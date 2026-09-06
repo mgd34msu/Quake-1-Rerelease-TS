@@ -107,8 +107,30 @@ Con_ToggleConsole_f with the expected `() => void` signature, imported
 directly below; console.ts itself only reaches menu.ts through a lazy
 `require("./menu")` (its own file header explains why), so no import cycle
 results from this file's static `import ... from "./console"`.
+
+U17 addition (2026-09-06, "the menus learn the re-release content"): three
+new screens with no WinQuake C original -- `m_qex_episodes` (the New Game
+episode picker), `m_qex_levels` (level select + Ruleset + Difficulty +
+Start, one combined screen per this unit's brief), `m_qex_addons` (reached
+from Options, lists mounted gamedirs and switches with the `game` command).
+Their content/launch model lives in the new src/client/menu_content.ts (see
+that file's own header for the import-cycle-avoidance split, matching
+quake-2-re-ts's menu.ts/menu_content.ts precedent). M_SinglePlayer_Key's
+"New Game" item (cursor 0) is the only existing entry point touched: it
+gates on whether LoadContentModel() finds any mounted mapdb.json episodes,
+and falls through to the ORIGINAL classic body (byte-for-byte, including the
+SCR_ModalMessage confirmation) when it doesn't -- test/menu.test.ts's
+existing assertions never mount a re-release root, so they exercise that
+unchanged classic body. The Load/Save screens grow a 13th row ("Autosave",
+scanned from `<gamedir>/autosave/` the same way M_ScanSaves already reads
+`s<N>.sav`) and the Options screen grows seven rows (gl_coloredlight,
+snd_speed, sv_autosave, cl_weaponswitch, language, joy_enable, Add-Ons) --
+all read/set BY NAME through cvar.ts, exactly like every other Options row
+in this file (see this header's own cvars-by-name note above), since none of
+those cvars are owned by a module this unit is scoped to import directly.
 */
 
+import { readdirSync } from "node:fs";
 import { getRenderer, TOP_RANGE, BOTTOM_RANGE } from "./render";
 import type { QpicT } from "../common/wad";
 import { vid, vidMenuHooks, vidBackend } from "./vid";
@@ -147,12 +169,25 @@ import { svs, sv } from "../server/server";
 import { Cmd_AddCommand, Cbuf_AddText, Cbuf_InsertText } from "../common/cmd";
 import { Cvar_Set, Cvar_SetValue, Cvar_VariableValue, Cvar_VariableString } from "../common/cvar";
 import { com_gamedir, Q_atoi, registered, rogue, hipnotic } from "../common/common";
-import { Sys_FileOpenRead, Sys_FileRead, Sys_FileClose, Sys_Error } from "../platform/sys";
+import { Sys_FileOpenRead, Sys_FileRead, Sys_FileClose, Sys_FileTime, Sys_Error } from "../platform/sys";
 import { SAVEGAME_COMMENT_LENGTH } from "../common/quakedef";
 import { Com_sprintf } from "../common/sprintf";
 import { Con_ToggleConsole_f } from "./console";
 import { SCR_ModalMessage, SCR_BeginLoadingPlaque } from "./screen";
 import { S_LocalSound, S_ExtraUpdate } from "./snd_dma";
+import {
+  type ContentModel,
+  type ContentEpisode,
+  RULESETS,
+  DIFFICULTIES,
+  LoadContentModel,
+  LoadMenuLocalization,
+  LocalizedEpisodeName,
+  EpisodeAllowsNightmare,
+  ResolveLaunch,
+  Content_PerformLaunch,
+  AvailableLanguages,
+} from "./menu_content";
 
 // net_ser.c / IPX were not ported; see file header.
 const serialAvailable = false;
@@ -187,6 +222,11 @@ export enum MStateT {
   m_gameoptions,
   m_search,
   m_slist,
+  // U17 additions -- see file header. Appended after the last WinQuake
+  // ordinal so every existing MStateT value keeps its original number.
+  m_qex_episodes,
+  m_qex_levels,
+  m_qex_addons,
 }
 
 // see file header: every scalar file-scope global in menu.c lives here.
@@ -249,7 +289,40 @@ export const menuState = {
 
   slist_cursor: 0,
   slist_sorted: false,
+
+  // U17 additions -- see file header. Not WinQuake C globals (no C original
+  // has a re-release content picker), but kept on this same shared-state
+  // object per this file's own "shared mutable globals become an exported
+  // const singleton" convention.
+  qexEpisodeCursor: 0,
+  qexSelectedEpisode: 0,
+  qexLevelCursor: 0,
+  qexSelectedLevel: 0,
+  qexRulesetIndex: 1, // RULESETS[1] === "rerelease" -- mapdb.json only ever appears under a mounted re-release root
+  qexSkill: 1, // Normal
+  qexAddonsCursor: 0,
 };
+
+// U17 additions -- see file header. Cached content model, refreshed each
+// time the New Game / Add-Ons entry points below are opened (LoadContentModel
+// re-scans the mounted filesystem, which does not change mid-session in this
+// engine except through the "game" command menu.ts itself queues). Not a
+// WinQuake C global, so it doesn't live on menuState (that object is for
+// scalar C-global fidelity; this is a whole cached model).
+let qexContentModel: ContentModel | null = null;
+let qexLocLoaded = false;
+
+const EMPTY_CONTENT_MODEL: ContentModel = {
+  roots: { classicRoot: "", rereleaseRoot: "", isRerelease: false },
+  mapdbPresent: false,
+  mapdbErrors: [],
+  episodes: [],
+  addonDirs: [],
+};
+
+function qexModel(): ContentModel {
+  return qexContentModel ?? EMPTY_CONTENT_MODEL;
+}
 
 // #define StartingGame (m_multiplayer_cursor == 1)
 function StartingGame(): boolean {
@@ -535,6 +608,17 @@ export function M_SinglePlayer_Key(key: number): void {
 
       switch (menuState.m_singleplayer_cursor) {
         case 0: {
+          // U17: a mounted re-release mapdb.json (at least one episode with
+          // sp maps) switches "New Game" to the episode picker; with no
+          // mapdb.json (a classic-only install, or none of its episodes'
+          // dirs are actually mounted), fall through to the ORIGINAL
+          // classic body untouched -- see file header.
+          qexContentModel = LoadContentModel();
+          if (qexModel().episodes.length > 0) {
+            M_Menu_QexEpisodes_f();
+            break;
+          }
+
           if (sv.active) {
             if (!SCR_ModalMessage("Are you sure you want to\nstart a new game?\n")) break;
           }
@@ -564,6 +648,16 @@ export function M_SinglePlayer_Key(key: number): void {
 export const MAX_SAVEGAMES = 12;
 export const m_filenames: string[] = new Array<string>(MAX_SAVEGAMES).fill("--- UNUSED SLOT ---");
 export const loadable: boolean[] = new Array<boolean>(MAX_SAVEGAMES).fill(false);
+
+// U17 addition: a 13th row, the newest `<gamedir>/autosave/*.sav` (see this
+// unit's brief and src/common/host_cmd.ts's own Host_AutosaveDir/
+// Host_NewestAutosave header comments -- both are private to that file, so
+// this is a local re-reading of the same directory rather than a call into
+// them). LOAD_ROWS is the total row count both screens' cursors wrap over.
+export const AUTOSAVE_SLOT = MAX_SAVEGAMES;
+export const LOAD_ROWS = MAX_SAVEGAMES + 1;
+export let autosaveFilename = "--- NO AUTOSAVE ---";
+export let autosaveLoadable = false;
 
 // fscanf (f, "%i\n" / "%s\n", ...): skip whitespace, take one
 // whitespace-delimited token, then consume the whitespace that follows.
@@ -596,30 +690,76 @@ class SaveTextScanner {
   }
 }
 
+// Reads one already-open save file's comment the same way the loop in
+// M_ScanSaves below does; factored out so scanAutosave (a different source
+// path) can share it.
+function readSaveComment(path: string): string | null {
+  const opened = Sys_FileOpenRead(path);
+  if (opened.handle === -1) return null;
+
+  const bytes = new Uint8Array(opened.length);
+  Sys_FileRead(opened.handle, bytes, opened.length);
+  Sys_FileClose(opened.handle);
+  let contents = "";
+  for (let k = 0; k < bytes.length; k++) contents += String.fromCharCode(bytes[k]);
+  const scan = new SaveTextScanner(contents);
+
+  scan.scanToken(); // version -- read, exactly as the C's fscanf, and discarded
+  // strncpy (m_filenames[i], name, sizeof(m_filenames[i])-1)
+  let comment = scan.scanToken().slice(0, SAVEGAME_COMMENT_LENGTH);
+
+  // change _ back to space
+  comment = comment.replace(/_/g, " ");
+  return comment;
+}
+
+// U17 addition: the newest `<gamedir>/autosave/*.sav` (host_cmd.ts's own
+// Host_NewestAutosave, re-read here since that function is private to that
+// file -- see this unit's brief and AUTOSAVE_SLOT's comment above). Only the
+// comment is needed here (the load itself just runs `load autosave`, which
+// Host_Loadgame_f resolves to the newest slot on its own), so the resolved
+// path isn't kept past this function.
+function scanAutosave(): void {
+  autosaveFilename = "--- NO AUTOSAVE ---";
+  autosaveLoadable = false;
+
+  const dir = `${com_gamedir}/autosave`;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return;
+  }
+
+  let best: string | null = null;
+  let bestTime = -1;
+  for (const entry of entries) {
+    if (!entry.toLowerCase().endsWith(".sav")) continue;
+    const full = `${dir}/${entry}`;
+    const t = Sys_FileTime(full);
+    if (t > bestTime) {
+      bestTime = t;
+      best = full;
+    }
+  }
+  if (best === null) return;
+
+  const comment = readSaveComment(best);
+  if (comment === null) return;
+  autosaveFilename = comment;
+  autosaveLoadable = true;
+}
+
 export function M_ScanSaves(): void {
   for (let i = 0; i < MAX_SAVEGAMES; i++) {
     m_filenames[i] = "--- UNUSED SLOT ---";
     loadable[i] = false;
-    const path = `${com_gamedir}/s${i}.sav`;
-    const opened = Sys_FileOpenRead(path);
-    if (opened.handle === -1) continue;
-
-    const bytes = new Uint8Array(opened.length);
-    Sys_FileRead(opened.handle, bytes, opened.length);
-    Sys_FileClose(opened.handle);
-    let contents = "";
-    for (let k = 0; k < bytes.length; k++) contents += String.fromCharCode(bytes[k]);
-    const scan = new SaveTextScanner(contents);
-
-    scan.scanToken(); // version -- read, exactly as the C's fscanf, and discarded
-    // strncpy (m_filenames[i], name, sizeof(m_filenames[i])-1)
-    let comment = scan.scanToken().slice(0, SAVEGAME_COMMENT_LENGTH);
-
-    // change _ back to space
-    comment = comment.replace(/_/g, " ");
+    const comment = readSaveComment(`${com_gamedir}/s${i}.sav`);
+    if (comment === null) continue;
     m_filenames[i] = comment;
     loadable[i] = true;
   }
+  scanAutosave();
 }
 
 export function M_Menu_Load_f(): void {
@@ -644,6 +784,7 @@ export function M_Load_Draw(): void {
   M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
 
   for (let i = 0; i < MAX_SAVEGAMES; i++) M_Print(16, 32 + 8 * i, m_filenames[i]);
+  M_Print(16, 32 + 8 * AUTOSAVE_SLOT, autosaveFilename);
 
   // line cursor
   M_DrawCharacter(8, 32 + menuState.load_cursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
@@ -654,6 +795,7 @@ export function M_Save_Draw(): void {
   M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
 
   for (let i = 0; i < MAX_SAVEGAMES; i++) M_Print(16, 32 + 8 * i, m_filenames[i]);
+  M_Print(16, 32 + 8 * AUTOSAVE_SLOT, autosaveFilename);
 
   // line cursor
   M_DrawCharacter(8, 32 + menuState.load_cursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
@@ -667,6 +809,17 @@ export function M_Load_Key(k: number): void {
 
     case K_ENTER:
       S_LocalSound("misc/menu2.wav");
+      // U17: the Autosave row (see AUTOSAVE_SLOT) runs `load autosave`
+      // instead of `load s<N>` -- Host_Loadgame_f resolves that to the
+      // newest `<gamedir>/autosave/*.sav` slot itself.
+      if (menuState.load_cursor === AUTOSAVE_SLOT) {
+        if (!autosaveLoadable) return;
+        menuState.m_state = MStateT.m_none;
+        keyState.key_dest = KeydestT.key_game;
+        SCR_BeginLoadingPlaque();
+        Cbuf_AddText("load autosave\n");
+        return;
+      }
       if (!loadable[menuState.load_cursor]) return;
       menuState.m_state = MStateT.m_none;
       keyState.key_dest = KeydestT.key_game;
@@ -683,14 +836,14 @@ export function M_Load_Key(k: number): void {
     case K_LEFTARROW:
       S_LocalSound("misc/menu1.wav");
       menuState.load_cursor--;
-      if (menuState.load_cursor < 0) menuState.load_cursor = MAX_SAVEGAMES - 1;
+      if (menuState.load_cursor < 0) menuState.load_cursor = LOAD_ROWS - 1;
       break;
 
     case K_DOWNARROW:
     case K_RIGHTARROW:
       S_LocalSound("misc/menu1.wav");
       menuState.load_cursor++;
-      if (menuState.load_cursor >= MAX_SAVEGAMES) menuState.load_cursor = 0;
+      if (menuState.load_cursor >= LOAD_ROWS) menuState.load_cursor = 0;
       break;
   }
 }
@@ -702,6 +855,11 @@ export function M_Save_Key(k: number): void {
       break;
 
     case K_ENTER:
+      // U17: the Autosave row isn't a manual save target (autosave writes to
+      // `<gamedir>/autosave/<mapname>.sav`, named by map rather than by
+      // slot) -- ENTER on it is a no-op, the same way an unused classic slot
+      // is on the Load screen.
+      if (menuState.load_cursor === AUTOSAVE_SLOT) return;
       menuState.m_state = MStateT.m_none;
       keyState.key_dest = KeydestT.key_game;
       Cbuf_AddText(`save s${menuState.load_cursor}\n`);
@@ -711,15 +869,266 @@ export function M_Save_Key(k: number): void {
     case K_LEFTARROW:
       S_LocalSound("misc/menu1.wav");
       menuState.load_cursor--;
-      if (menuState.load_cursor < 0) menuState.load_cursor = MAX_SAVEGAMES - 1;
+      if (menuState.load_cursor < 0) menuState.load_cursor = LOAD_ROWS - 1;
       break;
 
     case K_DOWNARROW:
     case K_RIGHTARROW:
       S_LocalSound("misc/menu1.wav");
       menuState.load_cursor++;
-      if (menuState.load_cursor >= MAX_SAVEGAMES) menuState.load_cursor = 0;
+      if (menuState.load_cursor >= LOAD_ROWS) menuState.load_cursor = 0;
       break;
+  }
+}
+
+//=============================================================================
+/* NEW GAME: EPISODE PICKER (U17 addition -- see file header; no WinQuake C
+   original) */
+
+export function M_Menu_QexEpisodes_f(): void {
+  qexLocLoaded = LoadMenuLocalization() > 0;
+  keyState.key_dest = KeydestT.key_menu;
+  menuState.m_state = MStateT.m_qex_episodes;
+  menuState.m_entersound = true;
+  const count = qexModel().episodes.length;
+  if (menuState.qexEpisodeCursor < 0 || menuState.qexEpisodeCursor >= count) menuState.qexEpisodeCursor = 0;
+}
+
+export function M_QexEpisodes_Draw(): void {
+  M_DrawTransPic(16, 4, cachePic("gfx/qplaque.lmp"));
+  const p = cachePic("gfx/ttl_sgl.lmp");
+  M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
+
+  const episodes = qexModel().episodes;
+  for (let i = 0; i < episodes.length; i++) {
+    M_Print(48, 32 + i * 8, LocalizedEpisodeName(episodes[i].nameKey, qexLocLoaded));
+  }
+
+  if (episodes.length > 0) M_DrawCharacter(32, 32 + menuState.qexEpisodeCursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
+}
+
+export function M_QexEpisodes_Key(key: number): void {
+  const episodes = qexModel().episodes;
+
+  switch (key) {
+    case K_ESCAPE:
+      M_Menu_SinglePlayer_f();
+      break;
+
+    case K_UPARROW:
+      if (episodes.length === 0) break;
+      S_LocalSound("misc/menu1.wav");
+      menuState.qexEpisodeCursor--;
+      if (menuState.qexEpisodeCursor < 0) menuState.qexEpisodeCursor = episodes.length - 1;
+      break;
+
+    case K_DOWNARROW:
+      if (episodes.length === 0) break;
+      S_LocalSound("misc/menu1.wav");
+      menuState.qexEpisodeCursor++;
+      if (menuState.qexEpisodeCursor >= episodes.length) menuState.qexEpisodeCursor = 0;
+      break;
+
+    case K_ENTER:
+      if (episodes.length === 0) break;
+      menuState.m_entersound = true;
+      menuState.qexSelectedEpisode = menuState.qexEpisodeCursor;
+      menuState.qexLevelCursor = 0;
+      menuState.qexSelectedLevel = 0;
+      M_Menu_QexLevels_f();
+      break;
+  }
+}
+
+//=============================================================================
+/* NEW GAME: LEVEL SELECT + RULESET + DIFFICULTY + START (U17 addition -- see
+   file header; no WinQuake C original). One combined screen per the unit
+   brief: the level rows come first, then a Ruleset row, a Difficulty row,
+   then Start -- qexLevelCursor is a single cursor over all of those rows. */
+
+function qexSelectedContentEpisode(): ContentEpisode | null {
+  return qexModel().episodes[menuState.qexSelectedEpisode] ?? null;
+}
+
+export function M_Menu_QexLevels_f(): void {
+  keyState.key_dest = KeydestT.key_menu;
+  menuState.m_state = MStateT.m_qex_levels;
+  menuState.m_entersound = true;
+}
+
+export function M_QexLevels_Draw(): void {
+  const episode = qexSelectedContentEpisode();
+  if (!episode) {
+    M_Menu_QexEpisodes_f();
+    return;
+  }
+
+  M_DrawTransPic(16, 4, cachePic("gfx/qplaque.lmp"));
+  const p = cachePic("gfx/ttl_sgl.lmp");
+  M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
+
+  const maps = episode.maps;
+  const rulesetRow = maps.length;
+  const difficultyRow = maps.length + 1;
+  const startRow = maps.length + 2;
+
+  for (let i = 0; i < maps.length; i++) {
+    M_Print(24, 32 + i * 8, maps[i].title);
+  }
+  if (menuState.qexSelectedLevel >= 0 && menuState.qexSelectedLevel < maps.length) {
+    M_DrawCharacter(16, 32 + menuState.qexSelectedLevel * 8, "*".charCodeAt(0));
+  }
+
+  const ruleset = RULESETS[menuState.qexRulesetIndex].id;
+  M_Print(24, 32 + rulesetRow * 8, `Ruleset: ${RULESETS[menuState.qexRulesetIndex].name}`);
+
+  const diffCount = EpisodeAllowsNightmare(episode.dir, ruleset) ? 4 : 3;
+  if (menuState.qexSkill >= diffCount) menuState.qexSkill = diffCount - 1;
+  M_Print(24, 32 + difficultyRow * 8, `Difficulty: ${DIFFICULTIES[menuState.qexSkill]}`);
+
+  M_Print(24, 32 + startRow * 8, "Start");
+
+  M_DrawCharacter(8, 32 + menuState.qexLevelCursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
+}
+
+export function M_QexLevels_Key(key: number): void {
+  const episode = qexSelectedContentEpisode();
+  if (!episode) {
+    M_Menu_QexEpisodes_f();
+    return;
+  }
+
+  const maps = episode.maps;
+  const episodeDir = episode.dir;
+  const rulesetRow = maps.length;
+  const difficultyRow = maps.length + 1;
+  const startRow = maps.length + 2;
+  const numRows = maps.length + 3;
+
+  function cycleDifficulty(dir: number): void {
+    const ruleset = RULESETS[menuState.qexRulesetIndex].id;
+    const diffCount = EpisodeAllowsNightmare(episodeDir, ruleset) ? 4 : 3;
+    menuState.qexSkill = (menuState.qexSkill + dir + diffCount) % diffCount;
+  }
+
+  switch (key) {
+    case K_ESCAPE:
+      M_Menu_QexEpisodes_f();
+      break;
+
+    case K_UPARROW:
+      S_LocalSound("misc/menu1.wav");
+      menuState.qexLevelCursor--;
+      if (menuState.qexLevelCursor < 0) menuState.qexLevelCursor = numRows - 1;
+      break;
+
+    case K_DOWNARROW:
+      S_LocalSound("misc/menu1.wav");
+      menuState.qexLevelCursor++;
+      if (menuState.qexLevelCursor >= numRows) menuState.qexLevelCursor = 0;
+      break;
+
+    case K_LEFTARROW:
+      if (menuState.qexLevelCursor === rulesetRow) {
+        S_LocalSound("misc/menu3.wav");
+        menuState.qexRulesetIndex = (menuState.qexRulesetIndex - 1 + RULESETS.length) % RULESETS.length;
+      } else if (menuState.qexLevelCursor === difficultyRow) {
+        S_LocalSound("misc/menu3.wav");
+        cycleDifficulty(-1);
+      }
+      break;
+
+    case K_RIGHTARROW:
+      if (menuState.qexLevelCursor === rulesetRow) {
+        S_LocalSound("misc/menu3.wav");
+        menuState.qexRulesetIndex = (menuState.qexRulesetIndex + 1) % RULESETS.length;
+      } else if (menuState.qexLevelCursor === difficultyRow) {
+        S_LocalSound("misc/menu3.wav");
+        cycleDifficulty(1);
+      }
+      break;
+
+    case K_ENTER:
+      menuState.m_entersound = true;
+      if (menuState.qexLevelCursor < maps.length) {
+        menuState.qexSelectedLevel = menuState.qexLevelCursor;
+      } else if (menuState.qexLevelCursor === rulesetRow) {
+        menuState.qexRulesetIndex = (menuState.qexRulesetIndex + 1) % RULESETS.length;
+      } else if (menuState.qexLevelCursor === difficultyRow) {
+        cycleDifficulty(1);
+      } else if (menuState.qexLevelCursor === startRow) {
+        const levelIndex = menuState.qexSelectedLevel >= 0 && menuState.qexSelectedLevel < maps.length ? menuState.qexSelectedLevel : 0;
+        const chosenMap = maps[levelIndex].bsp;
+        const ruleset = RULESETS[menuState.qexRulesetIndex].id;
+        const plan = ResolveLaunch(episode, ruleset, chosenMap, menuState.qexSkill);
+
+        keyState.key_dest = KeydestT.key_game;
+        menuState.m_state = MStateT.m_none;
+        SCR_BeginLoadingPlaque();
+        Content_PerformLaunch(plan);
+      }
+      break;
+  }
+}
+
+//=============================================================================
+/* ADD-ONS (U17 addition -- see file header; no WinQuake C original). Reached
+   from the Options screen; lists the mounted gamedirs (base game plus every
+   mounted mission-pack-style dir) and switches with the `game` command. */
+
+export function M_Menu_QexAddons_f(): void {
+  qexContentModel = LoadContentModel();
+  keyState.key_dest = KeydestT.key_menu;
+  menuState.m_state = MStateT.m_qex_addons;
+  menuState.m_entersound = true;
+  const count = qexModel().addonDirs.length + 1; // +1 for the base game row
+  if (menuState.qexAddonsCursor < 0 || menuState.qexAddonsCursor >= count) menuState.qexAddonsCursor = 0;
+}
+
+function qexAddonsRows(): string[] {
+  return ["Base Game", ...qexModel().addonDirs];
+}
+
+export function M_QexAddons_Draw(): void {
+  M_DrawTransPic(16, 4, cachePic("gfx/qplaque.lmp"));
+  const p = cachePic("gfx/p_option.lmp");
+  M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
+
+  const rows = qexAddonsRows();
+  for (let i = 0; i < rows.length; i++) M_Print(40, 32 + i * 8, rows[i]);
+
+  M_DrawCharacter(24, 32 + menuState.qexAddonsCursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
+}
+
+export function M_QexAddons_Key(key: number): void {
+  const rows = qexAddonsRows();
+
+  switch (key) {
+    case K_ESCAPE:
+      M_Menu_Options_f();
+      break;
+
+    case K_UPARROW:
+      S_LocalSound("misc/menu1.wav");
+      menuState.qexAddonsCursor--;
+      if (menuState.qexAddonsCursor < 0) menuState.qexAddonsCursor = rows.length - 1;
+      break;
+
+    case K_DOWNARROW:
+      S_LocalSound("misc/menu1.wav");
+      menuState.qexAddonsCursor++;
+      if (menuState.qexAddonsCursor >= rows.length) menuState.qexAddonsCursor = 0;
+      break;
+
+    case K_ENTER: {
+      menuState.m_entersound = true;
+      // rows[0] is the synthetic "Base Game" label; every real gamedir name
+      // is qexModel().addonDirs[cursor - 1] (the actual `game` argument).
+      const dirs = qexModel().addonDirs;
+      const target = menuState.qexAddonsCursor === 0 ? "id1" : dirs[menuState.qexAddonsCursor - 1];
+      Cbuf_AddText(`game ${target}\n`);
+      break;
+    }
   }
 }
 
@@ -1062,7 +1471,13 @@ export function M_Net_Key(k: number): void {
 /* OPTIONS MENU */
 
 // non-Windows list; the _WIN32 list adds a 14th item ("Use Mouse"), dropped.
-export const OPTIONS_ITEMS = 13;
+// U17 addition: seven more rows after "Video Options" (index 12) -- see this
+// unit's brief and file header -- for cvars this file doesn't own (read/set
+// BY NAME, same convention as every row above them): gl_coloredlight (13),
+// snd_speed (14), sv_autosave (15), cl_weaponswitch (16), language (17),
+// joy_enable (18), and an "Add-Ons" action row (19) that opens
+// M_Menu_QexAddons_f.
+export const OPTIONS_ITEMS = 20;
 
 export const SLIDER_RANGE = 10;
 
@@ -1139,7 +1554,58 @@ export function M_AdjustSliders(dir: number): void {
       Cvar_SetValue("lookstrafe", Cvar_VariableValue("lookstrafe") ? 0 : 1);
       break;
 
-    // _WIN32's case 13 (_windowed_mouse) is dropped
+    // _WIN32's case 13 (_windowed_mouse) is dropped; case 12 (Video Options)
+    // is an action row handled in M_Options_Key, not here.
+
+    case 13: // colored lighting -- U17 addition, gl_coloredlight
+      Cvar_SetValue("gl_coloredlight", Cvar_VariableValue("gl_coloredlight") ? 0 : 1);
+      break;
+
+    case 14: {
+      // sound frequency -- U17 addition, snd_speed. Not a slider: cycles
+      // through the sample rates snd_dma.ts's mixer actually supports.
+      const rates = [11025, 22050, 44100, 48000];
+      const current = Math.trunc(Cvar_VariableValue("snd_speed"));
+      let idx = rates.indexOf(current);
+      if (idx === -1) idx = rates.indexOf(44100);
+      idx = (idx + dir + rates.length) % rates.length;
+      Cvar_SetValue("snd_speed", rates[idx]);
+      break;
+    }
+
+    case 15: // autosave -- U17 addition, sv_autosave
+      Cvar_SetValue("sv_autosave", Cvar_VariableValue("sv_autosave") ? 0 : 1);
+      break;
+
+    case 16: {
+      // weapon switch -- U17 addition, cl_weaponswitch: 0=only when the
+      // player didn't already have the weapon, 1=never, 2=always (cl_main.ts's
+      // own header comment on this cvar) -- a 3-way cycle, not a checkbox.
+      let next = Math.trunc(Cvar_VariableValue("cl_weaponswitch")) + dir;
+      if (next < 0) next = 2;
+      if (next > 2) next = 0;
+      Cvar_SetValue("cl_weaponswitch", next);
+      break;
+    }
+
+    case 17: {
+      // language -- U17 addition. Cycles menu_content.ts's AvailableLanguages
+      // (only loc files actually mounted in the search path).
+      const langs = AvailableLanguages();
+      if (langs.length === 0) break;
+      const current = Cvar_VariableString("language").trim().toLowerCase();
+      let idx = langs.findIndex((l) => l === current);
+      if (idx === -1) idx = 0;
+      idx = (idx + dir + langs.length) % langs.length;
+      Cvar_Set("language", langs[idx]);
+      break;
+    }
+
+    case 18: // game controller -- U17 addition, joy_enable
+      Cvar_SetValue("joy_enable", Cvar_VariableValue("joy_enable") ? 0 : 1);
+      break;
+
+    // case 19 (Add-Ons) is an action row handled in M_Options_Key, not here.
   }
 }
 
@@ -1202,6 +1668,29 @@ export function M_Options_Draw(): void {
 
   if (vidMenuHooks.vid_menudrawfn) M_Print(16, 128, "         Video Options");
 
+  // U17 additions -- see OPTIONS_ITEMS' own comment.
+  M_Print(16, 136, "      Colored Lighting");
+  M_DrawCheckbox(220, 136, Cvar_VariableValue("gl_coloredlight") !== 0);
+
+  M_Print(16, 144, "      Sound Frequency");
+  M_Print(220, 144, `${Math.trunc(Cvar_VariableValue("snd_speed")) || 44100}`);
+
+  M_Print(16, 152, "              Autosave");
+  M_DrawCheckbox(220, 152, Cvar_VariableValue("sv_autosave") !== 0);
+
+  M_Print(16, 160, "        Weapon Switch");
+  const weaponSwitchLabels = ["Only New", "Never", "Always"];
+  const weaponSwitchValue = Math.trunc(Cvar_VariableValue("cl_weaponswitch"));
+  M_Print(220, 160, weaponSwitchLabels[weaponSwitchValue] ?? weaponSwitchLabels[0]);
+
+  M_Print(16, 168, "              Language");
+  M_Print(220, 168, Cvar_VariableString("language") || "english");
+
+  M_Print(16, 176, "      Game Controller");
+  M_DrawCheckbox(220, 176, Cvar_VariableValue("joy_enable") !== 0);
+
+  M_Print(16, 184, "                Add-Ons");
+
   // cursor
   M_DrawCharacter(200, 32 + menuState.options_cursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
 }
@@ -1227,6 +1716,9 @@ export function M_Options_Key(k: number): void {
           break;
         case 12:
           M_Menu_Video_f();
+          break;
+        case 19: // Add-Ons -- U17 addition
+          M_Menu_QexAddons_f();
           break;
         default:
           M_AdjustSliders(1);
@@ -1255,8 +1747,16 @@ export function M_Options_Key(k: number): void {
       break;
   }
 
+  // Row 12 (Video Options) only exists when vidMenuHooks.vid_menudrawfn is
+  // set (see M_Options_Draw); this bounces the cursor off it either
+  // direction. U17 addition: with rows now continuing past 12 (13..19), a
+  // downward bounce has to land on 13 rather than wrapping all the way to 0
+  // (the original C's own two-way bounce -- "up goes to 11, everything else
+  // goes to 0" -- relied on 12 being the LAST row, where 0 and "the row
+  // after 12" were the same destination; that's no longer true here).
   if (menuState.options_cursor === 12 && !vidMenuHooks.vid_menudrawfn) {
     if (k === K_UPARROW) menuState.options_cursor = 11;
+    else if (k === K_DOWNARROW) menuState.options_cursor = 13;
     else menuState.options_cursor = 0;
   }
 }
@@ -2262,6 +2762,7 @@ export function M_Init(): void {
   Cmd_AddCommand("menu_video", M_Menu_Video_f);
   Cmd_AddCommand("help", M_Menu_Help_f);
   Cmd_AddCommand("menu_quit", M_Menu_Quit_f);
+  Cmd_AddCommand("menu_addons", M_Menu_QexAddons_f); // U17 addition
 }
 
 export function M_Draw(): void {
@@ -2357,6 +2858,18 @@ export function M_Draw(): void {
     case MStateT.m_slist:
       M_ServerList_Draw();
       break;
+
+    case MStateT.m_qex_episodes:
+      M_QexEpisodes_Draw();
+      break;
+
+    case MStateT.m_qex_levels:
+      M_QexLevels_Draw();
+      break;
+
+    case MStateT.m_qex_addons:
+      M_QexAddons_Draw();
+      break;
   }
 
   if (menuState.m_entersound) {
@@ -2441,6 +2954,18 @@ export function M_Keydown(key: number): void {
 
     case MStateT.m_slist:
       M_ServerList_Key(key);
+      return;
+
+    case MStateT.m_qex_episodes:
+      M_QexEpisodes_Key(key);
+      return;
+
+    case MStateT.m_qex_levels:
+      M_QexLevels_Key(key);
+      return;
+
+    case MStateT.m_qex_addons:
+      M_QexAddons_Key(key);
       return;
   }
 }

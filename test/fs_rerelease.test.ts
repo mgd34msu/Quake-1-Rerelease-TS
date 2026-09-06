@@ -48,8 +48,8 @@ import {
   setRogue,
   setStandardQuake,
   standard_quake,
+  com_searchpaths, setComGamedir, setComSearchpaths,
 } from "../src/common/common";
-import { setComSearchpaths } from "../src/common/common";
 import { Cbuf_Init, Cmd_TokenizeString } from "../src/common/cmd";
 import { Host_Game_f } from "../src/common/host_cmd";
 import { hostClientHooks } from "../src/common/host";
@@ -69,9 +69,13 @@ const savedDopa = dopa;
 const savedCtf = ctf;
 const savedStandardQuake = standard_quake;
 const savedSvActive = sv.active;
+const savedSearchpaths = com_searchpaths;
+const savedGamedir = com_gamedir;
 
 afterAll(() => {
   rmSync(scratchDir, { recursive: true, force: true });
+  setComSearchpaths(savedSearchpaths);
+  setComGamedir(savedGamedir);
   setHipnotic(savedHipnotic);
   setRogue(savedRogue);
   setMg1(savedMg1);
