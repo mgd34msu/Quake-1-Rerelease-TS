@@ -36,7 +36,17 @@ Landed (2026-09-06):
   and hosts either server profile, chosen per connection and per command
   line instead of per process. `-dedicated -qw` is a QuakeWorld dedicated
   server; a plain `-dedicated` is NetQuake; `-qw` alone is a QuakeWorld
-  client; anything else is NetQuake client/listen server.
+  client; anything else is NetQuake client/listen server. A QuakeWorld
+  listen server is also reachable from that default (non-`-qw`) boot,
+  with `sv_profile qw` then `map` bringing the QuakeWorld server profile
+  up and the local client joining it over loopback.
+- Local splitscreen (`cl_splitscreen`, two to four players): each seat is
+  its own loopback client connection with its own view, HUD and input;
+  `svc_setviews` tells a local client how many seats its own machine is
+  running.
+- A Multiplayer menu: a Bots page, a start-server screen (ruleset, bot
+  count/skill, protocol), a join screen for NetQuake and QuakeWorld
+  addresses, and CTF team selection.
 - Bots and navigation: NAV2 pathing, `ex_walkpathtogoal` (falling back to
   `movetogoal` on a map with no `.nav`), a game-agnostic bot brain shared
   with quake-2-re-ts's binding work, `addbot`/`bot_count`/`bot_skill`.
@@ -62,13 +72,15 @@ Landed (2026-09-06):
 - Parsers for `mapdb.json`, `wwheel.txt`, the bot knowledge files and NAV2
   navmeshes.
 
-In flight: a Multiplayer menu (bots page, start-server, join by NetQuake or
-QuakeWorld address, CTF teams), the QuakeWorld listen server socket split,
-local splitscreen, and render-seam cleanup (a shared `fog` command,
-`Draw_GlyphAtlas` on the renderer interface). Not started: the software
-renderer's own colored-lighting/MD5/lerp/skybox/fog work above already
-landed ahead of the phase-7 regate; the qcc union-progs compiler (R1) and
-the final byte-vector regate (phase 8) are still open.
+Render-seam cleanup also landed: a shared `fog` command and `Draw_GlyphAtlas`
+on the renderer interface, with the cvars both renderers read moved to one
+shared module (`src/common/render_cvars.ts`). In flight: a per-profile
+cvar/cmd registry for the handful of remaining qwcl/qwsv name collisions
+where one tree registers a command and the other a cvar under the same name
+(`name` itself is the one solved so far, by hand). Not started: the `-qw`
+boot cannot host a server yet (the two boot paths still need merging); the
+qcc union-progs compiler (R1) and the final byte-vector regate (phase 8) are
+still open.
 
 ## Running
 
@@ -232,9 +244,10 @@ Behaviour that looks like a gap but is a deliberate, documented choice:
   then `map <name>` stands the server up and connects the local client to it
   over UDP. The `-qw` boot itself is a QuakeWorld client only; hosting from
   it needs the two boots merged (in flight).
-- No local splitscreen yet: the QEX `svc_setviews` opcode and per-seat
-  plumbing exist on the wire, but the client-side multi-viewport, per-seat
-  input and per-seat HUD work has not landed.
+- A handful of qwcl/qwsv name collisions where one tree registers a command
+  and the other a cvar of the same name still need one-off registration code
+  rather than a general per-profile registry; `name` itself is the one
+  solved so far.
 - The software renderer's colored lighting is a true-color present path
   behind `r_coloredlight`; the classic 8-bit paletted path is kept for
   `sv_ruleset classic` rather than removed.

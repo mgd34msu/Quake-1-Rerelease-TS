@@ -168,15 +168,16 @@ it. This is the Quake 1 shape of quake-2-re-ts's "classic modules gained
 re-release entity classes as content, not rules". It covers, for
 instance, mg1's `func_bob`, `fog` and horde entities under 1.06 progs.
 
-**RULING NEEDED (R1):** a TypeScript port of qcc (`../qsrc/quake-tools`,
+**RULING R1 (default in effect):** a TypeScript port of qcc (`../qsrc/quake-tools`,
 GPLv2) extended with the FTEQCC features the re-release sources use
 (`#0:name` builtins, `...` varargs, `#ifdef`), so we can build union
 "crossover" progs from the GPLv2 QuakeC at build time and ship them as
 part of the release (they are code, not game assets). This is the
 stronger form of crossover and doubles as a QuakeC mod platform. It is a
-separate deliverable of real size (qcc is about 5k lines of C). Default
-if not ruled: the compat spawn table ships first; the compiler is a later
-phase.
+separate deliverable of real size (qcc is about 5k lines of C). The
+default stands: the compat spawn table shipped first (U12, landed
+2026-09-06) and is what runs today; the qcc union-progs compiler is a
+later phase and has not been started.
 
 ## Engine core commitments
 
@@ -263,36 +264,138 @@ operations staying plain shared functions. Codecs:
   ideas with Quake's is kept as a lead: if the lobby opcodes' payloads
   ever need guessing, `kexdemo.ts` is the first place to look.
 
-**RULING NEEDED (R2):** "all possible protocols". Committed: 15, 666, 999
-with all `PRFL_*` flags, QW 28, and the QEX opcode set. Also cheap:
-Nehahra 250 (demo playback only). DarkPlaces protocols 5 to 7 would need
-the DarkPlaces source (GPLv2, not checked out) and add a large surface for
-little re-release value; default: not in v1.
+**RULING R2 (ruled, default stands):** "all possible protocols". Committed
+and landed: 15, 666, 999 with all `PRFL_*` flags, QW 28, and the QEX opcode
+set, plus this engine's own wide QuakeWorld protocol 29 (U18). Also cheap:
+Nehahra 250 (demo playback only) -- not started. DarkPlaces protocols 5 to 7
+would need the DarkPlaces source (GPLv2, not checked out) and add a large
+surface for little re-release value; ruled: not in v1.
 
 ## Unified client and server
 
-One binary. The client speaks NetQuake and QuakeWorld: the connection
-kind (a QW handshake versus an NQ connect, or the demo file's header)
-selects the codec and the client profile per connection, exactly as the
-`qw.active` fold already gates 435 sites across both renderers, cvar,
-cmd, console and view. The QW-only modules the fold never reached
-(`cl_ents`, `cl_pred`, `cl_cam`, `skin`, and the QW halves of
-`cl_parse`/`cl_input`/`cl_main`) become the QW client profile, selected
-per connection instead of per process. The server side hosts both
-profiles the same way; `-dedicated` runs headless. `qwsv` and `qwcl`
-remain as thin entry points (aliases) until the fold is complete, then go.
+Landed: one binary, `q1rets` (ruling R4, U42). The client speaks NetQuake
+and QuakeWorld per connection rather than per process
+(`src/common/profile.ts`): the connect rule that the `connect` console
+command follows and `src/client/cl_main.ts` implements picks the profile
+before the handshake even starts -- `cl_protocol qw|nq` forces it
+outright, an address with an explicit `:port` means QuakeWorld and one
+with no port means NetQuake, and `playdemo`/`timedemo` take it from the
+file (`.qwd` is QuakeWorld, `.dem`, any protocol, is NetQuake). The
+`qw.active` fold that used to gate 435 sites across both renderers,
+cvar, cmd, console and view is now this per-connection profile switch
+instead of a process-wide flag.
+
+`cmd_functions` and `cvar_vars` are each one table for the whole process
+(U38/U41): `Cmd_AddCommand` takes an optional profile scope, and lookup
+(`Cmd_ExecuteString`, `Cmd_CompleteCommand`) prefers the entry whose
+profile matches the profile in force, falling back to an unscoped
+registration -- the duplicate-name rejection is per (name, profile) pair
+rather than per name, covering the roughly 90 command names (`say`,
+`status`, `kick`, `connect`, `+attack`, `screenshot`, `menu_main`, ...)
+both trees register. A command arriving from the dedicated stdin
+console, an rcon packet, or a connected client's `clc_stringcmd`
+resolves against THAT SERVER's profile no matter what the local client
+is doing; `cmdConsole.profile`, set around a drain by
+`Cmd_WithConsoleProfile`, is that console-source profile. Most cvars
+both trees declare under one name are folded onto one shared `CvarT`
+object (`SV_RegisterSharedVariable`) rather than kept as two.
+
+The server side holds at most one server per process
+(`connectionProfile.server`, published as `sv.profile`): `-dedicated -qw`
+(what the `qwsv` entry point now passes) boots straight onto the
+QuakeWorld server tree, and a plain `-dedicated` boots NetQuake's. The
+same choice is reachable at runtime from a NetQuake boot with no
+`-qw` at all: `sv_profile qw` followed by `map <name>`
+(`Host_Map_QW_f`, `src/common/host_cmd.ts`) brings the QuakeWorld server
+profile up in a process that already has a client, and the local client's
+own `connect local` then joins it exactly as a LAN client would -- this
+is how the QuakeWorld listen server is hosted from the DEFAULT boot.
+`src/qw/net_udp.ts` gives that configuration one UDP socket per side
+(client and server), rather than the C's one socket per binary, now that
+both halves can share a process.
+
+Still open: the `-qw` boot itself is a QuakeWorld CLIENT only, with no
+server of its own -- hosting from it needs the two boot paths merged,
+which has not happened. And while the general mechanisms above (the
+profile-scoped command table and the shared-cvar registration) resolve
+most of the ~90 duplicate names, a handful of collisions where one tree's
+name is a COMMAND and the other's is a CVAR of the same name are not
+covered by either general mechanism -- `Cvar_RegisterVariable`'s "is a
+command" guard leaves the cvar object unlinked from `cvar_vars` and
+unreachable by name. `name` itself is the one of these solved so far
+(`Host_Name_QW_f` reads and writes QuakeWorld's `name` cvar object
+directly via `Cvar_SetObject`, bypassing the by-name lookup that would
+otherwise miss it); a general per-profile cvar/cmd registry that would
+cover the rest of this kind of collision without one-off code per name
+does not exist yet.
+
+`qwsv` and `qwcl` remain as thin entry points (aliases, R4) that insert
+`-qw` / `-dedicated -qw` onto the command line before it reaches this
+same binary's `main`.
 
 Client features, all in scope: localization with TTF/kfont text from
 `QuakeEX.kpf` (quake-2-re-ts `ttf.ts` and `kfont.ts` lifted), scaled HUD,
 menus and console with mouse (`ui_scale.ts`/`ui_mouse.ts` pattern), the
 weapon wheel from `wwheel.txt`, `mapdb.json`-driven New Game and
 Content x Ruleset screens, a server browser (NQ `slist` and QW master
-queries), local splitscreen (`svc_setviews`, per-seat HUD and sound;
-quake-2-re-ts's `gamepad_assign.ts`), SDL GameController with
+queries), local splitscreen (landed, see below), SDL GameController with
 `gamecontrollerdb.txt` from the kpf, haptics from `tactile/*.bnvib`
 (quake-2-re-ts `haptics.ts`), client-side prediction for QW and, as an
 option, for NQ on 666/999, achievements as a no-op log, and the id Vault
 gallery from `vault/`.
+
+### Splitscreen
+
+Landed (U43, `src/client/splitscreen.ts`): two to four players in one
+process, on one listen server. There is no C original to port against --
+WinQuake and QuakeWorld are single-seat binaries and the KEX engine's own
+splitscreen is not observable -- so this is an original module built on
+what the re-release QuakeC does leave on the wire, `svc_setviews` (45).
+
+Each seat past 0 is a FULL client connection over the loopback driver
+(its own `NET_Connect("local")`, running the ordinary prespawn / name /
+color / spawn / begin signon and getting its own player edict out of
+`SV_ConnectClient`), not a second camera hung off one connection -- to
+the server a seat is indistinguishable from a second player who happened
+to connect from the same process. This is affordable because `cl`,
+`cls`, `cl_entities` and `cl_visedicts` are live ESM bindings
+(`export let`) in `src/client/client.ts`: `SS_ActivateSeat` repoints all
+four at another seat's objects, so parse, input and draw run inside
+whichever seat's window is active with no call-site change anywhere in
+the client, the same one-switch-read-everywhere shape as the `qw.active`
+fold. `cl_splitscreen` is a console COMMAND, not a cvar -- seating a
+player is an action (it opens a connection, spawns an edict and re-cuts
+the screen), not a preference with something to archive -- while
+`cl_splitscreen_layout` (auto / side-by-side / stacked) is an archived
+cvar, since which way the screen is cut genuinely is one.
+
+Per seat: the connection, the whole of `ClientStateT` (view angles,
+stats, items, intermission, scoreboard, ...), the entity snapshot
+(`cl_entities`/`cl_visedicts`), the viewport rect, the HUD, the usercmd
+and the name/color the seat signs on with. Shared, deliberately: the
+world model and its efrag links (a seat's own `svc_spawnstatic`s for
+statics seat 0 already linked are dropped rather than linked twice),
+lightstyles, dlights (entity-keyed, so seats' copies of one muzzle flash
+collapse onto one slot), temp entities and beams, the console, the menu,
+the bind system and the sound listener -- sound is mixed from SEAT 0's
+ears only, since `snd_mix.ts` has no multi-listener render path; each
+seat's own local sounds still play, just spatialized from seat 0.
+QuakeWorld connections stay single-seat (`cl_splitscreen` is refused
+under the `qw` profile), since QW's per-connection prediction and
+netchan state live on `cl.qw`/`cls.qw`, which the seat switch does not
+yet cover connection by connection.
+
+`svc_setviews` is given its own documented semantics here, since the KEX
+engine's are not observable: the server tells a client how many LOCAL
+seats that client's own machine is running, so the client can tell "one
+of N views on one screen" from "one of N players on N machines". This
+port sends it from `SV_SendServerinfo` to loopback (local) clients only
+and parses it into `cl.numviews`; nothing in this engine's behaviour is
+gated on the received value -- the seat count a client actually draws
+with is its own local `cl_splitscreen`, authoritative on the machine that
+owns the screen -- so a server that never sends it (every non-re-release
+server) leaves `cl.numviews` at 1 and behaves exactly as it did before
+splitscreen existed.
 
 ## Renderers
 
@@ -308,12 +411,28 @@ Both renderers load and draw everything. Feature list:
   `host_maxfps` free-running.
 - **Software**: BSP2, colored lighting (three-channel blocklights with a
   15-bit or true-color present path; the 8-bit paletted path stays for
-  `classic`), MD5 through the alias triangle pipeline, fog as a depth
-  post-pass, skyboxes, lerp, replacement textures downsampled to the
-  surface cache. **RULING NEEDED (R3):** the software renderer's colored
-  lighting means a true-color output path in the software rasterizer,
-  which is the largest single renderer lift on the software side. Default:
-  in scope, sequenced after the GL renderer has every feature.
+  `classic`), MD5 through the alias triangle pipeline (U26), fog as a
+  depth post-pass (U27), cube-mapped skybox spans (U34), pose and
+  movement lerp including MD5 (U39), replacement textures downsampled to
+  the surface cache. **RULING R3 (done):** the software renderer's colored
+  lighting true-color output path landed with U25, ahead of the phase-7
+  regate; fog, skyboxes, MD5 and lerp above followed it, so the software
+  renderer now carries the same fog/skybox/MD5/lerp feature set the GL
+  renderer does, each in the shape its own rasterizer needs.
+
+Both renderers read one shared cvar set rather than each declaring its
+own copy: `src/common/render_cvars.ts` (U44) registers
+`r_enhancedmodels`, `r_lerpmove`, `r_lerpmodels`, `r_nolerp_list`,
+`r_lerplightstyles`, `r_skyfog`, `r_fastsky`, `r_skyalpha` and the
+water/lava/slime/tele alpha cvars once, at module load, so a
+software-only or dedicated-server process (which never runs the GL
+renderer's own `R_Init`) still finds them registered instead of stuck at
+`CvarT`'s unregistered-0 default. `src/client/fog_cmd.ts` (U44) is the
+same fix for the `fog` console command: one registration that dispatches
+through the active renderer's own `Renderer.fogCommand` seam member,
+replacing the two separate `Cmd_AddCommand("fog", ...)` calls (one per
+renderer) that used to fight over the same name in a process with both
+renderers compiled in.
 
 ## Bots and navigation
 
@@ -336,6 +455,45 @@ no nav). Reference for structure: quake-2-re-ts `src/server/nav.ts` and
 `src/kexgame/bots/`. Bots work under every profile and every progs that
 has the hooks; under 1.06 progs they still path and fight, without the
 hook calls.
+
+Landed: `src/lib/bot_brain/**` is the game-agnostic brain the ruling
+above asked for -- one instance per bot, one `think()` per server frame,
+knowing the world only through the small `BotWorldT` interface
+(`src/lib/bot_brain/world.ts`) and nothing else from outside `src/lib`.
+`src/bots/**` is the Quake 1 binding: `src/bots/index.ts` registers
+`svMainHooks.isBot`/`.botThink`/`.spawnServer` (so `SV_RunClients`,
+`SV_SendClientMessages` and `SV_SpawnServer` treat a client slot with no
+socket as a bot instead of a broken connection), the three re-release
+navigation builtins (`qexBotHooks`/`qexNavHooks`), and the
+`addbot`/`kickbot` commands with the `bot_skill`/`bot_count` cvars.
+
+`.nav` (NAV2, magic `NAV2`, version 12) decodes into nodes (flags, links,
+radius) and links (targets, hint types), with entity links read
+separately; `src/lib/nav.ts` and `src/lib/bot_brain/nav_graph.ts` name
+these fields `type`, `traversal` and `entityLinks` (renamed from an
+earlier pass to match how `nav_graph.ts` actually uses them, rather than
+the raw NAV2 field names).
+
+quake-2-re-ts binds this same brain (U36): it had the nav loader and the
+game-side adapter already but no decision-making of its own, since the
+Quake II brain is inside the closed KEX engine there too. That
+integration surfaced three bugs, fixed back in the shared
+`src/lib/bot_brain/brain.ts` rather than in either game's binding, since
+the brain is the one module both games run: (1) a goal the nav graph
+cannot reach used to wedge a bot permanently -- picking the same
+unreachable item every frame and walking into the wall between it and
+the bot with no stuck detection on that code path -- fixed by
+`unreachableUntil`, which benches an unreachable goal entity for a
+while; (2) the give-up escalation counted stuck trips on
+`pathState.stuckCount`, which both `clearPath` and `setPath` zero, and
+the stuck branch calls `clearPath` on every trip short of giving up, so
+the tally could never reach `STUCK_GIVE_UP` -- fixed by moving the tally
+onto the brain itself as `stuckTrips`; (3) a bot stopped dead-on against
+a wall has no tangential velocity to slide along it with, so it presses
+forward at full speed and does not move, and re-planning just produces
+the same route into the same wall -- fixed by `unstickUntil`/
+`unstickSide`, which open a short sidestep-and-hop window on every stuck
+trip.
 
 ## Savegames
 
@@ -410,10 +568,19 @@ under running games; 6 depends on 2; 7 depends on 4.
 ## Rulings requested
 
 - **R1** crossover progs: compat spawn table only, or also a TypeScript
-  qcc for union progs (default: table first, compiler later).
+  qcc for union progs (default: table first, compiler later). **Table
+  shipped** (U12, landed); the compiler has not been started and stays a
+  later phase.
 - **R2** protocol list beyond 15/666/999/28 + QEX (default: Nehahra 250
-  playback only; DarkPlaces protocols not in v1).
+  playback only; DarkPlaces protocols not in v1). **As ruled**: 15, 666,
+  999, QW 28 and this engine's own QW 29 are landed; Nehahra 250 and
+  DarkPlaces stay out of v1.
 - **R3** software renderer true-color colored lighting (default: in scope,
-  after the GL feature set).
+  after the GL feature set). **Done** (U25), with fog, skyboxes, MD5 and
+  lerp following it in the software renderer (U26/U27/U34/U39) ahead of
+  the phase-7 regate.
 - **R4** binary name for the unified executable (default: `q1rets`, with
-  `q1ts`/`qwsv`/`qwcl` kept as aliases until phase 5 completes).
+  `q1ts`/`qwsv`/`qwcl` kept as aliases until phase 5 completes). **Done**
+  (U42): `q1rets` is the only `bun build --compile` target; the other
+  three names are optional `--aliases` copies from
+  `scripts/release-build.sh`.

@@ -53,6 +53,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cube-mapped skybox spans in the software renderer.
 - Shadow projection for MD5-replaced models in the OpenGL renderer.
 - Pose and movement lerp in the software renderer, including MD5 models.
+- Multiplayer menu: a Bots page (roster, skill, count, gated on `bots/` data
+  being mounted), a start-server screen (ruleset, bot count/skill, NetQuake
+  protocol), a join screen for NetQuake and QuakeWorld addresses
+  (`cl_protocol`), and CTF team selection.
+- Local splitscreen: two to four players in one process on one listen
+  server, each seat a full loopback client connection with its own view,
+  HUD and usercmd; `cl_splitscreen` (command) and `cl_splitscreen_layout`
+  (cvar: auto/side-by-side/stacked). `svc_setviews` carries the local seat
+  count to loopback clients only.
+- This engine's bot brain (`src/lib/bot_brain`) is now also bound by
+  quake-2-re-ts; see that project's own changelog for its side of the work.
 
 ### Changed
 - Repository seeded from Quake-1-TS v1.0.0 (86c6867) as commit 1; package
@@ -70,12 +81,28 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The server side of the same unification: one process hosts both the
   NetQuake and QuakeWorld server profiles, dispatching console commands by
   the console's own profile (unified server, phase 5 part 2).
+- The QuakeWorld listen server: `sv_profile qw` followed by `map` brings the
+  QuakeWorld server profile up in a process that booted plain (no `-qw`),
+  and the local client joins it over loopback; `src/qw/net_udp.ts` now opens
+  one UDP socket per side (client and server) instead of one per binary.
+  Most cvars both trees declare under one name are now one shared object
+  (`SV_RegisterSharedVariable`) instead of two (unified binary, phase 5
+  part 3).
 - The unified binary is the only build target: `package.json`'s `build`
   produces `q1rets` from `src/main.ts`; `scripts/release-build.sh` builds
   the same one binary for all four release targets, with `q1ts`/`qwsv`/
   `qwcl` available only as optional `--aliases` copies of it;
   `src/qw/main_cl.ts` and `src/qw/main_sv.ts` are now thin wrappers that
   insert `-qw` / `-dedicated -qw` (ARCHITECTURE.md ruling R4).
+- Renderer seam cleanup: `Draw_GlyphAtlas` is a member of the `Renderer`
+  interface both renderers implement (kfont_text.ts no longer reaches into
+  either renderer module directly); one shared `fog` console command
+  (`src/client/fog_cmd.ts`) dispatches through the active renderer instead
+  of each renderer registering its own; `r_skyfog` and the other
+  lerp/sky/alpha cvars both renderers read now live in
+  `src/common/render_cvars.ts`, registered once so a software-only or
+  dedicated process finds them without the GL renderer's `R_Init` ever
+  running.
 
 ## Quake-1-TS [1.0.0] - 2026-09-05 (the seed)
 
