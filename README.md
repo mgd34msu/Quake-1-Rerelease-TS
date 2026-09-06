@@ -228,10 +228,10 @@ Behaviour that looks like a gap but is a deliberate, documented choice:
 
 ## Known limitations
 
-- No QuakeWorld listen server yet: `-qw` without `-dedicated` is a
-  QuakeWorld client only. Hosting a playable QuakeWorld game currently
-  needs a separate `-dedicated -qw` process; the socket split that lets
-  one process do both is in flight (see Status).
+- A QuakeWorld listen server is hosted from the default boot: `sv_profile qw`
+  then `map <name>` stands the server up and connects the local client to it
+  over UDP. The `-qw` boot itself is a QuakeWorld client only; hosting from
+  it needs the two boots merged (in flight).
 - No local splitscreen yet: the QEX `svc_setviews` opcode and per-seat
   plumbing exist on the wire, but the client-side multi-viewport, per-seat
   input and per-seat HUD work has not landed.
