@@ -7,12 +7,34 @@ Dimension of the Machine, Dawn of the Machine, the re-release CTF) with
 any content under any ruleset, over NetQuake protocols 15/666/999 and
 QuakeWorld 28, with both a software and an OpenGL renderer.
 
-**Status: kickoff (2026-09-06).** The tree is the faithful
-[Quake-1-TS](https://github.com/mgd34msu/Quake-1-TS) v1.0.0 port, seeded
-as commit 1, and is being transformed in place. `ARCHITECTURE.md` is the
-design contract and phase plan; `PORTING.md` carries the inherited
-C-to-TypeScript conventions; `CHANGELOG.md` records what each release
-changed.
+**Status: phase 2 in progress (2026-09-06).** Seeded from the faithful
+[Quake-1-TS](https://github.com/mgd34msu/Quake-1-TS) v1.0.0 port and
+transformed in place; `ARCHITECTURE.md` is the design contract and phase
+plan, `PORTING.md` carries the inherited C-to-TypeScript conventions,
+`CHANGELOG.md` records what each release changed. Landed so far:
+
+- One QuakeC VM with NetQuake and QuakeWorld host profiles; the re-release
+  progs run with all 18 name-bound `ex_*` builtins, `checkextension`,
+  localized prints, `MOVETYPE_GIB`, `SOLID_CORPSE`, the QEX opcodes, prompts,
+  `setcolor`, and a `sv_ruleset classic|rerelease|auto` behaviour profile.
+- Protocols 15, 666 and 999 behind a codec seam (protocol 15 byte-identical
+  to the seed), wide limits (`max_edicts` up to 32000, 8192 models, 2048
+  sounds), BSP2 and 2PSB maps, `.lit` colored lighting, BSPX directory,
+  external `.ent` files and texture wads, textures of any size.
+- Re-release roots detected (nested `rerelease/` or direct), `QuakeEX.kpf`
+  mounted, `-mg1 -mg3 -dopa -ctf`, a runtime `game` command, `-homedir`.
+- OpenGL: colored lightmaps and entity lighting, fog, skyboxes, water and
+  entity alpha, anisotropy. Sound at 44.1 kHz. KEX-format savegames and
+  autosave. SDL game controllers with the re-release's mappings and
+  `.bnvib` haptics. Parsers for `mapdb.json`, `wwheel.txt`, the bot
+  knowledge files and NAV2 navmeshes; MD5 model loader; TTF and kfont
+  rasterizers; a compat spawn table so re-release maps load under classic
+  progs.
+
+In flight: menus driven by `mapdb.json`, software-renderer colored
+lighting, the protocol-999 fix for messages outside the codec. Next: bots
+and navmesh pathing, client-side lerp, localization on the client with
+TTF text, the unified client and server binary, splitscreen.
 
 ### Running (today, the seed)
 
