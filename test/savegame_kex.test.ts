@@ -196,6 +196,14 @@ describe.skipIf(!HAVE_PROGS106)("sv_saveformat", () => {
     expect(kexLines[2 + NUM_SPAWN_PARMS + 2]).toBe("world");
   });
 
+  test("a save name with subdirectories creates them (re-release maps live under vault/ and test/)", () => {
+    spawnWorld();
+    sv_saveformat.string = "classic";
+    Cmd_ExecuteString("save autosave/vault/nested_map", CmdSourceT.src_command);
+    const lines = readFileSync(join(com_gamedir, "autosave", "vault", "nested_map.sav"), "latin1").split("\n");
+    expect(lines[0]).toBe(String(SAVEGAME_VERSION));
+  });
+
   test("auto writes classic under sv_ruleset classic and kex under sv_ruleset rerelease", () => {
     spawnWorld();
     sv_saveformat.string = "auto";

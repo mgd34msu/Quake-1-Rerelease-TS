@@ -147,6 +147,7 @@ import {
   hipnotic,
   rogue,
   type ParseState,
+  COM_CreatePath,
 } from "./common";
 import { Con_Printf } from "../client/console";
 import { Com_sprintf } from "./sprintf";
@@ -659,6 +660,9 @@ function Host_WriteSaveFile(f: SysFileTextWriter, kex: boolean): void {
 // `save "autosave/%s" 0`.
 function Host_SaveToFile(name: string, skipnotify: boolean): void {
   if (!skipnotify) Con_Printf("Saving game to %s...\n", name);
+  // Maps in subdirectories (the re-release's vault/ and test/ folders) name
+  // nested autosave paths; create the parents the way COM_CopyFile does.
+  COM_CreatePath(name);
   const handle = Sys_FileOpenWrite(name);
   if (handle === -1) {
     Con_Printf("ERROR: couldn't open.\n");
