@@ -451,6 +451,20 @@ export const temp1 = new CvarT("temp1", "0");
 // MAX_EDICTS)`); changing it mid-level does nothing until the next load.
 export const max_edicts = new CvarT("max_edicts", String(DEFAULT_MAX_EDICTS), true);
 
+// U24 (re-release addition): the retail savegame format toggle plus
+// Host_CheckAutosave's gate and interval (Ironwail host.c:95-96's
+// `sv_autosave`/`sv_autosave_interval` cvars, both CVAR_ARCHIVE). Ironwail
+// itself always WRITES the classic SAVEGAME_VERSION text format and only
+// READS SAVEGAME_VERSION_KEX (host_cmd.c:2574-2594); `sv_saveformat` is this
+// port's own addition so our own saves round-trip with the retail game too --
+// "auto" (the default) writes the KEX header only when
+// `SV_RulesetIsRerelease()` says the loaded progs is a re-release build, so
+// classic play keeps producing the byte-identical classic file host_cmd.test.ts
+// checks. host_cmd.ts (Host_Savegame_f/Host_CheckAutosave) is the only reader.
+export const sv_saveformat = new CvarT("sv_saveformat", "auto", true);
+export const sv_autosave = new CvarT("sv_autosave", "1", true);
+export const sv_autosave_interval = new CvarT("sv_autosave_interval", "30", true);
+
 // The clamp Ironwail's SV_SpawnServer applies, as a function so both
 // SV_SpawnServer and the NQ progs profile's `maxEdicts` getter read one rule.
 export function Host_MaxEdicts(): number {
@@ -596,6 +610,10 @@ export function Host_InitLocal(): void {
   Cvar_RegisterVariable(temp1);
 
   Cvar_RegisterVariable(max_edicts);
+
+  Cvar_RegisterVariable(sv_saveformat);
+  Cvar_RegisterVariable(sv_autosave);
+  Cvar_RegisterVariable(sv_autosave_interval);
 
   Host_FindMaxClients();
 
@@ -891,6 +909,14 @@ export function Host_ServerFrame(): void {
 
   // send all messages to the clients
   svMainMod().SV_SendClientMessages();
+
+  // U24 (re-release addition): Ironwail host.c:984's `Host_CheckAutosave()`
+  // call at the end of its own Host_ServerFrame. host_cmd.ts owns the
+  // autosave gate/writer (SCOPE note: sv_main.ts is a concurrent unit, not
+  // this one's), so this is the same lazy `hostCmdMod()` accessor line 575
+  // above already uses to reach Host_InitCommands -- the one call site this
+  // file needs outside cvar registration to make the interval trigger fire.
+  hostCmdMod().Host_CheckAutosave();
 }
 
 /*

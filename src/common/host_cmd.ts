@@ -60,6 +60,67 @@ Deviations from PORTING.md / the C source:
   LoadGamestate, the startspot arguments to SV_SpawnServer, and
   Host_Loadgame_f's `Cvar_SetValue("deathmatch"/"coop"/"teamplay", 0)`),
   `IDGODS` (Host_Please_f and its `please` command).
+
+U24 (2021 re-release savegame format, plus autosave):
+- `SAVEGAME_VERSION_KEX` (6, Ironwail progs.h:305) is read and, under
+  `sv_saveformat`, written. Ironwail's own Host_Loadgame_f (host_cmd.c:2570-
+  2600) is the only KEX-format reference: past the version integer it adds
+  exactly one line, the mod/gamedir name (`COM_GetGameNames()`, the same
+  string `game`/Host_Game_f already prints), read before the comment line;
+  everything after that (comment, spawn parms, skill, mapname, time,
+  lightstyles, `{ ... }` blocks) is byte-for-byte the classic layout. Ironwail
+  itself never WRITES that header (`SaveData_WriteHeader` always emits
+  `SAVEGAME_VERSION`) -- it only reads KEX saves for interoperability with the
+  closed-source retail engine -- so the writer side here is derived from the
+  reader, not copied from an Ironwail function; no retail `.sav` fixture was
+  found under qfiles/q1/rerelease (or anywhere else in the qfiles tree) to
+  check it against.
+- `sv_saveformat` (`classic`|`kex`|`auto`, default `auto`) selects the header:
+  `auto` writes KEX exactly when `SV_RulesetIsRerelease()` (src/progs/ext/
+  ruleset.ts, the same `ex_centerprint`-present/`centerprint`-absent detection
+  the ruleset unit keys its own profile off) says so. `classic` always keeps
+  writing the WinQuake SAVEGAME_VERSION 5 layout host_cmd.test.ts checks
+  byte-for-byte; the shared writer (`Host_WriteSaveFile`) only branches on the
+  version-line and one extra header line, so that path is untouched.
+- On load, a KEX game field that differs from `COM_GetGameNames()` calls
+  `COM_SwitchGame` (the same function Host_Game_f above already drives) with
+  the field split on `;`. Ironwail additionally gates this on
+  `Modlist_IsInstalled` (an id Vault mod-listing feature with no port here)
+  and toggles its menu state (`key_dest`); both are dropped -- the switch
+  always proceeds and prints through `Con_Printf`, which is the closest
+  faithful thing without that infrastructure. Ironwail's `kexonly`
+  flag/multi-basedir save lookup (host_cmd.c:2500-2524, id Vault's versioned
+  save storage) is out of scope entirely: this port has one basedir tier.
+- Autosave (Ironwail host.c:849-935's `Host_CheckAutosave`, cvars host.c:95-96):
+  `sv_autosave` (0/1, default 1) and `sv_autosave_interval` (seconds, default
+  30, Ironwail's own default) gate it; slots are `<gamedir>/autosave/
+  <mapname>.sav`, exactly Ironwail's `Cbuf_AddText ("save \"autosave/%s\" 0\n",
+  sv.name)` naming (one slot per map, overwritten on each autosave -- there is
+  no numbered ring buffer in Ironwail's own scheme either). The interval gate
+  mirrors Ironwail's early-return conditions (single player, alive, not in
+  intermission, cheat time not counted, a 3-second no-damage/no-attack window,
+  speed under 100, `MOVETYPE_NONE` excluded) but drops the score/boost curve
+  (secret/teleport/health-scaled bonuses, host.c:914-931) that only shifts
+  *when* inside that window autosave fires, in favor of the plain elapsed-
+  time-since-last-save >= `sv_autosave_interval` check that curve is centered
+  on -- reported here rather than silently, since "mirror Ironwail's
+  conditions" is the brief's phrase and the gating conditions are mirrored,
+  the scoring nuance is not. `pendingLevelStart` (this port's own addition,
+  not in Ironwail) makes the *first* eligible frame after a fresh level entry
+  (`map`/`changelevel`/`restart`, not `load`) save immediately once the player
+  has actually spawned in, rather than waiting a full interval -- Ironwail has
+  no "at level start" trigger; this unit's brief asked for one explicitly.
+  `load autosave` (no further path) is likewise this port's own addition
+  (Ironwail's menu already knows which map's autosave to offer by name,
+  `menu.c:2150`'s `load "autosave/%s"`; this engine's console-only `load` does
+  not have that context) and picks the newest-mtime `.sav` file under
+  `<gamedir>/autosave/` via `Sys_FileTime`, using `node:fs`'s `readdirSync`
+  directly to enumerate that one directory (see the import site's own note).
+- Host_CheckAutosave/the level-start save need per-frame invocation; SCOPE
+  keeps sv_main.ts and host.ts's Host_ServerFrame body off limits beyond cvar
+  registration, so host.ts adds exactly one line calling it through the
+  `hostCmdMod()` lazy accessor that file already uses for Host_InitCommands --
+  flagged in this unit's report as the one host.ts edit beyond registration.
 */
 
 import {
@@ -106,7 +167,9 @@ import {
   Sys_FileOpenRead,
   Sys_FileOpenWrite,
   Sys_FileRead,
+  Sys_FileTime,
   Sys_FloatTime,
+  Sys_mkdir,
   Sys_Printf,
   Sys_Quit,
   sysState,
@@ -131,6 +194,7 @@ import {
   FL_NOTARGET,
   MOVETYPE_FLY,
   MOVETYPE_NOCLIP,
+  MOVETYPE_NONE,
   MOVETYPE_WALK,
   NUM_PING_TIMES,
   NUM_SPAWN_PARMS,
@@ -147,23 +211,56 @@ import { EDICT_NUM, EDICT_TO_PROG, NUM_FOR_EDICT, PR_GetString, PR_SetEngineStri
 import { ED_ParseEdict, ED_ParseGlobals, ED_Write, ED_WriteGlobals, GetEdictFieldValue } from "../progs/pr_edict";
 import { PR_ExecuteProgram } from "../progs/pr_exec";
 import { GLOBAL_OFS, type GlobalVars } from "../progs/progdefs";
+import { SV_RulesetIsRerelease } from "../progs/ext/ruleset";
+import { CONTENTS_LAVA, CONTENTS_SLIME } from "./bspfile";
+import { Length } from "./mathlib";
 import {
   Host_ShutdownServer,
   SV_BroadcastPrintf,
   SV_ClientPrintf,
   SV_DropClient,
   SysFileTextWriter,
+  host,
   hostClientHooks,
   pausable,
+  sv_autosave,
+  sv_autosave_interval,
+  sv_saveformat,
   teamplay,
 } from "./host";
+// U24 (re-release addition, Host_NewestAutosave): sys.ts's own header notes
+// "node:fs is confined to this file and src/common/common.ts" -- neither is
+// this unit's SCOPE, and no Sys_FindFirst/FindNext (Ironwail's own directory
+// walk, host_cmd.c:1420's SaveList_Init) is ported. Following common.ts's own
+// listZipFilesInDir (same try/catch-on-ENOENT shape) rather than adding a
+// third confinement site silently.
+import { readdirSync } from "node:fs";
 
 // client.h -- see the file header
 const MAX_DEMOS = 8;
 const MAX_DEMONAME = 16;
 
 // int current_skill; -- see the file header
-export const hostCmdState = { current_skill: 0 };
+//
+// `autosave` is this port's own state for Host_CheckAutosave below (Ironwail
+// keeps the same fields on `server_t` -- server.h's anonymous `sv.autosave`
+// struct -- but server.ts/ServerT is sv_main.ts's territory, out of this
+// unit's SCOPE, and sv.clear() would wipe them on every SV_SpawnServer
+// anyway; keeping them here means this module resets them itself at every
+// spawn/load call site instead). `pendingLevelStart` is this port's own
+// addition (see Host_CheckAutosave's header comment): Ironwail has no
+// "autosave right at level start" trigger, only the interval heuristic.
+export const hostCmdState = {
+  current_skill: 0,
+  autosave: {
+    time: 0, // last autosave time, Ironwail host.c "sv.autosave.time" (sv.time-scale)
+    hurt_time: -1000, // last time the player was hurt, host.c "sv.autosave.hurt_time"
+    shoot_time: -1000, // last time the player attacked, host.c "sv.autosave.shoot_time"
+    cheat: 0, // time spent with cheats active since the last autosave, host.c "sv.autosave.cheat"
+    prev_health: 0, // host.c "sv.autosave.prev_health"
+    pendingLevelStart: false,
+  },
+};
 
 export let noclip_anglehack = false;
 export function setNoclipAnglehack(v: boolean): void {
@@ -396,6 +493,7 @@ export function Host_Map_f(): void {
   const name = Cmd_Argv(1);
   SV_SpawnServer(name);
   if (!sv.active) return;
+  Host_ResetAutosaveClock(sv.time, true); // U24 addition: see the file header
 
   if (!sysState.isDedicated) {
     let spawnparms = "";
@@ -429,6 +527,7 @@ export function Host_Changelevel_f(): void {
   SV_SaveSpawnparms();
   const level = Cmd_Argv(1);
   SV_SpawnServer(level);
+  if (sv.active) Host_ResetAutosaveClock(sv.time, true); // U24 addition: see the file header
 }
 
 /*
@@ -445,6 +544,7 @@ export function Host_Restart_f(): void {
   const mapname = sv.name; // must copy out, because it gets cleared
   // in sv_spawnserver
   SV_SpawnServer(mapname);
+  if (sv.active) Host_ResetAutosaveClock(sv.time, true); // U24 addition: see the file header
 }
 
 /*
@@ -487,6 +587,7 @@ LOAD / SAVE GAME
 */
 
 export const SAVEGAME_VERSION = 5;
+export const SAVEGAME_VERSION_KEX = 6; // Ironwail progs.h:305 -- see the file header
 
 /*
 ===============
@@ -511,6 +612,62 @@ export function Host_SavegameComment(): string {
   for (let i = 0; i < SAVEGAME_COMMENT_LENGTH; i++) if (text[i] === " ") text[i] = "_";
 
   return text.join("");
+}
+
+// U24: `sv_saveformat`'s "auto" branch -- see the file header. Not exported;
+// Host_SaveToFile/Host_CheckAutosave (both below) are the only callers.
+function Host_UseKexFormat(): boolean {
+  const format = sv_saveformat.string.trim().toLowerCase();
+  if (format === "classic") return false;
+  if (format === "kex") return true;
+  return SV_RulesetIsRerelease(); // "auto"
+}
+
+// The body of Host_Savegame_f's file-writing half, factored out so
+// Host_CheckAutosave's autosave slots go through the same format selection
+// and field order. `kex` picks the version line and the one extra header
+// field the KEX format adds (COM_GetGameNames -- see the file header);
+// everything after that is untouched from the original C.
+function Host_WriteSaveFile(f: SysFileTextWriter, kex: boolean): void {
+  f.write(Com_sprintf("%i\n", kex ? SAVEGAME_VERSION_KEX : SAVEGAME_VERSION));
+  if (kex) f.write(Com_sprintf("%s\n", COM_GetGameNames()));
+  const comment = Host_SavegameComment();
+  f.write(Com_sprintf("%s\n", comment));
+  for (let i = 0; i < NUM_SPAWN_PARMS; i++) f.write(Com_sprintf("%f\n", svs.clients[0].spawn_parms[i]));
+  f.write(Com_sprintf("%d\n", hostCmdState.current_skill));
+  f.write(Com_sprintf("%s\n", sv.name));
+  f.write(Com_sprintf("%f\n", sv.time));
+
+  // write the light styles
+
+  for (let i = 0; i < MAX_LIGHTSTYLES; i++) {
+    if (sv.lightstyles[i]) f.write(Com_sprintf("%s\n", sv.lightstyles[i]));
+    else f.write("m\n");
+  }
+
+  ED_WriteGlobals(f);
+  for (let i = 0; i < sv.num_edicts; i++) {
+    ED_Write(f, EDICT_NUM(i));
+  }
+}
+
+// Opens `name` and writes it, in whatever format Host_UseKexFormat picks.
+// `skipnotify` is Ironwail's own save command's optional third argument
+// (host_cmd.c's Host_Savegame_f, `skipnotify = ... atof (Cmd_Argv(2))`):
+// Host_Savegame_f below always prints; Host_WriteAutosave (this port's
+// autosave writer) passes true, matching Ironwail's own
+// `save "autosave/%s" 0`.
+function Host_SaveToFile(name: string, skipnotify: boolean): void {
+  if (!skipnotify) Con_Printf("Saving game to %s...\n", name);
+  const handle = Sys_FileOpenWrite(name);
+  if (handle === -1) {
+    Con_Printf("ERROR: couldn't open.\n");
+    return;
+  }
+  const f = new SysFileTextWriter(handle);
+  Host_WriteSaveFile(f, Host_UseKexFormat());
+  Sys_FileClose(handle);
+  if (!skipnotify) Con_Printf("done.\n");
 }
 
 /*
@@ -557,35 +714,7 @@ export function Host_Savegame_f(): void {
   let name = Com_sprintf("%s/%s", com_gamedir, Cmd_Argv(1));
   name = COM_DefaultExtension(name, ".sav");
 
-  Con_Printf("Saving game to %s...\n", name);
-  const handle = Sys_FileOpenWrite(name);
-  if (handle === -1) {
-    Con_Printf("ERROR: couldn't open.\n");
-    return;
-  }
-  const f = new SysFileTextWriter(handle);
-
-  f.write(Com_sprintf("%i\n", SAVEGAME_VERSION));
-  const comment = Host_SavegameComment();
-  f.write(Com_sprintf("%s\n", comment));
-  for (let i = 0; i < NUM_SPAWN_PARMS; i++) f.write(Com_sprintf("%f\n", svs.clients[0].spawn_parms[i]));
-  f.write(Com_sprintf("%d\n", hostCmdState.current_skill));
-  f.write(Com_sprintf("%s\n", sv.name));
-  f.write(Com_sprintf("%f\n", sv.time));
-
-  // write the light styles
-
-  for (let i = 0; i < MAX_LIGHTSTYLES; i++) {
-    if (sv.lightstyles[i]) f.write(Com_sprintf("%s\n", sv.lightstyles[i]));
-    else f.write("m\n");
-  }
-
-  ED_WriteGlobals(f);
-  for (let i = 0; i < sv.num_edicts; i++) {
-    ED_Write(f, EDICT_NUM(i));
-  }
-  Sys_FileClose(handle);
-  Con_Printf("done.\n");
+  Host_SaveToFile(name, false);
 }
 
 // `fscanf (f, "%i\n" | "%f\n" | "%s\n", ...)`: skip whitespace, take one
@@ -617,6 +746,129 @@ class TextScanner {
   }
 }
 
+// `<gamedir>/autosave` -- Ironwail's own naming (host_cmd.c:1420,
+// menu.c:2022/2150), the directory Host_WriteAutosave/Host_NewestAutosave
+// both work in.
+function Host_AutosaveDir(): string {
+  return Com_sprintf("%s/autosave", com_gamedir);
+}
+
+// Ironwail's own save-list enumeration is Sys_FindFirst/FindNext
+// (host_cmd.c:1420's SaveList_Init); unported here -- see the node:fs
+// import's own note. Newest mtime among `<gamedir>/autosave/*.sav`, or null
+// if the directory doesn't exist or holds no `.sav` file. This port's own
+// addition backing `load autosave` -- see the file header.
+function Host_NewestAutosave(): string | null {
+  const dir = Host_AutosaveDir();
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return null;
+  }
+
+  let best: string | null = null;
+  let bestTime = -1;
+  for (const entry of entries) {
+    if (!entry.toLowerCase().endsWith(".sav")) continue;
+    const full = `${dir}/${entry}`;
+    const t = Sys_FileTime(full);
+    if (t > bestTime) {
+      bestTime = t;
+      best = full;
+    }
+  }
+  return best;
+}
+
+// Ironwail host_cmd.c:2690's `sv.autosave.time = time;` (Host_Loadgame_f) is
+// the one call site the real engine has; the two other call sites below
+// (Host_Map_f/Host_Changelevel_f/Host_Restart_f, `pendingLevelStart = true`)
+// are this port's own addition -- see the file header.
+function Host_ResetAutosaveClock(time: number, pendingLevelStart: boolean): void {
+  const a = hostCmdState.autosave;
+  a.time = time;
+  a.hurt_time = -1000;
+  a.shoot_time = -1000;
+  a.cheat = 0;
+  a.prev_health = 0;
+  a.pendingLevelStart = pendingLevelStart;
+}
+
+// Ironwail host.c:935's `Cbuf_AddText (va ("save \"autosave/%s\" 0\n",
+// sv.name))`, called directly instead of going through the command buffer
+// (nothing here needs the one-frame deferral Cbuf_AddText gives Ironwail's
+// background save thread).
+function Host_WriteAutosave(mapname: string): void {
+  Sys_mkdir(Host_AutosaveDir());
+  const name = Com_sprintf("%s/%s.sav", Host_AutosaveDir(), mapname);
+  Host_SaveToFile(name, true);
+}
+
+/*
+===============
+Host_CheckAutosave
+
+Ironwail host.c:849-935, called at the end of its own Host_ServerFrame
+(host.c:984) -- see the file header for what is mirrored, what is simplified,
+and `pendingLevelStart`, this port's own level-start trigger.
+===============
+*/
+export function Host_CheckAutosave(): void {
+  if (!sv.active) return;
+  if (!sv_autosave.value || sv_autosave_interval.value <= 0 || svs.maxclients !== 1) return;
+
+  const player = svs.clients[0].edict;
+  if (player === null || player.v.health <= 0) return;
+  if (hostClientHooks.clIntermission?.() ?? 0) return;
+
+  const a = hostCmdState.autosave;
+
+  // track health changes
+  if (!a.prev_health) a.prev_health = player.v.health;
+  const health_change = player.v.health - a.prev_health;
+  if (health_change < 0 && (health_change < -3 || player.v.health < 100 || player.v.watertype === CONTENTS_SLIME || player.v.watertype === CONTENTS_LAVA)) {
+    a.hurt_time = sv.time;
+  }
+  a.prev_health = player.v.health;
+
+  // track attacking
+  if (player.v.button0) a.shoot_time = sv.time;
+
+  // time spent with cheats active doesn't count toward the interval
+  if (player.v.movetype === MOVETYPE_NOCLIP || ((player.v.flags | 0) & (FL_GODMODE | FL_NOTARGET)) !== 0) {
+    a.cheat += host.frametime;
+    return;
+  }
+
+  if (a.pendingLevelStart) {
+    a.pendingLevelStart = false;
+    a.time = sv.time;
+    a.cheat = 0;
+    Host_WriteAutosave(sv.name);
+    return;
+  }
+
+  // don't save if the player has been hurt or has attacked recently
+  if (sv.time - a.hurt_time < 3) return;
+  if (sv.time - a.shoot_time < 3) return;
+
+  // only save when the player slows down a bit
+  if (Length(player.v.velocity) > 100) return;
+
+  // Copper's func_void holds the player at the bottom for a bit before
+  // inflicting damage, so standing still isn't enough on its own
+  if (player.v.movetype === MOVETYPE_NONE) return;
+
+  // don't save too often
+  const elapsed = sv.time - a.time - a.cheat;
+  if (elapsed < sv_autosave_interval.value) return;
+
+  a.time = sv.time;
+  a.cheat = 0;
+  Host_WriteAutosave(sv.name);
+}
+
 /*
 ===============
 Host_Loadgame_f
@@ -634,8 +886,21 @@ export function Host_Loadgame_f(): void {
 
   hostClientHooks.setClsDemonum?.(-1); // stop demo loop in case this fails
 
-  let name = Com_sprintf("%s/%s", com_gamedir, Cmd_Argv(1));
-  name = COM_DefaultExtension(name, ".sav");
+  // U24 addition: `load autosave` picks the newest autosave slot instead of
+  // naming a file directly -- see the file header.
+  const arg = Cmd_Argv(1);
+  let name: string;
+  if (Q_strcasecmp(arg, "autosave") === 0) {
+    const newest = Host_NewestAutosave();
+    if (newest === null) {
+      Con_Printf("ERROR: no autosave found.\n");
+      return;
+    }
+    name = newest;
+  } else {
+    name = Com_sprintf("%s/%s", com_gamedir, arg);
+    name = COM_DefaultExtension(name, ".sav");
+  }
 
   // we can't call SCR_BeginLoadingPlaque, because too much stack space has
   // been used.  The menu calls it before stuffing loadgame command
@@ -655,7 +920,14 @@ export function Host_Loadgame_f(): void {
   const scan = new TextScanner(contents);
 
   const version = Q_atoi(scan.scanToken());
-  if (version !== SAVEGAME_VERSION) {
+  if (version === SAVEGAME_VERSION_KEX) {
+    // U24: the KEX header's one extra field -- see the file header. A
+    // mismatched game name switches gamedirs the same way Host_Game_f does;
+    // Ironwail additionally gates this on Modlist_IsInstalled and toggles its
+    // menu state, both dropped (see the file header).
+    const kexGame = scan.scanToken();
+    if (kexGame !== COM_GetGameNames()) COM_SwitchGame(kexGame.split(";"));
+  } else if (version !== SAVEGAME_VERSION) {
     Con_Printf("Savegame is version %i, not %i\n", version, SAVEGAME_VERSION);
     return;
   }
@@ -721,6 +993,7 @@ export function Host_Loadgame_f(): void {
 
   sv.num_edicts = entnum;
   sv.time = time;
+  Host_ResetAutosaveClock(time, false); // Ironwail host_cmd.c:2690 `sv.autosave.time = time;`
 
   for (let i = 0; i < NUM_SPAWN_PARMS; i++) svs.clients[0].spawn_parms[i] = spawn_parms[i];
 
