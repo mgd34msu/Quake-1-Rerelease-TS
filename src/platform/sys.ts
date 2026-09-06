@@ -240,21 +240,65 @@ export function Sys_FileOpenWrite(path: string): number {
 }
 
 export function Sys_FileClose(handle: number): void {
+  if (sysMemTable.delete(handle)) return;
   closeSync(handle);
   sysFileTable.delete(handle);
 }
 
 export function Sys_FileSeek(handle: number, position: number): void {
+  const mem = sysMemTable.get(handle);
+  if (mem) {
+    mem.pos = position;
+    return;
+  }
   const entry = sysFileTable.get(handle);
   if (entry) entry.pos = position; // lseek (handle, position, SEEK_SET); return value ignored, as in the C
 }
 
 export function Sys_FileRead(handle: number, dest: Uint8Array, count: number): number {
+  const mem = sysMemTable.get(handle);
+  if (mem) {
+    const n = Math.min(count, mem.data.length - mem.pos);
+    if (n <= 0) return 0;
+    dest.set(mem.data.subarray(mem.pos, mem.pos + n), 0);
+    mem.pos += n;
+    return n;
+  }
   const entry = sysFileTable.get(handle);
   if (!entry) return 0;
   const n = readSync(entry.fd, dest, 0, count, entry.pos);
   entry.pos += n;
   return n;
+}
+
+/*
+============
+Sys_FileOpenMemory (re-release addition, not in WinQuake/sys.h)
+
+A KEX .kpf/.pk3 entry has no real fd to hand back for "handle" mode: its
+bytes come out of ZipArchive.readFile already fully inflated into a JS
+buffer (see src/lib/zipfile.ts's own header on why DEFLATE entries can't be
+streamed incrementally through a bare fd the way a .pak's stored bytes can).
+COM_FindFile's "handle" mode still needs to hand callers a bare `number`
+though, so this is a second, disjoint handle table alongside sysFileTable's
+real-fd one: disjoint because a real fd from openSync() is always >= 0,
+while every handle this hands out is negative, so the two spaces can never
+collide and Sys_FileRead/Seek/Close above can tell which table to consult
+with one Map lookup.
+============
+*/
+interface SysMemEntry {
+  data: Uint8Array;
+  pos: number;
+}
+
+const sysMemTable = new Map<number, SysMemEntry>();
+let nextMemHandle = -2; // -1 is already COM_FindFile's own "not found" sentinel
+
+export function Sys_FileOpenMemory(data: Uint8Array): number {
+  const handle = nextMemHandle--;
+  sysMemTable.set(handle, { data, pos: 0 });
+  return handle;
 }
 
 export function Sys_FileWrite(handle: number, data: Uint8Array, count: number): number {

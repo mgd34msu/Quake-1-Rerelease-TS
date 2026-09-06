@@ -115,12 +115,22 @@ Deviations from PORTING.md / the C source:
 import { GAMENAME, MAX_NUM_ARGVS, QuakeParmsT, qw } from "./quakedef";
 import { CRC_Init, CRC_ProcessByte } from "./crc";
 import { Con_Printf } from "../client/console";
-import { Sys_Error, Sys_FileClose, Sys_FileOpenRead, Sys_FileRead, Sys_FileSeek, Sys_Printf, Sys_ResolveCase } from "../platform/sys";
+import {
+  Sys_Error,
+  Sys_FileClose,
+  Sys_FileOpenMemory,
+  Sys_FileOpenRead,
+  Sys_FileRead,
+  Sys_FileSeek,
+  Sys_Printf,
+  Sys_ResolveCase,
+} from "../platform/sys";
 import { Com_sprintf } from "./sprintf";
 import type { CvarT } from "./cvar";
 import type * as CvarModule from "./cvar";
 import { Cmd_AddCommand } from "./cmd";
-import { openSync, closeSync, readSync, writeSync, statSync, mkdirSync } from "node:fs";
+import { openSync, closeSync, readSync, writeSync, statSync, mkdirSync, existsSync, readdirSync } from "node:fs";
+import { ZipArchive } from "../lib/zipfile";
 
 // cvar.ts statically imports Q_atof from this module (real cycle: cvar.ts
 // <-> common.ts <-> cmd.ts, all three reach into each other). Every other
@@ -482,11 +492,23 @@ export interface PackT {
   files: PackFileT[];
 }
 
+// Re-release addition (U10): a KEX-era `.kpf`/`.pk3` mount (QuakeEX.kpf, or
+// a mod's own zip dropped into a gamedir). Not a port of any classic C
+// struct -- see src/lib/zipfile.ts's own header for why this is a
+// from-scratch reader, and quake-2-re-ts's src/qcommon/files.ts ZipPackT for
+// the shape this mirrors.
+export interface ZipT {
+  filename: string;
+  archive: ZipArchive;
+  numfiles: number;
+}
+
 // "only one of filename / pack will be used" (searchpath_t's C comment)
 // becomes a discriminated union, matching ../quake-2-ts/src/qcommon/files.ts.
 export type SearchPathT =
   | { kind: "dir"; filename: string; next: SearchPathT | null }
-  | { kind: "pack"; pack: PackT; next: SearchPathT | null };
+  | { kind: "pack"; pack: PackT; next: SearchPathT | null }
+  | { kind: "zip"; zip: ZipT; next: SearchPathT | null };
 
 export let com_argc = 0;
 export let com_argv: string[] = [];
@@ -497,11 +519,57 @@ export let msg_suppress_1 = false;
 export let static_registered = 1; // only for startup check, then set
 export let com_gamedir = "";
 export let com_cachedir = "";
+// -homedir <dir> (re-release addition, no WinQuake equivalent): "" means
+// "write into com_gamedir" -- the unmodified behaviour. See
+// COM_AddGameDirectory's own comment at the mount site for the write-target
+// and search-priority effect this has once it's non-empty.
+export let com_homedir = "";
 export let standard_quake = true;
 export let rogue = false;
 export let hipnotic = false;
+// Re-release mission-pack-style episode flags (U10): -mg1/-mg3/-dopa/-ctf,
+// exported next to hipnotic/rogue the same way, set in COM_InitArgv below
+// and consulted by COM_InitFilesystem/COM_ResetGameDirectories to decide
+// which directory under the active episode root (see episodeRoot() below)
+// to mount.
+export let mg1 = false;
+export let mg3 = false;
+export let dopa = false;
+export let ctf = false;
 export let proghack = false;
 export let com_searchpaths: SearchPathT | null = null;
+// The search path exactly as of the end of the BASE tier (classic id1
+// and/or a re-release root's QuakeEX.kpf + id1 -- see COM_InitFilesystem):
+// everything mounted above this is what COM_ResetGameDirectories/the
+// runtime "game" command tear down and rebuild, mirroring Ironwail's own
+// com_base_searchpaths (common.c:3209).
+let com_base_searchpaths: SearchPathT | null = null;
+// The gamedir names mounted above the base tier since boot or the last
+// "game" switch, in mount order -- COM_GetGameNames()'s source, and how
+// COM_ResetGameDirectories skips a name that's already loaded.
+let com_gamenames: string[] = [];
+// The content root generic (non-mission-pack) gamedir mounts -- -game
+// <dir>, and any plain directory name passed to the "game" command -- are
+// resolved against as the FIRST preference (episodeRoot() also uses this
+// for mission-pack dirs). Set once per COM_InitFilesystem call.
+let com_basedir = "";
+// resolveGameDir's FALLBACK root: the plain content root, deliberately
+// excluding the re-release-root preference com_basedir carries (checking
+// "<com_basedir>/<name>" again when <rereleaseroot>/<name> already failed
+// to exist would just repeat the same failed lookup whenever com_basedir
+// IS the re-release root). classicRoot when one was mounted, else the same
+// basedir com_basedir falls back to.
+let com_plain_basedir = "";
+// "" when no re-release root was mounted; otherwise the directory that
+// holds QuakeEX.kpf/id1 for the active install (the basedir itself, or its
+// "rerelease" subdirectory in the nested-classic-root case). Backs
+// COM_IsRereleaseRoot()/COM_RereleaseDir() and episodeRoot() below.
+let com_rerelease_root = "";
+// "" when no classic root was mounted (a pure re-release-only install);
+// otherwise the directory holding the classic id1. Exposed via
+// COM_ClassicDir() for the menu unit's future New Game scan, alongside
+// COM_RereleaseDir().
+let com_classic_root = "";
 
 // QuakeWorld track (Task 1, 2026-09-05): src/qw/common.ts's own filesystem
 // functions (COM_InitFilesystem, COM_Gamedir, COM_AddGameDirectory,
@@ -535,6 +603,35 @@ export function setStaticRegistered(n: number): void {
 }
 export function setComFilesize(n: number): void {
   com_filesize = n;
+}
+// Re-release addition (U10): hipnotic/rogue/mg1/mg3/dopa/ctf/standard_quake
+// are sticky exactly like com_modified (COM_InitArgv/COM_InitFilesystem only
+// ever sets them true; nothing but the runtime "game" command's
+// COM_ResetGameDirectories ever sets them back false, matching Ironwail's
+// own COM_InitArgv/COM_ResetGameDirectories) -- test files that exercise
+// -hipnotic/-mg1/etc or the "game" command need a way to restore the
+// pre-test value afterward, the same reason setComModified/
+// setStaticRegistered exist above.
+export function setHipnotic(b: boolean): void {
+  hipnotic = b;
+}
+export function setRogue(b: boolean): void {
+  rogue = b;
+}
+export function setMg1(b: boolean): void {
+  mg1 = b;
+}
+export function setMg3(b: boolean): void {
+  mg3 = b;
+}
+export function setDopa(b: boolean): void {
+  dopa = b;
+}
+export function setCtf(b: boolean): void {
+  ctf = b;
+}
+export function setStandardQuake(b: boolean): void {
+  standard_quake = b;
 }
 
 export const host_parms = new QuakeParmsT();
@@ -587,6 +684,24 @@ export function COM_InitArgv(argv: string[]): void {
   }
   if (COM_CheckParm("-hipnotic")) {
     hipnotic = true;
+    standard_quake = false;
+  }
+  // Re-release mission-pack-style episodes (U10): same pattern as
+  // -rogue/-hipnotic above.
+  if (COM_CheckParm("-mg1")) {
+    mg1 = true;
+    standard_quake = false;
+  }
+  if (COM_CheckParm("-mg3")) {
+    mg3 = true;
+    standard_quake = false;
+  }
+  if (COM_CheckParm("-dopa")) {
+    dopa = true;
+    standard_quake = false;
+  }
+  if (COM_CheckParm("-ctf")) {
+    ctf = true;
     standard_quake = false;
   }
 }
@@ -715,23 +830,39 @@ function sysMkdir(dir: string): void {
 }
 
 // COM_FRead/COM_FClose are this port's stand-ins for fread()/fclose() on the
-// FILE* handles COM_FOpenFile hands back (see file header).
+// FILE* handles COM_FOpenFile hands back (see file header). `data`, when
+// set, is a re-release addition (U10): a zip mount's entry has already been
+// fully inflated into a JS buffer by the time COM_FindFile hands one back
+// (see src/lib/zipfile.ts's header on why DEFLATE entries can't be streamed
+// incrementally through a bare fd the way a .pak's stored bytes can), so
+// `fd` is meaningless for such a handle (left -1) and reads/close are
+// served out of `data` instead.
 export class FileHandle {
   fd: number;
   pos: number;
-  constructor(fd: number, pos: number) {
+  data: Uint8Array | null;
+  constructor(fd: number, pos: number, data: Uint8Array | null = null) {
     this.fd = fd;
     this.pos = pos;
+    this.data = data;
   }
 }
 
 export function COM_FRead(f: FileHandle, buf: Uint8Array, len: number): number {
+  if (f.data) {
+    const n = Math.min(len, f.data.length - f.pos);
+    if (n <= 0) return 0;
+    buf.set(f.data.subarray(f.pos, f.pos + n), 0);
+    f.pos += n;
+    return n;
+  }
   const n = readSync(f.fd, buf, 0, len, f.pos);
   f.pos += n;
   return n;
 }
 
 export function COM_FClose(f: FileHandle): void {
+  if (f.data) return; // memory-backed: no real fd to close
   closeSync(f.fd);
 }
 
@@ -745,6 +876,7 @@ export function COM_Path_f(): void {
   Con_Printf("Current search path:\n");
   for (let s = com_searchpaths; s; s = s.next) {
     if (s.kind === "pack") Con_Printf("%s (%i files)\n", s.pack.filename, s.pack.numfiles);
+    else if (s.kind === "zip") Con_Printf("%s (%i files)\n", s.zip.filename, s.zip.numfiles);
     else Con_Printf("%s\n", s.filename);
   }
 }
@@ -866,6 +998,18 @@ export function COM_FindFile(
           return { file: null, length: com_filesize };
         }
       }
+    } else if (search.kind === "zip") {
+      // Re-release addition (U10): look through the zip archive's entries
+      // (case-insensitive -- see src/lib/zipfile.ts's ZipArchive.readFile).
+      const data = search.zip.archive.readFile(filename);
+      if (data === null) continue;
+
+      Sys_Printf("PackFile: %s : %s\n", search.zip.filename, filename);
+      com_filesize = data.length;
+
+      if (mode === "handle") return { handle: Sys_FileOpenMemory(data), length: com_filesize };
+
+      return { file: new FileHandle(-1, 0, data), length: com_filesize };
     } else {
       // check a file in the directory tree
       if (!static_registered) {
@@ -952,6 +1096,8 @@ export function COM_FindFileTier(filename: string): number {
       for (let i = 0; i < pak.numfiles; i++) {
         if (pak.files[i].name === filename) return tier;
       }
+    } else if (search.kind === "zip") {
+      if (search.zip.archive.findEntry(filename)) return tier;
     } else {
       if (!static_registered && (filename.includes("/") || filename.includes("\\"))) continue;
 
@@ -961,6 +1107,29 @@ export function COM_FindFileTier(filename: string): number {
   }
 
   return -1;
+}
+
+//===========================================================
+//
+// COM_FindFilePath (re-release addition, U10)
+//
+// Resolves `filename` to a real on-disk path by walking com_searchpaths'
+// "dir" entries only, highest priority first -- "pack"/"zip" mounts have no
+// bare filesystem path a foreign library can open directly (a zip entry in
+// particular has already been decompressed into memory by the time anything
+// here would see it). Used by src/platform/cd_ogg.ts, which hands a path to
+// libvorbisfile's ov_fopen rather than reading through COM_FindFile itself.
+// A pure probe like COM_FindFileTier: nothing is opened, com_filesize is
+// untouched, and nothing is printed.
+//===========================================================
+
+export function COM_FindFilePath(filename: string): string | null {
+  for (let search = com_searchpaths; search; search = search.next) {
+    if (search.kind !== "dir") continue;
+    const netpath = `${search.filename}/${filename}`;
+    if (sysFileTime(netpath) !== -1) return netpath;
+  }
+  return null;
 }
 
 //===========================================================
@@ -1108,6 +1277,86 @@ export function COM_LoadPackFile(packfile: string): PackT | null {
   return pack;
 }
 
+//=================
+//
+// peekPackFileNames (re-release addition, U10)
+//
+// Reads a pak's header and directory ONLY -- never its file contents --
+// and returns the bare list of entry names, or null if `packfile` doesn't
+// open or isn't a well-formed PACK. Used by COM_IsRereleaseRootDir to check
+// for mapdb.json inside id1/pak0.pak without loading the (200+ MB) pak
+// itself, and without COM_LoadPackFile's side effects (com_modified, the
+// CRC check, mounting it) -- this is a probe, not a load.
+//=================
+
+function peekPackFileNames(packfile: string): string[] | null {
+  const { handle: fd } = Sys_FileOpenRead(packfile);
+  if (fd === -1) return null;
+
+  const headerBuf = new Uint8Array(DPACKHEADER_T_SIZE);
+  Sys_FileRead(fd, headerBuf, DPACKHEADER_T_SIZE);
+  const header = readDpackheader(headerBuf);
+
+  if (header.id !== "PACK") {
+    Sys_FileClose(fd);
+    return null;
+  }
+
+  const numpackfiles = Math.trunc(header.dirlen / DPACKFILE_T_SIZE);
+  const info = new Uint8Array(header.dirlen);
+  Sys_FileSeek(fd, header.dirofs);
+  Sys_FileRead(fd, info, header.dirlen);
+  Sys_FileClose(fd);
+
+  const names: string[] = [];
+  for (let i = 0; i < numpackfiles; i++) names.push(readDpackfile(info, i * DPACKFILE_T_SIZE).name);
+  return names;
+}
+
+//=================
+//
+// COM_LoadZipFile (re-release addition, U10)
+//
+// Takes an explicit path to a `.kpf`/`.pk3` archive (QuakeEX.kpf, or a mod's
+// own zip dropped into a gamedir) and reads the whole file so
+// ZipArchive.open can parse its central directory. Unlike COM_LoadPackFile,
+// there is no "modified" CRC check to run -- a zip's own per-entry CRC32
+// is not validated by src/lib/zipfile.ts (see that file's header).
+//=================
+
+export function COM_LoadZipFile(zipfile: string): ZipT | null {
+  const { handle: fd, length } = Sys_FileOpenRead(zipfile);
+  if (fd === -1) return null;
+
+  const buf = new Uint8Array(length);
+  Sys_FileRead(fd, buf, length);
+  Sys_FileClose(fd);
+
+  const archive = ZipArchive.open(buf);
+  if (!archive) return null;
+
+  Con_Printf("Added packfile %s (%i files)\n", zipfile, archive.entries.length);
+  return { filename: zipfile, archive, numfiles: archive.entries.length };
+}
+
+// Every `.kpf`/`.pk3` directly inside `dir`, sorted, as full paths.
+function listZipFilesInDir(dir: string): string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return [];
+  }
+
+  return entries
+    .filter((name) => {
+      const lower = name.toLowerCase();
+      return lower.endsWith(".kpf") || lower.endsWith(".pk3");
+    })
+    .sort()
+    .map((name) => `${dir}/${name}`);
+}
+
 //================
 //
 // COM_AddGameDirectory
@@ -1133,7 +1382,204 @@ export function COM_AddGameDirectory(dir: string): void {
     com_searchpaths = { kind: "pack", pack: pak, next: com_searchpaths };
   }
 
+  // Re-release addition (U10): mount every .kpf/.pk3 sitting directly inside
+  // this gamedir, after the paks -- higher search priority than this
+  // gamedir's own paks (a mod's zip content overrides its own paks, the same
+  // relative order QuakeEX.kpf's own per-root mount uses -- see
+  // COM_MountRereleaseRoot below, which mounts QuakeEX.kpf BEFORE calling
+  // this function for id1 so it ends up lower priority than id1's paks
+  // instead).
+  for (const zipfile of listZipFilesInDir(dir)) {
+    const zip = COM_LoadZipFile(zipfile);
+    if (zip) com_searchpaths = { kind: "zip", zip, next: com_searchpaths };
+  }
+
+  // Home directory tier (-homedir addition, U10): mounted LAST so it ends up
+  // at the head of the search path -- the highest priority, searched before
+  // this gamedir's own tree/paks/zips -- and is also where com_gamedir (and
+  // therefore COM_WriteFile, Host_WriteConfiguration's config.cfg, savegames,
+  // screenshots, ...) now points. A no-op when -homedir wasn't given, so the
+  // unmodified game-directory write behaviour is untouched (com_gamedir is
+  // left pointing at `dir` itself, as it always did).
+  if (com_homedir) {
+    const homeDir = `${com_homedir}/${homedirBaseName(dir)}`;
+    sysMkdirRecursive(homeDir);
+    const resolvedHomeDir = Sys_ResolveCase(homeDir);
+    com_gamedir = resolvedHomeDir;
+
+    com_searchpaths = { kind: "dir", filename: resolvedHomeDir, next: com_searchpaths };
+
+    for (let i = 0; ; i++) {
+      const pakfile = Sys_ResolveCase(`${resolvedHomeDir}/pak${i}.pak`);
+      const pak = COM_LoadPackFile(pakfile);
+      if (!pak) break;
+      com_searchpaths = { kind: "pack", pack: pak, next: com_searchpaths };
+    }
+  }
+
   // add the contents of the parms.txt file to the end of the command line
+}
+
+// The last path component of a mounted gamedir ("id1", "hipnotic", a mod
+// name, ...) -- what a homedir mount recreates the write tree under.
+function homedirBaseName(dir: string): string {
+  const idx = dir.lastIndexOf("/");
+  return idx === -1 ? dir : dir.slice(idx + 1);
+}
+
+function sysMkdirRecursive(dir: string): void {
+  try {
+    mkdirSync(dir, { recursive: true });
+  } catch {
+    // Sys_mkdir in the C also ignores mkdir() failures (e.g. EEXIST)
+  }
+}
+
+//=================
+//
+// COM_IsRereleaseRootDir / COM_MountRereleaseRoot (re-release addition, U10)
+//
+// A base directory is a re-release root when it holds QuakeEX.kpf, or an
+// id1/pak0.pak whose directory contains mapdb.json (checked via
+// peekPackFileNames -- the pak's directory only, never its 200+ MB of file
+// contents). COM_MountRereleaseRoot mounts QuakeEX.kpf (when present) as the
+// LOWEST-priority node of the pair, added before id1 itself so id1's own
+// paks -- and any of id1's own .kpf/.pk3 mounts -- end up with higher
+// priority: retail data wins over kpf duplicates (fonts/pics/etc that also
+// ship loose or in a pak).
+//=================
+
+function COM_IsRereleaseRootDir(root: string): boolean {
+  const kpfPath = Sys_ResolveCase(`${root}/QuakeEX.kpf`);
+  if (existsSync(kpfPath)) return true;
+
+  const pakPath = Sys_ResolveCase(`${root}/${GAMENAME}/pak0.pak`);
+  const names = peekPackFileNames(pakPath);
+  return names !== null && names.some((n) => n.toLowerCase() === "mapdb.json");
+}
+
+function COM_MountRereleaseRoot(root: string): void {
+  const kpfPath = Sys_ResolveCase(`${root}/QuakeEX.kpf`);
+  if (existsSync(kpfPath)) {
+    const zip = COM_LoadZipFile(kpfPath);
+    if (zip) com_searchpaths = { kind: "zip", zip, next: com_searchpaths };
+  }
+  COM_AddGameDirectory(`${root}/${GAMENAME}`);
+}
+
+// COM_IsRereleaseRoot()/COM_RereleaseDir()/COM_ClassicDir() (re-release
+// addition, U10): for the menu unit's future New Game / mapdb.json scan,
+// same purpose as quake-2-re-ts's DataTreeId roots.
+export function COM_IsRereleaseRoot(): boolean {
+  return com_rerelease_root.length > 0;
+}
+export function COM_RereleaseDir(): string {
+  return com_rerelease_root;
+}
+export function COM_ClassicDir(): string {
+  return com_classic_root;
+}
+
+// Where mission-pack-style episode directories (-hipnotic/-rogue/-mg1/-mg3/
+// -dopa/-ctf, and the "game" command's own equivalents) are resolved
+// against: the re-release root when one is mounted (so -hipnotic/-rogue
+// under a re-release root use the re-release copies, per the unit brief),
+// else the plain content root.
+function episodeRoot(): string {
+  return com_rerelease_root || com_basedir;
+}
+
+function directoryExists(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// Where a GENERIC (non-mission-pack) gamedir name -- -game <dir>, and any
+// plain name the "game" command is given -- resolves against: the
+// re-release root first, when one is mounted AND it actually holds a
+// directory of that name on disk (e.g. "-game mg1" on a classic root with a
+// nested rerelease/ subdirectory should reach rerelease/mg1, not fail
+// looking for a nonexistent classic-root/mg1); otherwise the plain content
+// root, exactly as before this unit.
+function resolveGameDir(name: string): string {
+  if (com_rerelease_root) {
+    const candidate = Sys_ResolveCase(`${com_rerelease_root}/${name}`);
+    if (directoryExists(candidate)) return candidate;
+  }
+  return `${com_plain_basedir}/${name}`;
+}
+
+const MISSION_PACK_DIRS: ReadonlySet<string> = new Set(["hipnotic", "rogue", "mg1", "mg3", "dopa", "ctf"]);
+
+function setMissionPackFlag(name: string, value: boolean): void {
+  switch (name) {
+    case "hipnotic":
+      hipnotic = value;
+      break;
+    case "rogue":
+      rogue = value;
+      break;
+    case "mg1":
+      mg1 = value;
+      break;
+    case "mg3":
+      mg3 = value;
+      break;
+    case "dopa":
+      dopa = value;
+      break;
+    case "ctf":
+      ctf = value;
+      break;
+    default:
+      break;
+  }
+}
+
+//================
+//
+// COM_GetGameNames / COM_ResetGameDirectories / COM_SwitchGame
+// (re-release addition, U10: the runtime "game" command's underlying
+// machinery, mirroring Ironwail's COM_GetGameNames/COM_ResetGameDirectories/
+// COM_SwitchGame, common.c:2565/2670).
+//
+//================
+
+export function COM_GetGameNames(): string {
+  return com_gamenames.length > 0 ? com_gamenames.join(";") : GAMENAME;
+}
+
+// Tears down every search-path entry mounted above the base tier
+// (com_base_searchpaths) and mounts `newgamedirs` fresh -- src/common/
+// host_cmd.ts's "game" command (Host_Game_f) is the only caller today.
+export function COM_ResetGameDirectories(newgamedirs: readonly string[]): void {
+  com_searchpaths = com_base_searchpaths;
+  for (const name of MISSION_PACK_DIRS) setMissionPackFlag(name, false);
+  standard_quake = true;
+  com_gamenames = [];
+
+  for (const raw of newgamedirs) {
+    if (Q_strcasecmp(raw, GAMENAME) === 0) continue; // id1 is already the base
+    if (com_gamenames.some((g) => Q_strcasecmp(g, raw) === 0)) continue; // already loaded
+
+    com_gamenames.push(raw);
+    const lower = raw.toLowerCase();
+    if (MISSION_PACK_DIRS.has(lower)) {
+      setMissionPackFlag(lower, true);
+      standard_quake = false;
+      COM_AddGameDirectory(`${episodeRoot()}/${raw}`);
+    } else {
+      COM_AddGameDirectory(resolveGameDir(raw));
+    }
+  }
+}
+
+export function COM_SwitchGame(newgamedirs: readonly string[]): void {
+  com_modified = true;
+  COM_ResetGameDirectories(newgamedirs);
 }
 
 //================
@@ -1165,18 +1611,97 @@ export function COM_InitFilesystem(): void {
     com_cachedir = "";
   }
 
-  // start up with GAMENAME by default (id1)
-  COM_AddGameDirectory(`${basedir}/${GAMENAME}`);
+  // -homedir <path> (re-release addition, U10): see com_homedir's own
+  // comment and COM_AddGameDirectory's home-directory-tier mount.
+  i = COM_CheckParm("-homedir");
+  com_homedir = i && i < com_argc - 1 ? com_argv[i + 1] : "";
 
-  if (COM_CheckParm("-rogue")) COM_AddGameDirectory(`${basedir}/rogue`);
-  if (COM_CheckParm("-hipnotic")) COM_AddGameDirectory(`${basedir}/hipnotic`);
+  // -classic <dir> / -rerelease <dir> (re-release addition, U10): override
+  // COM_IsRereleaseRootDir's auto-detection instead of deriving both roots
+  // from -basedir/host_parms.basedir.
+  i = COM_CheckParm("-classic");
+  let classicRoot: string | null = i && i < com_argc - 1 ? com_argv[i + 1] : null;
+  i = COM_CheckParm("-rerelease");
+  let rereleaseRoot: string | null = i && i < com_argc - 1 ? com_argv[i + 1] : null;
+
+  if (classicRoot === null && rereleaseRoot === null) {
+    // Auto-detect from basedir: either basedir itself is a re-release root
+    // (e.g. -basedir pointing directly at a "rerelease" install), or it's a
+    // classic root that may or may not have a nested "rerelease"
+    // subdirectory (the retail Steam/GOG/EGS layout -- Ironwail common.c:3209).
+    if (COM_IsRereleaseRootDir(basedir)) {
+      rereleaseRoot = basedir;
+    } else {
+      classicRoot = basedir;
+      const nested = `${basedir}/rerelease`;
+      if (COM_IsRereleaseRootDir(nested)) rereleaseRoot = nested;
+    }
+  } else if (classicRoot !== null && rereleaseRoot === null) {
+    // Only -classic given: still auto-detect a nested rerelease/ under it.
+    const nested = `${classicRoot}/rerelease`;
+    if (COM_IsRereleaseRootDir(nested)) rereleaseRoot = nested;
+  }
+  // Only -rerelease given (with or without -classic): trust it as-is, no
+  // further auto-detection.
+
+  if (classicRoot !== null) COM_AddGameDirectory(`${classicRoot}/${GAMENAME}`); // classic id1, mounted first (lowest priority so far)
+  if (rereleaseRoot !== null) COM_MountRereleaseRoot(rereleaseRoot); // QuakeEX.kpf (if present) + id1, above the classic tier
+
+  if (classicRoot === null && rereleaseRoot === null) {
+    // Unreachable given the auto-detect branch above always sets one of the
+    // two; kept so a future refactor can't silently leave id1 unmounted.
+    COM_AddGameDirectory(`${basedir}/${GAMENAME}`);
+  }
+
+  com_classic_root = classicRoot ?? "";
+  com_rerelease_root = rereleaseRoot ?? "";
+  com_basedir = rereleaseRoot ?? classicRoot ?? basedir;
+  com_plain_basedir = classicRoot ?? basedir;
+
+  // Everything mounted so far is the BASE tier: COM_ResetGameDirectories/the
+  // runtime "game" command tear down and rebuild everything ABOVE this,
+  // never this itself (Ironwail common.c:3209's com_base_searchpaths).
+  com_base_searchpaths = com_searchpaths;
+  com_gamenames = [];
+
+  // add mission pack requests (only one should normally be specified) --
+  // under a re-release root these resolve against episodeRoot() so
+  // -hipnotic/-rogue there use the re-release copies, per the unit brief.
+  if (COM_CheckParm("-rogue")) {
+    com_gamenames.push("rogue");
+    COM_AddGameDirectory(`${episodeRoot()}/rogue`);
+  }
+  if (COM_CheckParm("-hipnotic")) {
+    com_gamenames.push("hipnotic");
+    COM_AddGameDirectory(`${episodeRoot()}/hipnotic`);
+  }
+  if (COM_CheckParm("-mg1")) {
+    com_gamenames.push("mg1");
+    COM_AddGameDirectory(`${episodeRoot()}/mg1`);
+  }
+  if (COM_CheckParm("-mg3")) {
+    com_gamenames.push("mg3");
+    COM_AddGameDirectory(`${episodeRoot()}/mg3`);
+  }
+  if (COM_CheckParm("-dopa")) {
+    com_gamenames.push("dopa");
+    COM_AddGameDirectory(`${episodeRoot()}/dopa`);
+  }
+  if (COM_CheckParm("-ctf")) {
+    com_gamenames.push("ctf");
+    COM_AddGameDirectory(`${episodeRoot()}/ctf`);
+  }
 
   // -game <gamedir>
-  // Adds basedir/gamedir as an override game
+  // Adds basedir/gamedir as an override game -- resolveGameDir() prefers the
+  // re-release root when one is mounted and it actually has that directory
+  // (e.g. "-game mg1" on a classic root with a nested rerelease/).
   i = COM_CheckParm("-game");
   if (i && i < com_argc - 1) {
     com_modified = true;
-    COM_AddGameDirectory(`${basedir}/${com_argv[i + 1]}`);
+    const gamedirName = com_argv[i + 1];
+    com_gamenames.push(gamedirName);
+    COM_AddGameDirectory(resolveGameDir(gamedirName));
   }
 
   // -path <dir or packfile> [<dir or packfile>] ...
@@ -1198,6 +1723,9 @@ export function COM_InitFilesystem(): void {
         com_searchpaths = { kind: "dir", filename: arg, next: com_searchpaths };
       }
     }
+    // -path fully replaces the generated search path, base tier included --
+    // there is no more "mission pack layer" left to distinguish it from.
+    com_base_searchpaths = com_searchpaths;
   }
 
   if (COM_CheckParm("-proghack")) proghack = true;

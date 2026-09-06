@@ -62,7 +62,7 @@ import { ptr, read as ffiRead, type Library, type Pointer } from "bun:ffi";
 import { currentLibrarySearch, openLibrary } from "./libs";
 import { Con_Printf, Con_DPrintf } from "../client/console";
 import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv } from "../common/cmd";
-import { COM_CheckParm, Q_atoi, Q_strcasecmp, com_gamedir } from "../common/common";
+import { COM_CheckParm, COM_FindFilePath, Q_atoi, Q_strcasecmp } from "../common/common";
 import { Cvar_SetValue } from "../common/cvar";
 import { bgmvolume } from "../client/sound";
 import { cdAudio, type CdAudio } from "../client/cdaudio";
@@ -183,13 +183,22 @@ export function CDAudio_Play(track: number, looping: boolean): void {
   const l = lib();
   if (!l) return;
 
+  // Re-release addition (U10): resolved through the FULL mounted search
+  // path (COM_FindFilePath), not just com_gamedir -- com_gamedir is now the
+  // WRITE tree (the homedir mount, when -homedir is given, which may be an
+  // otherwise-empty directory), and a nested re-release root mounts its own
+  // higher-priority music/ tree (e.g. rerelease/id1/music/track02.ogg)
+  // above the classic gamedir's. libvorbisfile's ov_fopen needs a real
+  // filesystem path, so only "dir" search-path entries are considered
+  // (see COM_FindFilePath's own header).
   const pad = remapped < 10 ? `0${remapped}` : `${remapped}`;
-  const candidates = [`${com_gamedir}/music/${pad}.ogg`, `${com_gamedir}/music/track${pad}.ogg`];
+  const candidates = [`music/${pad}.ogg`, `music/track${pad}.ogg`];
 
   const storage = new Uint8Array(OV_FILE_SIZE);
   let opened = false;
-  for (const path of candidates) {
-    if (l.symbols.ov_fopen(cstr(path), ptr(storage)) === 0) {
+  for (const rel of candidates) {
+    const path = COM_FindFilePath(rel);
+    if (path && l.symbols.ov_fopen(cstr(path), ptr(storage)) === 0) {
       opened = true;
       break;
     }

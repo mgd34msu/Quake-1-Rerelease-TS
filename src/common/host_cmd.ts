@@ -74,7 +74,19 @@ import {
   cmdState,
 } from "./cmd";
 import { Cvar_Set, Cvar_SetValue, Cvar_VariableString } from "./cvar";
-import { COM_DefaultExtension, COM_Parse, Q_atof, Q_atoi, Q_strcasecmp, com_gamedir, hipnotic, rogue, type ParseState } from "./common";
+import {
+  COM_DefaultExtension,
+  COM_GetGameNames,
+  COM_Parse,
+  COM_SwitchGame,
+  Q_atof,
+  Q_atoi,
+  Q_strcasecmp,
+  com_gamedir,
+  hipnotic,
+  rogue,
+  type ParseState,
+} from "./common";
 import { Con_Printf } from "../client/console";
 import { Com_sprintf } from "./sprintf";
 import {
@@ -1456,6 +1468,43 @@ export function Host_Stopdemo_f(): void {
 
 /*
 ==================
+Host_Game_f (re-release addition, U10)
+
+Ironwail's "game" console command (common.c:2736, COM_Game_f): switches the
+active mod/mission-pack layer at runtime by tearing down every search-path
+entry mounted above the boot-time base tier (COM_ResetGameDirectories) and
+re-adding the requested list of gamedirs, then re-execs quake.rc the way a
+fresh boot would (host.ts:1179's own COM_InitFilesystem-adjacent boot exec
+uses the same script). With no arguments, reports the currently active
+gamedir(s) instead of switching.
+
+Follows Ironwail's own COM_SwitchGame exactly (common.c:2670): if a server
+is active or a client is connected, both are shut down first (CL_Disconnect/
+Host_ShutdownServer, the same pair Host_Map_f above uses) rather than
+refusing -- a coordinator ruling superseding this unit's earlier "refuse
+unless acknowledged with a trailing map" draft.
+==================
+*/
+export function Host_Game_f(): void {
+  if (Cmd_Argc() < 2) {
+    Con_Printf('"game" is "%s"\n', COM_GetGameNames());
+    return;
+  }
+
+  const dirs: string[] = [];
+  for (let i = 1; i < Cmd_Argc(); i++) dirs.push(Cmd_Argv(i));
+
+  hostClientHooks.clDisconnect?.(); // CL_Disconnect
+  Host_ShutdownServer(false);
+
+  COM_SwitchGame(dirs);
+
+  Con_Printf('"game" changed to "%s"\n', COM_GetGameNames());
+  Cbuf_AddText("exec quake.rc\n");
+}
+
+/*
+==================
 Host_InitCommands
 ==================
 */
@@ -1466,6 +1515,7 @@ export function Host_InitCommands(): void {
   Cmd_AddCommand("notarget", Host_Notarget_f);
   Cmd_AddCommand("fly", Host_Fly_f);
   Cmd_AddCommand("map", Host_Map_f);
+  Cmd_AddCommand("game", Host_Game_f);
   Cmd_AddCommand("restart", Host_Restart_f);
   Cmd_AddCommand("changelevel", Host_Changelevel_f);
   Cmd_AddCommand("connect", Host_Connect_f);

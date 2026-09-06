@@ -583,6 +583,11 @@ export function COM_Path_f(): void {
   for (let s = com_searchpaths; s; s = s.next) {
     if (s === com_base_searchpaths) Con_Printf("----------\n");
     if (s.kind === "pack") Con_Printf("%s (%i files)\n", s.pack.filename, s.pack.numfiles);
+    // "zip" (src/common/common.ts's U10 re-release addition, SearchPathT's
+    // shared type): QW's own COM_AddGameDirectory below never mounts one,
+    // so this arm is unreachable in practice; kept only so this file still
+    // exhaustively narrows the shared union.
+    else if (s.kind === "zip") Con_Printf("%s (%i files)\n", s.zip.filename, s.zip.numfiles);
     else Con_Printf("%s\n", s.filename);
   }
 }
@@ -668,6 +673,12 @@ export function COM_FOpenFile(filename: string): { handle: number; length: numbe
         file_from_pak = 1;
         return { handle, length: pak.files[i].filelen };
       }
+    } else if (search.kind === "zip") {
+      // "zip" (src/common/common.ts's U10 re-release addition, SearchPathT's
+      // shared type): QW's own COM_AddGameDirectory below never mounts one,
+      // so this arm is unreachable in practice; kept only so this file
+      // still exhaustively narrows the shared union.
+      continue;
     } else {
       // check a file in the directory tree
       if (!static_registered) {
