@@ -95,7 +95,7 @@ import { CvarT, Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue } from "../common
 import { Com_sprintf } from "../common/sprintf";
 import { Con_DPrintf, Con_Printf } from "../client/console";
 import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv, Cmd_ExecuteString, CmdSourceT, cmdState } from "../common/cmd";
-import { Q_atoi, standard_quake } from "../common/common";
+import { COM_CheckParm, com_argv, Q_atoi, standard_quake } from "../common/common";
 import { coop, deathmatch, host, Host_ClearMemory, Host_MaxEdicts, Host_ShutdownServer, skill } from "../common/host";
 import { claimServerProfile, serverProfile, serverShutdownHooks, type NetProfileT } from "../common/profile";
 import { hostname, NET_CanSendMessage, NET_CheckNewConnections, NET_SendMessage, NET_SendToAll, NET_SendUnreliableMessage, net_activeconnections, setNetActiveConnections } from "../common/net_main";
@@ -103,7 +103,7 @@ import { CONTENTS_SOLID, MAX_MAP_LEAFS } from "../common/bspfile";
 import { NET_MAXMESSAGE } from "../common/net";
 import { isMleaf, loadState, Mod_ForName, Mod_LeafPVS, type MleafT, type ModelT, type MnodeT } from "../common/model";
 import { BSP_WIDTH_29 } from "../common/bspfile";
-import { DotProduct, VectorAdd, VectorCopy, type Vec3, vec3 } from "../common/mathlib";
+import { DotProduct, Q_SeedRandom, VectorAdd, VectorCopy, type Vec3, vec3 } from "../common/mathlib";
 import { DATAGRAM_MTU, MAX_DATAGRAM, MAX_MODELS, MAX_MSGLEN, MAX_SOUNDS, VERSION } from "../common/quakedef";
 import {
   ENTALPHA_DEFAULT,
@@ -193,6 +193,20 @@ export const svMainHooks: {
    *  are sized here and nowhere else, so this is the only point that count can
    *  be applied; see src/client/splitscreen.ts's SS_ServerSpawned. */
   serverSpawned: (() => number) | null;
+  /** F13: called once per server frame, from SV_CheckForNewClients, before
+   *  any new connection is accepted. src/bots installs it so a `bot_count`
+   *  raised while the level is running seats bots on the next frame even
+   *  when the roster is empty -- the reconcile used to run off the first
+   *  bot to think, which never happens when there is no bot to think. */
+  serverFrame: (() => void) | null;
+  /** F13: the mirror of `spawnServer` at the near end of SV_SpawnServer,
+   *  where the ruleset cvars the level is about to be built from are still
+   *  changeable. src/bots installs it so a map the retail mapdb.json flags
+   *  `horde` spawns in the mode its own spawn points need -- see
+   *  src/bots/bot_client.ts's Bot_PrepareLevel. Called before the
+   *  `coop`/`deathmatch` consistency rule below, so a mode chosen here goes
+   *  through it like any operator's. */
+  prepareLevel: ((mapname: string) => void) | null;
 } = {
   dropClient: null,
   scrCenterTimeOff: null,
@@ -202,6 +216,8 @@ export const svMainHooks: {
   shutdownServer: null,
   localSeatCount: null,
   serverSpawned: null,
+  serverFrame: null,
+  prepareLevel: null,
 };
 
 // U38: the NetQuake half of src/common/profile.ts's one-server-at-a-time
@@ -241,6 +257,16 @@ function requireWorldmodel(): ModelT {
 // setting is). `15`, `666`, `999` or `auto`; changes take effect at the next
 // map load, exactly as Ironwail's command does.
 export const sv_protocol = new CvarT("sv_protocol", "auto", true);
+
+// F13 (addition, no C original): the seed the engine's stdlib rand() runs
+// from -- the QuakeC `random()` builtin and SV_MoveToGoal's chase-direction
+// roll (mathlib.ts's Q_rand). 0, the default, is WinQuake's unseeded engine:
+// Math.random, a different match every run. Any other value pins the stream,
+// so a driver that measures play (frags scored, ground covered) measures the
+// same match twice. Applied at every SV_SpawnServer, so each `map` restarts
+// the sequence from the seed rather than continuing the previous level's;
+// `-randseed <n>` sets it from the command line.
+export const sv_randomseed = new CvarT("sv_randomseed", "0", false);
 
 // U38 (ARCHITECTURE.md "Unified client and server"): which server tree the
 // next `map` spawns -- "nq" (WinQuake's, this file's) or "qw" (QuakeWorld's,
@@ -365,6 +391,11 @@ export function SV_Init(): void {
   Cvar_RegisterVariable(sv_aim);
   Cvar_RegisterVariable(sv_nostep);
   Cvar_RegisterVariable(sv_protocol);
+  Cvar_RegisterVariable(sv_randomseed);
+  {
+    const i = COM_CheckParm("-randseed");
+    if (i && i < com_argv.length - 1) Cvar_Set("sv_randomseed", com_argv[i + 1]!);
+  }
   Cvar_RegisterVariable(sv_profile); // U38, see its own comment
   // U9: the behaviour profile's own cvars, the ones the re-release QuakeC
   // reads or sets, and the debug-draw gate.
@@ -624,6 +655,8 @@ SV_CheckForNewClients
 ===================
 */
 export function SV_CheckForNewClients(): void {
+  if (svMainHooks.serverFrame !== null) svMainHooks.serverFrame();
+
   // check for new connections
   for (;;) {
     const ret = NET_CheckNewConnections();
@@ -1280,12 +1313,17 @@ export function SV_SpawnServer(server: string): void {
   if (sv.active) SV_SendReconnect();
 
   // make cvars consistant
+  if (svMainHooks.prepareLevel !== null) svMainHooks.prepareLevel(server);
   if (coop.value) Cvar_SetValue("deathmatch", 0);
   hostCmdState.current_skill = Math.trunc(skill.value + 0.5);
   if (hostCmdState.current_skill < 0) hostCmdState.current_skill = 0;
   if (hostCmdState.current_skill > 3) hostCmdState.current_skill = 3;
 
   Cvar_SetValue("skill", hostCmdState.current_skill);
+
+  // F13: every level starts the random sequence from the seed, so the same
+  // seed replays the same map. See sv_randomseed's own comment.
+  Q_SeedRandom(sv_randomseed.value);
 
   // set up the new server
   Host_ClearMemory();

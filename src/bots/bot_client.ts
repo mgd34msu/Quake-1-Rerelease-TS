@@ -47,7 +47,7 @@ so those two run bots with no hook calls, which is what ARCHITECTURE.md's
 
 import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv } from "../common/cmd";
 import { Con_Printf } from "../client/console";
-import { CvarT, Cvar_RegisterVariable, Cvar_VariableValue } from "../common/cvar";
+import { CvarT, Cvar_RegisterVariable, Cvar_SetValue, Cvar_VariableValue } from "../common/cvar";
 import { COM_LoadTempFile } from "../common/common";
 import { MSG_WriteByte, MSG_WriteShort, MSG_WriteString, SZ_Clear } from "../common/sizebuf";
 import { SvcOpsT } from "../common/protocol";
@@ -56,7 +56,7 @@ import { PR_ExecuteProgram } from "../progs/pr_exec";
 import { FL_MONSTER, NUM_SPAWN_PARMS, sv, svs, svState, type ClientT } from "../server/server";
 import { SV_ConnectClient } from "../server/sv_main";
 import { GLOBAL_OFS, type GlobalVars } from "../progs/progdefs";
-import { deathmatch, host } from "../common/host";
+import { coop, deathmatch, host } from "../common/host";
 import { QEX_LocGetString } from "../progs/ext/qex_print";
 import { parseMapdb } from "../lib/mapdb";
 import {
@@ -541,6 +541,25 @@ function callHook(index: number, ent: EdictT): void {
 }
 
 /**
+ * Once per server frame, from SV_CheckForNewClients (svMainHooks.serverFrame).
+ *
+ * `bot_count` applies while the level is running, not only at the next
+ * SV_SpawnServer: raising it seats bots now, lowering it kicks the ones
+ * added last. This ran off the first bot to think until F13, which meant a
+ * `bot_count` raised from zero with no bot in the game had nobody to run it
+ * and took effect only at the next map load.
+ */
+export function Bot_Frame(): void {
+  if (!sv.active) return;
+  if (botState.reconciledAt === sv.time) return;
+  botState.reconciledAt = sv.time;
+  const want = Math.trunc(bot_count.value);
+  const grow = want > botState.roster.length;
+  const governs = want > 0 || Bot_AutoCount() > 0;
+  if (governs && want !== botState.roster.length && Bot_MultiplayerRuleset() && (!grow || Bot_MapAllowsBots(sv.name))) Bot_Reconcile();
+}
+
+/**
  * Fills one bot's usercmd for this frame. sv_user.ts calls this in
  * SV_RunClients where a human client would be read off its socket, so the
  * SV_ClientThink that follows is the same one a player gets.
@@ -553,18 +572,17 @@ export function Bot_Think(client: ClientT): void {
   const ent = client.edict;
   if (ent === null) return;
 
-  // `bot_count` applies while the level is running, not only at the next
-  // SV_SpawnServer: raising it seats bots now, lowering it kicks the ones
-  // added last. Once a frame, off the first bot to think.
-  if (botState.reconciledAt !== sv.time) {
-    botState.reconciledAt = sv.time;
-    const want = Math.trunc(bot_count.value);
-    const grow = want > botState.roster.length;
-    const governs = want > 0 || Bot_AutoCount() > 0;
-    if (governs && want !== botState.roster.length && deathmatch.value !== 0 && (!grow || Bot_MapAllowsBots(sv.name))) Bot_Reconcile();
-  }
-
   Bot_ChatEvents(slot, ent);
+
+  // FL_ISBOT is the engine's bit, and every QuakeC PutClientInServer opens
+  // with `self.flags = FL_CLIENT` (quakec/client.qc, and every other tree's):
+  // the flag survives the seating in Bot_PutInServer, which sets it after
+  // that call, and is then wiped by the first respawn -- by
+  // PlayerDeathThink's, and under mg1 by horde.qc's RespawnAllPlayers, which
+  // calls PutClientInServer straight out of the QuakeC. Re-asserting it here
+  // is what keeps the QuakeC's own three bot checks firing for the rest of
+  // the level.
+  ent.v.flags = (ent.v.flags | 0) | FL_ISBOT;
 
   // `fixangle` is cleared by SV_WriteClientdataToMessage once the angle has
   // been sent to the client that owns the edict. A bot is skipped by
@@ -751,6 +769,19 @@ export function Bot_SpawnServer(mapname: string): void {
   Bot_ClearNav();
   Bot_LoadNav(mapname);
 
+  // A pinned run is pinned for the bots too: a non-zero `sv_randomseed`
+  // (src/server/sv_main.ts) reseeds the stream `addbot`'s own choices come
+  // from -- which character, and the seed that character's brain rolls its
+  // dice with -- so the same seed on the same map seats the same bots making
+  // the same decisions. Unseeded, which is the default, the chain runs on
+  // from wherever the session left it, and two matches in one session get
+  // different bots.
+  const seed = Math.trunc(Cvar_VariableValue("sv_randomseed"));
+  if (seed !== 0) {
+    botState.nextSeed = seed;
+    botState.usedCharacters.clear();
+  }
+
   const mode = Bot_GameMode();
   for (const [clientnum, slot] of botState.slots) {
     const client = svs.clients[clientnum];
@@ -776,7 +807,7 @@ export function Bot_SpawnServer(mapname: string): void {
 }
 
 /**
- * `bot_count` auto-fill. Only on a deathmatch server, and only on a map
+ * `bot_count` auto-fill. Only on a multiplayer server, and only on a map
  * mapdb.json flags `bots` -- a map with no nav gives bots nothing to walk
  * along, and mapdb's own flag is the retail data's statement of which maps
  * were authored for them. `addbot` is not gated by either: an operator who
@@ -785,7 +816,7 @@ export function Bot_SpawnServer(mapname: string): void {
 export function Bot_AutoFill(mapname: string): void {
   const want = Math.trunc(bot_count.value);
   if (want <= 0) return;
-  if (deathmatch.value === 0) return;
+  if (!Bot_MultiplayerRuleset()) return;
   if (!Bot_MapAllowsBots(mapname)) {
     Con_Printf("bot_count: %s is not flagged for bots in mapdb.json\n", mapname);
     return;
@@ -830,28 +861,98 @@ function Bot_AutoCount(): number {
   return n;
 }
 
-const mapdbCache: { loaded: boolean; bots: Set<string> } = { loaded: false, bots: new Set<string>() };
+/**
+ * A server bots may fill: deathmatch, coop or horde. Single player (both
+ * cvars 0) is the one ruleset the auto-fill leaves alone -- `addbot` still
+ * works there. Coop and horde count because that is where the re-release's
+ * own bots play: mapdb.json flags every horde map `bots`, and horde is coop
+ * (see Bot_PrepareLevel).
+ */
+export function Bot_MultiplayerRuleset(): boolean {
+  return deathmatch.value !== 0 || coop.value !== 0;
+}
+
+const mapdbCache: { loaded: boolean; bots: Set<string>; horde: Set<string> } = { loaded: false, bots: new Set<string>(), horde: new Set<string>() };
+
+function loadMapdb(): void {
+  if (mapdbCache.loaded) return;
+  mapdbCache.loaded = true;
+  const bytes = COM_LoadTempFile("mapdb.json");
+  if (bytes === null) return;
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] === 0) end--;
+  const result = parseMapdb(new TextDecoder().decode(bytes.subarray(0, end)));
+  for (const m of result.mapdb.maps) {
+    if (m.bots) mapdbCache.bots.add(m.bsp.toLowerCase());
+    if (m.horde) mapdbCache.horde.add(m.bsp.toLowerCase());
+  }
+}
 
 export function Bot_MapAllowsBots(mapname: string): boolean {
-  if (!mapdbCache.loaded) {
-    mapdbCache.loaded = true;
-    const bytes = COM_LoadTempFile("mapdb.json");
-    if (bytes !== null) {
-      let end = bytes.length;
-      while (end > 0 && bytes[end - 1] === 0) end--;
-      const result = parseMapdb(new TextDecoder().decode(bytes.subarray(0, end)));
-      for (const m of result.mapdb.maps) if (m.bots) mapdbCache.bots.add(m.bsp.toLowerCase());
-    }
-  }
+  loadMapdb();
   // No mapdb at all (a classic install) means no statement either way, and
   // the operator's explicit `addbot` still works; only the auto-fill defers.
   if (mapdbCache.bots.size === 0) return false;
   return mapdbCache.bots.has(mapname.toLowerCase());
 }
 
+/** mapdb.json's own `"horde": true`, the retail data's list of horde maps. */
+export function Bot_MapIsHorde(mapname: string): boolean {
+  loadMapdb();
+  return mapdbCache.horde.has(mapname.toLowerCase());
+}
+
+/** What Bot_PrepareLevel forced on, and what it puts back afterwards. */
+const hordeMode: { forced: boolean; deathmatch: number; coop: number } = { forced: false, deathmatch: 0, coop: 0 };
+
+/**
+ * Horde is coop (addition, F13).
+ *
+ * mg1's horde maps carry `info_player_coop` spawn points and no
+ * `info_player_deathmatch` at all, and quakec_mg1/client.qc:1135's
+ * `info_player_coop` removes itself at load when `coop` is 0. So a horde map
+ * started on a deathmatch server has no spawn point anyone can use:
+ * SelectSpawnPoint (quakec_mg1/client.qc:684) answers `world`, and
+ * PutClientInServer parks every client -- human and bot alike -- at the
+ * intermission camera with `deadflag = DEAD_DEAD`, `SOLID_NOT` and
+ * `MOVETYPE_NONE`, retrying every five seconds forever. The QuakeC's own
+ * `horde_manager` says the same thing from the other side: it turns the
+ * `horde` cvar on itself, but only `if (!cvar("horde") && !deathmatch)`
+ * (quakec_mg1/horde.qc:1911).
+ *
+ * The retail engine's launcher picks the mode for the map -- mapdb.json's
+ * `"horde": true` is that statement in the shipped data -- so this does the
+ * same: a map the mapdb flags `horde` spawns with `coop 1` (SV_SpawnServer
+ * then clears `deathmatch` itself, and `horde_manager` sets `horde 1`),
+ * and the operator's own deathmatch/coop settings come back at the next
+ * non-horde map, along with `horde 0`. Without the restore the QuakeC's
+ * `horde` cvar would stay 1 into the next level, where SelectSpawnPoint's
+ * horde branch finds no `info_player_coop` and drops every player onto one
+ * `info_player_start`.
+ */
+export function Bot_PrepareLevel(mapname: string): void {
+  if (Bot_MapIsHorde(mapname)) {
+    if (coop.value !== 0) return;
+    hordeMode.forced = true;
+    hordeMode.deathmatch = deathmatch.value;
+    hordeMode.coop = coop.value;
+    Cvar_SetValue("coop", 1);
+    Con_Printf("%s is a horde map (mapdb.json): coop 1\n", mapname);
+    return;
+  }
+  if (!hordeMode.forced) return;
+  hordeMode.forced = false;
+  Cvar_SetValue("coop", hordeMode.coop);
+  Cvar_SetValue("deathmatch", hordeMode.deathmatch);
+  Cvar_SetValue("horde", 0);
+}
+
+
 export function Bot_ForgetMapdb(): void {
   mapdbCache.loaded = false;
   mapdbCache.bots.clear();
+  mapdbCache.horde.clear();
+  hordeMode.forced = false;
 }
 
 //============================================================================

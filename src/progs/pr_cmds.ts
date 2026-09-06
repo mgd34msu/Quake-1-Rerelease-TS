@@ -42,7 +42,10 @@ Deviations from the C source:
 - `PF_random`'s `rand()` (mathlib.ts owns `rand`/`random` per PORTING.md's
   general idiom map, but the unit brief rules this builtin's `rand()` call
   is local to this file): `Math.floor(Math.random() * 0x8000) & 0x7fff`,
-  reported per the brief's explicit ruling.
+  reported per the brief's explicit ruling. F13 revisited that: the call now
+  goes through mathlib.ts's `Q_rand`, which answers from Math.random in the
+  same [0, 0x7fff] range while `sv_randomseed` is 0 and from a seeded
+  generator when it is not, so a test can pin a match.
 - `PF_setmodel`: the actual pr_cmds.c body read for this port has no
   `mod->type == mod_brush` branch (unlike the unit brief's RULINGS
   paraphrase) -- it always calls `SetMinMaxSize (e, mod->mins, mod->maxs,
@@ -126,6 +129,7 @@ import {
   DotProduct,
   Length,
   M_PI,
+  Q_rand,
   VectorAdd,
   VectorCopy,
   VectorMA,
@@ -564,7 +568,7 @@ random()
 */
 function PF_random(): void {
   // rand() has no libc equivalent; see file header's ruling
-  const num = (Math.floor(Math.random() * 0x8000) & 0x7fff) / 0x7fff;
+  const num = (Q_rand() & 0x7fff) / 0x7fff;
   globals().f[OFS_RETURN] = num;
 }
 

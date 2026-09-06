@@ -240,6 +240,12 @@ const INTERACTABLES_TXT = `
 
 const GAME_RULES_TXT = `
 {
+  cvar horde
+  value 1
+  weapon_stay true
+  game_type horde
+}
+{
   cvar coop
   value 1
   weapon_stay true
@@ -966,6 +972,9 @@ describe("knowledge", () => {
 
     cvars.coop = 1;
     expect(knowledge.gameMode((n) => cvars[n] ?? 0)).toEqual({ gameType: "coop", weaponStay: true });
+    // The retail mg1 file lists horde ahead of coop, and horde maps run coop.
+    cvars.horde = 1;
+    expect(knowledge.gameMode((n) => cvars[n] ?? 0)).toEqual({ gameType: "horde", weaponStay: true });
   });
 
   test("interactables.txt's conditions pick the right interaction for one classname", () => {
@@ -1098,13 +1107,13 @@ function stubItem(id: number, classname: string, origin: BotVec3): BotEntityT {
   };
 }
 
-function makeBrain(seed: number): BotBrain {
+function makeBrain(seed: number, gameMode: { gameType: string; weaponStay: boolean } = { gameType: "deathmatch", weaponStay: false }): BotBrain {
   const knowledge = buildKnowledge();
   return new BotBrain({
     knowledge,
     skill: "medium",
     rng: new Xorshift32(seed),
-    gameMode: { gameType: "deathmatch", weaponStay: false },
+    gameMode,
     maxHealth: 100,
     weaponImpulse: (n) => (n === 1 ? 2 : n === 2 ? 3 : n === 4096 ? 1 : 0),
   });
@@ -1271,6 +1280,32 @@ describe("brain", () => {
       return out.join("|");
     };
     expect(run(1)).not.toBe(run(99999));
+  });
+
+  test("horde is a team game: a teammate is not a target, and a player on another team is", () => {
+    // mg1's own bots/game_rules.txt gives horde its own game_type, and its
+    // PutClientInServer puts every player on TEAM_HUMANS. A bot that only
+    // knew "coop" shot its own team in the first seconds of a wave game.
+    const play = (gameType: string, mateTeam: number): number => {
+      const world = new StubWorld(bvec(0, 0, 0));
+      world.selfState.team = 1;
+      const mate = stubEnemy(2, bvec(300, 0, 0));
+      mate.team = mateTeam;
+      world.ents = [mate];
+      const brain = makeBrain(5, { gameType, weaponStay: true });
+      for (let i = 0; i < 40; i++) {
+        world.now += 0.05;
+        brain.think(world);
+      }
+      return brain.currentTarget();
+    };
+
+    expect(play("horde", 1)).toBe(-1);
+    expect(play("coop", 1)).toBe(-1);
+    // Same player, another team: still something to shoot.
+    expect(play("horde", 2)).toBe(2);
+    // And a free-for-all ignores `team` entirely.
+    expect(play("deathmatch", 1)).toBe(2);
   });
 
   test("a dead bot presses attack to respawn and stops moving", () => {

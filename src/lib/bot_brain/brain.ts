@@ -687,7 +687,21 @@ export class BotBrain {
    */
   private teamGame(): boolean {
     const type = this.config.gameMode.gameType;
-    return type === BotGameType.TeamDeathmatch || type === BotGameType.Ctf || type === BotGameType.Coop;
+    return type === BotGameType.TeamDeathmatch || type === BotGameType.Ctf || this.coopGame();
+  }
+
+  /**
+   * Coop and horde are the same game to a bot: one team, and everything that
+   * has to be killed is a monster. game_rules.txt gives horde its own
+   * `game_type` (the re-release's own mg1/bots/game_rules.txt has
+   * `horde 1 -> horde` ahead of `coop 1 -> coop`), so a bot that only knew
+   * about coop treated every other player in a horde game as something to
+   * shoot -- which, with the QuakeC's own player friendly fire, is four bots
+   * killing each other in the first five seconds of a wave game.
+   */
+  private coopGame(): boolean {
+    const type = this.config.gameMode.gameType;
+    return type === BotGameType.Coop || type === BotGameType.Horde;
   }
 
   private friendly(ent: BotEntityT, team: number): boolean {
@@ -808,7 +822,7 @@ export class BotBrain {
 
   /** In coop, the human the bot regroups with. See COOP_REGROUP_SECONDS. */
   private coopRegroupGoal(entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, now: number): BotVec3 | null {
-    if (this.config.gameMode.gameType !== BotGameType.Coop) return null;
+    if (!this.coopGame()) return null;
     let nearest: BotEntityT | null = null;
     let best = Infinity;
     for (const ent of entities) {
@@ -844,7 +858,7 @@ export class BotBrain {
    * SHOOT is still gated by senses.ts -- this only decides where it walks.
    */
   private coopHuntGoal(entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, now: number): BotVec3 | null {
-    if (this.config.gameMode.gameType !== BotGameType.Coop) return null;
+    if (!this.coopGame()) return null;
 
     let human: BotEntityT | null = null;
     let humanRange = Infinity;

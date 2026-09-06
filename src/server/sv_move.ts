@@ -15,11 +15,12 @@ Deviations from PORTING.md / the C source:
 - `STEPSIZE` and `DI_NODIR` are `#define`s local to this C file (sv_phys.c
   has its own separate `STEPSIZE`); ported as unexported module-local
   `const`s rather than exported names.
-- `rand()` (stdlib, via `<stdlib.h>`) has no project-wide helper (mathlib.ts's
-  own header comment: "Quake's [random helpers] are QuakeC builtins... None
-  are invented here"). Ruling for this unit: a file-private `rand()` =
+- `rand()` (stdlib, via `<stdlib.h>`) had no project-wide helper when this
+  file landed, so it took a file-private `rand()` =
   `Math.floor(Math.random() * 0x8000)`, matching stdlib rand()'s [0, RAND_MAX]
-  range with RAND_MAX = 0x7fff on the reference toolchain.
+  range with RAND_MAX = 0x7fff on the reference toolchain. F13 gave mathlib.ts
+  that helper (`Q_rand`, same range, seedable through `sv_randomseed`) and
+  this file's `rand()` now calls it.
 - `enemy == sv.edicts` / `!= sv.edicts` (comparing an edict pointer against
   the pointer to edict 0, the world edict, C's "no entity" sentinel) becomes
   `... === EDICT_NUM(0)` / `!== EDICT_NUM(0)`, the same idiom already used by
@@ -39,7 +40,7 @@ import type { GlobalVars } from "../progs/progdefs";
 import { OFS_PARM0, OFS_RETURN } from "../progs/pr_comp";
 import { SV_Move, SV_LinkEdict, SV_PointContents, MOVE_NORMAL, MOVE_NOMONSTERS, type TraceT } from "./world";
 import { FL_FLY, FL_SWIM, FL_ONGROUND, FL_PARTIALGROUND } from "./server";
-import { type Vec3, vec3, vec3_origin, anglemod, VectorCopy, VectorAdd, M_PI } from "../common/mathlib";
+import { type Vec3, vec3, vec3_origin, anglemod, Q_rand, VectorCopy, VectorAdd, M_PI } from "../common/mathlib";
 import { YAW } from "../common/quakedef";
 import { CONTENTS_SOLID, CONTENTS_EMPTY } from "../common/bspfile";
 import { SysError } from "../platform/sys";
@@ -62,7 +63,7 @@ function requireGlobals(): { f: Float32Array; i: Int32Array } {
 
 // see file header's deviation note.
 function rand(): number {
-  return Math.floor(Math.random() * 0x8000);
+  return Q_rand();
 }
 
 /*

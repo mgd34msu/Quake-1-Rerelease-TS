@@ -22,7 +22,11 @@ Deviations from PORTING.md / the C source:
   would yield INT_MIN. mathlib.c's version is the `#if !id386` fallback and has
   no C caller (the x86 build calls the .s implementation), so nothing observes it.
 - mathlib.h declares no random()/crandom(); Quake's are QuakeC builtins over
-  stdlib rand(). None are invented here.
+  stdlib rand(). None are invented here. `Q_rand`/`Q_SeedRandom` below are an
+  addition rather than a port: the stdlib rand() every `rand()` idiom in this
+  tree stands in for, plus the seed WinQuake never had (see their own
+  comment); pr_cmds.ts's `random()` builtin and sv_move.ts's chase-direction
+  roll are the two callers.
 - The `#if !id386` guards around BoxOnPlaneSide and Invert24To16, and the `#if 0`
   blocks inside anglemod and BoxOnPlaneSide, take the C path per PORTING.md.
   The `#if 0` fast axial case inside BoxOnPlaneSide stays dropped: in Quake 1
@@ -216,6 +220,56 @@ export function RotatePointAroundVector(dst: Vec3, dir: Vec3, point: Vec3, degre
 }
 
 /*-----------------------------------------------------------------*/
+
+/*
+==================
+Q_rand / Q_SeedRandom
+
+The engine's own stdlib rand(), and a seed for it (addition, F13). WinQuake
+never seeds rand() at all -- _Host_Frame's `rand()` call exists only to "keep
+the random time dependent" -- so the QuakeC `random()` builtin and
+SV_MoveToGoal's chase-direction roll answer differently on every run, and a
+test that measures play (how often
+bots frag each other, how far a monster gets) measures a different match
+each time. Seeding makes one run replayable: with a non-zero seed the two
+answer from the xorshift32 below instead of Math.random, so the same seed,
+the same map and the same inputs give the same match.
+
+A zero seed -- the default -- is the unseeded engine: Math.random, exactly
+as before, because a game that always played out identically is not the
+behaviour anyone wants outside a test. The generator's range is stdlib
+rand()'s [0, RAND_MAX] with RAND_MAX 0x7fff, which is the range PORTING.md's
+`rand()` idiom (`Math.floor(Math.random() * 0x8000)`) already produces.
+==================
+*/
+const randState = { seed: 0, state: 0 };
+
+/** 0 restores the unseeded (Math.random) engine; anything else pins the stream. */
+export function Q_SeedRandom(seed: number): void {
+  const s = Math.trunc(seed) | 0;
+  randState.seed = s;
+  // 0 is xorshift's fixed point, and is also the "unseeded" value, so the
+  // state word never has to hold it.
+  randState.state = s;
+}
+
+/** The seed in force, or 0 when the generator is unseeded. */
+export function Q_RandomSeed(): number {
+  return randState.seed;
+}
+
+/** stdlib rand(): an integer in [0, 0x7fff]. */
+export function Q_rand(): number {
+  if (randState.state === 0) return Math.floor(Math.random() * 0x8000);
+  let x = randState.state;
+  x ^= x << 13;
+  x |= 0;
+  x ^= x >>> 17;
+  x ^= x << 5;
+  x |= 0;
+  randState.state = x;
+  return (x >>> 0) >>> 17;
+}
 
 export function anglemod(a: number): number {
   a = (360.0 / 65536) * (Math.trunc(a * (65536 / 360.0)) & 65535);

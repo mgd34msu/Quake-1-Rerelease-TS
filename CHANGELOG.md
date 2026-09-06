@@ -132,6 +132,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- Horde maps (mg1) were unplayable under `deathmatch 1` for humans and bots
+  alike: mg1's coop spawn points remove themselves outside coop, so
+  everyone was parked at the intermission camera; a map `mapdb.json` flags
+  `horde` now spawns in coop and the operator's values return on the next
+  non-horde map. Bots keep their bot flag across respawns (the QuakeC
+  resets it), treat horde as a team game, and `bot_count` applies from
+  zero through a per-frame server hook. `sv_randomseed <n>` / `-randseed`
+  seeds the generator the QuakeC `random()`, `SV_MoveToGoal` and the bot
+  roster use, so a run can be replayed (0 = unseeded, the default).
 - The `ctfscores` client command the re-release CTF progs stuff at every
   client is implemented: team scores and each flag's state (at base,
   carried, dropped) are kept per connection and drawn under the status bar

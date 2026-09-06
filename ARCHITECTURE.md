@@ -466,10 +466,22 @@ knowing the world only through the small `BotWorldT` interface
 socket as a bot instead of a broken connection), the three re-release
 navigation builtins (`qexBotHooks`/`qexNavHooks`), and the
 `addbot`/`kickbot` commands with the `bot_skill`/`bot_count` cvars.
+`bot_count` applies live from any count (a per-frame server hook reconciles
+the roster even with no bot present) and never removes a bot added with
+`addbot`. A map that the retail `mapdb.json` flags `horde` spawns in coop:
+mg1's coop spawn points remove themselves under deathmatch, so a human or
+bot in a horde map under `deathmatch 1` was parked at the intermission
+camera forever (a documented addition; the operator's deathmatch/coop and
+`horde` values are restored at the next non-horde map). `sv_randomseed <n>`
+(also `-randseed <n>`; 0 = unseeded, the default) seeds the generator the
+QuakeC `random()` builtin, `SV_MoveToGoal` and the bot roster draw from, so
+a run can be replayed; it is applied at every `SV_SpawnServer`.
 
-`.nav` (NAV2, magic `NAV2`, version 12) decodes into nodes (flags, links,
-radius) and links (targets, hint types), with entity links read
-separately; `src/lib/nav.ts` and `src/lib/bot_brain/nav_graph.ts` name
+`.nav` (NAV2, magic `NAV2`, versions 12 to 18 across the retail trees; the
+link record is `int16 target, uint8 type, uint8 flags, int16 traversal`,
+the v16+ header float is the pathing heuristic) decodes into nodes (flags,
+links, radius) and links (targets, hint types, flags), with entity links
+read separately; `src/lib/nav.ts` and `src/lib/bot_brain/nav_graph.ts` name
 these fields `type`, `traversal` and `entityLinks` (renamed from an
 earlier pass to match how `nav_graph.ts` actually uses them, rather than
 the raw NAV2 field names).

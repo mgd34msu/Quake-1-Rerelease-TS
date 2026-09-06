@@ -7,7 +7,7 @@ import { buildBsp, ensureDir, writeGameFile } from "./support/bsp_builder";
 import { Mod_ForName, Mod_Init } from "../src/common/model";
 import { Cvar_FindVar } from "../src/common/cvar";
 import { coop, deathmatch, skill } from "../src/common/host";
-import { vec3 } from "../src/common/mathlib";
+import { Q_RandomSeed, Q_SeedRandom, Q_rand, vec3 } from "../src/common/mathlib";
 import { sysState, SysError } from "../src/platform/sys";
 import { EdictT, PR_GetString, PR_SetEngineString, pr, setEdictTable } from "../src/progs/progs";
 import { ENTVARS_SIZE_WORDS } from "../src/progs/progdefs";
@@ -99,6 +99,73 @@ function makeEdict(index: number): EdictT {
 }
 
 //============================================================================
+
+describe("sv_randomseed (F13 addition)", () => {
+  afterAll(() => {
+    Q_SeedRandom(0); // shared module state: back to the unseeded engine
+  });
+
+  test("SV_Init registers the cvar, unseeded by default", () => {
+    SV_Init();
+    const cvar = Cvar_FindVar("sv_randomseed");
+    expect(cvar).not.toBeNull();
+    expect(cvar!.value).toBe(0);
+    expect(Q_RandomSeed()).toBe(0);
+  });
+
+  test("unseeded, Q_rand answers stdlib rand()'s range and does not repeat itself", () => {
+    Q_SeedRandom(0);
+    const first: number[] = [];
+    for (let i = 0; i < 64; i++) first.push(Q_rand());
+    for (const n of first) {
+      expect(Number.isInteger(n)).toBe(true);
+      expect(n).toBeGreaterThanOrEqual(0);
+      expect(n).toBeLessThanOrEqual(0x7fff);
+    }
+    Q_SeedRandom(0);
+    const second: number[] = [];
+    for (let i = 0; i < 64; i++) second.push(Q_rand());
+    expect(second).not.toEqual(first);
+  });
+
+  test("a seed replays the same sequence, and two seeds differ", () => {
+    Q_SeedRandom(7);
+    expect(Q_RandomSeed()).toBe(7);
+    const first: number[] = [];
+    for (let i = 0; i < 64; i++) first.push(Q_rand());
+
+    Q_SeedRandom(7);
+    const again: number[] = [];
+    for (let i = 0; i < 64; i++) again.push(Q_rand());
+    expect(again).toEqual(first);
+
+    Q_SeedRandom(8);
+    const other: number[] = [];
+    for (let i = 0; i < 64; i++) other.push(Q_rand());
+    expect(other).not.toEqual(first);
+
+    for (const n of first) {
+      expect(n).toBeGreaterThanOrEqual(0);
+      expect(n).toBeLessThanOrEqual(0x7fff);
+    }
+  });
+
+  test("the QuakeC random() builtin's own [0, 1) draw follows the seed", () => {
+    // pr_cmds.ts's PF_random is `(Q_rand() & 0x7fff) / 0x7fff`.
+    const draw = (): number => (Q_rand() & 0x7fff) / 0x7fff;
+    Q_SeedRandom(1234);
+    const first: number[] = [];
+    for (let i = 0; i < 32; i++) first.push(draw());
+    Q_SeedRandom(1234);
+    const again: number[] = [];
+    for (let i = 0; i < 32; i++) again.push(draw());
+    expect(again).toEqual(first);
+    for (const n of first) {
+      expect(n).toBeGreaterThanOrEqual(0);
+      expect(n).toBeLessThanOrEqual(1);
+    }
+  });
+});
 
 describe.skipIf(!HAVE_PROGS106)("SV_Init", () => {
   test("registers the ten sv_* cvars owned by sv_phys.ts/sv_user.ts/pr_cmds.ts", () => {

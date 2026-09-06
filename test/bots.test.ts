@@ -22,7 +22,7 @@ import { COM_InitArgv, pop } from "../src/common/common";
 import { writePakToDisk } from "./support/pak_builder";
 import { buildBsp, buildMdl, buildSpr, ensureDir, writeGameFile } from "./support/bsp_builder";
 import { Cmd_ExecuteString, CmdSourceT, cmdHost } from "../src/common/cmd";
-import { Cvar_SetValue, setCvarServerHooks } from "../src/common/cvar";
+import { Cvar_SetValue, Cvar_VariableValue, setCvarServerHooks } from "../src/common/cvar";
 import { LUMPINFO_T_SIZE, WADINFO_T_SIZE } from "../src/common/wad";
 import { QuakeParmsT } from "../src/common/quakedef";
 import { setHostShutdown, sysState } from "../src/platform/sys";
@@ -32,10 +32,11 @@ import { EDICT_NUM, PR_GetString } from "../src/progs/progs";
 import { ED_FindFunction } from "../src/progs/pr_edict";
 import { pr_builtin } from "../src/progs/pr_cmds";
 import { setBuiltins } from "../src/progs/pr_exec";
-import { Host_Init, host } from "../src/common/host";
+import { Host_Init, coop, deathmatch, host } from "../src/common/host";
+import { Loc_SetLocaleProbeForTest } from "../src/common/loc_host";
 import { SV_Physics } from "../src/server/sv_phys";
 import { SV_RunClients } from "../src/server/sv_user";
-import { SV_ClientIsBot, SV_SendClientMessages } from "../src/server/sv_main";
+import { SV_CheckForNewClients, SV_ClientIsBot, SV_SendClientMessages } from "../src/server/sv_main";
 import { vec3 } from "../src/common/mathlib";
 import { HAVE_PROGS106, PROGS106_DAT } from "./support/fixture_availability";
 import { WORLDSPAWN_MODELS } from "./support/dedicated_fixture";
@@ -47,6 +48,9 @@ import {
   Bot_ForgetKnowledge,
   Bot_ForgetMapdb,
   Bot_GoalBuiltins,
+  Bot_MapIsHorde,
+  Bot_MultiplayerRuleset,
+  Bot_PrepareLevel,
   Bot_Knowledge,
   Bot_MonsterPath,
   Bot_Nav,
@@ -79,6 +83,7 @@ const scratchDir = mkdtempSync(join(scratchRoot, "bots-test-"));
 const baseDir = join(scratchDir, "quake");
 
 afterAll(() => {
+  Loc_SetLocaleProbeForTest(null);
   Bot_RemoveAll();
   Bot_ClearNav();
   Bot_ClearMonsterPaths();
@@ -338,7 +343,12 @@ const SYNTH_GAME_RULES = `
 
 const SYNTH_MAPDB = JSON.stringify({
   episodes: [{ dir: "id1", name: "Test" }],
-  maps: [{ title: "World", bsp: "world", episode: "id1", game: "id1", sp: true, dm: true, coop: false, bots: true, ctf: false, horde: false }],
+  maps: [
+    { title: "World", bsp: "world", episode: "id1", game: "id1", sp: true, dm: true, coop: false, bots: true, ctf: false, horde: false },
+    // The shape of a retail horde entry (mg1's horde1..7): flagged for bots
+    // and horde, and for neither deathmatch nor coop.
+    { title: "Wave World", bsp: "waveworld", episode: "id1", game: "id1", sp: false, dm: false, coop: false, bots: true, ctf: false, horde: true },
+  ],
 });
 
 //=============================================================================
@@ -429,6 +439,16 @@ describe.skipIf(!HAVE_PROGS106)("bot client slots on a synthetic dedicated serve
     Bot_ClearNav();
     Cmd_ExecuteString("map world", CmdSourceT.src_command);
   });
+
+  /** One server frame's worth of the two calls Host_ServerFrame makes into the server. */
+  function serverFrames(n: number): void {
+    host.frametime = 0.05;
+    for (let f = 0; f < n; f++) {
+      sv.time += 0.05;
+      SV_CheckForNewClients();
+      SV_RunClients();
+    }
+  }
 
   test("the map's own .nav is loaded at SV_SpawnServer", () => {
     expect(sv.active).toBe(true);
@@ -644,19 +664,12 @@ describe.skipIf(!HAVE_PROGS106)("bot client slots on a synthetic dedicated serve
     Cmd_ExecuteString("map world", CmdSourceT.src_command);
     expect(Bot_Count()).toBe(1);
 
-    host.frametime = 0.05;
     Cvar_SetValue("bot_count", 3);
-    for (let f = 0; f < 4; f++) {
-      sv.time += 0.05;
-      SV_RunClients();
-    }
+    serverFrames(4);
     expect(Bot_Count()).toBe(3);
 
     Cvar_SetValue("bot_count", 1);
-    for (let f = 0; f < 4; f++) {
-      sv.time += 0.05;
-      SV_RunClients();
-    }
+    serverFrames(4);
     expect(Bot_Count()).toBe(1);
 
     Cvar_SetValue("bot_count", 0);
@@ -671,12 +684,124 @@ describe.skipIf(!HAVE_PROGS106)("bot client slots on a synthetic dedicated serve
     Bot_Add("testbot", "");
     expect(Bot_Count()).toBe(1);
 
-    host.frametime = 0.05;
-    for (let f = 0; f < 6; f++) {
-      sv.time += 0.05;
-      SV_RunClients();
-    }
+    serverFrames(6);
     expect(Bot_Count()).toBe(1);
+    Bot_RemoveAll();
+  });
+
+  test("bot_count applies with no bot in the game to run the reconcile", () => {
+    // F13: the reconcile used to run off the first bot to think, so raising
+    // `bot_count` from zero with an empty roster did nothing until the next
+    // SV_SpawnServer. It runs from the server frame now.
+    Bot_RemoveAll();
+    Cvar_SetValue("deathmatch", 1);
+    Cvar_SetValue("bot_count", 0);
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+    expect(Bot_Count()).toBe(0);
+
+    Cvar_SetValue("bot_count", 2);
+    serverFrames(4);
+    expect(Bot_Count()).toBe(2);
+
+    Cvar_SetValue("bot_count", 0);
+    serverFrames(4);
+    expect(Bot_Count()).toBe(0);
+    Bot_RemoveAll();
+  });
+
+  test("the auto-fill counts coop as a server bots may fill", () => {
+    Bot_RemoveAll();
+    Cvar_SetValue("bot_count", 2);
+    Cvar_SetValue("deathmatch", 0);
+    Cvar_SetValue("coop", 1);
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+    expect(Bot_MultiplayerRuleset()).toBe(true);
+    expect(Bot_Count()).toBe(2);
+
+    // Single player -- both cvars off -- is the one ruleset it leaves alone.
+    Bot_RemoveAll();
+    Cvar_SetValue("coop", 0);
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+    expect(Bot_MultiplayerRuleset()).toBe(false);
+    expect(Bot_Count()).toBe(0);
+
+    Cvar_SetValue("bot_count", 0);
+    Cvar_SetValue("deathmatch", 1);
+    Bot_RemoveAll();
+  });
+
+  test("a horde map spawns in coop, and the mode is handed back afterwards", () => {
+    Cvar_SetValue("deathmatch", 1);
+    Cvar_SetValue("coop", 0);
+    Cvar_SetValue("horde", 0);
+
+    expect(Bot_MapIsHorde("waveworld")).toBe(true);
+    expect(Bot_MapIsHorde("world")).toBe(false);
+
+    // What SV_SpawnServer does with the name it was handed, before it makes
+    // the coop/deathmatch pair consistent.
+    Bot_PrepareLevel("waveworld");
+    expect(coop.value).toBe(1);
+
+    // The QuakeC's own horde_manager turns this on and never turns it off;
+    // leaving the horde map is what puts it back.
+    Cvar_SetValue("horde", 1);
+    Bot_PrepareLevel("world");
+    expect(coop.value).toBe(0);
+    expect(deathmatch.value).toBe(1);
+    expect(Cvar_VariableValue("horde")).toBe(0);
+
+    // A non-horde map on a server nobody forced is left exactly as it is.
+    Cvar_SetValue("coop", 1);
+    Bot_PrepareLevel("world");
+    expect(coop.value).toBe(1);
+    Cvar_SetValue("coop", 0);
+    Cvar_SetValue("deathmatch", 1);
+  });
+
+  test("sv_randomseed pins the choices addbot makes for itself", () => {
+    // The character a `random` addbot picks and the seed its brain rolls
+    // with come from one stream inside src/bots. Seeded, SV_SpawnServer puts
+    // that stream back to the seed, so the same map load seats the same
+    // bots; unseeded it runs on, and two matches in one session get
+    // different ones.
+    const sample = (): string[] => {
+      Bot_RemoveAll();
+      Cmd_ExecuteString("map world", CmdSourceT.src_command);
+      const out: string[] = [];
+      for (let i = 0; i < 2; i++) {
+        const clientnum = Bot_Add("random", "");
+        const slot = Bot_Slots().get(clientnum)!;
+        out.push(`${slot.name}:${slot.brain.config.rng.next().toFixed(9)}`);
+      }
+      return out;
+    };
+
+    Cvar_SetValue("deathmatch", 1);
+    Cvar_SetValue("bot_count", 0);
+    Cvar_SetValue("sv_randomseed", 99);
+    expect(sample()).toEqual(sample());
+
+    Cvar_SetValue("sv_randomseed", 0);
+    expect(sample()).not.toEqual(sample());
+
+    Bot_RemoveAll();
+  });
+
+  test("FL_ISBOT survives a QuakeC respawn", () => {
+    // Every tree's PutClientInServer opens with `self.flags = FL_CLIENT`, so
+    // the flag the seating set is gone after the first respawn unless the
+    // frame puts it back.
+    Bot_RemoveAll();
+    Cvar_SetValue("deathmatch", 1);
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+    const clientnum = Bot_Add("testbot", "");
+    const ent = svs.clients[clientnum]!.edict!;
+    expect((ent.v.flags | 0) & FL_ISBOT).toBe(FL_ISBOT);
+
+    ent.v.flags = (ent.v.flags | 0) & ~FL_ISBOT;
+    serverFrames(1);
+    expect((ent.v.flags | 0) & FL_ISBOT).toBe(FL_ISBOT);
     Bot_RemoveAll();
   });
 
@@ -734,6 +859,15 @@ const RERELEASE_DATA_DIR = process.env.Q1TS_RERELEASE_DATA ?? `${import.meta.dir
 const HAVE_RERELEASE = existsSync(`${RERELEASE_DATA_DIR}/id1/pak0.pak`);
 
 function bootRetail(maxclients: string): void {
+  // The retail tree ships localization/, so QEX_AfterLoadProgs resolves the
+  // `language` cvar's default "auto" through src/common/loc_host.ts's locale
+  // probe -- whose real implementation lazily `require`s src/platform/sdl.ts,
+  // and with it the whole client graph, at the first `map`. Every command
+  // that graph registers at module scope then lands after host_initialized,
+  // which is a Sys_Error. A dedicated server has no business probing the
+  // desktop locale in a test, so this installs the module's own probe seam.
+  Loc_SetLocaleProbeForTest(() => "en_US");
+
   const argv = ["quake", "-basedir", RERELEASE_DATA_DIR, "-dedicated", maxclients];
   COM_InitArgv(argv);
   cmdHost.initialized = false;
