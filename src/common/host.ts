@@ -404,6 +404,10 @@ export let host_colormap: Uint8Array | null = null;
 // cycle and is resolved with the same lazy `require()` this file already uses
 // for its server-side siblings.
 import type * as QwClMainModule from "../qw/client/cl_main";
+// The NetQuake compat spawn table registers itself with the VM on import
+// (src/server/compat_spawn.ts); the composition root pulls it in so every
+// NetQuake host, listen or dedicated, resolves re-release classnames.
+import "../server/compat_spawn";
 
 function qwClMainMod(): typeof QwClMainModule {
   return require("../qw/client/cl_main");

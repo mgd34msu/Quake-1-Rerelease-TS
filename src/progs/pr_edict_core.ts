@@ -185,6 +185,46 @@ const MAX_FIELD_LEN = 64;
 // vkQuake, QuakeSpasm), and the re-release progs ask for it there.
 export const CHECKEXTENSION_BUILTIN = 99;
 
+//============================================================================
+// Compat spawn table (ARCHITECTURE.md's "Content crossover"): content chooses
+// its progs by default, but every progs runs on every map. A classname the
+// running progs has no spawn function for is resolved through a per-profile
+// table registered here, keyed by PR_ActiveProfile().name -- src/server/
+// compat_spawn.ts registers the NetQuake table under "nq". With nothing
+// registered for the active profile, ED_LoadFromFile's fallback ("No spawn
+// function for:", free) and ED_ParseEdict's "is not a field" warning are
+// unchanged from the classic C source.
+
+export type SpawnResolutionT =
+  | { readonly kind: "inhibit" }
+  | { readonly kind: "rename"; readonly classname: string; readonly rewrite?: (ent: EdictBaseT) => void }
+  | { readonly kind: "none" };
+
+export interface SpawnCompatT {
+  // called when ED_FindFunction fails on `classname`; `fields` is the raw
+  // key/value text this entity was parsed from (ED_ParseEdict's return),
+  // available for a rewrite() to consult fields the current progs' own
+  // field table may not even have.
+  resolveClassname(classname: string, ent: EdictBaseT, fields: ReadonlyMap<string, string>): SpawnResolutionT;
+  // keys ED_ParseEdict accepts without an "is not a field" warning when the
+  // active progs has no matching field def (worldspawn/entity keys the
+  // re-release QuakeC or editors emit that classic progs never declared).
+  readonly knownKeys: ReadonlySet<string>;
+}
+
+const spawnCompatByProfile = new Map<string, SpawnCompatT>();
+
+export function registerSpawnCompat(profileName: string, compat: SpawnCompatT): void {
+  spawnCompatByProfile.set(profileName, compat);
+}
+
+// Test-only: undoes registerSpawnCompat so a suite that imports a
+// self-registering compat module (src/server/compat_spawn.ts) can restore
+// this shared registry in afterAll, per rule 13.
+export function clearSpawnCompat(profileName: string): void {
+  spawnCompatByProfile.delete(profileName);
+}
+
 function requireProgs(state: ProgsStateT): DprogramsT {
   if (state.progs === null) throw new SysError("pr_edict.ts: progs not loaded (PR_LoadProgs not called)");
   return state.progs;
@@ -839,12 +879,13 @@ ed should be a properly initialized empty edict.
 Used for initial level load and for savegames.
 ====================
 */
-export function ED_ParseEdict(ps: ParseState, ent: EdictBaseT): void {
+export function ED_ParseEdict(ps: ParseState, ent: EdictBaseT): ReadonlyMap<string, string> {
   const profile = PR_ActiveProfile();
   const state = profile.state;
   let anglehack: boolean;
   let init = false;
   let com_token = "";
+  const rawFields = new Map<string, string>();
 
   // clear it
   const table = state.edicts;
@@ -883,10 +924,15 @@ export function ED_ParseEdict(ps: ParseState, ent: EdictBaseT): void {
     // and are immediately discarded by quake
     if (keyname[0] === "_") continue;
 
+    rawFields.set(keyname, com_token);
+
     const key = ED_FindField(keyname);
     if (key === null) {
-      const q = profile.unknownKeyQuote;
-      Con_Printf("%s is not a field\n", q + keyname + q);
+      const compat = spawnCompatByProfile.get(profile.name);
+      if (!compat?.knownKeys.has(keyname)) {
+        const q = profile.unknownKeyQuote;
+        Con_Printf("%s is not a field\n", q + keyname + q);
+      }
       continue;
     }
 
@@ -899,6 +945,7 @@ export function ED_ParseEdict(ps: ParseState, ent: EdictBaseT): void {
   }
 
   if (!init) ent.free = true;
+  return rawFields;
 }
 
 /*
@@ -933,7 +980,7 @@ export function ED_LoadFromFile(ps: ParseState): void {
 
     if (ent === null) ent = EDICT_NUM(state, 0);
     else ent = ED_Alloc();
-    ED_ParseEdict(ps, ent);
+    const rawFields = ED_ParseEdict(ps, ent);
 
     // remove things from different skill levels or deathmatch
     if (profile.inhibitEntity(ent)) {
@@ -953,7 +1000,30 @@ export function ED_LoadFromFile(ps: ParseState): void {
     }
 
     // look for the spawn function
-    const func = ED_FindFunction(PR_GetString(state, ent.v.classname));
+    let classname = PR_GetString(state, ent.v.classname);
+    let func = ED_FindFunction(classname);
+
+    if (func === null) {
+      // compat spawn table (ARCHITECTURE.md's "Content crossover"): the
+      // active profile's registered compat, if any, gets first refusal
+      // before this falls back to the classic "No spawn function for:".
+      const compat = spawnCompatByProfile.get(profile.name);
+      const resolution = compat ? compat.resolveClassname(classname, ent, rawFields) : { kind: "none" as const };
+
+      if (resolution.kind === "inhibit") {
+        Con_DPrintf("compat: inhibiting %s\n", classname);
+        ED_Free(ent);
+        inhibit++;
+        continue;
+      }
+
+      if (resolution.kind === "rename") {
+        resolution.rewrite?.(ent);
+        ent.v.classname = PR_SetEngineString(state, resolution.classname);
+        classname = resolution.classname;
+        func = ED_FindFunction(classname);
+      }
+    }
 
     if (func === null) {
       Con_Printf("No spawn function for:\n");
