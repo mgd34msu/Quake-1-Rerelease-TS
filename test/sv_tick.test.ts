@@ -111,7 +111,7 @@ describe("Host_ServerFrame's rerelease fixed-step clock", () => {
     const fixture = buildDedicatedFixture("sv-tick-72-");
     builtFixtures.push(fixture);
 
-    bootDedicated(["q1ts", "-dedicated", "1", "-basedir", fixture.baseDir, "+map", "world"]);
+    bootDedicated(["q1ts", "-dedicated", "1", "-port", "26996", "-basedir", fixture.baseDir, "+map", "world"]);
     runFrames(1, 0.05); // drains "exec quake.rc" -> "+map world", as in main_boot.test.ts
     expect(sv.active).toBe(true);
 
@@ -136,7 +136,7 @@ describe("Host_ServerFrame's rerelease fixed-step clock", () => {
     const fixture = buildDedicatedFixture("sv-tick-0-");
     builtFixtures.push(fixture);
 
-    bootDedicated(["q1ts", "-dedicated", "1", "-basedir", fixture.baseDir, "+map", "world"]);
+    bootDedicated(["q1ts", "-dedicated", "1", "-port", "26996", "-basedir", fixture.baseDir, "+map", "world"]);
     runFrames(1, 0.05);
     expect(sv.active).toBe(true);
 
@@ -161,7 +161,7 @@ describe("Host_ServerFrame's rerelease fixed-step clock", () => {
     const fixture = buildDedicatedFixture("sv-tick-classic-");
     builtFixtures.push(fixture);
 
-    bootDedicated(["q1ts", "-dedicated", "1", "-basedir", fixture.baseDir, "+map", "world"]);
+    bootDedicated(["q1ts", "-dedicated", "1", "-port", "26996", "-basedir", fixture.baseDir, "+map", "world"]);
     runFrames(1, 0.05);
     expect(sv.active).toBe(true);
 
@@ -183,7 +183,7 @@ describe("Host_ServerFrame's rerelease fixed-step clock", () => {
     const fixture = buildDedicatedFixture("sv-tick-clamp-");
     builtFixtures.push(fixture);
 
-    bootDedicated(["q1ts", "-dedicated", "1", "-basedir", fixture.baseDir, "+map", "world"]);
+    bootDedicated(["q1ts", "-dedicated", "1", "-port", "26996", "-basedir", fixture.baseDir, "+map", "world"]);
     runFrames(1, 0.05);
     expect(sv.active).toBe(true);
 

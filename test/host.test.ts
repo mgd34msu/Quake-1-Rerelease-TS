@@ -180,7 +180,7 @@ beforeAll(() => {
   writeGameFile(baseDir, "id1/maps/world.bsp", buildBsp());
 
   // sys_linux.c's main(): COM_InitArgv, then the quakeparms_t, then Host_Init.
-  const argv = ["quake", "-basedir", baseDir, "-dedicated", "-nohomedir"];
+  const argv = ["quake", "-basedir", baseDir, "-dedicated", "-port", "26995", "-nohomedir"];
   COM_InitArgv(argv);
   cmdHost.initialized = false; // a previous suite in this process may have set it
 

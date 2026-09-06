@@ -154,7 +154,7 @@ describe("D3: process termination", () => {
     const fixture = buildDedicatedFixture("sysexit-q1-dedquit-");
     try {
       const start = Date.now();
-      const child = spawnChild(["bun", "src/main.ts", "-dedicated", "-basedir", fixture.baseDir, "+map", "world", "+quit"]);
+      const child = spawnChild(["bun", "src/main.ts", "-dedicated", "-port", "26993", "-basedir", fixture.baseDir, "+map", "world", "+quit"]);
       const code = await waitForExit(child.proc, 5000);
       const elapsed = Date.now() - start;
       if (code === null) {
@@ -303,7 +303,7 @@ describe("D5: SIGINT/SIGTERM", () => {
   test.skipIf(!HAVE_PROGS106)("q1ts dedicated: SIGINT shuts down cleanly and exits 0 within 3s", async () => {
     const fixture = buildDedicatedFixture("sysexit-q1-sigint-");
     try {
-      const child = spawnChild(["bun", "src/main.ts", "-dedicated", "-basedir", fixture.baseDir, "+map", "world"]);
+      const child = spawnChild(["bun", "src/main.ts", "-dedicated", "-port", "26993", "-basedir", fixture.baseDir, "+map", "world"]);
       const booted = await waitUntil(
         () => child.out.text.includes("UDP Initialized") || child.err.text.includes("UDP_Listen: Unable to open accept socket"),
         5000,
