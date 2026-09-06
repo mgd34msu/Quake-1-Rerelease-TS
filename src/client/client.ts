@@ -141,7 +141,21 @@ export class BeamT {
   end: Vec3 = vec3();
 }
 
-export const MAX_EFRAGS = 640;
+// WinQuake's own 640 (QuakeWorld's client.h reduces it to 512). U9 widens it
+// for the re-release maps, which the retail sweep showed exhausting the pool
+// on 12 of mg1's and 6 of mg3's: those maps carry far more static entities
+// than 1996 content did, and every static occupies one efrag per leaf its
+// bounding box touches.
+//
+// Neither Ironwail nor QuakeSpasm has a constant to copy -- QuakeSpasm
+// removed the fixed pool entirely (Quake/gl_refrag.c:52-84's R_GetEfrag
+// Hunk_AllocNames EXTRA_EFRAGS=128 more whenever the free list runs dry, and
+// "Too many efrags!" no longer exists there), and Ironwail follows it. The
+// allocator that would grow on demand here lives in src/ref_gl/gl_refrag.ts
+// and src/ref_soft/r_efrag.ts, so this stays a fixed pool for now and the
+// growth is a follow-up for those units; the size is the one the retail
+// sweep needs.
+export const MAX_EFRAGS = 4096;
 
 export const MAX_MAPSTRING = 2048;
 export const MAX_DEMOS = 8;
@@ -302,6 +316,22 @@ export class ClientStateT {
   // including QW's additions in the C's single struct.
   qw: QwClientStateExtT = new QwClientStateExtT();
 
+  // U9: the 2021 re-release's on-screen prompt (svc_prompt, quakec_ctf's
+  // `prompt`/`promptchoice`/`clearprompt` builtins). `promptText` empty means
+  // no prompt is up; each choice carries the impulse the player's key sends.
+  promptText = "";
+  promptChoices: PromptChoiceT[] = [];
+  promptWanted = 0; // the `numChoices` the server announced
+
+  // U9: engine-side extras the re-release's own opcodes carry. The renderer
+  // and HUD units read them; nothing here interprets them.
+  spawnedmonsters = 0; // svc_spawnedmonster's running total
+  numviews = 1; // svc_setviews
+  levelcompleted = false; // svc_levelcompleted
+  backtolobby = false; // svc_backtolobby
+  seq = 0; // svc_seq
+  servervars = ""; // svc_servervars
+
   clear(): void {
     this.movemessages = 0;
     this.cmd.viewangles[0] = this.cmd.viewangles[1] = this.cmd.viewangles[2] = 0;
@@ -353,6 +383,27 @@ export class ClientStateT {
     this.cdtrack = 0;
     this.looptrack = 0;
     this.scores = [];
+    this.promptText = "";
+    this.promptChoices = [];
+    this.promptWanted = 0;
+    this.spawnedmonsters = 0;
+    this.numviews = 1;
+    this.levelcompleted = false;
+    this.backtolobby = false;
+    this.seq = 0;
+    this.servervars = "";
+  }
+}
+
+/** One line of an svc_prompt menu: the text drawn and the impulse the player
+ * sends by choosing it (quakec_ctf/status.qc:45-50 pairs them). */
+export class PromptChoiceT {
+  text = "";
+  impulse = 0;
+
+  constructor(text = "", impulse = 0) {
+    this.text = text;
+    this.impulse = impulse;
   }
 }
 

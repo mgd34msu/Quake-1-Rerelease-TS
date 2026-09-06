@@ -53,7 +53,7 @@ import { setComSearchpaths } from "../src/common/common";
 import { Cbuf_Init, Cmd_TokenizeString } from "../src/common/cmd";
 import { Host_Game_f } from "../src/common/host_cmd";
 import { hostClientHooks } from "../src/common/host";
-import { sv } from "../src/server/server";
+import { sv, svs } from "../src/server/server";
 import { writePakToDisk, ensureDir } from "./support/pak_builder";
 import { writeZipToDisk } from "./support/zip_builder";
 
@@ -426,6 +426,15 @@ describe('runtime "game" command (Host_Game_f)', () => {
 
     sv.active = true;
     const savedClDisconnect = hostClientHooks.clDisconnect;
+    // Host_ShutdownServer walks svs.clients (dropping active ones through the
+    // net socket pool) and then replaces every client object. Other suites
+    // in this process own that table and the pool's counts, so run the
+    // shutdown against an empty table and put the real one back.
+    const savedMaxclients = svs.maxclients;
+    const savedMaxclientslimit = svs.maxclientslimit;
+    const savedClients = svs.clients.slice();
+    svs.maxclients = 0;
+    svs.maxclientslimit = 0;
     let disconnectCalled = false;
     hostClientHooks.clDisconnect = () => {
       disconnectCalled = true;
@@ -435,6 +444,10 @@ describe('runtime "game" command (Host_Game_f)', () => {
       Host_Game_f();
     } finally {
       hostClientHooks.clDisconnect = savedClDisconnect;
+      svs.maxclients = savedMaxclients;
+      svs.maxclientslimit = savedMaxclientslimit;
+      for (let i = 0; i < savedClients.length; i++) svs.clients[i] = savedClients[i];
+      svs.clients.length = savedClients.length;
     }
 
     expect(disconnectCalled).toBe(true); // CL_Disconnect called unconditionally, like Host_Map_f does

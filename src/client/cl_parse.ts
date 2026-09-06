@@ -88,12 +88,31 @@ import {
   U_ORIGIN2,
   U_ORIGIN3,
   U_SKIN,
+  SND_LARGESOUND,
+  PROMPT_BEGIN,
+  PROMPT_CHOICE,
+  PROMPT_CLEAR,
+  svc_achievement,
+  svc_backtolobby,
   svc_bf,
+  svc_botchat,
+  svc_chat,
   svc_fog,
+  svc_levelcompleted,
+  svc_localsound,
+  svc_prompt,
+  svc_rawprint,
+  svc_seq,
+  svc_servervars,
+  svc_setviews,
   svc_skybox,
   svc_spawnbaseline2,
+  svc_spawnedmonster,
   svc_spawnstatic2,
   svc_spawnstaticsound2,
+  svc_updateping,
+  svc_updateplinfo,
+  svc_updatesocial,
 } from "../common/protocol";
 import { getCodec, protocolSupported } from "../common/protocol/registry";
 import { ClientdataTailT, EntityUpdateTailT, SoundHeaderT } from "../common/protocol/codec";
@@ -128,6 +147,7 @@ import {
   STAT_MONSTERS,
   STAT_SECRETS,
   STAT_SHELLS,
+  STAT_TOTALMONSTERS,
   STAT_WEAPON,
   STAT_WEAPONFRAME,
 } from "../common/quakedef";
@@ -139,19 +159,77 @@ import { CL_ClearState, CL_SignonReply, cl_shownet } from "./cl_main";
 import { CL_GetMessage } from "./cl_demo";
 import { CL_ParseTEnt } from "./cl_tent";
 import { Con_DPrintf, Con_Printf } from "./console";
-import { EntityExtT, SIGNONS, ScoreboardT, cl, cl_entities, cl_entity_ext, cl_lightstyle, cl_static_entities, cl_static_entity_ext, cls, growEntities, growStaticEntities } from "./client";
+import { EntityExtT, PromptChoiceT, SIGNONS, ScoreboardT, cl, cl_entities, cl_entity_ext, cl_lightstyle, cl_static_entities, cl_static_entity_ext, cls, growEntities, growStaticEntities } from "./client";
 import { BOTTOM_RANGE, TOP_RANGE, getRenderer, type EntityT } from "./render";
 // r_part.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { R_ParseParticleEffect } from "./r_part";
 // sbar.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { Sbar_Changed } from "./sbar";
 // snd_dma.c (concurrent sibling, not yet landed -- absent-at-gate rule)
-import { S_BeginPrecaching, S_EndPrecaching, S_PrecacheSound, S_StartSound, S_StaticSound, S_StopSound, S_TouchSound } from "./snd_dma";
+import { S_BeginPrecaching, S_EndPrecaching, S_LocalSound, S_PrecacheSound, S_StartSound, S_StaticSound, S_StopSound, S_TouchSound } from "./snd_dma";
 // screen.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { SCR_CenterPrint } from "./screen";
 // view.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { V_ParseDamage } from "./view";
 import { VID_GRADES, vid } from "./vid";
+
+/*
+==================
+CL_ParseLocalSound
+
+U9, "for 2021 rerelease" -- Ironwail Quake/cl_parse.c:200-213 verbatim: a flags
+byte carrying SND_LARGESOUND when the sound number needs a short, then the
+number. The sound is played without a position, so it is at full volume
+wherever the listener is.
+==================
+*/
+export function CL_ParseLocalSound(): void {
+  const field_mask = MSG_ReadByte();
+  const sound_num = field_mask & SND_LARGESOUND ? MSG_ReadShort() : MSG_ReadByte();
+  if (sound_num >= MAX_SOUNDS) Host_Error("CL_ParseLocalSound: %i > MAX_SOUNDS", sound_num);
+
+  const sfx = cl.sound_precache[sound_num];
+  if (sfx !== null) S_LocalSound(sfx.name);
+}
+
+/*
+==================
+CL_ParsePrompt
+
+U9. svc_prompt carries one of quakec_ctf's three prompt builtins per message
+(PROMPT_BEGIN / PROMPT_CHOICE / PROMPT_CLEAR -- see src/common/protocol.ts),
+in the order the QuakeC called them: one `prompt(client, text, numChoices)`
+then one `promptchoice(client, text, impulse)` per line. The overlay itself is
+src/client/screen.ts's SCR_DrawPrompt, and src/client/keys.ts turns the digit
+keys into the chosen impulse.
+==================
+*/
+export function CL_ParsePrompt(): void {
+  const op = MSG_ReadByte();
+
+  if (op === PROMPT_BEGIN) {
+    cl.promptText = MSG_ReadString();
+    cl.promptWanted = MSG_ReadByte();
+    cl.promptChoices = [];
+    return;
+  }
+
+  if (op === PROMPT_CHOICE) {
+    const text = MSG_ReadString();
+    const impulse = MSG_ReadByte();
+    if (cl.promptText !== "") cl.promptChoices.push(new PromptChoiceT(text, impulse));
+    return;
+  }
+
+  if (op === PROMPT_CLEAR) {
+    cl.promptText = "";
+    cl.promptWanted = 0;
+    cl.promptChoices = [];
+    return;
+  }
+
+  Con_DPrintf("CL_ParsePrompt: unknown op %i\n", op);
+}
 
 export const svc_strings: string[] = [
   "svc_bad",
@@ -1046,6 +1124,96 @@ export function CL_ParseServerMessage(): void {
 
       case SvcOpsT.svc_sellscreen:
         Cmd_ExecuteString("help", CmdSourceT.src_command);
+        break;
+
+      //========================================================================
+      // U9: the 2021 re-release's own opcodes. Only two of these are defined by
+      // anything readable: svc_achievement, which the QuakeC writes by hand as
+      // `WriteByte(SVC_ACHIEVEMENT); WriteString("ACH_...")`
+      // (quakec/client.qc:329) and Ironwail reads at cl_parse.c:1374-1381, and
+      // svc_localsound, whose payload is Ironwail's CL_ParseLocalSound
+      // (cl_parse.c:200-213). The rest are declared-but-dead in the QuakeC and
+      // unhandled in all three reference engines -- which means Ironwail,
+      // vkQuake and QuakeSpasm all Host_Error on one. The payloads read here
+      // are this engine's own, documented in src/common/protocol.ts; every one
+      // of them is consumed so the stream stays in sync, and none of them is an
+      // error.
+      case svc_achievement: {
+        const id = MSG_ReadString();
+        Con_DPrintf("achievement %s\n", id);
+        break;
+      }
+
+      case svc_localsound:
+        CL_ParseLocalSound();
+        break;
+
+      case svc_chat:
+        Con_Printf("%s", MSG_ReadString());
+        break;
+
+      case svc_botchat:
+        Con_Printf("%s", MSG_ReadString());
+        break;
+
+      case svc_rawprint:
+        Con_Printf("%s", MSG_ReadString());
+        break;
+
+      case svc_levelcompleted:
+        cl.levelcompleted = true;
+        Con_DPrintf("svc_levelcompleted\n");
+        break;
+
+      case svc_backtolobby:
+        cl.backtolobby = true;
+        Con_DPrintf("svc_backtolobby\n");
+        break;
+
+      case svc_spawnedmonster:
+        // [byte] monsters added to the level total. STAT_TOTALMONSTERS is what
+        // the HUD counts against, and svc_killedmonster already bumps its
+        // partner STAT_MONSTERS, so this keeps the two in step.
+        {
+          const count = MSG_ReadByte();
+          cl.spawnedmonsters += count;
+          cl.stats[STAT_TOTALMONSTERS] += count;
+          Sbar_Changed();
+        }
+        break;
+
+      case svc_setviews:
+        cl.numviews = MSG_ReadByte();
+        break;
+
+      case svc_updateping:
+        // [byte] client [short] milliseconds. scoreboard_t has no ping field
+        // in NetQuake (QuakeWorld's does); read past it so the stream stays in
+        // sync, and leave the value to whichever unit adds the field.
+        MSG_ReadByte();
+        MSG_ReadShort();
+        break;
+
+      case svc_updatesocial:
+        MSG_ReadByte();
+        MSG_ReadString();
+        break;
+
+      case svc_updateplinfo:
+        MSG_ReadByte();
+        MSG_ReadString();
+        break;
+
+      case svc_servervars:
+        cl.servervars = MSG_ReadString();
+        break;
+
+      case svc_seq:
+        cl.seq = MSG_ReadLong();
+        break;
+
+      case svc_prompt:
+        CL_ParsePrompt();
         break;
     }
   }

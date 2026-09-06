@@ -119,6 +119,7 @@ import {
 } from "./server";
 import { SV_Move, SV_LinkEdict, SV_PointContents, SV_TestEntityPosition, TraceT, MOVE_NORMAL, MOVE_NOMONSTERS, MOVE_MISSILE } from "./world";
 import { SV_StartSound } from "./sv_main";
+import { MOVETYPE_GIB, SV_RulesetIsRerelease } from "../progs/ext/ruleset";
 import { CvarT } from "../common/cvar";
 import { host } from "../common/host";
 import {
@@ -930,6 +931,13 @@ export function SV_Physics_Client(ent: EdictT, num: number): void {
       SV_Physics_Toss(ent);
       break;
 
+    case MOVETYPE_GIB:
+      // Ironwail Quake/sv_phys.c:983-987 carries GIB in this switch too; a
+      // client edict never has it, but a re-release progs could set it.
+      if (!SV_RulesetIsRerelease()) Sys_Error("SV_Physics_client: bad movetype %i", ent.v.movetype | 0);
+      SV_Physics_Toss(ent);
+      break;
+
     case MOVETYPE_FLY:
       if (!SV_RunThink(ent)) return;
       SV_FlyMove(ent, host.frametime, null);
@@ -1054,15 +1062,25 @@ export function SV_Physics_Toss(ent: EdictT): void {
   if (trace.fraction === 1) return;
   if (ent.free) return;
 
+  // U9: MOVETYPE_GIB (quakec/defs.qc:278) is "like MOVETYPE_BOUNCE, but with
+  // adjustable gravity", and ARCHITECTURE.md's "Rulesets" rules that where the
+  // open engines disagree with the QuakeC, the QuakeC wins: Ironwail, vkQuake
+  // and QuakeSpasm all leave GIB on the TOSS backoff of 1 (gibs stop dead),
+  // which is not what the comment describes. Under the re-release profile a
+  // gib bounces on BOUNCE's terms; the "adjustable gravity" half needs nothing
+  // here, since SV_AddGravity already scales by the entity's own `gravity`
+  // field when the progs declares one.
+  const bounces = ent.v.movetype === MOVETYPE_BOUNCE || (ent.v.movetype === MOVETYPE_GIB && SV_RulesetIsRerelease());
+
   let backoff: number;
-  if (ent.v.movetype === MOVETYPE_BOUNCE) backoff = 1.5;
+  if (bounces) backoff = 1.5;
   else backoff = 1;
 
   ClipVelocity(ent.v.velocity, trace.plane.normal, ent.v.velocity, backoff);
 
   // stop if on ground
   if (trace.plane.normal[2] > 0.7) {
-    if (ent.v.velocity[2] < 60 || ent.v.movetype !== MOVETYPE_BOUNCE) {
+    if (ent.v.velocity[2] < 60 || !bounces) {
       ent.v.flags = (ent.v.flags | 0) | FL_ONGROUND;
       if (trace.ent === null) throw new SysError("SV_Physics_Toss: !trace.ent");
       ent.v.groundentity = EDICT_TO_PROG(trace.ent);
@@ -1150,7 +1168,13 @@ export function SV_Physics(): void {
     else if (ent.v.movetype === MOVETYPE_NONE) SV_Physics_None(ent);
     else if (ent.v.movetype === MOVETYPE_NOCLIP) SV_Physics_Noclip(ent);
     else if (ent.v.movetype === MOVETYPE_STEP) SV_Physics_Step(ent);
-    else if (ent.v.movetype === MOVETYPE_TOSS || ent.v.movetype === MOVETYPE_BOUNCE || ent.v.movetype === MOVETYPE_FLY || ent.v.movetype === MOVETYPE_FLYMISSILE)
+    else if (
+      ent.v.movetype === MOVETYPE_TOSS ||
+      ent.v.movetype === MOVETYPE_BOUNCE ||
+      ent.v.movetype === MOVETYPE_FLY ||
+      ent.v.movetype === MOVETYPE_FLYMISSILE ||
+      (ent.v.movetype === MOVETYPE_GIB && SV_RulesetIsRerelease())
+    )
       SV_Physics_Toss(ent);
     else Sys_Error("SV_Physics: bad movetype %i", ent.v.movetype | 0);
   }

@@ -274,6 +274,41 @@ export function SCR_DrawCenterString(): void {
   }
 }
 
+/*
+==============
+SCR_DrawPrompt
+
+U9. The 2021 re-release's on-screen prompt (quakec_ctf's `prompt` /
+`promptchoice` builtins, arriving as svc_prompt): a centered block of text with
+one numbered line per choice, drawn on the existing Draw_Character path the way
+SCR_DrawCenterString is. src/client/keys.ts turns the digit keys 1-9 into the
+impulse the chosen line carries. Nothing is drawn when no prompt is up.
+==============
+*/
+export function SCR_DrawPrompt(): void {
+  if (cl.promptText === "") return;
+  if (keyState.key_dest !== KeydestT.key_game) return;
+
+  const lines: string[] = [];
+  for (const line of cl.promptText.split("\n")) lines.push(line);
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  for (let i = 0; i < cl.promptChoices.length && i < 9; i++) {
+    lines.push(`${i + 1}. ${cl.promptChoices[i].text}`);
+  }
+  if (lines.length === 0) return;
+
+  const re = getRenderer();
+  let y = ((vid.height - lines.length * 8) / 2) | 0;
+  if (y < 0) y = 0;
+
+  for (const line of lines) {
+    const width = Math.min(line.length, 40);
+    let x = ((vid.width - width * 8) / 2) | 0;
+    for (let j = 0; j < width; j++, x += 8) re.Draw_Character(x, y, line.charCodeAt(j));
+    y += 8;
+  }
+}
+
 export function SCR_CheckDrawCenterString(): void {
   scrState.scr_copytop = 1;
   if (scr_center_lines > scr_erase_lines) scr_erase_lines = scr_center_lines;
@@ -767,6 +802,7 @@ export function SCR_UpdateScreen(): void {
     SCR_DrawTurtle();
     SCR_DrawPause();
     SCR_CheckDrawCenterString();
+    SCR_DrawPrompt();
     Sbar_Draw();
     SCR_DrawConsole();
     M_Draw();

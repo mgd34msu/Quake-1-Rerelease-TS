@@ -19,14 +19,15 @@ A profile owns its own `ProgsStateT`, so the WinQuake VM and the QuakeWorld
 VM stay as separate at runtime as the C's `quake` and `qwsv` binaries were
 (each C binary compiled its own copy of every pr_*.c file-scope global).
 
-Extension points phase 2 will fill:
+Extension points:
 - `namedBuiltins` binds `= #0:name` builtins after load, the way Ironwail's
   PR_InitBuiltins (Quake/pr_edict.c:1858-1900) remaps functions whose
-  first_statement, parm_start and locals are all zero. Both tables are empty
-  here; the machinery, including the loud failure for an unbound name, is
-  live.
-- `extensions` is the set `checkextension` (builtin 99) answers 1 for. Empty
-  here.
+  first_statement, parm_start and locals are all zero. The NetQuake profile
+  fills it from src/progs/ext/qex.ts with the 2021 re-release's `ex_*` set;
+  the QuakeWorld profile's is empty. An unbound name still fails loudly.
+- `extensions` is the set `checkextension` (builtin 99) answers 1 for. The
+  NetQuake profile answers the re-release's four names under the `rerelease`
+  behaviour profile and nothing under `classic`.
 */
 
 import { SysError } from "../../platform/sys";

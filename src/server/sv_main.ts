@@ -94,8 +94,8 @@ import { hostCmdState } from "../common/host_cmd";
 import { CvarT, Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue } from "../common/cvar";
 import { Com_sprintf } from "../common/sprintf";
 import { Con_DPrintf, Con_Printf } from "../client/console";
-import { Cmd_ExecuteString, CmdSourceT } from "../common/cmd";
-import { standard_quake } from "../common/common";
+import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv, Cmd_ExecuteString, CmdSourceT, cmdState } from "../common/cmd";
+import { Q_atoi, standard_quake } from "../common/common";
 import { coop, deathmatch, host, Host_ClearMemory, Host_MaxEdicts, skill } from "../common/host";
 import { hostname, NET_CanSendMessage, NET_CheckNewConnections, NET_SendMessage, NET_SendToAll, NET_SendUnreliableMessage, net_activeconnections, setNetActiveConnections } from "../common/net_main";
 import { CONTENTS_SOLID, MAX_MAP_LEAFS } from "../common/bspfile";
@@ -141,6 +141,9 @@ import {
 } from "./server";
 import { SV_ClearWorld } from "./world";
 import { GetEdictFieldValue, PR_AllocEdicts, ED_LoadFromFile, PR_LoadProgs } from "../progs/pr_edict";
+import { QEX_AfterLoadProgs, QEX_PrintRuleset, QEX_RegisterCvars, SV_EffectsMask } from "../progs/ext/ruleset";
+import { QEX_ClearClient, QEX_ClearLevel, QEX_SetClientExFlags } from "../progs/ext/qex";
+import { QEX_DebugDrawClear, QEX_DebugDrawExpire, QEX_RegisterDrawCvars } from "../progs/ext/qex_draw";
 import { PR_SetProfile } from "../progs/profiles/profile";
 import { nqProfile } from "../progs/profiles/nq";
 import { PR_ExecuteProgram } from "../progs/pr_exec";
@@ -252,6 +255,28 @@ export function SV_EdictScale(ent: EdictT): number {
 
 /*
 ===============
+SV_ExFlags_f
+
+`ex_flags <bits>`, a client string command (U9, an addition). NetQuake has no
+userinfo, so this is how a client's weapon-auto-switch preference reaches
+`ex_CheckPlayerEXFlags` -- src/client/cl_main.ts sends it from the
+`cl_weaponswitch` cvar right after `name`/`color` in CL_SignonReply, and
+src/server/sv_user.ts allows it through the clc_stringcmd filter. Bits are
+quakec/defs.qc:444-445's PEF_CHANGEONLYNEW / PEF_CHANGENEVER.
+===============
+*/
+export function SV_ExFlags_f(): void {
+  if (cmdState.source !== CmdSourceT.src_client) return; // console-side: nothing to set
+  const host_client = svState.host_client;
+  if (host_client === null) return;
+  const index = svs.clients.indexOf(host_client);
+  if (index < 0) return;
+  if (Cmd_Argc() < 2) return;
+  QEX_SetClientExFlags(index, Q_atoi(Cmd_Argv(1)));
+}
+
+/*
+===============
 SV_Init
 ===============
 */
@@ -267,6 +292,11 @@ export function SV_Init(): void {
   Cvar_RegisterVariable(sv_aim);
   Cvar_RegisterVariable(sv_nostep);
   Cvar_RegisterVariable(sv_protocol);
+  // U9: the behaviour profile's own cvars, the ones the re-release QuakeC
+  // reads or sets, and the debug-draw gate.
+  QEX_RegisterCvars();
+  QEX_RegisterDrawCvars();
+  Cmd_AddCommand("ex_flags", SV_ExFlags_f);
 
   for (let i = 0; i < MAX_MODELS; i++) localmodels[i] = `*${i}`;
 
@@ -473,6 +503,8 @@ export function SV_ConnectClient(clientnum: number): void {
 
   client.netconnection = netconnection;
 
+  QEX_ClearClient(clientnum); // U9: the client's ex_flags word and finale state
+
   client.name = "unconnected";
   client.active = true;
   client.spawned = false;
@@ -659,7 +691,10 @@ export function SV_WriteEntitiesToClient(clent: EdictT, msg: SizeBuf): void {
     u.frame = ent.v.frame;
     u.colormap = ent.v.colormap;
     u.skin = ent.v.skin;
-    u.effects = ent.v.effects;
+    // U9: Ironwail's `qcvm->effects_mask` (Quake/sv_main.c:857, :870, :929):
+    // the EF_QEX_* bits only reach the wire when the loaded progs declares
+    // them, so a mod that reuses bit 32 is not read as a colored dynlight.
+    u.effects = (ent.v.effects | 0) & SV_EffectsMask();
     u.movetypeStep = ent.v.movetype === MOVETYPE_STEP;
     u.baseline = ent.baseline;
 
@@ -894,6 +929,10 @@ SV_SendClientMessages
 =======================
 */
 export function SV_SendClientMessages(): void {
+  // U9: the `ex_draw_*` shapes the QuakeC recorded this frame stop being drawn
+  // once their lifetime has run out (a lifetime of 0 means "this frame only").
+  QEX_DebugDrawExpire(sv.time);
+
   // update frags, names, etc
   SV_UpdateToReliableMessages();
 
@@ -1174,6 +1213,15 @@ export function SV_SpawnServer(server: string): void {
   // load progs to get entity field count
   PR_SetProfile(nqProfile); // this binary's QuakeC host profile (ARCHITECTURE.md, "Core model")
   PR_LoadProgs();
+
+  // U9: the behaviour profile is a property of the progs that just loaded, and
+  // everything the re-release expects the engine to own (the effects mask, the
+  // `cheats_allowed`/`campaign` globals, the loc table the `$key` prints
+  // resolve through) follows from it.
+  QEX_AfterLoadProgs();
+  QEX_ClearLevel();
+  QEX_DebugDrawClear();
+  QEX_PrintRuleset();
 
   // allocate server memory. `qcvm->max_edicts = CLAMP (MIN_EDICTS,
   // (int)max_edicts.value, MAX_EDICTS)` (Ironwail sv_main.c:1971) in place of

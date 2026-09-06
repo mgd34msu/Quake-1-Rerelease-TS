@@ -503,8 +503,17 @@ describe.skipIf(!HAVE_PROGS106)("PF_Fixme / the builtin table", () => {
     }
   });
 
-  test("table length matches pr_numbuiltins (79 slots)", () => {
+  test("WinQuake's own 79 slots are followed by 'Bad builtin call number' up to setcolor at 401", () => {
     expect(pr_builtin.length).toBe(pr_numbuiltins);
-    expect(pr_numbuiltins).toBe(79);
+    // U9: the table reaches quakec_ctf/defs.qc:839's `setcolor = #401`.
+    // WinQuake's own set still ends at 79, every slot between is the C's
+    // out-of-range error, and 99 is checkextension.
+    expect(pr_numbuiltins).toBe(402);
+    expect(pr_builtin[78]).toBe(pr_builtin[78]); // #78 setspawnparms, WinQuake's last
+    for (const gap of [79, 98, 100, 200, 400]) {
+      expect(() => pr_builtin[gap]()).toThrow("Bad builtin call number");
+    }
+    expect(() => pr_builtin[99]()).not.toThrow(); // checkextension
+    expect(() => pr_builtin[401]()).not.toThrow(); // setcolor, on a non-client entnum
   });
 });

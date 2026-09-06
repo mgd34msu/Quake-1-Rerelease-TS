@@ -274,3 +274,46 @@ export const svc_fog = 41; // [byte] density [byte] red [byte] green [byte] blue
 export const svc_spawnbaseline2 = 42; // support for large modelindex, large framenum, alpha, using flags
 export const svc_spawnstatic2 = 43; // support for large modelindex, large framenum, alpha, using flags
 export const svc_spawnstaticsound2 = 44; // [coord3] [short] samp [byte] vol [byte] aten
+
+//============================================================================
+// U9: the 2021 re-release's own server messages ("QEX"), layered on 666/999 --
+// the re-release did not bump the protocol version. The numbers are the ones
+// Ironwail, vkQuake and QuakeSpasm all carry in protocol.h and name in
+// cl_parse.c's svc_strings table (Ironwail Quake/cl_parse.c:75-99), plus
+// `svc_spawnedmonster` 39 and `svc_prompt` 57, which the re-release QuakeC
+// declares (quakec/defs.qc:365-371, SVC_SPAWNEDMONSTER/SVC_PROMPT) and no open
+// engine has a name for.
+//
+// PAYLOADS. Only one of these is defined by anything we can read: the
+// re-release QuakeC writes `svc_achievement` by hand as
+// `WriteByte(SVC_ACHIEVEMENT); WriteString("ACH_...")` (quakec/client.qc:329),
+// and Ironwail's client reads exactly that (cl_parse.c:1374-1381).
+// `svc_localsound` is defined by Ironwail's reader (cl_parse.c:200-213). Every
+// other opcode is declared-but-dead in the QuakeC and unhandled in all three
+// engines, so the payloads below are OURS: chosen so that a stream carrying
+// them stays in sync and the client can never Host_Error on one. They are
+// documented here and in src/client/cl_parse.ts, which is the only reader.
+export const svc_botchat = 38; // [string] text -- a bot's chat line
+export const svc_spawnedmonster = 39; // [byte] count -- monsters added to the level total since the map loaded
+export const svc_setviews = 45; // [byte] numviews -- splitscreen seat count
+export const svc_updateping = 46; // [byte] client [short] milliseconds
+export const svc_updatesocial = 47; // [byte] client [string] platform id
+export const svc_updateplinfo = 48; // [byte] client [string] info string
+export const svc_rawprint = 49; // [string] text, printed without notification handling
+export const svc_servervars = 50; // [string] "key value key value ..." pairs
+export const svc_seq = 51; // [long] sequence number
+export const svc_achievement = 52; // [string] id
+export const svc_chat = 53; // [string] text
+export const svc_levelcompleted = 54; // no payload
+export const svc_backtolobby = 55; // no payload
+export const svc_localsound = 56; // [byte] flags [byte/short] sound number (SND_LARGESOUND -> short)
+export const svc_prompt = 57; // [byte] op, then per op -- see PROMPT_* below
+
+// svc_prompt's own opcode byte. quakec_ctf/status.qc:45-50 opens a prompt with
+// `prompt(client, text, numChoices)` and then makes one `promptchoice(client,
+// text, impulse)` call per choice, so one wire message per builtin call keeps
+// the order the QuakeC wrote them in without the server having to buffer a
+// prompt until its last choice arrives.
+export const PROMPT_BEGIN = 0; // [string] text [byte] numchoices
+export const PROMPT_CHOICE = 1; // [string] text [byte] impulse
+export const PROMPT_CLEAR = 2; // no payload

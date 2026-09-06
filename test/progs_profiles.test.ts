@@ -331,7 +331,9 @@ describe("name-bound builtins and checkextension", () => {
     const bound = pr.functions[SYNTH_EX_TEST];
     expect(bound.first_statement).toBeLessThan(0);
     // the slot lives past the numbered table and past checkextension's 99
-    expect(-bound.first_statement).toBeGreaterThan(Math.max(numbered, edictCore.CHECKEXTENSION_BUILTIN));
+    // (U9: the NetQuake numbered table now runs to 401 for `setcolor`, so the
+    // first appended slot is the table's own length)
+    expect(-bound.first_statement).toBeGreaterThanOrEqual(Math.max(numbered, edictCore.CHECKEXTENSION_BUILTIN + 1));
     expect(-bound.first_statement).toBeLessThan(pr.builtins.length);
 
     // functions that carry real bytecode are left alone

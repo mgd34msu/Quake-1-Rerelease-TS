@@ -152,7 +152,7 @@ describe("client.h constants", () => {
     expect(SIGNONS).toBe(4);
     expect(MAX_DLIGHTS).toBe(32);
     expect(MAX_BEAMS).toBe(24);
-    expect(MAX_EFRAGS).toBe(640);
+    expect(MAX_EFRAGS).toBe(4096); // WinQuake 640; widened for the re-release maps (mg1 hit "Too many efrags!")
     expect(MAX_DEMOS).toBe(8);
     expect(MAX_TEMP_ENTITIES).toBe(64);
     // U3 (ARCHITECTURE.md "Engine core commitments"): widened from WinQuake's

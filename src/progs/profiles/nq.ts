@@ -48,6 +48,7 @@ import type { ProgsProfileT } from "./profile";
 import type * as PrCmdsModule from "../pr_cmds";
 import type * as PrExecModule from "../pr_exec";
 import type * as WorldModule from "../../server/world";
+import type * as QexModule from "../ext/qex";
 
 // see the file header's lazy-require note
 function prCmdsMod(): typeof PrCmdsModule {
@@ -60,6 +61,13 @@ function prExecMod(): typeof PrExecModule {
 
 function worldMod(): typeof WorldModule {
   return require("../../server/world");
+}
+
+// src/progs/ext/qex.ts reaches src/server/sv_main.ts (through server.ts and
+// the protocol modules), which imports this file to select the profile, so it
+// is deferred exactly like the three above.
+function qexMod(): typeof QexModule {
+  return require("../ext/qex");
 }
 
 export const nomonsters = new CvarT("nomonsters", "0");
@@ -108,8 +116,16 @@ export const nqProfile: ProgsProfileT = {
   numberedBuiltins(): readonly BuiltinT[] {
     return prCmdsMod().pr_builtin;
   },
-  namedBuiltins: new Map<string, BuiltinT>(),
-  extensions: new Set<string>(),
+  // the re-release's `= #0:ex_*` set and the extension registry it answers
+  // from, both from src/progs/ext/qex.ts. `extensions` is a getter because the
+  // answer depends on the behaviour profile in force (SV_Ruleset), which is
+  // only known once a progs has been loaded.
+  get namedBuiltins(): ReadonlyMap<string, BuiltinT> {
+    return qexMod().QEX_NamedBuiltins();
+  },
+  get extensions(): ReadonlySet<string> {
+    return qexMod().QEX_Extensions();
+  },
 
   get maxEdicts(): number {
     // U3: quakedef.h's MAX_EDICTS is now only the ceiling on the `max_edicts`

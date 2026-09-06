@@ -567,6 +567,10 @@ export function SV_ReadClientMessage(): boolean {
           else if (Q_strncasecmp(s, "ping", 4) === 0) ret2 = 1;
           else if (Q_strncasecmp(s, "give", 4) === 0) ret2 = 1;
           else if (Q_strncasecmp(s, "ban", 3) === 0) ret2 = 1;
+          // U9 (an addition): the client's weapon-auto-switch preference, which
+          // `ex_CheckPlayerEXFlags` answers with. NetQuake has no userinfo to
+          // carry it in, so it arrives as a string command like `color` does.
+          else if (Q_strncasecmp(s, "ex_flags", 8) === 0) ret2 = 1;
 
           if (ret2 === 2) Cbuf_InsertText(s);
           else if (ret2 === 1) Cmd_ExecuteString(s, CmdSourceT.src_client);

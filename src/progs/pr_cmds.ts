@@ -18,7 +18,17 @@ Deviations from the C source:
 - `PF_VarString`'s C `static char out[256]` truncation never bites in
   practice (no QuakeC caller loops enough OFS_PARM* to exceed 256 bytes) and
   has no meaningful TS equivalent over a JS string; ported as unbounded
-  string concatenation.
+  string concatenation. U9 moved the body to src/progs/ext/qex_print.ts's
+  `QEX_VarString`, which is Ironwail's own LOC-aware PF_VarString
+  (Quake/pr_cmds.c:68-109): the `$key` lookup and `{N}` substitution only
+  engage when a loc table is loaded, and with none loaded it is byte-for-byte
+  this same concatenation, so classic content is untouched.
+- U9 also extends `pr_builtin` past WinQuake's 79 slots to 401, where
+  quakec_ctf/defs.qc:839 declares `setcolor`. Every slot in between raises
+  the C's own "Bad builtin call number", which is what `i >= pr_numbuiltins`
+  produced before; slot 99 holds `checkextension`, which
+  src/progs/pr_edict_core.ts otherwise appends itself for a profile whose
+  numbered table stops short of it (QuakeWorld's still does).
 - `PF_error`/`PF_objerror` read `pr_strings + pr_xfunction->s_name` --
   `pr_xfunction` unchecked. It is only ever null before the first
   `PR_ExecuteProgram` call, which cannot happen while a builtin is running
@@ -52,7 +62,9 @@ Deviations from the C source:
   purely because a second local named `rotate` (the always-false override)
   shadows it, and is otherwise unused, exactly as in the C.
 - `PF_checkclient`/`PF_newcheckclient`'s `checkpvs[MAX_MAP_LEAFS/8]` is a
-  module-private `Uint8Array`, per the unit brief's ruling.
+  module-private `Uint8Array`, per the unit brief's ruling; U9 lets it grow to
+  the loaded worldmodel's leaf count, since a BSP2 map has more leafs than
+  BSP29's MAX_MAP_LEAFS (see its own comment).
   `leaf - sv.worldmodel->leafs` (a pointer difference) becomes
   `worldmodel.leafs.indexOf(leaf)`, the same substitution world.ts's
   `SV_FindTouchedLeafs` already uses for the identical C idiom.
@@ -169,6 +181,15 @@ import {
 import { MOVE_NORMAL, SV_LinkEdict, SV_Move, SV_PointContents } from "../server/world";
 import { SV_CheckBottom, SV_MoveToGoal, SV_movestep } from "../server/sv_move";
 import { SV_EdictAlpha, SV_EdictScale, SV_ModelIndex, SV_StartParticle, SV_StartSound } from "../server/sv_main";
+import { CHECKEXTENSION_BUILTIN } from "./pr_edict_core";
+// `SETCOLOR_BUILTIN` comes from the leaf src/progs/ext/constants.ts, not from
+// ext/qex.ts: this module reads it at module scope while assembling the
+// builtin table, and ext/qex.ts is still initialising at that point (see that
+// leaf module's header). The two `PF_*` names are function declarations, which
+// are hoisted and therefore safe to reach across the same cycle.
+import { PF_checkextension, PF_setcolor } from "./ext/qex";
+import { SETCOLOR_BUILTIN } from "./ext/constants";
+import { QEX_VarString } from "./ext/qex_print";
 
 //============================================================================
 // small module-private guards, matching the pattern already established in
@@ -202,11 +223,7 @@ PF_VarString
 ===============
 */
 function PF_VarString(first: number): string {
-  let out = "";
-  for (let i = first; i < prExec.argc; i++) {
-    out += G_STRING(OFS_PARM0 + i * 3);
-  }
-  return out;
+  return QEX_VarString(first);
 }
 
 /*
@@ -680,7 +697,20 @@ function PF_checkpos(): void {}
 
 //============================================================================
 
-const checkpvs = new Uint8Array(MAX_MAP_LEAFS / 8);
+// The C's `static byte checkpvs[MAX_MAP_LEAFS/8]` (pr_cmds.c). MAX_MAP_LEAFS
+// is BSP29's own limit; a BSP2 map blows straight past it (rerelease/mg1's
+// mge1m1 has 16403 leafs, which needs 2051 bytes against this array's 1024)
+// and the copy below threw a RangeError. ARCHITECTURE.md's "wide internal
+// state" rule applies: the buffer grows to whatever the loaded worldmodel
+// needs, the way src/common/model.ts grows `mod_novis`, and starts at the
+// C's own size so a BSP29 map allocates exactly once.
+let checkpvs = new Uint8Array(MAX_MAP_LEAFS / 8);
+
+function checkpvsFor(numleafs: number): Uint8Array {
+  const needed = (numleafs + 7) >> 3;
+  if (checkpvs.length < needed) checkpvs = new Uint8Array(needed);
+  return checkpvs;
+}
 
 /*
 ===============
@@ -727,7 +757,7 @@ function PF_newcheckclient(checkIn: number): number {
   const leaf = Mod_PointInLeaf(org, worldmodel);
   const pvs = Mod_LeafPVS(leaf, worldmodel);
   const numBytes = (worldmodel.numleafs + 7) >> 3;
-  checkpvs.set(pvs.subarray(0, numBytes));
+  checkpvsFor(worldmodel.numleafs).set(pvs.subarray(0, numBytes));
 
   return i;
 }
@@ -1401,6 +1431,10 @@ function PF_Fixme(): void {
   PR_RunError("unimplemented bulitin"); // sic: the C's own typo
 }
 
+function PF_BadBuiltin(): void {
+  PR_RunError("Bad builtin call number");
+}
+
 export const pr_builtin: BuiltinT[] = [
   PF_Fixme,
   PF_makevectors, // void(entity e)	makevectors 		= #1;
@@ -1492,6 +1526,17 @@ export const pr_builtin: BuiltinT[] = [
 
   PF_setspawnparms,
 ];
+
+// U9: quakec_ctf/defs.qc:839 declares `void setcolor(entity client, float
+// color) = #401`, so the NetQuake table has to reach that far. The slots
+// between are the C's own "Bad builtin call number" (which is what
+// `i >= pr_numbuiltins` produced before the table was this long), and slot 99
+// carries `checkextension`, which src/progs/pr_edict_core.ts only installs
+// itself for a profile whose numbered table stops short of it.
+while (pr_builtin.length < CHECKEXTENSION_BUILTIN) pr_builtin.push(PF_BadBuiltin);
+pr_builtin.push(PF_checkextension); // #99
+while (pr_builtin.length < SETCOLOR_BUILTIN) pr_builtin.push(PF_BadBuiltin);
+pr_builtin.push(PF_setcolor); // #401
 
 export const pr_numbuiltins = pr_builtin.length;
 

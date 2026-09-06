@@ -86,6 +86,7 @@ import {
   FL_MONSTER,
 } from "./server";
 import { type ModelT, HullT, type MnodeT, type MleafT, isMleaf, mod_brush } from "../common/model";
+import { SOLID_CORPSE, SV_RulesetIsRerelease } from "../progs/ext/ruleset";
 import { CONTENTS_EMPTY, CONTENTS_SOLID, CONTENTS_WATER, CONTENTS_CURRENT_0, CONTENTS_CURRENT_DOWN, DclipnodeT } from "../common/bspfile";
 import {
   type Vec3,
@@ -773,6 +774,19 @@ export function SV_ClipToLinks(node: AreanodeT, clip: MoveClipT): void {
     if (touch.v.solid === SOLID_TRIGGER) Sys_Error("Trigger in clipping list");
 
     if (clip.type === MOVE_NOMONSTERS && touch.v.solid !== SOLID_BSP) continue;
+
+    // U9: SOLID_CORPSE (quakec/defs.qc:286) "reports touch and can shoot it,
+    // but not blocking otherwise". No open engine implements it and the
+    // shipped QuakeC never sets it, so the rule here is derived from that
+    // comment: a corpse is in the clipping list, so a point trace -- a
+    // hitscan, a missile's own zero-sized move -- hits it and fires its touch
+    // through SV_Impact, while a move with a real bounding box (a player, a
+    // monster) passes straight through. Only under the re-release profile;
+    // classic content has no entity with solid 5.
+    if (touch.v.solid === SOLID_CORPSE) {
+      if (!SV_RulesetIsRerelease()) continue;
+      if (clip.mins[0] !== clip.maxs[0] || clip.mins[1] !== clip.maxs[1] || clip.mins[2] !== clip.maxs[2]) continue;
+    }
 
     if (
       clip.boxmins[0] > touch.v.absmax[0] ||
