@@ -426,6 +426,23 @@ export type RStateT = {
   // d_init.c
   d_minmip: number;
 
+  // U25 colored lighting (this port's own addition; see r_coloredlight.ts).
+  // The true-color output path runs beside the 8-bit one: when r_truecolor is
+  // set for the frame, every rasterizer writes 32-bit ARGB texels into
+  // d_viewbuffer32 / reads them from cacheblock32 instead of the palette
+  // indices it writes into d_viewbuffer / reads from cacheblock.
+  r_truecolor: boolean;
+  d_viewbuffer32: Uint32Array | null; // aliases vid.buffer32, or r_warpbuffer32 while r_dowarp
+  cacheblock32: Uint32Array | null;
+  r_warpbuffer32: Uint32Array | null;
+  // the alias model's per-channel light tint, 8.8 (256 == untinted)
+  r_alias_tint_r: number;
+  r_alias_tint_g: number;
+  r_alias_tint_b: number;
+  // V_UpdatePalette's cshift+gamma transform as three 256-entry ramps
+  // (r, g, b), the true-color equivalent of shifting the 8-bit palette
+  d_shiftramp: Uint8Array | null;
+
 };
 
 export const rState: RStateT = {
@@ -589,6 +606,16 @@ export const rState: RStateT = {
 
   // d_init.c
   d_minmip: 0,
+
+  // U25 colored lighting
+  r_truecolor: false,
+  d_viewbuffer32: null,
+  cacheblock32: null,
+  r_warpbuffer32: null,
+  r_alias_tint_r: 256,
+  r_alias_tint_g: 256,
+  r_alias_tint_b: 256,
+  d_shiftramp: null,
 
 };
 

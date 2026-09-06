@@ -21,7 +21,8 @@ Deviations from PORTING.md / the C source:
 */
 
 import { Sys_Error } from "../platform/sys";
-import { vid, type VrectT } from "../client/vid";
+import { d_8to24table, vid, type VrectT } from "../client/vid";
+import { rState } from "./r_shared";
 
 /*
 ================
@@ -52,9 +53,16 @@ export function D_FillRect(rect: VrectT, color: number): void {
 
   let dest = ry * vid.rowbytes + rx;
 
+  // U25: the fill color is a palette index, expanded untinted into the
+  // 32-bit framebuffer while the true-color path is presenting
+  // (src/ref_soft/r_coloredlight.ts)
+  const out32 = rState.r_truecolor ? vid.buffer32 : null;
+  const color32 = out32 !== null ? d_8to24table[color & 0xff] : 0;
+
   // slower byte-by-byte clear for unaligned cases
   for (ry = 0; ry < rheight; ry++) {
     for (rx = 0; rx < rwidth; rx++) buffer[dest + rx] = color;
+    if (out32 !== null) for (rx = 0; rx < rwidth; rx++) out32[dest + rx] = color32;
     dest += vid.rowbytes;
   }
 }

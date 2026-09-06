@@ -74,6 +74,8 @@ in both trees -- also a no-op, already excluded above.
 */
 
 import { Sys_Error } from "../platform/sys";
+import { d_8to24table } from "../client/vid";
+import { R_TintRGB } from "./r_coloredlight";
 import { FloorDivMod } from "../common/mathlib";
 import { CACHE_SIZE } from "../common/quakedef";
 import { adivtabIndex, adivtabQuotient, adivtabRemainder } from "./adivtab";
@@ -224,6 +226,12 @@ export function D_PolysetDrawFinalVerts(fv: FinalvertT[], numverts: number): voi
   if (acolormap === null) Sys_Error("D_PolysetDrawFinalVerts: NULL acolormap");
   if (skinstart === null) Sys_Error("D_PolysetDrawFinalVerts: NULL skinstart");
 
+  // U25: an alias model keeps the C's scalar per-vertex light through the
+  // colormap and takes its color from the RGB light sampled under the entity
+  // (rState.r_alias_tint_*, 8.8, all 256 on a map without colored light).
+  // See src/ref_soft/r_coloredlight.ts's header.
+  const out32 = rState.d_viewbuffer32;
+
   for (let i = 0; i < numverts; i++) {
     const v = fv[i].v;
     // valid triangle coordinates for filling can include the bottom and
@@ -235,7 +243,11 @@ export function D_PolysetDrawFinalVerts(fv: FinalvertT[], numverts: number): voi
         d_pzbuffer[zbuf] = z;
         let pix = skinstart[skintable[v[3] >> 16] + (v[2] >> 16)];
         pix = acolormap[pix + (v[4] & 0xff00)];
-        d_viewbuffer[d_scantable[v[1]] + v[0]] = pix;
+        if (out32 !== null) {
+          out32[d_scantable[v[1]] + v[0]] = R_TintRGB(d_8to24table[pix], rState.r_alias_tint_r, rState.r_alias_tint_g, rState.r_alias_tint_b);
+        } else {
+          d_viewbuffer[d_scantable[v[1]] + v[0]] = pix;
+        }
       }
     }
   }
@@ -374,6 +386,8 @@ function polysetRecursiveTriangle(lp1In: Int32Array, lp2In: Int32Array, lp3In: I
   if (acolormap === null) Sys_Error("D_PolysetRecursiveTriangle: NULL acolormap");
   if (skinstart === null) Sys_Error("D_PolysetRecursiveTriangle: NULL skinstart");
 
+  const out32 = rState.d_viewbuffer32; // U25, see D_PolysetDrawFinalVerts
+
   let lp1 = lp1In;
   let lp2 = lp2In;
   let lp3 = lp3In;
@@ -439,7 +453,11 @@ function polysetRecursiveTriangle(lp1In: Int32Array, lp2In: Int32Array, lp3In: I
     if (z >= d_pzbuffer[zbuf]) {
       d_pzbuffer[zbuf] = z;
       const pix = acolormap[d_pcolormap + skinstart[skintable[nw[3] >> 16] + (nw[2] >> 16)]];
-      d_viewbuffer[d_scantable[nw[1]] + nw[0]] = pix;
+      if (out32 !== null) {
+        out32[d_scantable[nw[1]] + nw[0]] = R_TintRGB(d_8to24table[pix], rState.r_alias_tint_r, rState.r_alias_tint_g, rState.r_alias_tint_b);
+      } else {
+        d_viewbuffer[d_scantable[nw[1]] + nw[0]] = pix;
+      }
     }
   }
 
@@ -615,6 +633,11 @@ export function D_PolysetDrawSpans8(spans: SpanpackageT[], start: number): void 
   if (acolormap === null) Sys_Error("D_PolysetDrawSpans8: NULL acolormap");
   if (pskin === null) Sys_Error("D_PolysetDrawSpans8: NULL pskin");
 
+  const out32 = rState.d_viewbuffer32; // U25, see D_PolysetDrawFinalVerts
+  const tintr = rState.r_alias_tint_r;
+  const tintg = rState.r_alias_tint_g;
+  const tintb = rState.r_alias_tint_b;
+
   let i = start;
 
   do {
@@ -641,7 +664,11 @@ export function D_PolysetDrawSpans8(spans: SpanpackageT[], start: number): void 
 
       do {
         if (lzi >> 16 >= d_pzbuffer[lpz]) {
-          d_viewbuffer[lpdest] = acolormap[pskin[lptex] + (llight & 0xff00)];
+          if (out32 !== null) {
+            out32[lpdest] = R_TintRGB(d_8to24table[acolormap[pskin[lptex] + (llight & 0xff00)]], tintr, tintg, tintb);
+          } else {
+            d_viewbuffer[lpdest] = acolormap[pskin[lptex] + (llight & 0xff00)];
+          }
           d_pzbuffer[lpz] = lzi >> 16;
         }
         lpdest++;
@@ -676,6 +703,9 @@ export function D_PolysetFillSpans8(spans: SpanpackageT[], start: number): void 
   // FIXME: do z buffering
 
   const color = polyState.d_aflatcolor++;
+  // U25: r_drawflat's flat color is a palette index, expanded untinted
+  const out32 = rState.d_viewbuffer32;
+  const color32 = out32 !== null ? d_8to24table[color & 0xff] : 0;
 
   let i = start;
 
@@ -689,9 +719,15 @@ export function D_PolysetFillSpans8(spans: SpanpackageT[], start: number): void 
     if (lcount) {
       let lpdest = pspanpackage.pdest;
 
-      do {
-        d_viewbuffer[lpdest++] = color;
-      } while (--lcount);
+      if (out32 !== null) {
+        do {
+          out32[lpdest++] = color32;
+        } while (--lcount);
+      } else {
+        do {
+          d_viewbuffer[lpdest++] = color;
+        } while (--lcount);
+      }
     }
 
     i++;

@@ -168,6 +168,7 @@ import { R_DrawSolidClippedSubmodelPolygons, R_DrawSubmodelPolygons, R_RenderWor
 import { R_ZDrawSubmodelPolys } from "./r_draw";
 import { R_SplitEntityOnNode2 } from "./r_efrag";
 import { R_LightPoint, R_MarkLights } from "./r_light";
+import { R_SetAliasLightTint, r_coloredlight } from "./r_coloredlight";
 import { R_DrawSprite } from "./r_sprite";
 import { R_AliasCheckBBox, R_AliasDrawModel } from "./r_alias";
 import { R_NetGraph, R_PrintAliasStats, R_PrintDSpeeds, R_PrintTimes, R_SetupFrame, R_TimeGraph, R_TimeRefresh_f, R_TransformFrustum, R_ZGraph } from "./r_misc";
@@ -268,6 +269,9 @@ export function R_Init(): void {
   Cvar_RegisterVariable(r_numedges);
   Cvar_RegisterVariable(r_aliastransbase);
   Cvar_RegisterVariable(r_aliastransadj);
+  // U25: this port's own cvar, the software mirror of ref_gl's
+  // gl_coloredlight (src/ref_soft/r_coloredlight.ts)
+  Cvar_RegisterVariable(r_coloredlight);
 
   // QW r_main.c registers these two unconditionally; WinQuake's R_Init has no
   // such call, so the registration itself is gated to keep WinQuake behavior
@@ -614,6 +618,10 @@ export function R_DrawEntitiesOnList(): void {
         // trivial accept status
         if (R_AliasCheckBBox()) {
           j = R_LightPoint(currententity.origin);
+          // U25: the RGB light R_LightPoint just sampled becomes this
+          // entity's per-channel tint; `j` is the average of the three, so
+          // the C's ambientlight/shadelight are unchanged on a grey map
+          R_SetAliasLightTint();
 
           lighting.ambientlight = j;
           lighting.shadelight = j;
@@ -678,6 +686,7 @@ export function R_DrawViewModel(): void {
   VectorInverse(viewlightvec);
 
   j = R_LightPoint(currententity.origin);
+  R_SetAliasLightTint(); // U25, see R_DrawEntitiesOnList
 
   if (j < 24) j = 24; // allways give some light on gun
   r_viewlighting.ambientlight = j;
@@ -962,9 +971,13 @@ r_refdef must be set before the first call
 */
 // C: `byte warpbuffer[WARP_WIDTH * WARP_HEIGHT];` on R_RenderView_'s stack
 const warpbuffer = new Uint8Array(WARP_WIDTH * WARP_HEIGHT);
+// U25: the true-color twin of that buffer, for r_dowarp under
+// rState.r_truecolor (src/ref_soft/r_coloredlight.ts)
+const warpbuffer32 = new Uint32Array(WARP_WIDTH * WARP_HEIGHT);
 
 export function R_RenderView_(): void {
   rState.r_warpbuffer = warpbuffer;
+  rState.r_warpbuffer32 = warpbuffer32;
 
   if (r_timegraph.value || r_speeds.value || r_dspeeds.value) rState.r_time1 = Sys_FloatTime();
 

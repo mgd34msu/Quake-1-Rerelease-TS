@@ -126,6 +126,13 @@ export class SurfcacheT {
   // view of the pixels that follow the header.
   offset = 0;
   data: Uint8Array = new Uint8Array(0);
+  // U25 (no C original): the same block viewed as 32-bit ARGB texels, for the
+  // true-color surface cache. `dState.sc_heap32` is a Uint32Array with one
+  // ELEMENT per byte of `sc_heap`, so a block's own `offset` and `size` carve
+  // it with the identical arithmetic and every block gets at least the
+  // `width * height` texels the 8-bit block got bytes. It stays null until
+  // the true-color path is first used (d_surf.ts's ensureHeap32).
+  data32: Uint32Array | null = null;
 
   clear(): void {
     this.next = null;
@@ -139,6 +146,7 @@ export class SurfcacheT {
     this.texture = null;
     this.offset = 0;
     this.data = new Uint8Array(0);
+    this.data32 = null;
   }
 }
 
@@ -223,6 +231,10 @@ other reassigned driver global is on `rState`.
 */
 export const dState: {
   sc_heap: Uint8Array | null;
+  // U25: the true-color twin of sc_heap, one element per heap byte; see
+  // SurfcacheT.data32 above. Allocated lazily, the first frame the
+  // true-color path runs.
+  sc_heap32: Uint32Array | null;
   sc_base: SurfcacheT | null;
   sc_rover: SurfcacheT | null;
   sc_size: number;
@@ -232,6 +244,7 @@ export const dState: {
   surfscale: number;
 } = {
   sc_heap: null,
+  sc_heap32: null,
   sc_base: null,
   sc_rover: null,
   sc_size: 0,

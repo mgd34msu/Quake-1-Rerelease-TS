@@ -49,6 +49,13 @@ Deviations from PORTING.md / the C source:
 - Dropped: nothing. d_surf.c has no #ifdef branches; the two `// DEBUG`
   comments and the `D_CheckCacheGuard()` call they mark are the shipping code
   and are kept.
+- U25 (no C original): the true-color surface cache. `dState.sc_heap32` is a
+  Uint32Array with one element per byte of the 8-bit heap, carved by the same
+  `offset`/`size` arithmetic, so a block that holds `width * height` palette
+  indices holds `width * height` 32-bit ARGB texels at the same block address.
+  It is allocated lazily (`ensureHeap32`) the first time D_CacheSurface runs
+  under `rState.r_truecolor`, and D_SetupFrame flushes the caches whenever
+  that flag changes, so a block never holds texels of the wrong kind.
 - D_SCAlloc's sanity bounds (`width > 256`, `size > 0x10000`) were derived
   from WinQuake's 256-texel extents cap: 256 is the max possible surfwidth,
   and 256*256 = 0x10000 the max possible cache size at mip 0. Both are
@@ -76,6 +83,34 @@ function blockAt(offset: number): SurfcacheT {
   const created = new SurfcacheT();
   created.offset = offset;
   blocks.set(offset, created);
+  return created;
+}
+
+/*
+U25: `c.data` viewed as 32-bit texels. See this file's header -- the same
+block address in the parallel heap, so no allocation arithmetic is repeated.
+*/
+function setBlockData32(c: SurfcacheT): void {
+  const heap32 = dState.sc_heap32;
+  if (heap32 === null) {
+    c.data32 = null;
+    return;
+  }
+  c.data32 = heap32.subarray(c.offset + SURFCACHE_HEADER_SIZE, c.offset + c.size);
+}
+
+/*
+U25: allocate the true-color heap the first time a frame needs it, and hand
+every block that already exists its view of it.
+*/
+function ensureHeap32(): Uint32Array {
+  const existing = dState.sc_heap32;
+  const heap = dState.sc_heap;
+  if (heap === null) Sys_Error("D_CacheSurface: NULL surface cache heap");
+  if (existing !== null && existing.length === heap.length) return existing;
+  const created = new Uint32Array(heap.length);
+  dState.sc_heap32 = created;
+  for (const c of blocks.values()) setBlockData32(c);
   return created;
 }
 
@@ -126,6 +161,7 @@ export function D_InitCaches(buffer: Uint8Array, size: number): void {
   if (!msg_suppress_1) Con_Printf("%ik surface cache\n", (size / 1024) | 0);
 
   dState.sc_heap = buffer;
+  dState.sc_heap32 = null; // U25: re-allocated on demand against the new heap
   blocks.clear();
 
   dState.sc_size = size - GUARDSIZE;
@@ -137,6 +173,7 @@ export function D_InitCaches(buffer: Uint8Array, size: number): void {
   sc_base.owner = null;
   sc_base.size = dState.sc_size;
   sc_base.data = buffer.subarray(SURFCACHE_HEADER_SIZE, sc_base.size);
+  sc_base.data32 = null;
 
   D_ClearCacheGuard();
 }
@@ -215,6 +252,7 @@ export function D_SCAlloc(width: number, sizeIn: number): SurfcacheT {
     fragment.width = 0;
     fragment.owner = null;
     fragment.data = heap.subarray(fragment.offset + SURFCACHE_HEADER_SIZE, fragment.offset + fragment.size);
+    setBlockData32(fragment);
     newBlock.next = fragment;
     newBlock.size = size;
   } else dState.sc_rover = newBlock.next;
@@ -225,6 +263,7 @@ export function D_SCAlloc(width: number, sizeIn: number): SurfcacheT {
 
   newBlock.owner = null; // should be set properly after return
   newBlock.data = heap.subarray(newBlock.offset + SURFCACHE_HEADER_SIZE, newBlock.offset + newBlock.size);
+  setBlockData32(newBlock);
 
   if (dState.d_roverwrapped) {
     const roverOffset = dState.sc_rover !== null ? dState.sc_rover.offset : -1;
@@ -315,8 +354,17 @@ export function D_CacheSurface(surface: MsurfaceT, miplevel: number): SurfcacheT
     cache.lightadj[1] === r_drawsurf.lightadj[1] &&
     cache.lightadj[2] === r_drawsurf.lightadj[2] &&
     cache.lightadj[3] === r_drawsurf.lightadj[3]
-  )
+  ) {
+    // U25: a cache hit still has to hand d_edge.c's D_DrawSurfaces the
+    // block's 32-bit view. D_SetupFrame flushes the caches whenever
+    // rState.r_truecolor changes, so a hit can only be a block that was
+    // generated under the mode this frame is in.
+    if (rState.r_truecolor && cache.data32 === null) {
+      ensureHeap32();
+      setBlockData32(cache);
+    }
     return cache;
+  }
 
   //
   // determine shape of surface
@@ -342,6 +390,15 @@ export function D_CacheSurface(surface: MsurfaceT, miplevel: number): SurfcacheT
   else cache.dlight = 0;
 
   r_drawsurf.surfdat = cache.data;
+  // U25: the true-color block for the same surface, allocated the first time
+  // a frame runs with rState.r_truecolor set
+  if (rState.r_truecolor) {
+    ensureHeap32();
+    if (cache.data32 === null) setBlockData32(cache);
+    r_drawsurf.surfdat32 = cache.data32;
+  } else {
+    r_drawsurf.surfdat32 = null;
+  }
 
   cache.texture = r_drawsurf.texture;
   cache.lightadj[0] = r_drawsurf.lightadj[0];

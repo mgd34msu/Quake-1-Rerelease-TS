@@ -19,6 +19,13 @@ Deviations from PORTING.md / the C source:
   server, or a test) they are the no-ops the C's non-Win32 macro expansions
   are.
 - `d_viewbuffer = (void *)(byte *)vid.buffer` becomes the Uint8Array itself.
+- U25 (no C original): D_SetupFrame makes the frame's one colored-lighting
+  decision -- `rState.r_truecolor` -- and points `rState.d_viewbuffer32` at
+  the 32-bit framebuffer (or the 32-bit warp buffer) when it is set. Because a
+  surface-cache block holds either palette indices or 32-bit texels but never
+  both, a change in that decision between frames flushes the caches here,
+  which is the same thing vid_x.c's ResetFrameBuffer does when the pixel
+  format underneath the cache changes.
 - D_CopyRects and D_UpdateRects keep the C's parameters even though both
   bodies are `UNUSED(...)`; `void x;` is this port's spelling of that macro.
 - `d_minmip = d_mipcap.value` truncates a float cvar to an int; `| 0` does the
@@ -36,8 +43,10 @@ import { type VrectT, vid, vidBackend } from "../client/vid";
 import { WARP_WIDTH } from "./d_iface";
 import { d_scalemip, dState } from "./d_local";
 import { type EspanT, rState } from "./r_shared";
-import { D_DrawSpans8 } from "./d_scan";
+import { D_DrawSpans32, D_DrawSpans8 } from "./d_scan";
 import { polyState } from "./d_polyse";
+import { R_ColoredLightAvailable } from "./r_coloredlight";
+import { D_FlushCaches } from "./d_surf";
 
 const NUM_MIPS = 4;
 
@@ -121,8 +130,20 @@ D_SetupFrame
 ===============
 */
 export function D_SetupFrame(): void {
+  // U25: the frame's one colored-lighting decision (see this file's header
+  // and src/ref_soft/r_coloredlight.ts's)
+  const truecolor = R_ColoredLightAvailable();
+  if (truecolor !== rState.r_truecolor) {
+    rState.r_truecolor = truecolor;
+    D_FlushCaches();
+  }
+
   if (rState.r_dowarp) rState.d_viewbuffer = rState.r_warpbuffer;
   else rState.d_viewbuffer = vid.buffer;
+
+  if (!truecolor) rState.d_viewbuffer32 = null;
+  else if (rState.r_dowarp) rState.d_viewbuffer32 = rState.r_warpbuffer32;
+  else rState.d_viewbuffer32 = vid.buffer32;
 
   if (rState.r_dowarp) rState.screenwidth = WARP_WIDTH;
   else rState.screenwidth = vid.rowbytes;
@@ -136,7 +157,7 @@ export function D_SetupFrame(): void {
 
   for (let i = 0; i < NUM_MIPS - 1; i++) d_scalemip[i] = basemip[i] * d_mipscale.value;
 
-  drawspansState.d_drawspans = D_DrawSpans8;
+  drawspansState.d_drawspans = rState.r_truecolor ? D_DrawSpans32 : D_DrawSpans8;
 
   polyState.d_aflatcolor = 0;
 }

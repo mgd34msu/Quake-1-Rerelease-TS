@@ -53,6 +53,13 @@ export class VrectT {
 
 export class ViddefT {
   buffer: Uint8Array | null = null; // invisible buffer
+  // U25 (no C original -- ARCHITECTURE.md ruling R3): the software
+  // renderer's true-color framebuffer, one 32-bit ARGB texel per pixel at
+  // the same `rowbytes` element stride as `buffer`. Allocated by
+  // src/platform/vid.ts beside `buffer` for the software refresh only; the
+  // rasterizer writes into it instead of `buffer` while colored lighting is
+  // active for the frame (src/ref_soft/r_coloredlight.ts).
+  buffer32: Uint32Array | null = null;
   colormap: Uint8Array | null = null; // 256 * VID_GRADES size
   colormap16: Uint16Array | null = null; // 256 * VID_GRADES size
   fullbright = 0; // index of first fullbright color

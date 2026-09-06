@@ -149,6 +149,7 @@ import { cl, cl_static_entities } from "../client/client";
 import { Cache_Flush } from "../common/zone";
 import { inputBackend } from "../client/input";
 import { SDL_BackendEnabled, SDL_SetBackendEnabled, SDL_SetWindowSizeChangedHandler, SDLVID_Init, SDLVID_Present, SDLVID_Resize, SDLVID_SetWindowTitle, SDLVID_Shutdown, SDL_SetFullscreenHint } from "./sdl";
+import { SWimp_Present32 } from "./swimp";
 import { CreateGLimp, glimpHolder } from "./glimp";
 import { VID_MenuDraw, VID_MenuKey } from "./vid_menu";
 // ref_soft's own r_main.ts (R_Init, registerRenderer, hostClientHooks.rInit)
@@ -350,6 +351,16 @@ function applyVidRefParm(): void {
 
 export function VID_Update(rects: VrectT | null): void {
   void rects; // vid_x.c's own VID_Update also ignores the rect list under MITSHM and always blits the whole framebuffer
+  // U25: while the software renderer is drawing colored lighting the frame
+  // lives in vid.buffer32, not vid.buffer, and goes out through swimp.ts's
+  // true-color present (which also applies V_UpdatePalette's shift ramps).
+  // rState.r_truecolor is the renderer's own per-frame decision; see
+  // src/ref_soft/r_coloredlight.ts.
+  const buffer32 = vid.buffer32;
+  if (rState.r_truecolor && buffer32 !== null) {
+    SWimp_Present32(buffer32, vid.rowbytes, vid.width, vid.height, rState.d_shiftramp);
+    return;
+  }
   if (!vid.buffer) return;
   const palette = new Uint8Array(d_8to24table.buffer);
   SDLVID_Present(vid.buffer, vid.rowbytes, vid.width, vid.height, palette);
@@ -540,6 +551,12 @@ function VID_CheckChanges_(runRInit: boolean, restartLevel: boolean): void {
   vid.height = height;
   vid.rowbytes = width;
   vid.buffer = new Uint8Array(width * height);
+  // U25 (no C original): the software refresh's true-color framebuffer,
+  // allocated beside the 8-bit one at the same element stride. GL has no use
+  // for it. src/ref_soft/r_coloredlight.ts's R_ColoredLightAvailable reads
+  // its presence as one of the three conditions for the true-color path, so
+  // leaving it null under GL is also what keeps that path software-only.
+  vid.buffer32 = name === "gl" ? null : new Uint32Array(width * height);
   // vid_x.c: `vid.conbuffer = vid.buffer;` (ResetFrameBuffer) and
   // `vid.conrowbytes = vid.rowbytes;` (VID_Init). draw.c's Draw_Character /
   // Draw_String / Draw_ConsoleBackground / Draw_Pixel write through these,
@@ -700,6 +717,7 @@ export function VID_SizeChanged(width: number, height: number): void {
   vid.height = height;
   vid.rowbytes = width;
   vid.buffer = new Uint8Array(width * height);
+  vid.buffer32 = activeRendererKind === "gl" ? null : new Uint32Array(width * height); // U25, as in VID_CheckChanges_
   vid.conbuffer = vid.buffer;
   vid.conrowbytes = vid.rowbytes;
   vid.conwidth = width;
@@ -820,6 +838,7 @@ export function VID_Shutdown(): void {
   Con_Printf("VID_Shutdown\n");
   teardownActiveRenderer();
   vid.buffer = null;
+  vid.buffer32 = null; // U25
   vid.conbuffer = null;
   vid.width = 0;
   vid.height = 0;
@@ -891,6 +910,7 @@ SDL_SetWindowSizeChangedHandler(VID_SizeChanged);
 export function VID_ResetForTests(): void {
   teardownActiveRenderer();
   vid.buffer = null;
+  vid.buffer32 = null; // U25
   vid.conbuffer = null;
   vid.width = 0;
   vid.height = 0;

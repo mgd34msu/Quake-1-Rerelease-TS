@@ -258,6 +258,11 @@ export const TRANSPARENT_COLOR = 0xff;
 
 export class DrawsurfT {
   surfdat: Uint8Array | null = null; // destination for generated surface
+  // U25 (no C original): the same destination as 32-bit ARGB texels, used
+  // instead of `surfdat` while rState.r_truecolor is set. `rowbytes` is the
+  // element stride for both, since the 8-bit block is one byte per texel and
+  // the 32-bit block one Uint32Array element per texel.
+  surfdat32: Uint32Array | null = null;
   rowbytes = 0; // destination logical width in bytes
   surf: MsurfaceT | null = null; // description for surface to generate
   // adjust for lightmap levels for dynamic lighting
@@ -269,6 +274,7 @@ export class DrawsurfT {
 
   clear(): void {
     this.surfdat = null;
+    this.surfdat32 = null;
     this.rowbytes = 0;
     this.surf = null;
     this.lightadj.fill(0);

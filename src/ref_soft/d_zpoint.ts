@@ -24,6 +24,7 @@ Deviations from PORTING.md / the C source:
 */
 
 import { Sys_Error } from "../platform/sys";
+import { d_8to24table } from "../client/vid";
 import { d_scantable } from "./d_local";
 import { r_zpointdesc } from "./d_iface";
 import { rState } from "./r_shared";
@@ -45,6 +46,10 @@ export function D_DrawZPoint(): void {
 
   if (d_pzbuffer[pz] <= izi) {
     d_pzbuffer[pz] = izi;
-    d_viewbuffer[pdest] = r_zpointdesc.color;
+    // U25: a z-buffered point is a palette index with no lighting, expanded
+    // through the palette untinted in true color (r_coloredlight.ts)
+    const out32 = rState.d_viewbuffer32;
+    if (out32 !== null) out32[pdest] = d_8to24table[r_zpointdesc.color];
+    else d_viewbuffer[pdest] = r_zpointdesc.color;
   }
 }

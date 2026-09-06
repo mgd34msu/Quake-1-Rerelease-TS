@@ -116,6 +116,9 @@ import { cl, CSHIFT_BONUS, CSHIFT_DAMAGE, NUM_CSHIFTS } from "../client/client";
 import { re, r_origin, r_refdef, type Renderer, vpn, vright, vup } from "../client/render";
 import { vid, vidBackend, VrectT } from "../client/vid";
 import { scr_vrect, scrState } from "../client/screen_types";
+import { rState } from "./r_shared";
+import { SWimp_QuantizeFrame32 } from "../platform/swimp";
+import { R_BuildShiftRamps } from "./r_coloredlight";
 import { CalcFov, scr_fov, scr_viewsize } from "../client/screen";
 import { Sbar_Changed } from "../client/sbar";
 import { cl_crossx, cl_crossy, crosshair, gammatable, V_CalcPowerupCshift, V_CheckGamma } from "../client/view";
@@ -227,6 +230,14 @@ function V_UpdatePalette(): void {
     pal[newpalIdx + 2] = gammatable[b];
     newpalIdx += 3;
   }
+
+  // U25: the true-color equivalent of shifting the palette. The loop above
+  // is a per-CHANNEL transform that happens to be applied to the 256 palette
+  // entries; lifted onto the whole 0..255 range it is three ramps the
+  // present path can apply to any pixel, colored or not. See
+  // src/ref_soft/r_coloredlight.ts's header.
+  if (rState.d_shiftramp === null) rState.d_shiftramp = new Uint8Array(3 * 256);
+  R_BuildShiftRamps(gammatable, rState.d_shiftramp);
 
   vidBackend.current?.VID_ShiftPalette(pal);
 }
@@ -445,9 +456,22 @@ function SCR_ScreenShot_f(): void {
   D_EnableBackBufferAccess(); // enable direct drawing of console to back
   //  buffer
 
-  const buffer = vid.buffer;
+  // U25: while the true-color path is presenting, the frame lives in
+  // vid.buffer32, not vid.buffer. A PCX is an 8-bit indexed format, so the
+  // shot goes through swimp.ts's 5:5:5 nearest-color reduction -- the same
+  // one the quantized present uses -- against the same palette PCX will
+  // carry. A true-color screenshot format is a follow-up, not this unit's.
+  let buffer = vid.buffer;
+  let shotrowbytes = vid.rowbytes;
+  const buffer32 = vid.buffer32;
+  if (rState.r_truecolor && buffer32 !== null) {
+    const shot = new Uint8Array(vid.width * vid.height);
+    SWimp_QuantizeFrame32(buffer32, vid.rowbytes, vid.width, vid.height, shot);
+    buffer = shot;
+    shotrowbytes = vid.width;
+  }
   const basepal = hostBasepal();
-  if (buffer && basepal) WritePCXfile(pcxname, buffer, vid.width, vid.height, vid.rowbytes, basepal);
+  if (buffer && basepal) WritePCXfile(pcxname, buffer, vid.width, vid.height, shotrowbytes, basepal);
 
   D_DisableBackBufferAccess(); // for adapters that can't stay mapped in
   //  for linear writes all the time

@@ -50,11 +50,22 @@ Deviations from PORTING.md / the C source:
 - Dropped `#if id386` branches: the asm twins of D_DrawTurbulent8Span,
   D_DrawSpans8 and D_DrawZSpans (d_scan.s / d_draw.s). Turbulent8 and
   D_WarpScreen have no `#if` around them and are ported as-is.
+- U25 (no C original): `D_DrawSpans32` and `D_DrawTurbulent32Span` are the
+  true-color twins of D_DrawSpans8 and D_DrawTurbulent8Span -- the same span
+  walk, the same fixed-point stepping, writing 32-bit ARGB texels into
+  `rState.d_viewbuffer32`. D_DrawSpans32 reads `rState.cacheblock32`, the
+  surface cache block r_surf.ts's R_DrawSurfaceBlock32 generated (its texels
+  are already lit, so the loop is a straight copy, as the 8-bit one is).
+  D_DrawTurbulent32Span expands the water texture's palette indices through
+  `d_8to24table` untinted, which is what a turbulent surface does in the C
+  too: it never goes through the colormap. D_WarpScreen gains the same
+  32-bit branch, since it re-samples the finished view buffer.
+  src/ref_soft/r_coloredlight.ts's header has the whole design.
 */
 
 import { Sys_Error } from "../platform/sys";
 import { cl } from "../client/client";
-import { vid } from "../client/vid";
+import { d_8to24table, vid } from "../client/vid";
 import { scr_vrect } from "../client/screen_types";
 import { CYCLE } from "./d_iface";
 import { AMP2, SPEED } from "./r_local";
@@ -100,6 +111,12 @@ export function D_WarpScreen(): void {
   if (d_viewbuffer === null) Sys_Error("D_WarpScreen: NULL d_viewbuffer");
   if (destbuf === null) Sys_Error("D_WarpScreen: NULL vid.buffer");
 
+  // U25: in true color the warp re-samples the 32-bit view buffer into the
+  // 32-bit framebuffer; the row/column tables it walks are identical.
+  const src32 = rState.d_viewbuffer32;
+  const dest32 = vid.buffer32;
+  const truecolor = src32 !== null && dest32 !== null;
+
   const screenwidth = rState.screenwidth;
 
   const w = r_refdef.vrect.width;
@@ -118,6 +135,21 @@ export function D_WarpScreen(): void {
 
   const turb = ((cl.time * SPEED) | 0) & (CYCLE - 1);
   let dest = scr_vrect.y * vid.rowbytes + scr_vrect.x;
+
+  if (truecolor && src32 !== null && dest32 !== null) {
+    for (let v = 0; v < scr_vrect.height; v++, dest += vid.rowbytes) {
+      const col = intsintable[turb + v];
+      const row = v;
+
+      for (let u = 0; u < scr_vrect.width; u += 4) {
+        dest32[dest + u + 0] = src32[rowptr[row + intsintable[turb + u + 0]] + column[col + u + 0]];
+        dest32[dest + u + 1] = src32[rowptr[row + intsintable[turb + u + 1]] + column[col + u + 1]];
+        dest32[dest + u + 2] = src32[rowptr[row + intsintable[turb + u + 2]] + column[col + u + 2]];
+        dest32[dest + u + 3] = src32[rowptr[row + intsintable[turb + u + 3]] + column[col + u + 3]];
+      }
+    }
+    return;
+  }
 
   for (let v = 0; v < scr_vrect.height; v++, dest += vid.rowbytes) {
     const col = intsintable[turb + v];
@@ -157,12 +189,41 @@ export function D_DrawTurbulent8Span(): void {
 
 /*
 =============
+D_DrawTurbulent32Span
+
+U25's true-color twin of D_DrawTurbulent8Span. Water and lava never go
+through the colormap in the C either -- Turbulent8 reads the base texture
+directly -- so the texel's palette color is written untinted.
+=============
+*/
+export function D_DrawTurbulent32Span(): void {
+  const pbase = turbState.r_turb_pbase;
+  const d_viewbuffer32 = rState.d_viewbuffer32;
+  if (pbase === null) Sys_Error("D_DrawTurbulent32Span: NULL r_turb_pbase");
+  if (d_viewbuffer32 === null) Sys_Error("D_DrawTurbulent32Span: NULL d_viewbuffer32");
+
+  let sturb: number;
+  let tturb: number;
+
+  do {
+    sturb = ((turbState.r_turb_s + sintable[turbState.r_turb_turb + ((turbState.r_turb_t >> 16) & (CYCLE - 1))]) >> 16) & 63;
+    tturb = ((turbState.r_turb_t + sintable[turbState.r_turb_turb + ((turbState.r_turb_s >> 16) & (CYCLE - 1))]) >> 16) & 63;
+    d_viewbuffer32[turbState.r_turb_pdest++] = d_8to24table[pbase[(tturb << 6) + sturb]];
+    turbState.r_turb_s = (turbState.r_turb_s + turbState.r_turb_sstep) | 0;
+    turbState.r_turb_t = (turbState.r_turb_t + turbState.r_turb_tstep) | 0;
+  } while (--turbState.r_turb_spancount > 0);
+}
+
+/*
+=============
 Turbulent8
 =============
 */
 export function Turbulent8(pspanIn: EspanT | null): void {
   const cacheblock = rState.cacheblock;
   if (cacheblock === null) Sys_Error("Turbulent8: NULL cacheblock");
+
+  const truecolor = rState.d_viewbuffer32 !== null;
 
   let pspan: EspanT | null = pspanIn;
   if (pspan === null) return;
@@ -269,7 +330,8 @@ export function Turbulent8(pspanIn: EspanT | null): void {
       turbState.r_turb_s = turbState.r_turb_s & ((CYCLE << 16) - 1);
       turbState.r_turb_t = turbState.r_turb_t & ((CYCLE << 16) - 1);
 
-      D_DrawTurbulent8Span();
+      if (truecolor) D_DrawTurbulent32Span();
+      else D_DrawTurbulent8Span();
 
       turbState.r_turb_s = snext;
       turbState.r_turb_t = tnext;
@@ -397,6 +459,141 @@ export function D_DrawSpans8(pspanIn: EspanT | null): void {
 
       do {
         d_viewbuffer[pdest++] = pbase[(s >> 16) + (t >> 16) * cachewidth];
+        s = (s + sstep) | 0;
+        t = (t + tstep) | 0;
+      } while (--spancount > 0);
+
+      s = snext;
+      t = tnext;
+    } while (count > 0);
+
+    pspan = pspan.pnext;
+  } while (pspan !== null);
+}
+
+/*
+=============
+D_DrawSpans32
+
+U25's true-color twin of D_DrawSpans8: the identical span walk and
+fixed-point stepping, reading the 32-bit surface cache block
+r_surf.ts's R_DrawSurfaceBlock32 generated (already lit, so this is a copy)
+and writing into the 32-bit view buffer.
+=============
+*/
+export function D_DrawSpans32(pspanIn: EspanT | null): void {
+  const pbase = rState.cacheblock32;
+  const d_viewbuffer32 = rState.d_viewbuffer32;
+  if (pbase === null) Sys_Error("D_DrawSpans32: NULL cacheblock32");
+  if (d_viewbuffer32 === null) Sys_Error("D_DrawSpans32: NULL d_viewbuffer32");
+
+  let pspan: EspanT | null = pspanIn;
+  if (pspan === null) return;
+
+  let count: number;
+  let spancount: number;
+  let pdest: number;
+  let s: number;
+  let t: number;
+  let snext = 0;
+  let tnext = 0;
+  let sstep: number;
+  let tstep: number;
+  let sdivz: number;
+  let tdivz: number;
+  let zi: number;
+  let z: number;
+  let du: number;
+  let dv: number;
+  let spancountminus1: number;
+
+  const screenwidth = rState.screenwidth;
+  const cachewidth = rState.cachewidth;
+
+  sstep = 0; // keep compiler happy
+  tstep = 0; // ditto
+
+  const sdivz8stepu = rState.d_sdivzstepu * 8;
+  const tdivz8stepu = rState.d_tdivzstepu * 8;
+  const zi8stepu = rState.d_zistepu * 8;
+
+  do {
+    pdest = screenwidth * pspan.v + pspan.u;
+
+    count = pspan.count;
+
+    // calculate the initial s/z, t/z, 1/z, s, and t and clamp
+    du = pspan.u;
+    dv = pspan.v;
+
+    sdivz = rState.d_sdivzorigin + dv * rState.d_sdivzstepv + du * rState.d_sdivzstepu;
+    tdivz = rState.d_tdivzorigin + dv * rState.d_tdivzstepv + du * rState.d_tdivzstepu;
+    zi = rState.d_ziorigin + dv * rState.d_zistepv + du * rState.d_zistepu;
+    z = 0x10000 / zi; // prescale to 16.16 fixed-point
+
+    s = (((sdivz * z) | 0) + rState.sadjust) | 0;
+    if (s > rState.bbextents) s = rState.bbextents;
+    else if (s < 0) s = 0;
+
+    t = (((tdivz * z) | 0) + rState.tadjust) | 0;
+    if (t > rState.bbextentt) t = rState.bbextentt;
+    else if (t < 0) t = 0;
+
+    do {
+      // calculate s and t at the far end of the span
+      if (count >= 8) spancount = 8;
+      else spancount = count;
+
+      count -= spancount;
+
+      if (count) {
+        // calculate s/z, t/z, zi->fixed s and t at far end of span,
+        // calculate s and t steps across span by shifting
+        sdivz += sdivz8stepu;
+        tdivz += tdivz8stepu;
+        zi += zi8stepu;
+        z = 0x10000 / zi; // prescale to 16.16 fixed-point
+
+        snext = (((sdivz * z) | 0) + rState.sadjust) | 0;
+        if (snext > rState.bbextents) snext = rState.bbextents;
+        else if (snext < 8) snext = 8; // prevent round-off error on <0 steps from
+        //  from causing overstepping & running off the
+        //  edge of the texture
+
+        tnext = (((tdivz * z) | 0) + rState.tadjust) | 0;
+        if (tnext > rState.bbextentt) tnext = rState.bbextentt;
+        else if (tnext < 8) tnext = 8; // guard against round-off error on <0 steps
+
+        sstep = (snext - s) >> 3;
+        tstep = (tnext - t) >> 3;
+      } else {
+        // calculate s/z, t/z, zi->fixed s and t at last pixel in span (so
+        // can't step off polygon), clamp, calculate s and t steps across
+        // span by division, biasing steps low so we don't run off the
+        // texture
+        spancountminus1 = spancount - 1;
+        sdivz += rState.d_sdivzstepu * spancountminus1;
+        tdivz += rState.d_tdivzstepu * spancountminus1;
+        zi += rState.d_zistepu * spancountminus1;
+        z = 0x10000 / zi; // prescale to 16.16 fixed-point
+        snext = (((sdivz * z) | 0) + rState.sadjust) | 0;
+        if (snext > rState.bbextents) snext = rState.bbextents;
+        else if (snext < 8) snext = 8; // prevent round-off error on <0 steps from
+        //  from causing overstepping & running off the
+        //  edge of the texture
+
+        tnext = (((tdivz * z) | 0) + rState.tadjust) | 0;
+        if (tnext > rState.bbextentt) tnext = rState.bbextentt;
+        else if (tnext < 8) tnext = 8; // guard against round-off error on <0 steps
+
+        if (spancount > 1) {
+          sstep = ((snext - s) / (spancount - 1)) | 0;
+          tstep = ((tnext - t) / (spancount - 1)) | 0;
+        }
+      }
+
+      do {
+        d_viewbuffer32[pdest++] = pbase[(s >> 16) + (t >> 16) * cachewidth];
         s = (s + sstep) | 0;
         t = (t + tstep) | 0;
       } while (--spancount > 0);

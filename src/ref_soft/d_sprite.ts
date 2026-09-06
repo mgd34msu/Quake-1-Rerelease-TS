@@ -33,6 +33,7 @@ Deviations from PORTING.md / the C source:
 */
 
 import { Sys_Error } from "../platform/sys";
+import { d_8to24table } from "../client/vid";
 import { DotProduct, VectorInverse, vec3 } from "../common/mathlib";
 import { DS_SPAN_LIST_END, MAXHEIGHT, type SspanT, allocSspans } from "./d_local";
 import { r_spritedesc } from "./d_iface";
@@ -80,6 +81,11 @@ export function D_SpriteDrawSpans(spans: SspanT[]): void {
   const screenwidth = rState.screenwidth;
   const d_zwidth = rState.d_zwidth;
   const cachewidth = rState.cachewidth;
+  // U25: a sprite's texels are palette indices with no lightmap, so in true
+  // color they are expanded through the palette untinted, with the C's
+  // index-255 transparency test left exactly where it is
+  // (src/ref_soft/r_coloredlight.ts's header).
+  const out32 = rState.d_viewbuffer32;
 
   sstep = 0; // keep compiler happy
   tstep = 0; // ditto
@@ -179,7 +185,8 @@ export function D_SpriteDrawSpans(spans: SspanT[]): void {
           if (btemp !== 255) {
             if (d_pzbuffer[pz] <= izi >> 16) {
               d_pzbuffer[pz] = izi >> 16;
-              d_viewbuffer[pdest] = btemp;
+              if (out32 !== null) out32[pdest] = d_8to24table[btemp];
+              else d_viewbuffer[pdest] = btemp;
             }
           }
 

@@ -32,7 +32,7 @@ Deviations from PORTING.md / the C source:
 
 import { Sys_Error } from "../platform/sys";
 import { VectorNormalize, vec3 } from "../common/mathlib";
-import { vid } from "../client/vid";
+import { d_8to24table, vid } from "../client/vid";
 import { SKYSIZE } from "./d_iface";
 import { R_SKY_SMASK, R_SKY_TMASK } from "./d_local";
 import { type EspanT, r_refdef, rState, vpn, vright, vup } from "./r_shared";
@@ -98,6 +98,11 @@ export function D_DrawSkyScans8(pspanIn: EspanT | null): void {
   let spancountminus1: number;
 
   const screenwidth = rState.screenwidth;
+  // U25: the sky is drawn untinted in true color -- it carries no lightmap
+  // in the C either (SURF_DRAWSKY surfaces never reach R_BuildLightMap), so
+  // its texels are just expanded through the palette. See
+  // src/ref_soft/r_coloredlight.ts's header.
+  const out32 = rState.d_viewbuffer32;
 
   sstep = 0; // keep compiler happy
   tstep = 0; // ditto
@@ -147,11 +152,19 @@ export function D_DrawSkyScans8(pspanIn: EspanT | null): void {
         }
       }
 
-      do {
-        d_viewbuffer[pdest++] = r_skysource[((t & R_SKY_TMASK) >> 8) + ((s & R_SKY_SMASK) >> 16)];
-        s = (s + sstep) | 0;
-        t = (t + tstep) | 0;
-      } while (--spancount > 0);
+      if (out32 !== null) {
+        do {
+          out32[pdest++] = d_8to24table[r_skysource[((t & R_SKY_TMASK) >> 8) + ((s & R_SKY_SMASK) >> 16)]];
+          s = (s + sstep) | 0;
+          t = (t + tstep) | 0;
+        } while (--spancount > 0);
+      } else {
+        do {
+          d_viewbuffer[pdest++] = r_skysource[((t & R_SKY_TMASK) >> 8) + ((s & R_SKY_SMASK) >> 16)];
+          s = (s + sstep) | 0;
+          t = (t + tstep) | 0;
+        } while (--spancount > 0);
+      }
 
       s = snext;
       t = tnext;

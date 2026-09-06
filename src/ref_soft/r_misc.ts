@@ -100,7 +100,7 @@ import { CONTENTS_WATER } from "../common/bspfile";
 import { cl, cls } from "../client/client";
 import { sv } from "../server/server";
 import { hostBasepal } from "../common/host";
-import { vid, vidBackend, VrectT } from "../client/vid";
+import { d_8to24table, vid, vidBackend, VrectT } from "../client/vid";
 import { scrState } from "../client/screen_types";
 import { lcd_x } from "../client/view";
 import { qw } from "../common/quakedef";
@@ -270,21 +270,36 @@ export function R_LineGraph(x: number, y: number, h: number): void {
 
   if (h > s) h = s;
 
+  // U25: the debug graphs are palette indices, expanded untinted into the
+  // 32-bit framebuffer while the true-color path is presenting
+  // (src/ref_soft/r_coloredlight.ts)
+  const out32 = rState.r_truecolor ? vid.buffer32 : null;
+
   if (qw.active) {
     for (i = 0; i < h; i++, dest -= vid.rowbytes * 2) {
       buffer[dest] = color;
+      if (out32 !== null) out32[dest] = d_8to24table[color];
     }
     for (; i < s; i++, dest -= vid.rowbytes * 2) {
       buffer[dest] = color;
+      if (out32 !== null) out32[dest] = d_8to24table[color];
     }
   } else {
     for (i = 0; i < h; i++, dest -= vid.rowbytes * 2) {
       buffer[dest] = 0xff;
       buffer[dest - vid.rowbytes] = 0x30;
+      if (out32 !== null) {
+        out32[dest] = d_8to24table[0xff];
+        out32[dest - vid.rowbytes] = d_8to24table[0x30];
+      }
     }
     for (; i < s; i++, dest -= vid.rowbytes * 2) {
       buffer[dest] = 0x30;
       buffer[dest - vid.rowbytes] = 0x30;
+      if (out32 !== null) {
+        out32[dest] = d_8to24table[0x30];
+        out32[dest - vid.rowbytes] = d_8to24table[0x30];
+      }
     }
   }
 }

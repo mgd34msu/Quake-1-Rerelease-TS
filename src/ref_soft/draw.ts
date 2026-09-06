@@ -127,7 +127,8 @@ import { LINUX_VERSION, VERSION, qw } from "../common/quakedef";
 import { QpicT, W_GetLumpName, W_GetQpic, SwapPic } from "../common/wad";
 import { CacheUser, Cache_Check } from "../common/zone";
 import { COM_LoadCacheFile } from "../common/common";
-import { vid, vidBackend, VrectT } from "../client/vid";
+import { d_8to24table, vid, vidBackend, VrectT } from "../client/vid";
+import { rState } from "./r_shared";
 import { TRANSPARENT_COLOR } from "./d_iface";
 import { cls } from "../client/client";
 import { scr_vrect } from "../client/screen_types";
@@ -140,6 +141,28 @@ import { scr_vrect } from "../client/screen_types";
 // view.ts (Q023b) adds `export const crosshaircolor = new CvarT(...)`.
 import { cl_crossx, cl_crossy, crosshair, crosshaircolor } from "../client/view";
 import { Con_Printf } from "../client/console";
+
+/*
+U25 (no C original): the 2D overlay -- console, HUD, menus -- draws 8-bit
+palette indices, exactly as the C does. When the frame is being presented
+from the 32-bit framebuffer (rState.r_truecolor; see
+src/ref_soft/r_coloredlight.ts's header) the same pixels are additionally
+expanded through d_8to24table into vid.buffer32 at the same coordinates.
+vid.buffer32 has the same element stride as vid.buffer/vid.conbuffer
+(vid.rowbytes == vid.conrowbytes), so every destination offset the C computes
+indexes both. Index 255's transparency is preserved for free: every path that
+honours it already tests the source byte before writing.
+*/
+function overlay32(): Uint32Array | null {
+  if (!rState.r_truecolor) return null;
+  return vid.buffer32;
+}
+
+// the 8-bit run `dst[dstOfs .. dstOfs+len)` mirrored into the 32-bit buffer
+function overlayRun32(out32: Uint32Array, src: Uint8Array, srcOfs: number, dstOfs: number, len: number): void {
+  for (let i = 0; i < len; i++) out32[dstOfs + i] = d_8to24table[src[srcOfs + i]];
+}
+
 
 //=============================================================================
 /* Support Routines */
@@ -264,16 +287,16 @@ export function Draw_Character(x: number, y: number, num: number): void {
   if (!conbuffer) return;
 
   let destOfs = y * vid.conrowbytes + x;
+  const out32 = overlay32();
 
   while (drawline--) {
-    if (chars[sourceOfs + 0]) conbuffer[destOfs + 0] = chars[sourceOfs + 0];
-    if (chars[sourceOfs + 1]) conbuffer[destOfs + 1] = chars[sourceOfs + 1];
-    if (chars[sourceOfs + 2]) conbuffer[destOfs + 2] = chars[sourceOfs + 2];
-    if (chars[sourceOfs + 3]) conbuffer[destOfs + 3] = chars[sourceOfs + 3];
-    if (chars[sourceOfs + 4]) conbuffer[destOfs + 4] = chars[sourceOfs + 4];
-    if (chars[sourceOfs + 5]) conbuffer[destOfs + 5] = chars[sourceOfs + 5];
-    if (chars[sourceOfs + 6]) conbuffer[destOfs + 6] = chars[sourceOfs + 6];
-    if (chars[sourceOfs + 7]) conbuffer[destOfs + 7] = chars[sourceOfs + 7];
+    for (let i = 0; i < 8; i++) {
+      const c = chars[sourceOfs + i];
+      if (c) {
+        conbuffer[destOfs + i] = c;
+        if (out32 !== null) out32[destOfs + i] = d_8to24table[c];
+      }
+    }
     sourceOfs += 128;
     destOfs += vid.conrowbytes;
   }
@@ -323,7 +346,10 @@ crosshair.value==2 dot renderer. r_pixbytes == 1 only, see file header.
 function Draw_Pixel(x: number, y: number, color: number): void {
   const conbuffer = vid.conbuffer;
   if (!conbuffer) return;
-  conbuffer[y * vid.conrowbytes + x] = color;
+  const ofs = y * vid.conrowbytes + x;
+  conbuffer[ofs] = color;
+  const out32 = overlay32();
+  if (out32 !== null) out32[ofs] = d_8to24table[color];
 }
 
 /*
@@ -382,9 +408,11 @@ export function Draw_SubPic(x: number, y: number, pic: QpicT, srcx: number, srcy
 
   let destOfs = y * vid.rowbytes + x;
   let sourceOfs = srcy * pic.width + srcx;
+  const out32 = overlay32();
 
   for (let v = 0; v < height; v++) {
     buffer.set(pic.data.subarray(sourceOfs, sourceOfs + width), destOfs);
+    if (out32 !== null) overlayRun32(out32, pic.data, sourceOfs, destOfs, width);
     destOfs += vid.rowbytes;
     sourceOfs += pic.width;
   }
@@ -427,9 +455,11 @@ export function Draw_Pic(x: number, y: number, pic: QpicT): void {
   const source = pic.data;
   let destOfs = y * vid.rowbytes + x;
   let sourceOfs = 0;
+  const out32 = overlay32();
 
   for (let v = 0; v < pic.height; v++) {
     buffer.set(source.subarray(sourceOfs, sourceOfs + pic.width), destOfs);
+    if (out32 !== null) overlayRun32(out32, source, sourceOfs, destOfs, pic.width);
     destOfs += vid.rowbytes;
     sourceOfs += pic.width;
   }
@@ -455,12 +485,17 @@ export function Draw_TransPic(x: number, y: number, pic: QpicT): void {
   let destOfs = y * vid.rowbytes + x;
   let sourceOfs = 0;
 
+  const out32 = overlay32();
+
   // see file header: the C's width&7 unrolled-by-8 branch is dropped as
   // behaviorally identical to this plain per-pixel loop
   for (let v = 0; v < pic.height; v++) {
     for (let u = 0; u < pic.width; u++) {
       const tbyte = source[sourceOfs + u];
-      if (tbyte !== TRANSPARENT_COLOR) buffer[destOfs + u] = tbyte;
+      if (tbyte !== TRANSPARENT_COLOR) {
+        buffer[destOfs + u] = tbyte;
+        if (out32 !== null) out32[destOfs + u] = d_8to24table[tbyte];
+      }
     }
     destOfs += vid.rowbytes;
     sourceOfs += pic.width;
@@ -488,10 +523,15 @@ export function Draw_TransPicTranslate(x: number, y: number, pic: QpicT, transla
   let destOfs = y * vid.rowbytes + x;
   let sourceOfs = 0;
 
+  const out32 = overlay32();
+
   for (let v = 0; v < pic.height; v++) {
     for (let u = 0; u < pic.width; u++) {
       const tbyte = source[sourceOfs + u];
-      if (tbyte !== TRANSPARENT_COLOR) buffer[destOfs + u] = translation[tbyte];
+      if (tbyte !== TRANSPARENT_COLOR) {
+        buffer[destOfs + u] = translation[tbyte];
+        if (out32 !== null) out32[destOfs + u] = d_8to24table[translation[tbyte]];
+      }
     }
     destOfs += vid.rowbytes;
     sourceOfs += pic.width;
@@ -570,12 +610,14 @@ export function Draw_ConsoleBackground(lines: number): void {
   if (!conbuffer) return;
 
   let destOfs = 0;
+  const out32 = overlay32();
   for (let y = 0; y < lines; y++, destOfs += vid.conrowbytes) {
     const v = ((vid.conheight - lines + y) * 200) / vid.conheight;
     const srcOfs = (v | 0) * 320;
 
     if (vid.conwidth === 320) {
       conbuffer.set(conback.data.subarray(srcOfs, srcOfs + vid.conwidth), destOfs);
+      if (out32 !== null) overlayRun32(out32, conback.data, srcOfs, destOfs, vid.conwidth);
     } else {
       let f = 0;
       const fstep = ((320 * 0x10000) / vid.conwidth) | 0;
@@ -588,6 +630,9 @@ export function Draw_ConsoleBackground(lines: number): void {
         f += fstep;
         conbuffer[destOfs + x + 3] = conback.data[srcOfs + (f >> 16)];
         f += fstep;
+      }
+      if (out32 !== null) {
+        for (let x = 0; x < vid.conwidth; x++) out32[destOfs + x] = d_8to24table[conbuffer[destOfs + x]];
       }
     }
   }
@@ -618,12 +663,16 @@ function R_DrawRect8(prect: VrectT, rowbytes: number, psrc: Uint8Array, psrcOfs:
   const destdelta = vid.rowbytes - prect.width;
 
   let srcOfs = psrcOfs;
+  const out32 = overlay32();
 
   if (transparent) {
     for (let i = 0; i < prect.height; i++) {
       for (let j = 0; j < prect.width; j++) {
         const t = psrc[srcOfs];
-        if (t !== TRANSPARENT_COLOR) buffer[pdestOfs] = t;
+        if (t !== TRANSPARENT_COLOR) {
+          buffer[pdestOfs] = t;
+          if (out32 !== null) out32[pdestOfs] = d_8to24table[t];
+        }
 
         srcOfs++;
         pdestOfs++;
@@ -635,6 +684,7 @@ function R_DrawRect8(prect: VrectT, rowbytes: number, psrc: Uint8Array, psrcOfs:
   } else {
     for (let i = 0; i < prect.height; i++) {
       buffer.set(psrc.subarray(srcOfs, srcOfs + prect.width), pdestOfs);
+      if (out32 !== null) overlayRun32(out32, psrc, srcOfs, pdestOfs, prect.width);
       srcOfs += rowbytes;
       pdestOfs += vid.rowbytes;
     }
@@ -722,8 +772,11 @@ export function Draw_Fill(x: number, y: number, w: number, h: number, c: number)
   if (!buffer) return;
 
   let destOfs = y * vid.rowbytes + x;
+  const out32 = overlay32();
+  const c32 = out32 !== null ? d_8to24table[c & 0xff] : 0;
   for (let v = 0; v < h; v++, destOfs += vid.rowbytes) {
     for (let u = 0; u < w; u++) buffer[destOfs + u] = c;
+    if (out32 !== null) for (let u = 0; u < w; u++) out32[destOfs + u] = c32;
   }
 }
 
@@ -740,12 +793,18 @@ export function Draw_FadeScreen(): void {
   const buffer = vid.buffer;
   if (!buffer) return;
 
+  const out32 = overlay32();
+  const zero32 = out32 !== null ? d_8to24table[0] : 0;
+
   for (let y = 0; y < vid.height; y++) {
     const pbufOfs = vid.rowbytes * y;
     const t = (y & 1) << 1;
 
     for (let x = 0; x < vid.width; x++) {
-      if ((x & 3) !== t) buffer[pbufOfs + x] = 0;
+      if ((x & 3) !== t) {
+        buffer[pbufOfs + x] = 0;
+        if (out32 !== null) out32[pbufOfs + x] = zero32;
+      }
     }
   }
 }

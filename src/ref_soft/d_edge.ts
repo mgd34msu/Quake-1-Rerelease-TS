@@ -44,6 +44,7 @@ Deviations from PORTING.md / the C source:
 */
 
 import { Sys_Error } from "../platform/sys";
+import { d_8to24table } from "../client/vid";
 import { DotProduct, VectorCopy, VectorScale, VectorSubtract, vec3 } from "../common/mathlib";
 import { SURF_DRAWBACKGROUND, SURF_DRAWSKY, SURF_DRAWTURB } from "../common/model";
 import type { MsurfaceT } from "../common/model";
@@ -118,6 +119,20 @@ export function D_DrawSolidSurface(surf: SurfT, color: number): void {
 
   const screenwidth = rState.screenwidth;
   const pix = color & 0xff;
+
+  // U25: r_clearcolor's background surface and r_drawflat's per-surface color
+  // are palette indices in both paths; in true color they are expanded
+  // through the palette untinted (see r_coloredlight.ts's header).
+  const out32 = rState.d_viewbuffer32;
+  if (out32 !== null) {
+    const rgb = d_8to24table[pix];
+    for (let span = surf.spans; span; span = span.pnext) {
+      const pdest = screenwidth * span.v;
+      const u2 = span.u + span.count - 1;
+      for (let u = span.u; u <= u2; u++) out32[pdest + u] = rgb;
+    }
+    return;
+  }
 
   for (let span = surf.spans; span; span = span.pnext) {
     const pdest = screenwidth * span.v;
@@ -321,6 +336,7 @@ export function D_DrawSurfaces(): void {
         const pcurrentcache = D_CacheSurface(pface, miplevel);
 
         rState.cacheblock = pcurrentcache.data;
+        rState.cacheblock32 = pcurrentcache.data32; // U25: null unless r_truecolor
         rState.cachewidth = pcurrentcache.width;
 
         D_CalcGradients(pface);

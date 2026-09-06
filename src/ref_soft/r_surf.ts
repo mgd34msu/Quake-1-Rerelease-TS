@@ -62,6 +62,20 @@ Deviations from PORTING.md / the C source:
 - Dropped `#if id386` alternates: R_DrawSurfaceBlock8_mip0..3 and
   R_DrawSurfaceBlock16 have asm versions; the `!id386` C bodies are ported.
 
+U25 COLORED LIGHTING (this port's own addition; no C original -- see
+src/ref_soft/r_coloredlight.ts's header for the design). When
+`rState.r_truecolor` is set for the frame, R_DrawSurface builds the lightmap
+into `blocklights_rgb` (three channels per texel, from the world model's
+`lightdata_rgb`) instead of `blocklights` and generates the surface cache
+block through R_DrawSurfaceBlock32, which writes 32-bit ARGB texels into
+`r_drawsurf.surfdat32` instead of palette indices into `r_drawsurf.surfdat`.
+Each channel walks the SAME colormap the 8-bit drawers walk, with that
+channel's own light value, so an equal-channel lightmap produces exactly the
+8-bit result expanded through `d_8to24table`. R_DrawSurfaceBlock32 is one
+function rather than four mip twins because it reads `blocksize` and
+`blockdivshift` the way R_DrawSurfaceBlock16 does; the four 8-bit
+R_DrawSurfaceBlock8_mipN bodies are untouched.
+
 QuakeWorld fold (PORTING.md's "QuakeWorld track", `qw.active`; see
 ../qsrc/quake/QW/client/r_surf.c against WinQuake/r_surf.c): the diff is a
 comment-out of the `r_fullbright.value ||` half of R_BuildLightMap's guard
@@ -73,7 +87,7 @@ import { DotProduct, type Vec3, vec3 } from "../common/mathlib";
 import { MAXLIGHTMAPS } from "../common/bspfile";
 import { MAX_SURFACE_EXTENTS, SURF_DRAWSKY, SURF_DRAWTURB, mipDim, type MsurfaceT, type TextureT } from "../common/model";
 import { MAX_DLIGHTS, cl, cl_dlights } from "../client/client";
-import { VID_CBITS, d_8to16table, vid } from "../client/vid";
+import { VID_CBITS, d_8to16table, d_8to24table, vid } from "../client/vid";
 import { Sys_Error } from "../platform/sys";
 import { CYCLE, TILE_SIZE, r_drawsurf } from "./d_iface";
 import { SPEED, r_refdef, rState, sintable } from "./r_local";
@@ -120,6 +134,17 @@ const surfmiptable: Array<() => void> = [
 // WinQuake-fixed 18*18, which only covered a 256-texel extents cap.
 const LM_BLOCK = (MAX_SURFACE_EXTENTS >> 4) + 2;
 export const blocklights: Uint32Array = new Uint32Array(LM_BLOCK * LM_BLOCK);
+
+// U25: the same lightmap, three channels per texel, interleaved r,g,b. Only
+// R_BuildLightMapRGB and R_DrawSurfaceBlock32 touch it, and only while
+// rState.r_truecolor is set.
+export const blocklights_rgb: Uint32Array = new Uint32Array(LM_BLOCK * LM_BLOCK * 3);
+
+function drawsurfDest32(): Uint32Array {
+  const d = r_drawsurf.surfdat32;
+  if (d === null) Sys_Error("R_DrawSurface: no 32-bit destination surface");
+  return d;
+}
 
 function drawsurfDest(): Uint8Array {
   const d = r_drawsurf.surfdat;
@@ -238,6 +263,142 @@ export function R_BuildLightMap(): void {
 
 /*
 ===============
+R_AddDynamicLightsRGB
+
+R_AddDynamicLights against the three-channel blocklights. A dlight is white
+in Quake 1 (cl_dlights carries no color), so the same add lands in all three
+channels; the loop is otherwise line-for-line the 8-bit one above.
+===============
+*/
+export function R_AddDynamicLightsRGB(): void {
+  const impact: Vec3 = vec3();
+  const local: Vec3 = vec3();
+
+  const surf = r_drawsurf.surf;
+  if (surf === null) Sys_Error("R_AddDynamicLightsRGB: no surface");
+  const smax = (surf.extents[0] >> 4) + 1;
+  const tmax = (surf.extents[1] >> 4) + 1;
+  const tex = surf.texinfo;
+  if (tex === null) Sys_Error("R_AddDynamicLightsRGB: surface has no texinfo");
+  const plane = surf.plane;
+  if (plane === null) Sys_Error("R_AddDynamicLightsRGB: surface has no plane");
+
+  for (let lnum = 0; lnum < MAX_DLIGHTS; lnum++) {
+    if (!(surf.dlightbits & (1 << lnum))) continue; // not lit by this light
+
+    let rad = cl_dlights[lnum].radius;
+    let dist = DotProduct(cl_dlights[lnum].origin, plane.normal) - plane.dist;
+    rad -= Math.abs(dist);
+    let minlight = cl_dlights[lnum].minlight;
+    if (rad < minlight) continue;
+    minlight = rad - minlight;
+
+    for (let i = 0; i < 3; i++) {
+      impact[i] = cl_dlights[lnum].origin[i] - plane.normal[i] * dist;
+    }
+
+    local[0] = DotProduct(impact, tex.vecs[0]) + tex.vecs[0][3];
+    local[1] = DotProduct(impact, tex.vecs[1]) + tex.vecs[1][3];
+
+    local[0] -= surf.texturemins[0];
+    local[1] -= surf.texturemins[1];
+
+    for (let t = 0; t < tmax; t++) {
+      let td = Math.trunc(local[1] - t * 16);
+      if (td < 0) td = -td;
+      for (let s = 0; s < smax; s++) {
+        let sd = Math.trunc(local[0] - s * 16);
+        if (sd < 0) sd = -sd;
+        if (sd > td) dist = sd + (td >> 1);
+        else dist = td + (sd >> 1);
+        if (dist < minlight) {
+          const add = (rad - dist) * 256;
+          const i3 = (t * smax + s) * 3;
+          blocklights_rgb[i3] += add;
+          blocklights_rgb[i3 + 1] += add;
+          blocklights_rgb[i3 + 2] += add;
+        }
+      }
+    }
+  }
+}
+
+/*
+===============
+R_BuildLightMapRGB
+
+R_BuildLightMap against the three-channel blocklights, reading the world
+model's `lightdata_rgb` (3 bytes per sample at `lightofs * 3`, the layout
+src/ref_gl/gl_rsurf.ts's R_BuildLightMap already reads) instead of the
+greyscale `surf.samples`. Every guard, every scale and the closing bound/
+invert/shift are the 8-bit function's, applied per channel, so a surface
+whose three channels carry the same value comes out of the block drawer as
+the 8-bit pixel expanded through the palette.
+===============
+*/
+export function R_BuildLightMapRGB(): void {
+  const surf = r_drawsurf.surf;
+  if (surf === null) Sys_Error("R_BuildLightMapRGB: no surface");
+
+  const smax = (surf.extents[0] >> 4) + 1;
+  const tmax = (surf.extents[1] >> 4) + 1;
+  const size = smax * tmax;
+  const lightmap = surf.samples;
+  let lightmapofs = 0;
+
+  const worldmodel = cl.worldmodel;
+  if ((!qw.active && r_fullbright.value) || worldmodel === null || worldmodel.lightdata === null) {
+    for (let i = 0; i < size * 3; i++) blocklights_rgb[i] = 0;
+    return;
+  }
+
+  // clear to ambient
+  const ambient = r_refdef.ambientlight << 8;
+  for (let i = 0; i < size * 3; i++) blocklights_rgb[i] = ambient;
+
+  const rgbLightdata = worldmodel.lightdata_rgb;
+  const rgbSamples = rgbLightdata !== null && surf.lightofs !== -1 ? rgbLightdata.subarray(surf.lightofs * 3) : null;
+
+  // add all the lightmaps
+  if (lightmap !== null) {
+    for (let maps = 0; maps < MAXLIGHTMAPS && surf.styles[maps] !== 255; maps++) {
+      const scale = r_drawsurf.lightadj[maps]; // 8.8 fraction
+      if (rgbSamples !== null) {
+        for (let i = 0; i < size; i++) {
+          const s3 = (lightmapofs + i) * 3;
+          const i3 = i * 3;
+          blocklights_rgb[i3] += rgbSamples[s3] * scale;
+          blocklights_rgb[i3 + 1] += rgbSamples[s3 + 1] * scale;
+          blocklights_rgb[i3 + 2] += rgbSamples[s3 + 2] * scale;
+        }
+      } else {
+        for (let i = 0; i < size; i++) {
+          const v = lightmap[lightmapofs + i] * scale;
+          const i3 = i * 3;
+          blocklights_rgb[i3] += v;
+          blocklights_rgb[i3 + 1] += v;
+          blocklights_rgb[i3 + 2] += v;
+        }
+      }
+      lightmapofs += size; // skip to next lightmap
+    }
+  }
+
+  // add all the dynamic lights
+  if (surf.dlightframe === rState.r_framecount) R_AddDynamicLightsRGB();
+
+  // bound, invert, and shift
+  for (let i = 0; i < size * 3; i++) {
+    let t = (255 * 256 - (blocklights_rgb[i] | 0)) >> (8 - VID_CBITS);
+
+    if (t < 1 << 6) t = 1 << 6;
+
+    blocklights_rgb[i] = t;
+  }
+}
+
+/*
+===============
 R_TextureAnimation
 
 Returns the proper texture for a given time and base texture
@@ -274,7 +435,8 @@ R_DrawSurface
 */
 export function R_DrawSurface(): void {
   // calculate the lightings
-  R_BuildLightMap();
+  if (rState.r_truecolor) R_BuildLightMapRGB();
+  else R_BuildLightMap();
 
   surfrowbytes = r_drawsurf.rowbytes;
 
@@ -310,7 +472,12 @@ export function R_DrawSurface(): void {
 
   let pblockdrawer: () => void;
   let horzblockstep: number;
-  if (rState.r_pixbytes === 1) {
+  if (rState.r_truecolor) {
+    // U25: one 32-bit texel per destination element, so the horizontal step
+    // is the block size, exactly as in the 8-bit case
+    pblockdrawer = R_DrawSurfaceBlock32;
+    horzblockstep = blocksize;
+  } else if (rState.r_pixbytes === 1) {
     pblockdrawer = surfmiptable[r_drawsurf.surfmip];
     // TODO: only needs to be set when there is a display settings change
     horzblockstep = blocksize;
@@ -520,6 +687,80 @@ export function R_DrawSurfaceBlock8_mip3(): void {
       psource += sourcetstep;
       lightright += lightrightstep;
       lightleft += lightleftstep;
+      prowdest += surfrowbytes;
+    }
+
+    if (psource >= r_sourcemax) psource -= r_stepback;
+  }
+}
+
+/*
+================
+R_DrawSurfaceBlock32
+
+U25's true-color block drawer. Structurally R_DrawSurfaceBlock8_mip0 with
+`blocksize`/`blockdivshift` in place of the hardcoded 16 and 4 (so one body
+covers all four mip levels, the way R_DrawSurfaceBlock16 does), and with the
+one colormap lookup replaced by three -- one per channel, each with that
+channel's own interpolated light value, each contributing one byte of the
+palette color. Three equal channel lights therefore hit the same colormap
+entry three times and reproduce `d_8to24table[colormap[(light & 0xff00) +
+pix]]` exactly.
+================
+*/
+export function R_DrawSurfaceBlock32(): void {
+  const colormap = drawColormap();
+  const dest = drawsurfDest32();
+  const size = blocksize;
+  const shift = blockdivshift;
+
+  let psource = pbasesource;
+  let prowdest = prowdestbase;
+
+  for (let v = 0; v < r_numvblocks; v++) {
+    let p3 = r_lightptr * 3;
+    let rleft = blocklights_rgb[p3];
+    let gleft = blocklights_rgb[p3 + 1];
+    let bleft = blocklights_rgb[p3 + 2];
+    let rright = blocklights_rgb[p3 + 3];
+    let gright = blocklights_rgb[p3 + 4];
+    let bright = blocklights_rgb[p3 + 5];
+    r_lightptr += r_lightwidth;
+    p3 = r_lightptr * 3;
+    const rleftstep = (blocklights_rgb[p3] - rleft) >> shift;
+    const gleftstep = (blocklights_rgb[p3 + 1] - gleft) >> shift;
+    const bleftstep = (blocklights_rgb[p3 + 2] - bleft) >> shift;
+    const rrightstep = (blocklights_rgb[p3 + 3] - rright) >> shift;
+    const grightstep = (blocklights_rgb[p3 + 4] - gright) >> shift;
+    const brightstep = (blocklights_rgb[p3 + 5] - bright) >> shift;
+
+    for (let i = 0; i < size; i++) {
+      const rstep = (rleft - rright) >> shift;
+      const gstep = (gleft - gright) >> shift;
+      const bstep = (bleft - bright) >> shift;
+
+      let rlight = rright;
+      let glight = gright;
+      let blight = bright;
+
+      for (let b = size - 1; b >= 0; b--) {
+        const pix = r_sourceData[psource + b];
+        const cr = d_8to24table[colormap[(rlight & 0xff00) + pix]] & 0xff;
+        const cg = d_8to24table[colormap[(glight & 0xff00) + pix]] & 0xff00;
+        const cb = d_8to24table[colormap[(blight & 0xff00) + pix]] & 0xff0000;
+        dest[prowdest + b] = (0xff000000 | cb | cg | cr) >>> 0;
+        rlight += rstep;
+        glight += gstep;
+        blight += bstep;
+      }
+
+      psource += sourcetstep;
+      rright += rrightstep;
+      gright += grightstep;
+      bright += brightstep;
+      rleft += rleftstep;
+      gleft += gleftstep;
+      bleft += bleftstep;
       prowdest += surfrowbytes;
     }
 

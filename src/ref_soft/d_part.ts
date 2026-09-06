@@ -24,6 +24,7 @@ Deviations from PORTING.md / the C source:
 */
 
 import { Sys_Error } from "../platform/sys";
+import { d_8to24table } from "../client/vid";
 import { DotProduct, VectorSubtract, vec3 } from "../common/mathlib";
 import { d_scantable } from "./d_local";
 import { PARTICLE_Z_CLIP, type ParticleT, r_ppn, r_pright, r_pup } from "./d_iface";
@@ -63,6 +64,10 @@ export function D_DrawParticle(pparticle: ParticleT): void {
 
   const d_zwidth = rState.d_zwidth;
   const screenwidth = rState.screenwidth;
+  // U25: particles carry a palette index and no lighting, so in true color
+  // they are expanded through the palette untinted (r_coloredlight.ts).
+  const out32 = rState.d_viewbuffer32;
+  const pcolor = out32 !== null ? d_8to24table[pparticle.color] : 0;
 
   // transform point
   VectorSubtract(pparticle.org, r_origin, local);
@@ -101,7 +106,8 @@ export function D_DrawParticle(pparticle: ParticleT): void {
       for (; count; count--, pz += d_zwidth, pdest += screenwidth) {
         if (d_pzbuffer[pz + 0] <= izi) {
           d_pzbuffer[pz + 0] = izi;
-          d_viewbuffer[pdest + 0] = pparticle.color;
+          if (out32 !== null) out32[pdest + 0] = pcolor;
+          else d_viewbuffer[pdest + 0] = pparticle.color;
         }
       }
       break;
@@ -112,12 +118,14 @@ export function D_DrawParticle(pparticle: ParticleT): void {
       for (; count; count--, pz += d_zwidth, pdest += screenwidth) {
         if (d_pzbuffer[pz + 0] <= izi) {
           d_pzbuffer[pz + 0] = izi;
-          d_viewbuffer[pdest + 0] = pparticle.color;
+          if (out32 !== null) out32[pdest + 0] = pcolor;
+          else d_viewbuffer[pdest + 0] = pparticle.color;
         }
 
         if (d_pzbuffer[pz + 1] <= izi) {
           d_pzbuffer[pz + 1] = izi;
-          d_viewbuffer[pdest + 1] = pparticle.color;
+          if (out32 !== null) out32[pdest + 1] = pcolor;
+          else d_viewbuffer[pdest + 1] = pparticle.color;
         }
       }
       break;
@@ -128,17 +136,20 @@ export function D_DrawParticle(pparticle: ParticleT): void {
       for (; count; count--, pz += d_zwidth, pdest += screenwidth) {
         if (d_pzbuffer[pz + 0] <= izi) {
           d_pzbuffer[pz + 0] = izi;
-          d_viewbuffer[pdest + 0] = pparticle.color;
+          if (out32 !== null) out32[pdest + 0] = pcolor;
+          else d_viewbuffer[pdest + 0] = pparticle.color;
         }
 
         if (d_pzbuffer[pz + 1] <= izi) {
           d_pzbuffer[pz + 1] = izi;
-          d_viewbuffer[pdest + 1] = pparticle.color;
+          if (out32 !== null) out32[pdest + 1] = pcolor;
+          else d_viewbuffer[pdest + 1] = pparticle.color;
         }
 
         if (d_pzbuffer[pz + 2] <= izi) {
           d_pzbuffer[pz + 2] = izi;
-          d_viewbuffer[pdest + 2] = pparticle.color;
+          if (out32 !== null) out32[pdest + 2] = pcolor;
+          else d_viewbuffer[pdest + 2] = pparticle.color;
         }
       }
       break;
@@ -149,22 +160,26 @@ export function D_DrawParticle(pparticle: ParticleT): void {
       for (; count; count--, pz += d_zwidth, pdest += screenwidth) {
         if (d_pzbuffer[pz + 0] <= izi) {
           d_pzbuffer[pz + 0] = izi;
-          d_viewbuffer[pdest + 0] = pparticle.color;
+          if (out32 !== null) out32[pdest + 0] = pcolor;
+          else d_viewbuffer[pdest + 0] = pparticle.color;
         }
 
         if (d_pzbuffer[pz + 1] <= izi) {
           d_pzbuffer[pz + 1] = izi;
-          d_viewbuffer[pdest + 1] = pparticle.color;
+          if (out32 !== null) out32[pdest + 1] = pcolor;
+          else d_viewbuffer[pdest + 1] = pparticle.color;
         }
 
         if (d_pzbuffer[pz + 2] <= izi) {
           d_pzbuffer[pz + 2] = izi;
-          d_viewbuffer[pdest + 2] = pparticle.color;
+          if (out32 !== null) out32[pdest + 2] = pcolor;
+          else d_viewbuffer[pdest + 2] = pparticle.color;
         }
 
         if (d_pzbuffer[pz + 3] <= izi) {
           d_pzbuffer[pz + 3] = izi;
-          d_viewbuffer[pdest + 3] = pparticle.color;
+          if (out32 !== null) out32[pdest + 3] = pcolor;
+          else d_viewbuffer[pdest + 3] = pparticle.color;
         }
       }
       break;
@@ -176,7 +191,8 @@ export function D_DrawParticle(pparticle: ParticleT): void {
         for (let i = 0; i < pix; i++) {
           if (d_pzbuffer[pz + i] <= izi) {
             d_pzbuffer[pz + i] = izi;
-            d_viewbuffer[pdest + i] = pparticle.color;
+            if (out32 !== null) out32[pdest + i] = pcolor;
+            else d_viewbuffer[pdest + i] = pparticle.color;
           }
         }
       }
