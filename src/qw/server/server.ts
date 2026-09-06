@@ -108,7 +108,9 @@ import type { FileHandle } from "../../common/common";
 import { NetchanT } from "../net_chan";
 import { NetadrT } from "../net_udp";
 import { MAX_MODELS, MAX_SOUNDS, MAX_LIGHTSTYLES, MAX_CL_STATS, MAX_DATAGRAM, MAX_MSGLEN } from "../bothdefs";
-import { MAX_CLIENTS, UPDATE_BACKUP, PacketEntitiesT, QwUsercmdT } from "../protocol";
+import { MAX_CLIENTS, PROTOCOL_VERSION, UPDATE_BACKUP, PacketEntitiesT, QwUsercmdT } from "../protocol";
+import type { QwProtocolCodec } from "../../common/protocol/codec";
+import { getQwCodec } from "../../common/protocol/registry";
 import type { QwEdictT } from "./progs";
 import {
   MOVETYPE_NONE,
@@ -242,7 +244,22 @@ export class ServerT {
   lightstyles: string[] = new Array<string>(MAX_LIGHTSTYLES).fill("");
   models: Array<ModelT | null> = new Array<ModelT | null>(MAX_MODELS).fill(null);
 
-  num_edicts = 0; // increases towards MAX_EDICTS
+  // U18: the wire protocol this map is being served on -- 28 (id's
+  // QuakeWorld) or 29 (this engine's wide variant, src/common/protocol/qw29.ts).
+  // SV_SpawnServer sets it from `sv_qwprotocol`, and it is fixed for the map
+  // because sv.datagram / sv.multicast / sv.signon are encoded ONCE and then
+  // handed to every client: two clients on different protocols could not share
+  // them. `protocolflags` is 29's PRFL_* word (0 on 28).
+  protocol = PROTOCOL_VERSION;
+  protocolflags = 0;
+
+  // U18: the runtime edict table size (Ironwail's `qcvm->max_edicts`), read
+  // from the shared `max_edicts` cvar at SV_SpawnServer. QW's bothdefs.h
+  // MAX_EDICTS (768) is no longer the cap; the wire's own limit is the codec's
+  // `maxEntityNumber`.
+  max_edicts = 0;
+
+  num_edicts = 0; // increases towards sv.max_edicts
   edicts: QwEdictT[] = []; // can NOT be array indexed, because
   // edict_t is variable sized, but can
   // be used to reference the world ent
@@ -287,6 +304,9 @@ export class ServerT {
     this.name = "";
     this.modelname = "";
     this.worldmodel = null;
+    this.protocol = PROTOCOL_VERSION;
+    this.protocolflags = 0;
+    this.max_edicts = 0;
     this.model_precache = new Array<string | null>(MAX_MODELS).fill(null);
     this.sound_precache = new Array<string | null>(MAX_SOUNDS).fill(null);
     this.lightstyles = new Array<string>(MAX_LIGHTSTYLES).fill("");
@@ -346,6 +366,12 @@ export class ClientT {
 
   userid = 0; // identifying number
   userinfo = ""; // infostring, MAX_INFO_STRING
+
+  // U18: set at SVC_DirectConnect from the client's `*wide` userinfo key --
+  // "this client can read protocol 29". A vanilla QuakeWorld client sends no
+  // such key and leaves this false, which is what keeps a 29-capable server
+  // answering it with 28.
+  wide = false;
 
   lastcmd: QwUsercmdT = new QwUsercmdT(); // for filling in big drops and partial predictions
   localtime = 0; // of last message
@@ -480,6 +506,13 @@ export enum RedirectT {
 
 export const svs = new ServerStaticT(); // persistant server info
 export const sv = new ServerT(); // local server
+
+// U18: the codec `sv.protocol` selects, for every QuakeWorld server module
+// that writes bytes. The NetQuake side spells the same thing
+// `src/server/sv_main.ts`'s `svCodec()`.
+export function svQwCodec(): QwProtocolCodec {
+  return getQwCodec(sv.protocol);
+}
 
 // `client_t *host_client;` and `edict_t *sv_player;`: C globals reassigned to
 // point at whatever client/edict is "current" (sv_main.c/sv_user.c/pr_cmds.c

@@ -34,15 +34,13 @@ Deviations from PORTING.md / the C source:
 */
 
 import type * as SvSendModule from "./sv_send";
-import { ClientT, MAX_BACK_BUFFERS } from "./server";
+import { ClientT, MAX_BACK_BUFFERS, sv, svQwCodec } from "./server";
 import {
   SizeBuf,
-  MSG_WriteAngle,
   MSG_WriteAngle16,
   MSG_WriteByte,
   MSG_WriteChar,
   MSG_WriteFloat,
-  MSG_WriteCoord,
   MSG_WriteLong,
   MSG_WriteShort,
   MSG_WriteString,
@@ -103,11 +101,13 @@ export function ClientReliable_FinishWrite(cl: ClientT): void {
 }
 
 export function ClientReliableWrite_Angle(cl: ClientT, f: number): void {
+  // U18: an angle's width is the protocol's (a byte on 28, a short on 29), so
+  // it goes through the codec exactly as MSG_WriteAngle's own callers do.
   if (cl.num_backbuf) {
-    MSG_WriteAngle(cl.backbuf, f);
+    svQwCodec().writeAngle(cl.backbuf, f, sv.protocolflags);
     ClientReliable_FinishWrite(cl);
   } else {
-    MSG_WriteAngle(cl.netchan.message, f);
+    svQwCodec().writeAngle(cl.netchan.message, f, sv.protocolflags);
   }
 }
 
@@ -149,10 +149,10 @@ export function ClientReliableWrite_Float(cl: ClientT, f: number): void {
 
 export function ClientReliableWrite_Coord(cl: ClientT, f: number): void {
   if (cl.num_backbuf) {
-    MSG_WriteCoord(cl.backbuf, f);
+    svQwCodec().writeCoord(cl.backbuf, f, sv.protocolflags);
     ClientReliable_FinishWrite(cl);
   } else {
-    MSG_WriteCoord(cl.netchan.message, f);
+    svQwCodec().writeCoord(cl.netchan.message, f, sv.protocolflags);
   }
 }
 

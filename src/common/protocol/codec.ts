@@ -8,8 +8,27 @@ byte-identical operations staying plain shared functions.
 Codecs: `nq15.ts` (NetQuake 15, extracted verbatim from the seed's own
 sv_main.ts/cl_parse.ts/sizebuf.ts code -- an extraction, not a rewrite),
 `fitz666.ts` (FitzQuake 666), `rmq999.ts` (RMQ 999 = 666 plus the `PRFL_*`
-flag word). QuakeWorld 28 is a separate track and is NOT routed through this
-seam by this unit (src/qw/** is untouched).
+flag word), `qw28.ts` (QuakeWorld 28, extracted the same way out of
+src/qw/server/sv_ents.ts, sv_send.ts, sv_user.ts and src/qw/client/cl_ents.ts,
+cl_parse.ts, cl_input.ts) and `qw29.ts` (this engine's own wide QuakeWorld
+variant).
+
+QuakeWorld's message set is not NetQuake's: it has no `svc_clientdata`, its
+entity updates are a delta between two *sent* states inside an
+`svc_packetentities` envelope rather than a delta against a baseline inside
+`svc_update`, and it carries two ops NetQuake has no equivalent of at all
+(`clc_move`'s delta usercmd, `svc_playerinfo`). The ops the two wires do
+share -- coordinates, angles, the protocol number, `svc_sound`,
+`svc_spawnstatic`, `svc_spawnstaticsound` -- keep the members already declared
+below, and the QuakeWorld-only ops are declared as OPTIONAL members at the end
+of the interface, so nothing an existing NetQuake caller reaches changes
+shape. The NetQuake-only members a QuakeWorld codec cannot honestly implement
+(`writeEntityUpdate`, `writeBaseline`, `writeClientdata`, `readEntityBits`,
+`readEntityUpdateTail`, `readBaseline`, `readClientdataBits`,
+`readClientdataTail`, `readSoundHeader`) throw in qw28.ts/qw29.ts rather than
+pretend; no QuakeWorld caller reaches them, and a NetQuake caller can only
+reach a QuakeWorld codec by asking `getCodec` for 28 or 29, which
+`CL_ParseServerInfo`/`SV_Protocol_f` never do.
 
 ---------------------------------------------------------------------------
 Op inventory vs Ironwail
@@ -72,6 +91,7 @@ import type { Vec3 } from "../mathlib";
 import { vec3 } from "../mathlib";
 import { EntityStateT } from "../quakedef";
 import { ENTALPHA_DEFAULT, ENTSCALE_DEFAULT } from "../protocol";
+import type { QwEntityStateT, QwUsercmdT } from "../../qw/protocol";
 
 //============================================================================
 // Data carriers. Callers fill a reused instance and hand it to the codec, so
@@ -188,6 +208,26 @@ export class SoundHeaderT {
   soundNum = 0;
 }
 
+// One record's header inside an `svc_packetentities`/`svc_deltapacketentities`
+// envelope, after every bits word the protocol puts in front of the payload
+// has been consumed: QuakeWorld 28's single short, or 29's short plus its
+// U_MOREBITS byte plus its U_EXTEND byte plus the high byte of a wide entity
+// number. `bits` is the protocol's own flag word with the entity-number field
+// masked out, which is what CL_ParseDelta stores in `to.flags`.
+export class QwEntityWordT {
+  bits = 0;
+  ext = 0; // the protocol-29 extend byte; always 0 on 28
+  number = 0;
+  remove = false;
+
+  clear(): void {
+    this.bits = 0;
+    this.ext = 0;
+    this.number = 0;
+    this.remove = false;
+  }
+}
+
 //============================================================================
 
 export interface ProtocolCodec {
@@ -249,4 +289,79 @@ export interface ProtocolCodec {
   readSoundHeader(fieldMask: number, out: SoundHeaderT): void;
   // svc_spawnstaticsound (version 1) / svc_spawnstaticsound2 (version 2).
   readStaticSoundIndex(version: number): number;
+
+  //==========================================================================
+  // QuakeWorld-only ops. Optional so the three NetQuake codecs stay exactly
+  // what they were; qw28.ts and qw29.ts implement every one of them.
+
+  // The first entity number this protocol CANNOT name in a packetentities
+  // record (512 on 28: nine bits in the leading short). An entity at or above
+  // it is not sent.
+  readonly maxEntityNumber?: number;
+  // protocol.h's MAX_PACKET_ENTITIES: how many entity states one
+  // svc_packetentities can carry.
+  readonly maxPacketEntities?: number;
+
+  // clc_move's / svc_playerinfo's delta usercmd (QW common.c).
+  writeDeltaUsercmd?(sb: SizeBuf, from: QwUsercmdT, cmd: QwUsercmdT): void;
+  readDeltaUsercmd?(from: QwUsercmdT, move: QwUsercmdT): void;
+
+  // One record inside svc_packetentities (SV_WriteDelta). Returns false when
+  // the protocol cannot name this entity, which is the wire's own limit and
+  // not an error: the entity is left out of the packet.
+  writeDeltaEntity?(sb: SizeBuf, from: QwEntityStateT, to: QwEntityStateT, force: boolean, flags: number): boolean;
+  // "this entity is gone", SV_EmitPacketEntities' `oldnum | U_REMOVE`.
+  writeRemoveEntity?(sb: SizeBuf, entnum: number): void;
+  // The zero word that closes an svc_packetentities.
+  writePacketEntitiesEnd?(sb: SizeBuf): void;
+  // Given the leading short already read (nonzero: zero ends the packet),
+  // consume the rest of the record's header and fill `out`.
+  readDeltaEntityHeader?(word: number, out: QwEntityWordT): void;
+  // The payload after that header, delta'd from `from`.
+  readDeltaEntity?(from: QwEntityStateT, to: QwEntityStateT, hdr: QwEntityWordT, flags: number): void;
+
+  // svc_spawnbaseline over a QW entity_state_t (SV_CreateBaseline /
+  // CL_ParseBaseline). The opcode byte and the entity number are the caller's.
+  writeQwBaseline?(sb: SizeBuf, es: QwEntityStateT, flags: number): void;
+  readQwBaseline?(es: QwEntityStateT, flags: number): void;
+
+  // A model precache index on the wire (svc_playerinfo's PF_MODEL,
+  // svc_spawnstatic): a byte on 28, a short on 29.
+  writeModelIndex?(sb: SizeBuf, n: number): void;
+  readModelIndex?(): number;
+  // A sound precache index (svc_sound, svc_spawnstaticsound).
+  writeSoundIndex?(sb: SizeBuf, n: number): void;
+  readSoundIndex?(): number;
+  // svc_modellist / svc_soundlist's leading "first index" and trailing "next
+  // index" counts: a byte on 28, a short on 29.
+  writePrecacheCount?(sb: SizeBuf, n: number): void;
+  readPrecacheCount?(): number;
 }
+
+// A codec that speaks QuakeWorld: every optional member above, required. The
+// two QuakeWorld codecs declare themselves as this, so a QuakeWorld caller
+// asking `getQwCodec` for one reaches the ops directly instead of narrowing a
+// possibly-undefined member at every call.
+export type QwProtocolCodec = ProtocolCodec &
+  Required<
+    Pick<
+      ProtocolCodec,
+      | "maxEntityNumber"
+      | "maxPacketEntities"
+      | "writeDeltaUsercmd"
+      | "readDeltaUsercmd"
+      | "writeDeltaEntity"
+      | "writeRemoveEntity"
+      | "writePacketEntitiesEnd"
+      | "readDeltaEntityHeader"
+      | "readDeltaEntity"
+      | "writeQwBaseline"
+      | "readQwBaseline"
+      | "writeModelIndex"
+      | "readModelIndex"
+      | "writeSoundIndex"
+      | "readSoundIndex"
+      | "writePrecacheCount"
+      | "readPrecacheCount"
+    >
+  >;

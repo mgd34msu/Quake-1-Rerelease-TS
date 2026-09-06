@@ -71,6 +71,7 @@ const savedNetMessageMaxsize = net_message.maxsize;
 
 afterAll(() => {
   if (savedQwBuiltins !== null) setBuiltins(savedQwBuiltins);
+  sv.max_edicts = 0; // this file's beforeAll set it; put the shared sv back
   sysState.nostdout = savedNostdout;
   setComSearchpaths(null);
   setComModified(false);
@@ -121,6 +122,11 @@ beforeAll(() => {
 
   PR_LoadProgs();
   PR_AllocEdicts(MAX_EDICTS);
+  // U18: qwProfile.maxEdicts reads sv.max_edicts (the table SV_SpawnServer
+  // allocated from the shared `max_edicts` cvar), the way nqProfile does; this
+  // fixture allocates its own table without going through SV_SpawnServer, so
+  // it declares the size it allocated. Restored in afterAll below.
+  sv.max_edicts = MAX_EDICTS;
   sv.num_edicts = 1;
   sv.time = 0;
 

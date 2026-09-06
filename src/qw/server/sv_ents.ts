@@ -49,13 +49,25 @@ Deviations from PORTING.md / the C source:
   platform-level `Sys_Error`, not `SV_Error` -- read directly from the
   source: every *other* fatal call in this file (`SV_Error ("Unset entity
   number")`, `SV_Error ("Entity number >= 512")`) is `SV_Error`, but this one
-  line is genuinely `Sys_Error` in the C.
+  line is genuinely `Sys_Error` in the C. It moved with the rest of the
+  encoder into src/common/protocol/qw28.ts and is unchanged there.
+- U18: SV_WriteDelta's bit computation and payload, SV_EmitPacketEntities'
+  U_REMOVE record and terminator, and SV_WritePlayersToClient's coordinates,
+  delta usercmd and PF_MODEL index all go through the protocol codec
+  (src/common/protocol/qw28.ts and qw29.ts) now, the way U3 moved protocol
+  15's encoders out of src/server/sv_main.ts. What stays here is the server's
+  own logic: the PVS test, which entities go in the packet, the pflags
+  computation, and the "Unset entity number" guard (a server-state error, not
+  a wire condition). `SV_Error ("Entity number >= 512")` is gone: 512 was
+  protocol 28's wire limit, so it is `codec.maxEntityNumber` and an entity
+  above it is dropped from the packet with a Con_DPrintf instead of killing
+  the server.
 */
 
 import type * as SvSendModule from "./sv_send";
 import type * as SvMainModule from "./sv_main";
 import { EDICT_NUM, PR_GetString, type QwEdictT } from "./progs";
-import { ClientStateT, ClientT, sv, svs } from "./server";
+import { ClientStateT, ClientT, sv, svQwCodec, svs } from "./server";
 import {
   MAX_CLIENTS,
   MAX_PACKET_ENTITIES,
@@ -75,26 +87,12 @@ import {
   QwUsercmdT,
   SvcOpsT,
   UPDATE_MASK,
-  U_ANGLE1,
-  U_ANGLE2,
-  U_ANGLE3,
-  U_COLORMAP,
-  U_EFFECTS,
-  U_FRAME,
-  U_MODEL,
-  U_MOREBITS,
-  U_ORIGIN1,
-  U_ORIGIN2,
-  U_ORIGIN3,
-  U_REMOVE,
-  U_SKIN,
-  U_SOLID,
 } from "../protocol";
-import { MSG_WriteAngle, MSG_WriteByte, MSG_WriteCoord, MSG_WriteDeltaUsercmd, MSG_WriteShort, nullcmd, SizeBuf } from "../common";
+import { MSG_WriteByte, MSG_WriteShort, nullcmd, SizeBuf } from "../common";
 import { DotProduct, VectorAdd, VectorCopy, vec3, type Vec3 } from "../../common/mathlib";
 import { CONTENTS_SOLID, MAX_MAP_LEAFS } from "../../common/bspfile";
 import { isMleaf, Mod_LeafPVS, type MleafT, type ModelT, type MnodeT } from "../../common/model";
-import { Sys_Error, SysError } from "../../platform/sys";
+import { SysError } from "../../platform/sys";
 
 // see file header: sv_send.ts imports this file's SV_WriteEntitiesToClient,
 // so sv_nailmodel/sv_supernailmodel/sv_playermodel are reached lazily here.
@@ -232,57 +230,22 @@ Can delta from either a baseline or a previous packet_entity
 ==================
 */
 export function SV_WriteDelta(from: QwEntityStateT, to: QwEntityStateT, msg: SizeBuf, force: boolean): void {
-  // send an update
-  let bits = 0;
-
-  for (let i = 0; i < 3; i++) {
-    const miss = to.origin[i] - from.origin[i];
-    if (miss < -0.1 || miss > 0.1) bits |= U_ORIGIN1 << i;
-  }
-
-  if (to.angles[0] !== from.angles[0]) bits |= U_ANGLE1;
-
-  if (to.angles[1] !== from.angles[1]) bits |= U_ANGLE2;
-
-  if (to.angles[2] !== from.angles[2]) bits |= U_ANGLE3;
-
-  if (to.colormap !== from.colormap) bits |= U_COLORMAP;
-
-  if (to.skinnum !== from.skinnum) bits |= U_SKIN;
-
-  if (to.frame !== from.frame) bits |= U_FRAME;
-
-  if (to.effects !== from.effects) bits |= U_EFFECTS;
-
-  if (to.modelindex !== from.modelindex) bits |= U_MODEL;
-
-  if (bits & 511) bits |= U_MOREBITS;
-
-  if (to.flags & U_SOLID) bits |= U_SOLID;
-
-  //
   // write the message
-  //
   if (!to.number) svMainMod().SV_Error("Unset entity number");
-  if (to.number >= 512) svMainMod().SV_Error("Entity number >= 512");
 
-  if (!bits && !force) return; // nothing to send!
-  const i = to.number | (bits & ~511);
-  if (i & U_REMOVE) Sys_Error("U_REMOVE");
-  MSG_WriteShort(msg, i);
-
-  if (bits & U_MOREBITS) MSG_WriteByte(msg, bits & 255);
-  if (bits & U_MODEL) MSG_WriteByte(msg, to.modelindex);
-  if (bits & U_FRAME) MSG_WriteByte(msg, to.frame);
-  if (bits & U_COLORMAP) MSG_WriteByte(msg, to.colormap);
-  if (bits & U_SKIN) MSG_WriteByte(msg, to.skinnum);
-  if (bits & U_EFFECTS) MSG_WriteByte(msg, to.effects);
-  if (bits & U_ORIGIN1) MSG_WriteCoord(msg, to.origin[0]);
-  if (bits & U_ANGLE1) MSG_WriteAngle(msg, to.angles[0]);
-  if (bits & U_ORIGIN2) MSG_WriteCoord(msg, to.origin[1]);
-  if (bits & U_ANGLE2) MSG_WriteAngle(msg, to.angles[1]);
-  if (bits & U_ORIGIN3) MSG_WriteCoord(msg, to.origin[2]);
-  if (bits & U_ANGLE3) MSG_WriteAngle(msg, to.angles[2]);
+  // U18: the C's `if (to->number >= 512) SV_Error ("Entity number >= 512")`.
+  // 512 is protocol 28's own nine-bit entity-number field, not the server's
+  // edict count, so it is the codec's `maxEntityNumber` now (65536 on protocol
+  // 29) and an entity the wire cannot name is left out of the packet rather
+  // than killing the server the first time a map crosses the line.
+  if (!svQwCodec().writeDeltaEntity(msg, from, to, force, sv.protocolflags)) {
+    svSendMod().Con_DPrintf(
+      "SV_WriteDelta: entity %i is above protocol %i's limit of %i, not sent\n",
+      to.number,
+      sv.protocol,
+      svQwCodec().maxEntityNumber,
+    );
+  }
 }
 
 /*
@@ -335,13 +298,13 @@ export function SV_EmitPacketEntities(client: ClientT, to: PacketEntitiesT, msg:
 
     if (newnum > oldnum) {
       // the old entity isn't present in the new message
-      MSG_WriteShort(msg, oldnum | U_REMOVE);
+      svQwCodec().writeRemoveEntity(msg, oldnum);
       oldindex++;
       continue;
     }
   }
 
-  MSG_WriteShort(msg, 0); // end of packetentities
+  svQwCodec().writePacketEntitiesEnd(msg);
 }
 
 /*
@@ -395,7 +358,7 @@ export function SV_WritePlayersToClient(client: ClientT, clent: QwEdictT, pvs: U
     MSG_WriteByte(msg, j);
     MSG_WriteShort(msg, pflags);
 
-    for (let i = 0; i < 3; i++) MSG_WriteCoord(msg, ent.v.origin[i]);
+    for (let i = 0; i < 3; i++) svQwCodec().writeCoord(msg, ent.v.origin[i], sv.protocolflags);
 
     MSG_WriteByte(msg, ent.v.frame);
 
@@ -426,14 +389,14 @@ export function SV_WritePlayersToClient(client: ClientT, clent: QwEdictT, pvs: U
       cmd.buttons = 0; // never send buttons
       cmd.impulse = 0; // never send impulses
 
-      MSG_WriteDeltaUsercmd(msg, nullcmd, cmd);
+      svQwCodec().writeDeltaUsercmd(msg, nullcmd, cmd);
     }
 
     for (let i = 0; i < 3; i++) {
       if (pflags & (PF_VELOCITY1 << i)) MSG_WriteShort(msg, ent.v.velocity[i]);
     }
 
-    if (pflags & PF_MODEL) MSG_WriteByte(msg, ent.v.modelindex);
+    if (pflags & PF_MODEL) svQwCodec().writeModelIndex(msg, ent.v.modelindex);
 
     if (pflags & PF_SKINNUM) MSG_WriteByte(msg, ent.v.skin);
 

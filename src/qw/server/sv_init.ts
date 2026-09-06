@@ -101,11 +101,15 @@ import { EDICT_NUM, EDICT_TO_PROG, PR_GetString, PR_SetString, qwpr } from "./pr
 import type { QwGlobalVars } from "./progdefs";
 import { QW_GLOBAL_OFS } from "./progdefs";
 import { Con_DPrintf, Con_Printf, SV_FindModelNumbers } from "./sv_send";
-import { ClientStateT, MAX_SIGNON_BUFFERS, MOVETYPE_PUSH, NUM_SPAWN_PARMS, ServerStateT, SOLID_BSP, sv, svs, svState } from "./server";
-import { MAX_CLIENTS, SvcOpsT } from "../protocol";
-import { MAX_EDICTS, MAX_MODELS } from "../bothdefs";
-import { COM_LoadStackFile, com_filesize, Info_SetValueForKey, MAX_SERVERINFO_STRING, MSG_WriteAngle, MSG_WriteByte, MSG_WriteCoord, MSG_WriteShort } from "../common";
+import { ClientStateT, MAX_SIGNON_BUFFERS, MOVETYPE_PUSH, NUM_SPAWN_PARMS, ServerStateT, SOLID_BSP, sv, svQwCodec, svs, svState } from "./server";
+import { MAX_CLIENTS, PROTOCOL_VERSION, SvcOpsT } from "../protocol";
+import { MAX_MODELS } from "../bothdefs";
+import { COM_LoadStackFile, com_filesize, Info_SetValueForKey, MAX_SERVERINFO_STRING, MSG_WriteByte, MSG_WriteShort } from "../common";
 import type { ModelT } from "../../common/model";
+import { loadState } from "../../common/model";
+import { BSP_WIDTH_29, type BspWidthT } from "../../common/bspfile";
+import { Host_MaxEdicts } from "../../common/host";
+import { getQwCodec, qw28Codec, PROTOCOL_QW_WIDE } from "../../common/protocol/registry";
 // Mod_ForName/Mod_ClearAll/Mod_LeafPVS are src/qw/server/model.ts's
 // re-exports of the shared src/common/model.ts functions, unchanged: the
 // checksum/checksum2 computation QW/server/model.c's Mod_LoadBrushModel
@@ -233,14 +237,7 @@ export function SV_CreateBaseline(): void {
     MSG_WriteByte(sv.signon, SvcOpsT.svc_spawnbaseline);
     MSG_WriteShort(sv.signon, entnum);
 
-    MSG_WriteByte(sv.signon, svent.baseline.modelindex);
-    MSG_WriteByte(sv.signon, svent.baseline.frame);
-    MSG_WriteByte(sv.signon, svent.baseline.colormap);
-    MSG_WriteByte(sv.signon, svent.baseline.skinnum);
-    for (let i = 0; i < 3; i++) {
-      MSG_WriteCoord(sv.signon, svent.baseline.origin[i]);
-      MSG_WriteAngle(sv.signon, svent.baseline.angles[i]);
-    }
+    svQwCodec().writeQwBaseline(sv.signon, svent.baseline, sv.protocolflags);
   }
 }
 
@@ -359,6 +356,76 @@ export function SV_CheckModel(mdl: string): number {
 
 /*
 ================
+SV_ChooseQwProtocol / SV_QwAutoProtocol / SV_SetQwProtocol
+
+U18. The QuakeWorld twin of src/server/sv_main.ts's SV_ChooseProtocol: which
+wire this map is served on, decided once and fixed for the map. It has to be
+fixed for the map rather than per client because sv.datagram, sv.multicast and
+sv.signon are encoded ONCE and then handed to every client -- two clients on
+different protocols could not share them.
+
+`sv_qwprotocol` is `28`, `29` or `auto` (default `auto`). `auto` answers 29
+only when protocol 28 genuinely cannot carry the map: a BSP2 world, a world
+that reaches past +-4096 (28's 13.3 fixed-point coordinate range), or more
+entities than 28's nine-bit entity-number field can name. A vanilla
+QuakeWorld client cannot read 29, so `auto` staying on 28 wherever 28 suffices
+is what keeps this server compatible by default; SV_New_f (sv_user.ts) refuses
+a client that cannot read the protocol this map chose.
+
+SV_CountQwEntityLump is the same "count `{` outside strings" the NetQuake side
+uses; it is written out here rather than imported because src/server/sv_main.ts
+is the WinQuake server and the QuakeWorld server is its own tree
+(PORTING.md's QuakeWorld track).
+================
+*/
+const QW_AUTO_EXTENT = 4096; // protocol 28's 13.3 fixed-point coordinate range
+
+export function SV_CountQwEntityLump(entities: string): number {
+  let count = 0;
+  let inQuote = false;
+  for (let i = 0; i < entities.length; i++) {
+    const c = entities[i];
+    if (c === '"') inQuote = !inQuote;
+    else if (!inQuote && c === "{") count++;
+  }
+  return count;
+}
+
+export function SV_QwAutoProtocol(worldmodel: ModelT, bspWidth: BspWidthT): number {
+  if (bspWidth !== BSP_WIDTH_29) return PROTOCOL_QW_WIDE;
+
+  for (let i = 0; i < 3; i++) {
+    if (worldmodel.mins[i] < -QW_AUTO_EXTENT || worldmodel.maxs[i] > QW_AUTO_EXTENT) return PROTOCOL_QW_WIDE;
+  }
+
+  if (SV_CountQwEntityLump(worldmodel.entities ?? "") + MAX_CLIENTS + 1 >= qw28Codec.maxEntityNumber) return PROTOCOL_QW_WIDE;
+
+  return PROTOCOL_VERSION;
+}
+
+export function SV_ChooseQwProtocol(worldmodel: ModelT, bspWidth: BspWidthT): number {
+  const requested = svMainMod().sv_qwprotocol.string.trim().toLowerCase();
+  switch (requested) {
+    case "28":
+      return PROTOCOL_VERSION;
+    case "29":
+      return PROTOCOL_QW_WIDE;
+    case "auto":
+      return SV_QwAutoProtocol(worldmodel, bspWidth);
+    default:
+      Con_Printf("sv_qwprotocol must be 28, 29 or auto\n");
+      return SV_QwAutoProtocol(worldmodel, bspWidth);
+  }
+}
+
+export function SV_SetQwProtocol(protocol: number): void {
+  sv.protocol = protocol;
+  sv.protocolflags = getQwCodec(protocol).defaultFlags;
+  Con_Printf("Server protocol %i (flags 0x%x)\n", sv.protocol, sv.protocolflags);
+}
+
+/*
+================
 SV_SpawnServer
 
 Change the server to a new map, taking all connected
@@ -408,7 +475,13 @@ export function SV_SpawnServer(server: string): void {
   PR_LoadProgs();
 
   // allocate edicts
-  sv.edicts = PR_AllocEdicts(MAX_EDICTS);
+  // U18: the table size is the shared `max_edicts` cvar (src/common/host.ts's
+  // Host_MaxEdicts, the clamp Ironwail's own SV_SpawnServer applies), not QW's
+  // bothdefs.h MAX_EDICTS. What protocol 28 can NAME is a separate, smaller
+  // number and lives on the codec (`maxEntityNumber`); entities above it are
+  // simulated and simply not sent.
+  sv.max_edicts = Host_MaxEdicts();
+  sv.edicts = PR_AllocEdicts(sv.max_edicts);
 
   // leave slots at start for clients only
   sv.num_edicts = MAX_CLIENTS + 1;
@@ -426,6 +499,7 @@ export function SV_SpawnServer(server: string): void {
   const worldmodel = Mod_ForName(sv.modelname, true);
   if (worldmodel === null) throw new SysError("SV_SpawnServer: Mod_ForName returned null with crash=true");
   sv.worldmodel = worldmodel;
+  const bspWidth = loadState.bspWidth; // the width Mod_LoadBrushModel just read
   SV_CalcPHS();
 
   //
@@ -446,6 +520,13 @@ export function SV_SpawnServer(server: string): void {
   // check player/eyes models for hacks
   sv.model_player_checksum = SV_CheckModel("progs/player.mdl");
   sv.eyes_player_checksum = SV_CheckModel("progs/eyes.mdl");
+
+  // U18: fix the wire protocol before anything protocol-encoded is written.
+  // PF_makestatic and PF_ambientsound write into the signon buffer from inside
+  // ED_LoadFromFile below, and SV_CreateBaseline writes into it at the end, so
+  // the decision cannot wait for the spawn to finish -- exactly the ordering
+  // src/server/sv_main.ts's own SV_ChooseProtocol has on the NetQuake side.
+  SV_SetQwProtocol(SV_ChooseQwProtocol(worldmodel, bspWidth));
 
   //
   // spawn the rest of the entities on the map

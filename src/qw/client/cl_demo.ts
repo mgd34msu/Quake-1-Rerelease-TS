@@ -61,9 +61,7 @@ Deviations from PORTING.md / the C source:
 
 import {
   COM_DefaultExtension,
-  MSG_WriteAngle,
   MSG_WriteByte,
-  MSG_WriteCoord,
   MSG_WriteFloat,
   MSG_WriteLong,
   MSG_WriteShort,
@@ -77,6 +75,12 @@ import {
 import { MAX_LIGHTSTYLES, MAX_MSGLEN, MAX_CL_STATS, MAX_MODELS, MAX_EDICTS } from "../bothdefs";
 import { Cmd_Argc, Cmd_Argv } from "../cmd";
 import { MAX_CLIENTS, PROTOCOL_VERSION, QwEntityStateT, QwUsercmdT, SvcOpsT, UPDATE_MASK } from "../protocol";
+import { VectorCopy } from "../../common/mathlib";
+import { EntityStateT } from "../../common/quakedef";
+
+// CL_Record's reused carrier for the svc_spawnstatic records it replays into
+// the demo header; the codec writes the same fields the C wrote by hand.
+const demoStaticState = new EntityStateT();
 import { movevars } from "../pmove_types";
 import { Netchan_Setup } from "../net_chan";
 import { NET_GetPacket, net_from } from "../net_udp";
@@ -464,7 +468,10 @@ export function CL_Record_f(): void {
 
   // send the serverdata
   MSG_WriteByte(buf, SvcOpsT.svc_serverdata);
-  MSG_WriteLong(buf, PROTOCOL_VERSION);
+  // U18: the demo records the protocol the live connection negotiated, not a
+  // fixed 28, so playback re-derives it from this very svc_serverdata
+  // (CL_ParseServerData) exactly as a fresh connection would.
+  cl.qw.codec().writeProtocol(buf, cl.qw.protocolflags);
   MSG_WriteLong(buf, cl.qw.servercount);
   MSG_WriteString(buf, gamedirfile);
 
@@ -500,7 +507,7 @@ export function CL_Record_f(): void {
 
   // soundlist
   MSG_WriteByte(buf, SvcOpsT.svc_soundlist);
-  MSG_WriteByte(buf, 0);
+  cl.qw.codec().writePrecacheCount(buf, 0);
 
   let n = 0;
   let s = cl.qw.sound_name[n + 1];
@@ -508,25 +515,25 @@ export function CL_Record_f(): void {
     MSG_WriteString(buf, s);
     if (buf.cursize > MAX_MSGLEN / 2) {
       MSG_WriteByte(buf, 0);
-      MSG_WriteByte(buf, n);
+      cl.qw.codec().writePrecacheCount(buf, n);
       CL_WriteRecordDemoMessage(buf, seq++);
       SZ_Clear(buf);
       MSG_WriteByte(buf, SvcOpsT.svc_soundlist);
-      MSG_WriteByte(buf, n + 1);
+      cl.qw.codec().writePrecacheCount(buf, n + 1);
     }
     n++;
     s = cl.qw.sound_name[n + 1];
   }
   if (buf.cursize) {
     MSG_WriteByte(buf, 0);
-    MSG_WriteByte(buf, 0);
+    cl.qw.codec().writePrecacheCount(buf, 0);
     CL_WriteRecordDemoMessage(buf, seq++);
     SZ_Clear(buf);
   }
 
   // modellist
   MSG_WriteByte(buf, SvcOpsT.svc_modellist);
-  MSG_WriteByte(buf, 0);
+  cl.qw.codec().writePrecacheCount(buf, 0);
 
   n = 0;
   s = cl.qw.model_name[n + 1];
@@ -534,18 +541,18 @@ export function CL_Record_f(): void {
     MSG_WriteString(buf, s);
     if (buf.cursize > MAX_MSGLEN / 2) {
       MSG_WriteByte(buf, 0);
-      MSG_WriteByte(buf, n);
+      cl.qw.codec().writePrecacheCount(buf, n);
       CL_WriteRecordDemoMessage(buf, seq++);
       SZ_Clear(buf);
       MSG_WriteByte(buf, SvcOpsT.svc_modellist);
-      MSG_WriteByte(buf, n + 1);
+      cl.qw.codec().writePrecacheCount(buf, n + 1);
     }
     n++;
     s = cl.qw.model_name[n + 1];
   }
   if (buf.cursize) {
     MSG_WriteByte(buf, 0);
-    MSG_WriteByte(buf, 0);
+    cl.qw.codec().writePrecacheCount(buf, 0);
     CL_WriteRecordDemoMessage(buf, seq++);
     SZ_Clear(buf);
   }
@@ -555,20 +562,17 @@ export function CL_Record_f(): void {
   for (let i = 0; i < cl.num_statics; i++) {
     const ent = cl_static_entities[i];
 
-    MSG_WriteByte(buf, SvcOpsT.svc_spawnstatic);
-
     let j: number;
     for (j = 1; j < MAX_MODELS; j++) if (ent.model === cl.model_precache[j]) break;
-    if (j === MAX_MODELS) MSG_WriteByte(buf, 0);
-    else MSG_WriteByte(buf, j);
 
-    MSG_WriteByte(buf, ent.frame);
-    MSG_WriteByte(buf, 0);
-    MSG_WriteByte(buf, ent.skinnum);
-    for (j = 0; j < 3; j++) {
-      MSG_WriteCoord(buf, ent.origin[j]);
-      MSG_WriteAngle(buf, ent.angles[j]);
-    }
+    const state = demoStaticState;
+    state.modelindex = j === MAX_MODELS ? 0 : j;
+    state.frame = ent.frame;
+    state.colormap = 0;
+    state.skin = ent.skinnum;
+    VectorCopy(ent.origin, state.origin);
+    VectorCopy(ent.angles, state.angles);
+    cl.qw.codec().writeStatic(buf, state, cl.qw.protocolflags);
 
     if (buf.cursize > MAX_MSGLEN / 2) {
       CL_WriteRecordDemoMessage(buf, seq++);
@@ -581,21 +585,14 @@ export function CL_Record_f(): void {
 
   // baselines
 
-  for (let i = 0; i < MAX_EDICTS; i++) {
+  for (let i = 0; i < cl_baselines.length; i++) {
     const es = cl_baselines[i];
 
     if (!entityStateIsBlank(es)) {
       MSG_WriteByte(buf, SvcOpsT.svc_spawnbaseline);
       MSG_WriteShort(buf, i);
 
-      MSG_WriteByte(buf, es.modelindex);
-      MSG_WriteByte(buf, es.frame);
-      MSG_WriteByte(buf, es.colormap);
-      MSG_WriteByte(buf, es.skinnum);
-      for (let j = 0; j < 3; j++) {
-        MSG_WriteCoord(buf, es.origin[j]);
-        MSG_WriteAngle(buf, es.angles[j]);
-      }
+      cl.qw.codec().writeQwBaseline(buf, es, cl.qw.protocolflags);
 
       if (buf.cursize > MAX_MSGLEN / 2) {
         CL_WriteRecordDemoMessage(buf, seq++);

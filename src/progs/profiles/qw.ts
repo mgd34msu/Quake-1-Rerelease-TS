@@ -31,8 +31,12 @@ Real QW deltas this profile carries (verified against the C, not guessed):
   in sv_main.c). The "no free edicts" path is completely rewritten: WinQuake
   `Sys_Error`s; QW instead prints a warning, steps back onto the last edict
   (`i--`), force-unlinks it, and reuses it, only incrementing `sv.num_edicts`
-  on the normal (room-left) path. `MAX_EDICTS` is QW's own bothdefs.h value
-  (768), not WinQuake's quakedef.h one (600).
+  on the normal (room-left) path. `MAX_EDICTS` was QW's own bothdefs.h value
+  (768), not WinQuake's quakedef.h one (600); U18 replaced both with the
+  shared `max_edicts` cvar the NetQuake profile already reads, so a
+  QuakeWorld map gets the same edict table a NetQuake one does. What
+  protocol 28 can NAME on the wire is a separate, smaller number and lives
+  on the codec (`maxEntityNumber`, src/common/protocol/qw28.ts).
 - `ED_LoadFromFile` drops WinQuake's `deathmatch`/skill-level filtering
   entirely (checked side by side: the `if (deathmatch.value) {...} else if
   (current_skill...) {...}` block is gone, not narrowed) and keeps only the
@@ -83,7 +87,7 @@ import { CRC_Block } from "../../common/crc";
 import { Con_Printf } from "../../client/console";
 import { Com_sprintf } from "../../common/sprintf";
 import { COM_LoadHunkFile, Info_SetValueForStarKey, MAX_SERVERINFO_STRING } from "../../qw/common";
-import { MAX_EDICTS } from "../../qw/bothdefs";
+import { Host_MaxEdicts } from "../../common/host";
 import { MAX_CLIENTS } from "../../qw/protocol";
 import { MOVETYPE_STEP, SPAWNFLAG_NOT_DEATHMATCH, ServerStateT, sv, svs } from "../../qw/server/server";
 import { EDICT_NUM, QwEdictT, qwpr } from "../../qw/server/progs";
@@ -159,7 +163,13 @@ export const qwProfile: ProgsProfileT = {
   extensions: new Set<string>(),
 
   get maxEdicts(): number {
-    return MAX_EDICTS;
+    // U18: QW's bothdefs.h MAX_EDICTS (768) is now only a historical floor;
+    // the live cap is the table SV_SpawnServer allocated from the shared
+    // `max_edicts` cvar (src/common/host.ts's Host_MaxEdicts), exactly as
+    // nqProfile reads it. Before a server has allocated one -- a bare
+    // PR_LoadProgs in a test -- the clamped cvar value is the answer, which is
+    // what SV_SpawnServer is about to allocate.
+    return sv.max_edicts > 0 ? sv.max_edicts : Host_MaxEdicts();
   },
   edictAllocStart() {
     return MAX_CLIENTS + 1;

@@ -65,7 +65,9 @@ Deviations from PORTING.md / the C source:
 import { type Vec3, vec3 } from "../../common/mathlib";
 import type { FileHandle } from "../../common/common";
 import { VID_GRADES } from "../../client/vid";
-import { MAX_CLIENTS, PacketEntitiesT, QwEntityStateT, QwUsercmdT, UPDATE_BACKUP } from "../protocol";
+import { MAX_CLIENTS, PROTOCOL_VERSION, PacketEntitiesT, QwEntityStateT, QwUsercmdT, UPDATE_BACKUP } from "../protocol";
+import type { QwProtocolCodec } from "../../common/protocol/codec";
+import { getQwCodec } from "../../common/protocol/registry";
 import { MAX_EDICTS, MAX_MODELS, MAX_SOUNDS } from "../bothdefs";
 import { NetchanT } from "../net_chan";
 import { CacheUser } from "../../common/zone";
@@ -190,6 +192,20 @@ export class QwClientStaticExtT {
 export class QwClientStateExtT {
   servercount = 0; // server identification for prespawns
 
+  // U18: the wire protocol this connection negotiated -- 28 (id's QuakeWorld)
+  // or 29 (this engine's wide variant). CL_ParseServerData sets both from
+  // svc_serverdata, which is also how a .qwd demo re-derives them.
+  protocol = PROTOCOL_VERSION;
+  protocolflags = 0;
+
+  // The codec `protocol` selects, for every QuakeWorld client module that
+  // reads or writes bytes. A method rather than a `clQwCodec()` free function
+  // because `cl` itself lives in src/client/client.ts, which already imports
+  // this module for the ext type.
+  codec(): QwProtocolCodec {
+    return getQwCodec(this.protocol);
+  }
+
   serverinfo = ""; // char serverinfo[MAX_SERVERINFO_STRING]
 
   parsecount = 0; // server message counter
@@ -275,7 +291,18 @@ export const NET_TIMINGSMASK = 255;
 // defined in cl_main.c. QW's entity_state_t is src/qw/protocol.ts's
 // QwEntityStateT, not the WinQuake one src/client/client.ts's arrays use, so
 // this array lives here rather than alongside cl_efrags/cl_static_entities.
+// U18: QW/client/cl_main.c's `entity_state_t cl_baselines[MAX_EDICTS]`. QW's
+// bothdefs.h MAX_EDICTS (768) was the whole table; the shared `max_edicts`
+// cvar now goes to 32000 and protocol 29 can name an entity up to 65535, so
+// the table starts at QW's own size and grows on demand -- the same treatment
+// src/client/client.ts's cl_entities got in U3.
 export const cl_baselines: QwEntityStateT[] = makeArray(MAX_EDICTS, () => new QwEntityStateT());
+
+export function CL_BaselineNum(i: number): QwEntityStateT {
+  while (cl_baselines.length <= i) cl_baselines.push(new QwEntityStateT());
+  return cl_baselines[i];
+}
+
 
 // #define CAM_NONE 0 / #define CAM_TRACK 1 (QW/client/client.h). Appended
 // here (not previously ported) because src/qw/client/cl_cam.ts already

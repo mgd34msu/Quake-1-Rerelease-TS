@@ -365,6 +365,12 @@ export function CL_SendConnectPacket(): void {
 
   cls.qw.userinfo = Info_SetValueForStarKey(cls.qw.userinfo, "*ip", NET_AdrToString(adr), MAX_INFO_STRING);
 
+  // U18: "this client can read protocol 29" (src/common/protocol/qw29.ts's
+  // header). The `connect` line itself still says PROTOCOL_VERSION, so a
+  // vanilla QuakeWorld server accepts this connect exactly as before and
+  // simply carries an extra userinfo key it never reads.
+  cls.qw.userinfo = Info_SetValueForStarKey(cls.qw.userinfo, "*wide", "1", MAX_INFO_STRING);
+
   //	Con_Printf ("Connecting to %s...\n", cls.servername);
   const data = connectlessPacket(
     Com_sprintf('connect %i %i %i "%s"\n', PROTOCOL_VERSION, cls.qw.qport, cls.qw.challenge, cls.qw.userinfo),

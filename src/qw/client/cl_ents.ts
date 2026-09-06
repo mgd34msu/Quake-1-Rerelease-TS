@@ -74,9 +74,7 @@ import { EF_GIB, EF_GRENADE, EF_ROCKET, EF_ROTATE, EF_TRACER, EF_TRACER2, EF_TRA
 import { EF_BRIGHTLIGHT, EF_DIMLIGHT } from "../../server/server";
 import {
   msgState,
-  MSG_ReadAngle,
   MSG_ReadByte,
-  MSG_ReadCoord,
   MSG_ReadDeltaUsercmd,
   MSG_ReadShort,
   nullcmd,
@@ -111,7 +109,8 @@ import {
   UPDATE_MASK,
 } from "../protocol";
 import { player_maxs, player_mins, pmove } from "../pmove_types";
-import { cl_baselines, PlayerStateT } from "./client";
+import { CL_BaselineNum, PlayerStateT } from "./client";
+import { QwEntityWordT } from "../../common/protocol/codec";
 import { CL_PredictUsercmd } from "./cl_pred";
 import { Cam_DrawPlayer } from "./cl_cam";
 import { cl_predict_players, cl_predict_players2, cl_solid_players, clMainState, Host_EndGame } from "./cl_main";
@@ -130,19 +129,7 @@ function rand(): number {
 }
 
 function copyEntityState(from: QwEntityStateT, to: QwEntityStateT): void {
-  to.number = from.number;
-  to.flags = from.flags;
-  to.origin[0] = from.origin[0];
-  to.origin[1] = from.origin[1];
-  to.origin[2] = from.origin[2];
-  to.angles[0] = from.angles[0];
-  to.angles[1] = from.angles[1];
-  to.angles[2] = from.angles[2];
-  to.modelindex = from.modelindex;
-  to.frame = from.frame;
-  to.colormap = from.colormap;
-  to.skinnum = from.skinnum;
-  to.effects = from.effects;
+  to.copyFrom(from);
 }
 
 // CL_LinkPlayers's `#ifdef GLQUAKE` guard -- see file header. Returns 0
@@ -302,50 +289,20 @@ Can go from either a baseline or a previous packet_entity
 */
 export const bitcounts = new Int32Array(32); /// just for protocol profiling
 
+// U18: the reused packetentities record header. CL_ParseDelta and
+// CL_ParsePacketEntities each fill it and hand it straight to the codec, so
+// the parse path allocates nothing per entity, exactly as the C reads its
+// `word` into a local.
+const parseEntityWord = new QwEntityWordT();
+
 export function CL_ParseDelta(from: QwEntityStateT, to: QwEntityStateT, bits: number): void {
-  // set everything to the state we are delta'ing from
-  copyEntityState(from, to);
-
-  to.number = bits & 511;
-  bits &= ~511;
-
-  if (bits & U_MOREBITS) {
-    // read in the low order bits
-    const i = MSG_ReadByte();
-    bits |= i;
-  }
+  const hdr = parseEntityWord;
+  cl.qw.codec().readDeltaEntityHeader(bits, hdr);
 
   // count the bits for net profiling
-  for (let i = 0; i < 16; i++) if (bits & (1 << i)) bitcounts[i]++;
+  for (let i = 0; i < 16; i++) if (hdr.bits & (1 << i)) bitcounts[i]++;
 
-  to.flags = bits;
-
-  if (bits & U_MODEL) to.modelindex = MSG_ReadByte();
-
-  if (bits & U_FRAME) to.frame = MSG_ReadByte();
-
-  if (bits & U_COLORMAP) to.colormap = MSG_ReadByte();
-
-  if (bits & U_SKIN) to.skinnum = MSG_ReadByte();
-
-  if (bits & U_EFFECTS) to.effects = MSG_ReadByte();
-
-  if (bits & U_ORIGIN1) to.origin[0] = MSG_ReadCoord();
-
-  if (bits & U_ANGLE1) to.angles[0] = MSG_ReadAngle();
-
-  if (bits & U_ORIGIN2) to.origin[1] = MSG_ReadCoord();
-
-  if (bits & U_ANGLE2) to.angles[1] = MSG_ReadAngle();
-
-  if (bits & U_ORIGIN3) to.origin[2] = MSG_ReadCoord();
-
-  if (bits & U_ANGLE3) to.angles[2] = MSG_ReadAngle();
-
-  // if (bits & U_SOLID)
-  // {
-  //	 FIXME
-  // }
+  cl.qw.codec().readDeltaEntity(from, to, hdr, cl.qw.protocolflags);
 }
 
 /*
@@ -443,7 +400,16 @@ export function CL_ParsePacketEntities(delta: boolean): void {
       }
       break;
     }
-    const newnum = word & 511;
+    // U18: the record's header -- 28's nine-bit number plus its U_MOREBITS
+    // byte, or 29's extra U_EXTEND byte and wide entity number -- has to be
+    // fully consumed before `newnum` is known. On 28 this reads exactly the
+    // bytes CL_ParseDelta used to read at this point, in the same order (the
+    // copy-old loop below reads nothing).
+    const hdr = parseEntityWord;
+    cl.qw.codec().readDeltaEntityHeader(word, hdr);
+    for (let b = 0; b < 16; b++) if (hdr.bits & (1 << b)) bitcounts[b]++;
+
+    const newnum = hdr.number;
     let oldnum = oldindex >= oldp.num_entities ? 9999 : oldp.entities[oldindex].number;
 
     while (newnum > oldnum) {
@@ -463,7 +429,7 @@ export function CL_ParsePacketEntities(delta: boolean): void {
 
     if (newnum < oldnum) {
       // new from baseline
-      if (word & U_REMOVE) {
+      if (hdr.remove) {
         if (full) {
           cl.qw.validsequence = 0;
           Con_Printf("WARNING: U_REMOVE on full update\n");
@@ -473,7 +439,7 @@ export function CL_ParsePacketEntities(delta: boolean): void {
         continue;
       }
       if (newindex >= MAX_PACKET_ENTITIES) Host_EndGame("CL_ParsePacketEntities: newindex == MAX_PACKET_ENTITIES");
-      CL_ParseDelta(cl_baselines[newnum], newp.entities[newindex], word);
+      cl.qw.codec().readDeltaEntity(CL_BaselineNum(newnum), newp.entities[newindex], hdr, cl.qw.protocolflags);
       newindex++;
       continue;
     }
@@ -484,11 +450,11 @@ export function CL_ParsePacketEntities(delta: boolean): void {
         cl.qw.validsequence = 0;
         Con_Printf("WARNING: delta on full update");
       }
-      if (word & U_REMOVE) {
+      if (hdr.remove) {
         oldindex++;
         continue;
       }
-      CL_ParseDelta(oldp.entities[oldindex], newp.entities[newindex], word);
+      cl.qw.codec().readDeltaEntity(oldp.entities[oldindex], newp.entities[newindex], hdr, cl.qw.protocolflags);
       newindex++;
       oldindex++;
     }
@@ -703,9 +669,9 @@ export function CL_ParsePlayerinfo(): void {
   const flags = (state.flags = MSG_ReadShort());
 
   state.messagenum = cl.qw.parsecount;
-  state.origin[0] = MSG_ReadCoord();
-  state.origin[1] = MSG_ReadCoord();
-  state.origin[2] = MSG_ReadCoord();
+  state.origin[0] = cl.qw.codec().readCoord(cl.qw.protocolflags);
+  state.origin[1] = cl.qw.codec().readCoord(cl.qw.protocolflags);
+  state.origin[2] = cl.qw.codec().readCoord(cl.qw.protocolflags);
 
   state.frame = MSG_ReadByte();
 
@@ -717,13 +683,13 @@ export function CL_ParsePlayerinfo(): void {
     state.state_time = parseState.parsecounttime - msec * 0.001;
   } else state.state_time = parseState.parsecounttime;
 
-  if (flags & PF_COMMAND) MSG_ReadDeltaUsercmd(nullcmd, state.command);
+  if (flags & PF_COMMAND) cl.qw.codec().readDeltaUsercmd(nullcmd, state.command);
 
   for (let i = 0; i < 3; i++) {
     if (flags & (PF_VELOCITY1 << i)) state.velocity[i] = MSG_ReadShort();
     else state.velocity[i] = 0;
   }
-  if (flags & PF_MODEL) state.modelindex = MSG_ReadByte();
+  if (flags & PF_MODEL) state.modelindex = cl.qw.codec().readModelIndex();
   else state.modelindex = parseState.cl_playerindex;
 
   if (flags & PF_SKINNUM) state.skinnum = MSG_ReadByte();

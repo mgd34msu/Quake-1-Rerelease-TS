@@ -179,7 +179,7 @@ import {
 } from "../../common/mathlib";
 import { Mod_LeafPVS, Mod_PointInLeaf, type ModelT } from "../../common/model";
 import { MAX_MAP_LEAFS } from "../../common/bspfile";
-import { MSG_WriteAngle, MSG_WriteByte, MSG_WriteChar, MSG_WriteCoord, MSG_WriteLong, MSG_WriteShort, MSG_WriteString, SizeBuf, SZ_Print } from "../../common/sizebuf";
+import { MSG_WriteByte, MSG_WriteChar, MSG_WriteLong, MSG_WriteShort, MSG_WriteString, SizeBuf, SZ_Print } from "../../common/sizebuf";
 import { Sys_Error, Sys_FileWrite, SysError } from "../../platform/sys";
 import { MAX_MODELS, MAX_SOUNDS } from "../bothdefs";
 import { MAX_CLIENTS, SvcOpsT } from "../protocol";
@@ -219,11 +219,18 @@ import {
   SOLID_NOT,
   svState,
   sv,
+  svQwCodec,
   svs,
   ClientStateT,
   ClientT,
 } from "./server";
 import { MOVE_NORMAL, SV_LinkEdict, SV_Move, SV_PointContents } from "./world";
+import { EntityStateT } from "../../common/quakedef";
+
+// PF_makestatic's reused carrier for svc_spawnstatic: the codec's writeStatic
+// takes the same modelindex/frame/colormap/skin/origin/angles the C reads
+// straight off the edict, and the send path allocates nothing per static.
+const pfStaticState = new EntityStateT();
 import { Con_Printf, SV_BroadcastPrintf, SV_ClientPrintf, SV_Multicast, SV_StartSound, svSendFileState } from "./sv_send";
 import { ClientReliableCheckBlock, ClientReliableWrite_Angle, ClientReliableWrite_Begin, ClientReliableWrite_Byte, ClientReliableWrite_Char, ClientReliableWrite_Coord, ClientReliableWrite_Long, ClientReliableWrite_Short, ClientReliableWrite_String } from "./sv_nchan";
 import { Info_ValueForKey } from "../common";
@@ -593,13 +600,9 @@ function PF_ambientsound(): void {
   }
 
   // add an svc_spawnambient command to the level signon packet
-  MSG_WriteByte(sv.signon, SvcOpsT.svc_spawnstaticsound);
-  for (let i = 0; i < 3; i++) MSG_WriteCoord(sv.signon, pos[i]);
-
-  MSG_WriteByte(sv.signon, soundnum);
-
-  MSG_WriteByte(sv.signon, vol * 255);
-  MSG_WriteByte(sv.signon, attenuation * 64);
+  if (!svQwCodec().writeStaticSound(sv.signon, pos, soundnum, vol, attenuation, sv.protocolflags)) {
+    Con_Printf("protocol %i cannot name sound %i: %s\n", sv.protocol, soundnum, samp);
+  }
 }
 
 /*
@@ -1373,7 +1376,7 @@ function PF_WriteAngle(): void {
     ClientReliableCheckBlock(cl, 1);
     ClientReliableWrite_Angle(cl, G_FLOAT(OFS_PARM1));
   } else {
-    MSG_WriteAngle(WriteDest(), G_FLOAT(OFS_PARM1));
+    svQwCodec().writeAngle(WriteDest(), G_FLOAT(OFS_PARM1), sv.protocolflags);
   }
 }
 
@@ -1383,7 +1386,7 @@ function PF_WriteCoord(): void {
     ClientReliableCheckBlock(cl, 2);
     ClientReliableWrite_Coord(cl, G_FLOAT(OFS_PARM1));
   } else {
-    MSG_WriteCoord(WriteDest(), G_FLOAT(OFS_PARM1));
+    svQwCodec().writeCoord(WriteDest(), G_FLOAT(OFS_PARM1), sv.protocolflags);
   }
 }
 
@@ -1413,16 +1416,16 @@ function PF_WriteEntity(): void {
 function PF_makestatic(): void {
   const ent = G_EDICT(OFS_PARM0);
 
-  MSG_WriteByte(sv.signon, SvcOpsT.svc_spawnstatic);
-
-  MSG_WriteByte(sv.signon, SV_ModelIndex(PR_GetString(ent.v.model)));
-
-  MSG_WriteByte(sv.signon, ent.v.frame);
-  MSG_WriteByte(sv.signon, ent.v.colormap);
-  MSG_WriteByte(sv.signon, ent.v.skin);
-  for (let i = 0; i < 3; i++) {
-    MSG_WriteCoord(sv.signon, ent.v.origin[i]);
-    MSG_WriteAngle(sv.signon, ent.v.angles[i]);
+  const state = pfStaticState;
+  state.modelindex = SV_ModelIndex(PR_GetString(ent.v.model));
+  state.frame = ent.v.frame;
+  state.colormap = ent.v.colormap;
+  state.skin = ent.v.skin;
+  VectorCopy(ent.v.origin, state.origin);
+  VectorCopy(ent.v.angles, state.angles);
+  if (!svQwCodec().writeStatic(sv.signon, state, sv.protocolflags)) {
+    // can't display the correct model & frame, so don't show it at all
+    Con_Printf("protocol %i cannot name model %i frame %i\n", sv.protocol, state.modelindex, state.frame);
   }
 
   // throw the entity away now

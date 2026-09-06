@@ -32,7 +32,19 @@ import {
   SND_VOLUME,
 } from "../src/common/protocol";
 import { ClientdataT, ClientdataTailT, EntityUpdateT, EntityUpdateTailT, SoundHeaderT, SoundMessageT } from "../src/common/protocol/codec";
-import { getCodec, nq15Codec, fitz666Codec, rmq999Codec, protocolSupported, PROTOCOLS } from "../src/common/protocol/registry";
+import {
+  getCodec,
+  getQwCodec,
+  nq15Codec,
+  fitz666Codec,
+  rmq999Codec,
+  qw28Codec,
+  qw29Codec,
+  protocolSupported,
+  qwProtocolSupported,
+  PROTOCOLS,
+  QW_PROTOCOLS,
+} from "../src/common/protocol/registry";
 import { RMQ_DEFAULT_FLAGS } from "../src/common/protocol/rmq999";
 
 const savedNetMessage = {
@@ -91,7 +103,20 @@ describe("the codec registry", () => {
     expect(protocolSupported(666)).toBe(true);
     expect(protocolSupported(999)).toBe(true);
     expect(protocolSupported(16)).toBe(false);
-    expect(protocolSupported(28)).toBe(false); // QuakeWorld is a separate track
+    // U18: QuakeWorld's 28 and 29 are codecs in this registry now (qw28.ts /
+    // qw29.ts), so protocolSupported knows them. They stay out of PROTOCOLS
+    // above: `sv_protocol` never selects one and CL_ParseServerInfo never sees
+    // one, because a QuakeWorld session is chosen by the connection kind.
+    expect(protocolSupported(28)).toBe(true);
+    expect(protocolSupported(29)).toBe(true);
+    expect(getCodec(28)).toBe(qw28Codec);
+    expect(getCodec(29)).toBe(qw29Codec);
+    expect(getQwCodec(28)).toBe(qw28Codec);
+    expect(getQwCodec(29)).toBe(qw29Codec);
+    expect(qwProtocolSupported(15)).toBe(false);
+    expect(qwProtocolSupported(28)).toBe(true);
+    expect(qwProtocolSupported(29)).toBe(true);
+    expect(QW_PROTOCOLS).toEqual([28, 29]);
   });
 
   test("each codec reports its own wire sizes", () => {

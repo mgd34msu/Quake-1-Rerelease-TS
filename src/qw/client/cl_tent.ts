@@ -101,9 +101,21 @@ Deviations from PORTING.md / the C source:
 */
 
 import { Con_Printf } from "./console";
-import { M_PI, VectorCopy, VectorNormalize, VectorSubtract, vec3, vec3_origin } from "../../common/mathlib";
+import { M_PI, type Vec3, VectorCopy, VectorNormalize, VectorSubtract, vec3, vec3_origin } from "../../common/mathlib";
 import { Mod_ForName, type ModelT } from "../../common/model";
-import { MSG_ReadByte, MSG_ReadCoord, MSG_ReadShort } from "../../common/sizebuf";
+import { MSG_ReadByte, MSG_ReadShort } from "../../common/sizebuf";
+
+// U18: a temp entity's position, read at the connection's protocol width
+// (13.3 fixed-point shorts on 28, 32-bit 16ths on 29 -- see
+// src/common/protocol/qw29.ts). The C's `MSG_ReadCoord()` triple is one
+// helper here so every TE_* case reads the same way; the three reads still
+// happen left to right, in the C's own order.
+function readQwPos(): Vec3 {
+  const x = cl.qw.codec().readCoord(cl.qw.protocolflags);
+  const y = cl.qw.codec().readCoord(cl.qw.protocolflags);
+  const z = cl.qw.codec().readCoord(cl.qw.protocolflags);
+  return vec3(x, y, z);
+}
 import {
   TE_BLOOD,
   TE_EXPLOSION,
@@ -226,8 +238,8 @@ CL_ParseBeam
 export function CL_ParseBeam(m: ModelT | null): void {
   const ent = MSG_ReadShort();
 
-  const start = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
-  const end = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+  const start = readQwPos();
+  const end = readQwPos();
 
   // override any beam with the same entity
   for (let i = 0; i < MAX_BEAMS; i++) {
@@ -267,7 +279,7 @@ export function CL_ParseTEnt(): void {
   switch (type) {
     case TE_WIZSPIKE: {
       // spike hitting wall
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_RunParticleEffect(pos, vec3_origin, 20, 30);
       S_StartSound(-1, 0, cl_sfx_wizhit, pos, 1, 1);
       break;
@@ -275,7 +287,7 @@ export function CL_ParseTEnt(): void {
 
     case TE_KNIGHTSPIKE: {
       // spike hitting wall
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_RunParticleEffect(pos, vec3_origin, 226, 20);
       S_StartSound(-1, 0, cl_sfx_knighthit, pos, 1, 1);
       break;
@@ -283,7 +295,7 @@ export function CL_ParseTEnt(): void {
 
     case TE_SPIKE: {
       // spike hitting wall
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_RunParticleEffect(pos, vec3_origin, 0, 10);
       if (rand() % 5) {
         S_StartSound(-1, 0, cl_sfx_tink1, pos, 1, 1);
@@ -297,7 +309,7 @@ export function CL_ParseTEnt(): void {
     }
     case TE_SUPERSPIKE: {
       // super spike hitting wall
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_RunParticleEffect(pos, vec3_origin, 0, 20);
 
       if (rand() % 5) {
@@ -314,7 +326,7 @@ export function CL_ParseTEnt(): void {
     case TE_EXPLOSION: {
       // rocket explosion
       // particles
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_ParticleExplosion(pos);
 
       // light
@@ -342,7 +354,7 @@ export function CL_ParseTEnt(): void {
 
     case TE_TAREXPLOSION: {
       // tarbaby explosion
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_BlobExplosion(pos);
 
       S_StartSound(-1, 0, cl_sfx_r_exp3, pos, 1, 1);
@@ -362,13 +374,13 @@ export function CL_ParseTEnt(): void {
       break;
 
     case TE_LAVASPLASH: {
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_LavaSplash(pos);
       break;
     }
 
     case TE_TELEPORT: {
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_TeleportSplash(pos);
       break;
     }
@@ -376,7 +388,7 @@ export function CL_ParseTEnt(): void {
     case TE_GUNSHOT: {
       // bullet hitting wall
       const cnt = MSG_ReadByte();
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_RunParticleEffect(pos, vec3_origin, 0, 20 * cnt);
       break;
     }
@@ -384,14 +396,14 @@ export function CL_ParseTEnt(): void {
     case TE_BLOOD: {
       // bullets hitting body
       const cnt = MSG_ReadByte();
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_RunParticleEffect(pos, vec3_origin, 73, 20 * cnt);
       break;
     }
 
     case TE_LIGHTNINGBLOOD: {
       // lightning hitting body
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = readQwPos();
       R_RunParticleEffect(pos, vec3_origin, 225, 50);
       break;
     }

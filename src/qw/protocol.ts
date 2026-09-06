@@ -49,7 +49,12 @@ Deviations from PORTING.md / the C source:
 */
 
 import { type Vec3, vec3 } from "../common/mathlib";
-import { DEFAULT_SOUND_PACKET_VOLUME, DEFAULT_SOUND_PACKET_ATTENUATION } from "../common/protocol";
+import {
+  DEFAULT_SOUND_PACKET_VOLUME,
+  DEFAULT_SOUND_PACKET_ATTENUATION,
+  ENTALPHA_DEFAULT,
+  ENTSCALE_DEFAULT,
+} from "../common/protocol";
 
 export { DEFAULT_SOUND_PACKET_VOLUME, DEFAULT_SOUND_PACKET_ATTENUATION };
 
@@ -279,6 +284,15 @@ export class QwEntityStateT {
   skinnum = 0;
   effects = 0;
 
+  // U18: not in QW 2.33's entity_state_t. Protocol 29
+  // (src/common/protocol/qw29.ts) carries FitzQuake 666's U_ALPHA/U_SCALE on
+  // the QuakeWorld wire, so the state a packetentities record encodes and
+  // decodes has to hold them; protocol 28 never reads or writes either, and
+  // qwprogs.dat has no entvar to source them from, so on both protocols they
+  // stay at their defaults until a progs profile with the fields exists.
+  alpha: number = ENTALPHA_DEFAULT;
+  scale: number = ENTSCALE_DEFAULT;
+
   clear(): void {
     this.number = 0;
     this.flags = 0;
@@ -289,6 +303,28 @@ export class QwEntityStateT {
     this.colormap = 0;
     this.skinnum = 0;
     this.effects = 0;
+    this.alpha = ENTALPHA_DEFAULT;
+    this.scale = ENTSCALE_DEFAULT;
+  }
+
+  // `*to = *from` (a C struct copy by value): QW/client/cl_ents.c and
+  // QW/server/sv_ents.c both do it, and every delta decode starts with it.
+  copyFrom(from: QwEntityStateT): void {
+    this.number = from.number;
+    this.flags = from.flags;
+    this.origin[0] = from.origin[0];
+    this.origin[1] = from.origin[1];
+    this.origin[2] = from.origin[2];
+    this.angles[0] = from.angles[0];
+    this.angles[1] = from.angles[1];
+    this.angles[2] = from.angles[2];
+    this.modelindex = from.modelindex;
+    this.frame = from.frame;
+    this.colormap = from.colormap;
+    this.skinnum = from.skinnum;
+    this.effects = from.effects;
+    this.alpha = from.alpha;
+    this.scale = from.scale;
   }
 }
 

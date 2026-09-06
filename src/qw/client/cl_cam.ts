@@ -34,7 +34,7 @@ import { Sbar_Changed } from "../../client/sbar";
 import { clMainState } from "./cl_main";
 import { Com_sprintf } from "../../common/sprintf";
 import { Cvar_RegisterVariable, CvarT } from "../../common/cvar";
-import { MSG_WriteByte, MSG_WriteCoord, MSG_WriteString } from "../common";
+import { MSG_WriteByte, MSG_WriteString } from "../common";
 import { ClcOpsT, MAX_CLIENTS, QwUsercmdT, UPDATE_MASK } from "../protocol";
 import { pmove, type PmtraceT } from "../pmove_types";
 import { PM_PlayerMove } from "../pmovetst";
@@ -310,9 +310,9 @@ export function Cam_Track(cmd: QwUsercmdT): void {
     VectorCopy(player.origin, desired_position);
     if (VectorCompare(desired_position, self.origin) === 0) {
       MSG_WriteByte(cls.qw.netchan.message, ClcOpsT.clc_tmove);
-      MSG_WriteCoord(cls.qw.netchan.message, desired_position[0]);
-      MSG_WriteCoord(cls.qw.netchan.message, desired_position[1]);
-      MSG_WriteCoord(cls.qw.netchan.message, desired_position[2]);
+      cl.qw.codec().writeCoord(cls.qw.netchan.message, desired_position[0], cl.qw.protocolflags);
+      cl.qw.codec().writeCoord(cls.qw.netchan.message, desired_position[1], cl.qw.protocolflags);
+      cl.qw.codec().writeCoord(cls.qw.netchan.message, desired_position[2], cl.qw.protocolflags);
       // move there locally immediately
       VectorCopy(desired_position, self.origin);
     }
@@ -326,9 +326,9 @@ export function Cam_Track(cmd: QwUsercmdT): void {
     if (len > 16) {
       // close enough?
       MSG_WriteByte(cls.qw.netchan.message, ClcOpsT.clc_tmove);
-      MSG_WriteCoord(cls.qw.netchan.message, desired_position[0]);
-      MSG_WriteCoord(cls.qw.netchan.message, desired_position[1]);
-      MSG_WriteCoord(cls.qw.netchan.message, desired_position[2]);
+      cl.qw.codec().writeCoord(cls.qw.netchan.message, desired_position[0], cl.qw.protocolflags);
+      cl.qw.codec().writeCoord(cls.qw.netchan.message, desired_position[1], cl.qw.protocolflags);
+      cl.qw.codec().writeCoord(cls.qw.netchan.message, desired_position[2], cl.qw.protocolflags);
     }
 
     // move there locally immediately

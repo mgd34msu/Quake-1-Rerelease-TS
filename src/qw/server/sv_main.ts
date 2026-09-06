@@ -190,6 +190,7 @@ import { Pmove_Init } from "../pmove";
 
 import { Cbuf_AddText, Cbuf_Execute, Cbuf_Init, Cbuf_InsertText, Cmd_AddCommand, Cmd_Argc, Cmd_Argv, Cmd_StuffCmds_f, Cmd_TokenizeString } from "../../common/cmd";
 import { CvarT, Cvar_RegisterVariable, Cvar_SetValue, setCvarInfoHook } from "../../common/cvar";
+import { max_edicts } from "../../common/host";
 import { Com_sprintf } from "../../common/sprintf";
 import { Hunk_AllocName, Hunk_LowMark, Memory_Init } from "../../common/zone";
 import { Mod_Init } from "../../common/model";
@@ -298,6 +299,14 @@ export const allow_download_maps = new CvarT("allow_download_maps", "1");
 export const sv_highchars = new CvarT("sv_highchars", "1");
 
 export const sv_phs = new CvarT("sv_phs", "1");
+
+// U18 (this engine's addition, not QW 2.33's): which QuakeWorld wire this
+// server serves -- "28" (id's protocol, the only one a vanilla client can
+// read), "29" (this engine's wide variant, src/common/protocol/qw29.ts) or
+// "auto" (the default: 29 only when the map needs the width). sv_init.ts's
+// SV_ChooseQwProtocol reads it once per map load; changing it mid-level does
+// nothing until the next one, exactly like the NetQuake side's sv_protocol.
+export const sv_qwprotocol = new CvarT("sv_qwprotocol", "auto");
 
 export const pausable = new CvarT("pausable", "1");
 
@@ -749,6 +758,11 @@ export function SVC_DirectConnect(): void {
   const temp = new ClientT();
 
   temp.userid = sv_connect_userid;
+
+  // U18: "this client can read protocol 29" (src/common/protocol/qw29.ts's
+  // header). A vanilla QuakeWorld client sends no `*wide` key, so it stays
+  // false and SV_New_f answers that client with 28.
+  temp.wide = Info_ValueForKey(userinfo, "*wide") === "1";
 
   // works properly
   if (!sv_highchars.value) {
@@ -1393,6 +1407,13 @@ export function SV_InitLocal(): void {
   Cvar_RegisterVariable(sv_highchars);
 
   Cvar_RegisterVariable(sv_phs);
+  Cvar_RegisterVariable(sv_qwprotocol);
+
+  // U18: the shared edict-table cvar (src/common/host.ts). qwsv never calls
+  // Host_Init, which is where the WinQuake binary registers it, so without
+  // this the cvar would sit at its unregistered value of 0 and
+  // Host_MaxEdicts would clamp every QuakeWorld map to MIN_EDICTS.
+  Cvar_RegisterVariable(max_edicts);
 
   Cvar_RegisterVariable(pausable);
 

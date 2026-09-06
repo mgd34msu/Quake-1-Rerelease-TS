@@ -303,6 +303,13 @@ import { Cache_Flush } from "../common/zone";
 import { Cmd_AddCommand } from "../common/cmd";
 import { CvarT, Cvar_RegisterVariable, Cvar_Set } from "../common/cvar";
 import { CRC_Block } from "../common/crc";
+import {
+  qwReadAngle16,
+  qwReadDeltaUsercmd,
+  qwWriteAngle,
+  qwWriteAngle16,
+  qwWriteDeltaUsercmd,
+} from "../common/protocol/qw28";
 import { type Vec3, vec3, VectorCopy } from "../common/mathlib";
 import { MAX_NUM_ARGVS } from "../common/quakedef";
 import {
@@ -1197,18 +1204,25 @@ export function COM_BlockSequenceCRCByte(base: Uint8Array, length: number, seque
 //
 //============================================================================
 
+// U18: the bodies of these five moved into the protocol-28 codec
+// (src/common/protocol/qw28.ts) with the rest of QuakeWorld's protocol-varying
+// encoders, the same extraction U3 did for protocol 15 -- the truncation order
+// that makes MSG_WriteAngle differ from WinQuake's IS the per-protocol
+// difference the codec seam exists to hold. They keep their common.c names and
+// exports here, where the C declares them, and forward.
+
 export function MSG_WriteAngle(sb: SizeBuf, f: number): void {
   // f*256/360 computed in floating point, THEN truncated -- differs from
   // WinQuake's truncation order, see file header
-  MSG_WriteByte(sb, Math.trunc((f * 256) / 360) & 255);
+  qwWriteAngle(sb, f);
 }
 
 export function MSG_WriteAngle16(sb: SizeBuf, f: number): void {
-  MSG_WriteShort(sb, Math.trunc((f * 65536) / 360) & 65535);
+  qwWriteAngle16(sb, f);
 }
 
 export function MSG_ReadAngle16(): number {
-  return MSG_ReadShort() * (360.0 / 65536);
+  return qwReadAngle16();
 }
 
 export function MSG_GetReadCount(): number {
@@ -1233,62 +1247,11 @@ export function MSG_ReadStringLine(): string {
 export const nullcmd: QwUsercmdT = new QwUsercmdT();
 
 export function MSG_WriteDeltaUsercmd(buf: SizeBuf, from: QwUsercmdT, cmd: QwUsercmdT): void {
-  //
-  // send the movement message
-  //
-  let bits = 0;
-  if (cmd.angles[0] !== from.angles[0]) bits |= CM_ANGLE1;
-  if (cmd.angles[1] !== from.angles[1]) bits |= CM_ANGLE2;
-  if (cmd.angles[2] !== from.angles[2]) bits |= CM_ANGLE3;
-  if (cmd.forwardmove !== from.forwardmove) bits |= CM_FORWARD;
-  if (cmd.sidemove !== from.sidemove) bits |= CM_SIDE;
-  if (cmd.upmove !== from.upmove) bits |= CM_UP;
-  if (cmd.buttons !== from.buttons) bits |= CM_BUTTONS;
-  if (cmd.impulse !== from.impulse) bits |= CM_IMPULSE;
-
-  MSG_WriteByte(buf, bits);
-
-  if (bits & CM_ANGLE1) MSG_WriteAngle16(buf, cmd.angles[0]);
-  if (bits & CM_ANGLE2) MSG_WriteAngle16(buf, cmd.angles[1]);
-  if (bits & CM_ANGLE3) MSG_WriteAngle16(buf, cmd.angles[2]);
-
-  if (bits & CM_FORWARD) MSG_WriteShort(buf, cmd.forwardmove);
-  if (bits & CM_SIDE) MSG_WriteShort(buf, cmd.sidemove);
-  if (bits & CM_UP) MSG_WriteShort(buf, cmd.upmove);
-
-  if (bits & CM_BUTTONS) MSG_WriteByte(buf, cmd.buttons);
-  if (bits & CM_IMPULSE) MSG_WriteByte(buf, cmd.impulse);
-  MSG_WriteByte(buf, cmd.msec);
+  qwWriteDeltaUsercmd(buf, from, cmd);
 }
 
 export function MSG_ReadDeltaUsercmd(from: QwUsercmdT, move: QwUsercmdT): void {
-  // memcpy (move, from, sizeof(*move));
-  VectorCopy(from.angles, move.angles);
-  move.forwardmove = from.forwardmove;
-  move.sidemove = from.sidemove;
-  move.upmove = from.upmove;
-  move.buttons = from.buttons;
-  move.impulse = from.impulse;
-  move.msec = from.msec;
-
-  const bits = MSG_ReadByte();
-
-  // read current angles
-  if (bits & CM_ANGLE1) move.angles[0] = MSG_ReadAngle16();
-  if (bits & CM_ANGLE2) move.angles[1] = MSG_ReadAngle16();
-  if (bits & CM_ANGLE3) move.angles[2] = MSG_ReadAngle16();
-
-  // read movement
-  if (bits & CM_FORWARD) move.forwardmove = MSG_ReadShort();
-  if (bits & CM_SIDE) move.sidemove = MSG_ReadShort();
-  if (bits & CM_UP) move.upmove = MSG_ReadShort();
-
-  // read buttons
-  if (bits & CM_BUTTONS) move.buttons = MSG_ReadByte();
-  if (bits & CM_IMPULSE) move.impulse = MSG_ReadByte();
-
-  // read time to run command
-  move.msec = MSG_ReadByte();
+  qwReadDeltaUsercmd(from, move);
 }
 
 // re-exported for callers that only need the type/constructor, not the wire helpers

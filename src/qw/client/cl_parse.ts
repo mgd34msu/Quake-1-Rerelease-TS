@@ -64,9 +64,7 @@ import {
   Info_ValueForKey,
   MAX_INFO_STRING,
   MAX_SERVERINFO_STRING,
-  MSG_ReadAngle,
   MSG_ReadByte,
-  MSG_ReadCoord,
   MSG_ReadFloat,
   MSG_ReadLong,
   MSG_ReadShort,
@@ -87,6 +85,7 @@ import {
 import { MAX_CL_STATS, MAX_EDICTS, MAX_LIGHTSTYLES, MAX_MODELS, MAX_SOUNDS, STAT_MONSTERS, STAT_SECRETS, STAT_ITEMS } from "../bothdefs";
 import { Cbuf_AddText, Cbuf_Execute, Cmd_ExecuteString } from "../cmd";
 import { ClcOpsT, MAX_CLIENTS, PRINT_CHAT, PROTOCOL_VERSION, QwEntityStateT, SND_ATTENUATION, SND_VOLUME, SvcOpsT } from "../protocol";
+import { PROTOCOL_QW_WIDE, qwProtocolSupported } from "../../common/protocol/registry";
 import { DEFAULT_SOUND_PACKET_ATTENUATION, DEFAULT_SOUND_PACKET_VOLUME } from "../protocol";
 import { movevars } from "../pmove_types";
 import { Mod_ForName } from "../../common/model";
@@ -100,7 +99,7 @@ import { S_LocalSound, S_PrecacheSound, S_StartSound, S_StaticSound, S_StopSound
 import { VID_GRADES, vid } from "../../client/vid";
 import { Sys_Error, Sys_FileClose, Sys_FileOpenRead, Sys_FileOpenWrite, Sys_FileRename, Sys_FileWrite } from "../../platform/sys";
 import { FileHandle } from "../../common/common";
-import { NET_TIMINGS, NET_TIMINGSMASK, DownloadTypeT, cl_baselines, type PlayerInfoT } from "./client";
+import { NET_TIMINGS, NET_TIMINGSMASK, CL_BaselineNum, DownloadTypeT, type PlayerInfoT } from "./client";
 import { UPDATE_BACKUP, UPDATE_MASK } from "../protocol";
 import { CL_ClearState, CL_Disconnect, Host_EndGame, Host_WriteConfiguration, clMainState, cl_shownet, modelNames } from "./cl_main";
 import { CL_AllocDlight, CL_ClearProjectiles, CL_ParsePacketEntities, CL_ParsePlayerinfo, CL_ParseProjectiles, CL_SetSolidEntities, glFlashblend } from "./cl_ents";
@@ -544,6 +543,7 @@ export function CL_ParseServerData(): void {
   const protover = MSG_ReadLong();
   if (
     protover !== PROTOCOL_VERSION &&
+    protover !== PROTOCOL_QW_WIDE &&
     !(cls.demoplayback && (protover === 26 || protover === 27 || protover === 28))
   )
     Host_EndGame(
@@ -551,6 +551,13 @@ export function CL_ParseServerData(): void {
       protover,
       PROTOCOL_VERSION,
     );
+
+  // U18: the connection's codec, and 29's PRFL_* flag word. A .qwd demo takes
+  // exactly this path, so playback re-derives the protocol from the recorded
+  // svc_serverdata rather than assuming the one the demo was recorded under
+  // (the same rule NetQuake demos follow).
+  cl.qw.protocol = qwProtocolSupported(protover) ? protover : PROTOCOL_VERSION;
+  cl.qw.protocolflags = cl.qw.codec().readProtocolFlags();
 
   cl.qw.servercount = MSG_ReadLong();
 
@@ -627,7 +634,7 @@ export function CL_ParseSoundlist(): void {
   // precache sounds
   //	memset (cl.sound_precache, 0, sizeof(cl.sound_precache));
 
-  let numsounds = MSG_ReadByte();
+  let numsounds = cl.qw.codec().readPrecacheCount();
 
   for (;;) {
     const str = MSG_ReadString();
@@ -637,7 +644,7 @@ export function CL_ParseSoundlist(): void {
     cl.qw.sound_name[numsounds] = str;
   }
 
-  const n = MSG_ReadByte();
+  const n = cl.qw.codec().readPrecacheCount();
 
   if (n) {
     MSG_WriteByte(cls.qw.netchan.message, ClcOpsT.clc_stringcmd);
@@ -658,7 +665,7 @@ CL_ParseModellist
 */
 export function CL_ParseModellist(): void {
   // precache models and note certain default indexes
-  let nummodels = MSG_ReadByte();
+  let nummodels = cl.qw.codec().readPrecacheCount();
 
   for (;;) {
     const str = MSG_ReadString();
@@ -672,7 +679,7 @@ export function CL_ParseModellist(): void {
     if (cl.qw.model_name[nummodels] === "progs/flag.mdl") parseState.cl_flagindex = nummodels;
   }
 
-  const n = MSG_ReadByte();
+  const n = cl.qw.codec().readPrecacheCount();
 
   if (n) {
     MSG_WriteByte(cls.qw.netchan.message, ClcOpsT.clc_stringcmd);
@@ -692,14 +699,7 @@ CL_ParseBaseline
 ==================
 */
 export function CL_ParseBaseline(es: QwEntityStateT): void {
-  es.modelindex = MSG_ReadByte();
-  es.frame = MSG_ReadByte();
-  es.colormap = MSG_ReadByte();
-  es.skinnum = MSG_ReadByte();
-  for (let i = 0; i < 3; i++) {
-    es.origin[i] = MSG_ReadCoord();
-    es.angles[i] = MSG_ReadAngle();
-  }
+  cl.qw.codec().readQwBaseline(es, cl.qw.protocolflags);
 }
 
 /*
@@ -739,8 +739,8 @@ CL_ParseStaticSound
 */
 export function CL_ParseStaticSound(): void {
   const org = vec3();
-  for (let i = 0; i < 3; i++) org[i] = MSG_ReadCoord();
-  const sound_num = MSG_ReadByte();
+  for (let i = 0; i < 3; i++) org[i] = cl.qw.codec().readCoord(cl.qw.protocolflags);
+  const sound_num = cl.qw.codec().readStaticSoundIndex(1);
   const vol = MSG_ReadByte();
   const atten = MSG_ReadByte();
 
@@ -773,9 +773,9 @@ export function CL_ParseStartSoundPacket(): void {
   if (channel & SND_ATTENUATION) attenuation = MSG_ReadByte() / 64.0;
   else attenuation = DEFAULT_SOUND_PACKET_ATTENUATION;
 
-  const sound_num = MSG_ReadByte();
+  const sound_num = cl.qw.codec().readSoundIndex();
 
-  for (let i = 0; i < 3; i++) pos[i] = MSG_ReadCoord();
+  for (let i = 0; i < 3; i++) pos[i] = cl.qw.codec().readCoord(cl.qw.protocolflags);
 
   const ent = (channel >> 3) & 1023;
   channel &= 7;
@@ -1093,7 +1093,7 @@ export function CL_ParseServerMessage(): void {
         break;
 
       case SvcOpsT.svc_setangle:
-        for (i = 0; i < 3; i++) cl.viewangles[i] = MSG_ReadAngle();
+        for (i = 0; i < 3; i++) cl.viewangles[i] = cl.qw.codec().readAngle(cl.qw.protocolflags);
         //			cl.viewangles[PITCH] = cl.viewangles[ROLL] = 0;
         break;
 
@@ -1140,8 +1140,8 @@ export function CL_ParseServerMessage(): void {
         break;
 
       case SvcOpsT.svc_spawnbaseline:
-        i = MSG_ReadShort();
-        CL_ParseBaseline(cl_baselines[i]);
+        i = MSG_ReadShort() & 0xffff;
+        CL_ParseBaseline(CL_BaselineNum(i));
         break;
       case SvcOpsT.svc_spawnstatic:
         CL_ParseStatic();
@@ -1182,8 +1182,8 @@ export function CL_ParseServerMessage(): void {
         cl.intermission = 1;
         cl.completed_time = clMainState.realtime;
         vid.recalc_refdef = 1; // go to full screen
-        for (i = 0; i < 3; i++) cl.qw.simorg[i] = MSG_ReadCoord();
-        for (i = 0; i < 3; i++) cl.qw.simangles[i] = MSG_ReadAngle();
+        for (i = 0; i < 3; i++) cl.qw.simorg[i] = cl.qw.codec().readCoord(cl.qw.protocolflags);
+        for (i = 0; i < 3; i++) cl.qw.simangles[i] = cl.qw.codec().readAngle(cl.qw.protocolflags);
         cl.qw.simvel[0] = cl.qw.simvel[1] = cl.qw.simvel[2] = 0;
         break;
 

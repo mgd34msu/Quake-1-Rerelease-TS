@@ -120,6 +120,7 @@ import {
   SOLID_SLIDEBOX,
   FL_ONGROUND,
   sv,
+  svQwCodec,
   svs,
   svState,
 } from "./server";
@@ -169,8 +170,6 @@ import {
   Info_ValueForKey,
   MSG_GetReadCount,
   MSG_ReadByte,
-  MSG_ReadCoord,
-  MSG_ReadDeltaUsercmd,
   MSG_ReadShort,
   MSG_ReadString,
   MSG_WriteByte,
@@ -287,6 +286,10 @@ export function SV_New_f(): void {
   host_client.state = ClientStateT.cs_connected;
   host_client.connection_started = svMain().svMainState.realtime;
 
+  // U18: one "protocol 28 can only name N models" line per connecting client,
+  // rather than one per svc_modellist message.
+  svResetPrecacheWarnings();
+
   // send the info about the new client to all connected clients
   //	SV_FullClientUpdate (host_client, &sv.reliable_datagram);
   //	host_client->sendinfo = true;
@@ -302,9 +305,25 @@ export function SV_New_f(): void {
     SZ_Clear(host_client.netchan.message);
   }
 
+  // U18: this map is served on sv.protocol (sv_init.ts's SV_ChooseQwProtocol),
+  // and a client that cannot read it has to be told so rather than fed bytes
+  // it will mis-parse. `wide` is the `*wide 1` userinfo key SVC_DirectConnect
+  // recorded; a vanilla QuakeWorld client never sends it.
+  if (sv.protocol !== PROTOCOL_VERSION && !host_client.wide) {
+    SV_ClientPrintf(
+      host_client,
+      PRINT_HIGH,
+      "This server is running QuakeWorld protocol %i, which this client cannot read.\n" +
+        "Ask the server for \"sv_qwprotocol 28\", or use a client that advertises \"*wide 1\".\n",
+      sv.protocol,
+    );
+    svMain().SV_DropClient(host_client);
+    return;
+  }
+
   // send the serverdata
   MSG_WriteByte(host_client.netchan.message, SvcOpsT.svc_serverdata);
-  MSG_WriteLong(host_client.netchan.message, PROTOCOL_VERSION);
+  svQwCodec().writeProtocol(host_client.netchan.message, sv.protocolflags);
   MSG_WriteLong(host_client.netchan.message, svs.spawncount);
   MSG_WriteString(host_client.netchan.message, gamedir);
 
@@ -338,6 +357,42 @@ export function SV_New_f(): void {
 
 /*
 ==================
+svPrecacheEntry
+
+U18. One entry of a precache table as svc_modellist / svc_soundlist may name
+it. QuakeWorld's own MAX_MODELS/MAX_SOUNDS are the shared 8192/2048 now, but
+protocol 28 indexes a model with a byte and counts a list with a byte, so on
+28 index 255 is the last one it can name at all; the list stops there and says
+so once, rather than wrapping the count and handing the client a table it will
+index wrongly. `codec.maxPrecache` is that limit (256 on 28, MAX_MODELS on 29).
+==================
+*/
+const svPrecacheWarned = { model: false, sound: false };
+
+export function svResetPrecacheWarnings(): void {
+  svPrecacheWarned.model = false;
+  svPrecacheWarned.sound = false;
+}
+
+function svPrecacheEntry(table: Array<string | null>, index: number, kind: "model" | "sound"): string | null {
+  if (index >= svQwCodec().maxPrecache) {
+    if (index < table.length && table[index] !== null && !svPrecacheWarned[kind]) {
+      svPrecacheWarned[kind] = true;
+      Con_DPrintf(
+        "SV_%slist: protocol %i can only name %i %ss; the rest are not sent\n",
+        kind === "model" ? "Model" : "Sound",
+        sv.protocol,
+        svQwCodec().maxPrecache,
+        kind,
+      );
+    }
+    return null;
+  }
+  return index < table.length ? table[index] : null;
+}
+
+/*
+==================
 SV_Soundlist_f
 ==================
 */
@@ -367,21 +422,21 @@ export function SV_Soundlist_f(): void {
   }
 
   MSG_WriteByte(host_client.netchan.message, SvcOpsT.svc_soundlist);
-  MSG_WriteByte(host_client.netchan.message, n);
+  svQwCodec().writePrecacheCount(host_client.netchan.message, n);
   let index = 1 + n;
-  let s = index < sv.sound_precache.length ? sv.sound_precache[index] : null;
+  let s = svPrecacheEntry(sv.sound_precache, index, "sound");
   while (s !== null && host_client.netchan.message.cursize < MAX_MSGLEN / 2) {
     MSG_WriteString(host_client.netchan.message, s);
     index++;
     n++;
-    s = index < sv.sound_precache.length ? sv.sound_precache[index] : null;
+    s = svPrecacheEntry(sv.sound_precache, index, "sound");
   }
 
   MSG_WriteByte(host_client.netchan.message, 0);
 
   // next msg
-  if (s !== null) MSG_WriteByte(host_client.netchan.message, n);
-  else MSG_WriteByte(host_client.netchan.message, 0);
+  if (s !== null) svQwCodec().writePrecacheCount(host_client.netchan.message, n);
+  else svQwCodec().writePrecacheCount(host_client.netchan.message, 0);
 }
 
 /*
@@ -415,20 +470,20 @@ export function SV_Modellist_f(): void {
   }
 
   MSG_WriteByte(host_client.netchan.message, SvcOpsT.svc_modellist);
-  MSG_WriteByte(host_client.netchan.message, n);
+  svQwCodec().writePrecacheCount(host_client.netchan.message, n);
   let index = 1 + n;
-  let s = index < sv.model_precache.length ? sv.model_precache[index] : null;
+  let s = svPrecacheEntry(sv.model_precache, index, "model");
   while (s !== null && host_client.netchan.message.cursize < MAX_MSGLEN / 2) {
     MSG_WriteString(host_client.netchan.message, s);
     index++;
     n++;
-    s = index < sv.model_precache.length ? sv.model_precache[index] : null;
+    s = svPrecacheEntry(sv.model_precache, index, "model");
   }
   MSG_WriteByte(host_client.netchan.message, 0);
 
   // next msg
-  if (s !== null) MSG_WriteByte(host_client.netchan.message, n);
-  else MSG_WriteByte(host_client.netchan.message, 0);
+  if (s !== null) svQwCodec().writePrecacheCount(host_client.netchan.message, n);
+  else svQwCodec().writePrecacheCount(host_client.netchan.message, 0);
 }
 
 /*
@@ -1622,9 +1677,9 @@ export function SV_ExecuteClientMessage(cl: ClientT): void {
         // read loss percentage
         cl.lossage = MSG_ReadByte();
 
-        MSG_ReadDeltaUsercmd(nullcmd, oldest);
-        MSG_ReadDeltaUsercmd(oldest, oldcmd);
-        MSG_ReadDeltaUsercmd(oldcmd, newcmd);
+        svQwCodec().readDeltaUsercmd(nullcmd, oldest);
+        svQwCodec().readDeltaUsercmd(oldest, oldcmd);
+        svQwCodec().readDeltaUsercmd(oldcmd, newcmd);
 
         if (cl.state !== ClientStateT.cs_spawned) break;
 
@@ -1677,9 +1732,9 @@ export function SV_ExecuteClientMessage(cl: ClientT): void {
       }
 
       case ClcOpsT.clc_tmove:
-        o[0] = MSG_ReadCoord();
-        o[1] = MSG_ReadCoord();
-        o[2] = MSG_ReadCoord();
+        o[0] = svQwCodec().readCoord(sv.protocolflags);
+        o[1] = svQwCodec().readCoord(sv.protocolflags);
+        o[2] = svQwCodec().readCoord(sv.protocolflags);
         // only allowed by spectators
         if (requireHostClient().spectator) {
           VectorCopy(o, requireSvPlayer().v.origin);

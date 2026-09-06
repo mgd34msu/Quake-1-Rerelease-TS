@@ -104,7 +104,7 @@ import { Cam_Track, Cam_FinishMove } from "./cl_cam";
 import { cl, cls } from "../../client/client";
 import { CactiveT } from "../../client/client";
 import { QwUsercmdT, ClcOpsT, UPDATE_BACKUP, UPDATE_MASK } from "../protocol";
-import { MSG_WriteByte, MSG_WriteDeltaUsercmd, COM_BlockSequenceCRCByte, nullcmd } from "../common";
+import { MSG_WriteByte, COM_BlockSequenceCRCByte, nullcmd } from "../common";
 import { Netchan_Transmit } from "../net_chan";
 import { CL_CalcNet } from "./cl_parse";
 import { CL_WriteDemoCmd } from "./cl_demo";
@@ -544,17 +544,17 @@ export function CL_SendCmd(): void {
 
   i = (netchan.outgoing_sequence - 2) & UPDATE_MASK;
   cmd = cl.qw.frames[i].cmd;
-  MSG_WriteDeltaUsercmd(buf, nullcmd, cmd);
+  cl.qw.codec().writeDeltaUsercmd(buf, nullcmd, cmd);
   let oldcmd = cmd;
 
   i = (netchan.outgoing_sequence - 1) & UPDATE_MASK;
   cmd = cl.qw.frames[i].cmd;
-  MSG_WriteDeltaUsercmd(buf, oldcmd, cmd);
+  cl.qw.codec().writeDeltaUsercmd(buf, oldcmd, cmd);
   oldcmd = cmd;
 
   i = netchan.outgoing_sequence & UPDATE_MASK;
   cmd = cl.qw.frames[i].cmd;
-  MSG_WriteDeltaUsercmd(buf, oldcmd, cmd);
+  cl.qw.codec().writeDeltaUsercmd(buf, oldcmd, cmd);
 
   // calculate a checksum over the move commands
   buf.data[checksumIndex] = COM_BlockSequenceCRCByte(buf.data.subarray(checksumIndex + 1), buf.cursize - checksumIndex - 1, seq_hash);

@@ -104,7 +104,7 @@ import { SV_WriteEntitiesToClient } from "./sv_ents";
 import { ClientReliableCheckBlock, ClientReliableWrite_Begin, ClientReliableWrite_Byte, ClientReliableWrite_Float, ClientReliableWrite_Long, ClientReliableWrite_Short, ClientReliableWrite_String, ClientReliableWrite_SZ } from "./sv_nchan";
 import { E_FLOAT, NUM_FOR_EDICT, PROG_TO_EDICT, PR_GetString, qwpr, type QwEdictT } from "./progs";
 import type { QwGlobalVars } from "./progdefs";
-import { ClientStateT, ClientT, MulticastT, RedirectT, SOLID_BSP, sv, svs, svState } from "./server";
+import { ClientStateT, ClientT, MulticastT, RedirectT, SOLID_BSP, sv, svQwCodec, svs, svState } from "./server";
 import {
   A2C_PRINT,
   DEFAULT_SOUND_PACKET_ATTENUATION,
@@ -116,7 +116,12 @@ import {
   SvcOpsT,
 } from "../protocol";
 import { MAX_CL_STATS, MAX_DATAGRAM, MAX_MODELS, MAX_SOUNDS, STAT_ACTIVEWEAPON, STAT_AMMO, STAT_ARMOR, STAT_CELLS, STAT_HEALTH, STAT_ITEMS, STAT_NAILS, STAT_ROCKETS, STAT_SHELLS, STAT_WEAPON } from "../bothdefs";
-import { MSG_WriteAngle, MSG_WriteByte, MSG_WriteCoord, MSG_WriteFloat, MSG_WriteLong, MSG_WriteShort, MSG_WriteString, SizeBuf, SZ_Clear, SZ_Write } from "../common";
+import { MSG_WriteByte, MSG_WriteFloat, MSG_WriteLong, MSG_WriteShort, MSG_WriteString, SizeBuf, SZ_Clear, SZ_Write } from "../common";
+import { SoundMessageT } from "../../common/protocol/codec";
+
+// SV_StartSound's reused carrier: the send path allocates nothing per sound,
+// exactly as the C fills its locals in place.
+const svSoundMessage = new SoundMessageT();
 import { Length, VectorCopy, VectorSubtract, vec3, type Vec3 } from "../../common/mathlib";
 import { Mod_PointInLeaf, type ModelT } from "../../common/model";
 import { net_from, NET_SendPacket } from "../net_udp";
@@ -474,12 +479,6 @@ export function SV_StartSound(entity: QwEdictT, channel: number, sample: string,
     use_phs = true;
   }
 
-  chan = (ent << 3) | chan;
-
-  // field_mask: write-only, never read in the C -- see file header; omitted
-  if (volume !== DEFAULT_SOUND_PACKET_VOLUME) chan |= SND_VOLUME;
-  if (attenuation !== DEFAULT_SOUND_PACKET_ATTENUATION) chan |= SND_ATTENUATION;
-
   // use the entity origin unless it is a bmodel
   const origin = vec3();
   if (entity.v.solid === SOLID_BSP) {
@@ -488,12 +487,23 @@ export function SV_StartSound(entity: QwEdictT, channel: number, sample: string,
     VectorCopy(entity.v.origin, origin);
   }
 
-  MSG_WriteByte(sv.multicast, SvcOpsT.svc_sound);
-  MSG_WriteShort(sv.multicast, chan);
-  if (chan & SND_VOLUME) MSG_WriteByte(sv.multicast, volume);
-  if (chan & SND_ATTENUATION) MSG_WriteByte(sv.multicast, attenuation * 64);
-  MSG_WriteByte(sv.multicast, sound_num);
-  for (let i = 0; i < 3; i++) MSG_WriteCoord(sv.multicast, origin[i]);
+  // U18: the svc_sound bytes -- the (ent<<3)|channel short with SND_VOLUME /
+  // SND_ATTENUATION in its top two bits, the optional volume and attenuation
+  // bytes, the sound index and the coordinates -- are the codec's
+  // (src/common/protocol/qw28.ts). The field_mask the C computes here is
+  // write-only and never read (see file header); the codec computes the same
+  // two bits from the same two comparisons.
+  const s = svSoundMessage;
+  s.ent = ent;
+  s.channel = chan;
+  s.soundNum = sound_num;
+  s.volume = volume;
+  s.attenuation = attenuation;
+  VectorCopy(origin, s.origin);
+  if (!svQwCodec().writeSound(sv.multicast, s, sv.protocolflags)) {
+    Con_DPrintf("SV_StartSound: protocol %i cannot carry entity %i / sound %i\n", sv.protocol, ent, sound_num);
+    return;
+  }
 
   if (use_phs) SV_Multicast(origin, reliable ? MulticastT.MULTICAST_PHS_R : MulticastT.MULTICAST_PHS);
   else SV_Multicast(origin, reliable ? MulticastT.MULTICAST_ALL_R : MulticastT.MULTICAST_ALL);
@@ -547,7 +557,8 @@ export function SV_WriteClientdataToMessage(client: ClientT, msg: SizeBuf): void
     MSG_WriteByte(msg, SvcOpsT.svc_damage);
     MSG_WriteByte(msg, ent.v.dmg_save);
     MSG_WriteByte(msg, ent.v.dmg_take);
-    for (let i = 0; i < 3; i++) MSG_WriteCoord(msg, other.v.origin[i] + 0.5 * (other.v.mins[i] + other.v.maxs[i]));
+    for (let i = 0; i < 3; i++)
+      svQwCodec().writeCoord(msg, other.v.origin[i] + 0.5 * (other.v.mins[i] + other.v.maxs[i]), sv.protocolflags);
 
     ent.v.dmg_take = 0;
     ent.v.dmg_save = 0;
@@ -556,7 +567,7 @@ export function SV_WriteClientdataToMessage(client: ClientT, msg: SizeBuf): void
   // a fixangle might get lost in a dropped packet.  Oh well.
   if (ent.v.fixangle) {
     MSG_WriteByte(msg, SvcOpsT.svc_setangle);
-    for (let i = 0; i < 3; i++) MSG_WriteAngle(msg, ent.v.angles[i]);
+    for (let i = 0; i < 3; i++) svQwCodec().writeAngle(msg, ent.v.angles[i], sv.protocolflags);
     ent.v.fixangle = 0;
   }
 }
