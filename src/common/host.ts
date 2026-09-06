@@ -144,7 +144,7 @@ import type * as HostCmdModule from "./host_cmd";
 import type * as RulesetModule from "../progs/ext/ruleset";
 import { EDICT_TO_PROG, pr } from "../progs/progs";
 import type { GlobalVars } from "../progs/progdefs";
-import { Cbuf_Execute, Cbuf_AddText, Cbuf_InsertText, Cbuf_Init, Cmd_Init, Cmd_WithConsoleProfile, cmdHost } from "./cmd";
+import { Cbuf_Execute, Cbuf_AddText, Cbuf_InsertText, Cbuf_Init, Cmd_Init, Cmd_WithConsoleProfile, Cmd_FlushConfigNoise, cmdHost } from "./cmd";
 import { clientProfile, serverProfile } from "./profile";
 import {
   COM_CheckParm,
@@ -1351,6 +1351,14 @@ export function Host_Shutdown(): void {
     return;
   }
   isdown = true;
+
+  // U49: a `quit` (or a fatal Sys_Error) reached inside the same Cbuf_Execute
+  // pass that just exec'd config.cfg calls Sys_Quit's process.exit()
+  // synchronously, from inside that pass's own while loop -- so cmd.ts's own
+  // end-of-pass flush (see Cbuf_Execute) never gets a chance to run. This is
+  // the last synchronous point before that exit, so any config-only noise
+  // still pending gets its one summary line here instead of being lost.
+  Cmd_FlushConfigNoise();
 
   // keep Con_Printf from trying to update the screen
   hostClientHooks.scrDisableForLoading?.(); // scr_disabled_for_loading = true

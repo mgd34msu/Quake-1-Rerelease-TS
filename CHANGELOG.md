@@ -126,6 +126,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   finite instead of handing it to the rasterizer.
 - The retail sweep's per-map timeout follows its SIGTERM with SIGKILL, so a
   driver spinning inside one frame cannot stall the sweep.
+- A dedicated server no longer prints one "Unknown command" line for every
+  client-only setting in the game's config.cfg (WinQuake did); the settings
+  are counted and reported in one summary line per command-buffer pass, a
+  one-word typo at the dedicated console still prints, and `developer`
+  restores the per-line print.
 
 ## Quake-1-TS [1.0.0] - 2026-09-05 (the seed)
 

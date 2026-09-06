@@ -133,6 +133,18 @@ Deviations from PORTING.md / the C source:
   "execing %s\n" the same way) is also not folded -- src/qw/cmd.ts's own
   `Cmd_Exec_f` already ports it faithfully as its own fork, and the unit
   brief names only the three functions above.
+- U49 (quality-of-life addition, not in WinQuake/QuakeSpasm's source but
+  matching their observable dedicated-console behavior): a dedicated server
+  never runs CL_Init, so none of the client's archived cvars are registered,
+  and config.cfg's exec used to print one "Unknown command" line per such
+  cvar. `Cmd_ExecuteString`'s unknown-command branch now counts a
+  settings-shaped (exactly two-token) line on a dedicated server instead of
+  printing it (`cmdConfigNoise`/`Cmd_NoteConfigNoise`), and `Cbuf_Execute`
+  flushes one summary line via `Cmd_FlushConfigNoise` at the end of its own
+  pass, so an `exec` at the runtime console still gets one line, not one per
+  cvar. `developer` and a one-token (typo) line are unaffected; a listen
+  server or the client boot never dedicated, so neither counts nor prints
+  differently.
 */
 
 import { SizeBuf, SZ_Alloc, SZ_Clear, SZ_Write } from "./sizebuf";
@@ -140,7 +152,7 @@ import { COM_Parse, type ParseState, com_argc, com_argv, COM_LoadHunkFile } from
 import { Cvar_Command, Cvar_VariableString } from "./cvar";
 import { Hunk_LowMark, Hunk_FreeToLowMark } from "./zone";
 import { Con_Printf } from "../client/console";
-import { Sys_Error } from "../platform/sys";
+import { Sys_Error, sysState } from "../platform/sys";
 import { activeProfile, type NetProfileT } from "./profile";
 import type * as HostModule from "./host";
 
@@ -226,6 +238,35 @@ export function Cmd_WithProfileRegistration(fn: () => void): void {
   } finally {
     cmdHost.profileRegistration = saved;
   }
+}
+
+// U49 (quality-of-life addition, see file header): a dedicated server never
+// runs CL_Init, so none of the client's archived cvars (sensitivity,
+// joy_rumble, ...) are registered, and config.cfg's exec floods the console
+// with one "Unknown command" line per such setting. A settings-shaped line
+// (exactly two tokens: a name and a value) that fails command/alias/cvar
+// lookup on a dedicated server is counted here instead of printed; the count
+// and a capped sample of the names are flushed as one summary line at the
+// end of the enclosing Cbuf_Execute pass. A one-token line (a typo at the
+// dedicated console) is not settings-shaped and still prints immediately, as
+// does everything under `developer`, on both dedicated and non-dedicated
+// processes.
+const MAX_CONFIG_NOISE_NAMES = 16;
+export const cmdConfigNoise = { count: 0, names: [] as string[] };
+
+function Cmd_NoteConfigNoise(name: string): void {
+  cmdConfigNoise.count++;
+  if (cmdConfigNoise.names.length < MAX_CONFIG_NOISE_NAMES) cmdConfigNoise.names.push(name);
+}
+
+export function Cmd_FlushConfigNoise(): void {
+  if (cmdConfigNoise.count > 0) {
+    const truncated = cmdConfigNoise.names.length < cmdConfigNoise.count;
+    const list = truncated ? `${cmdConfigNoise.names.join(", ")}, ...` : cmdConfigNoise.names.join(", ");
+    Con_Printf("config: %i client-only settings ignored on a dedicated server (%s)\n", cmdConfigNoise.count, list);
+  }
+  cmdConfigNoise.count = 0;
+  cmdConfigNoise.names.length = 0;
 }
 
 //=============================================================================
@@ -321,6 +362,10 @@ export function Cbuf_Execute(): void {
       break;
     }
   }
+
+  // U49: flush this pass's counted config-only noise (see Cmd_NoteConfigNoise
+  // above) as one summary line; a no-op when nothing was counted.
+  Cmd_FlushConfigNoise();
 }
 
 //==============================================================================
@@ -679,10 +724,18 @@ export function Cmd_ExecuteString(text: string, src: CmdSourceT, profile?: NetPr
 
   // check cvars
   if (!Cvar_Command()) {
-    // QW/client/cmd.c gates this print behind `cl_warncmd.value ||
-    // developer.value` instead of printing unconditionally -- folded under
-    // qw.active as `developer.value` alone, see file header.
-    if (active === "qw") {
+    // U49: a settings-shaped line (exactly two tokens) on a dedicated server
+    // is config.cfg noise from an archived client cvar CL_Init never
+    // registered (see Cmd_NoteConfigNoise above), not a typo -- counted
+    // instead of printed, for either NetQuake or QuakeWorld profile, unless
+    // developer is on. A one-token line falls through to the branches below
+    // unchanged.
+    if (sysState.isDedicated && Cmd_Argc() === 2 && !hostMod().developer.value) {
+      Cmd_NoteConfigNoise(Cmd_Argv(0));
+    } else if (active === "qw") {
+      // QW/client/cmd.c gates this print behind `cl_warncmd.value ||
+      // developer.value` instead of printing unconditionally -- folded under
+      // qw.active as `developer.value` alone, see file header.
       if (hostMod().developer.value) Con_Printf('Unknown command "%s"\n', Cmd_Argv(0));
     } else {
       Con_Printf('Unknown command "%s"\n', Cmd_Argv(0));

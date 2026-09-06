@@ -9,18 +9,25 @@
 // units land); it is written against the ruled signatures so it runs
 // correctly once they do.
 //
-// No bun:test spies (mock/spy helpers) are used -- their typings need `any`
-// under this project's strict gate. Observations are plain counters/arrays
-// captured by registered test commands, which is also the only way to
-// observe Cmd_ExecuteString's "unknown command" path: there is no cvar or
-// console mock to intercept Con_Printf's output, so that test instead
-// asserts on the tokenization/no-dispatch state Cmd_ExecuteString leaves
-// behind.
+// Most of this file uses no bun:test spies (mock/spy helpers): observations
+// are plain counters/arrays captured by registered test commands, which is
+// also the only way to observe Cmd_ExecuteString's "unknown command" path
+// for its own pre-existing tests below -- there is no cvar or console mock
+// to intercept Con_Printf's output there, so those tests instead assert on
+// the tokenization/no-dispatch state Cmd_ExecuteString leaves behind.
+//
+// The U49 config-noise describe block below is the exception: telling
+// "counted, not printed" apart from "printed" needs to observe whether
+// Con_Printf fired and with what arguments, so it uses the
+// spyOn(consoleMod, "Con_Printf") pattern already established in
+// test/compat_spawn.test.ts (a bare, per-test spy, restored with
+// .mockRestore() at the end of each test, per rule 15).
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   CmdSourceT,
   cmdState,
+  cmdConfigNoise,
   Cbuf_Init,
   Cbuf_AddText,
   Cbuf_Execute,
@@ -35,6 +42,9 @@ import {
   Cmd_ExecuteString,
   Cmd_CheckParm,
 } from "../src/common/cmd";
+import { sysState } from "../src/platform/sys";
+import { developer } from "../src/common/host";
+import * as consoleMod from "../src/client/console";
 
 Cbuf_Init();
 Cmd_Init(); // registers stuffcmds, exec, echo, alias, cmd, wait
@@ -184,5 +194,133 @@ describe("Cmd_CheckParm", () => {
     expect(Cmd_CheckParm("-two")).toBe(2);
     expect(Cmd_CheckParm("-TWO")).toBe(2); // case-insensitive, like Q_strcasecmp
     expect(Cmd_CheckParm("-three")).toBe(0);
+  });
+});
+
+// U49: a dedicated server never runs CL_Init, so archived client cvars
+// (sensitivity, joy_rumble, ...) are never registered and config.cfg's exec
+// used to print one "Unknown command" line per such cvar. See cmd.ts's file
+// header and Cmd_NoteConfigNoise/Cmd_FlushConfigNoise.
+describe("Cmd_ExecuteString / Cbuf_Execute: dedicated-server config noise (U49)", () => {
+  const savedIsDedicated = sysState.isDedicated;
+  const savedDeveloper = { string: developer.string, value: developer.value };
+
+  beforeEach(() => {
+    cmdConfigNoise.count = 0;
+    cmdConfigNoise.names = [];
+  });
+
+  afterAll(() => {
+    sysState.isDedicated = savedIsDedicated;
+    developer.string = savedDeveloper.string;
+    developer.value = savedDeveloper.value;
+    cmdConfigNoise.count = 0;
+    cmdConfigNoise.names = [];
+  });
+
+  test("a two-token unknown command on a dedicated server is counted, not printed", () => {
+    sysState.isDedicated = true;
+    developer.value = 0;
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    Cmd_ExecuteString("test_u49_setting_a 5", CmdSourceT.src_command);
+    expect(printSpy).not.toHaveBeenCalled();
+    expect(cmdConfigNoise.count).toBe(1);
+    expect(cmdConfigNoise.names).toEqual(["test_u49_setting_a"]);
+    printSpy.mockRestore();
+  });
+
+  test("a one-token unknown command on a dedicated server still prints, like a console typo today", () => {
+    sysState.isDedicated = true;
+    developer.value = 0;
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    Cmd_ExecuteString("test_u49_typo_a", CmdSourceT.src_command);
+    expect(printSpy).toHaveBeenCalledWith('Unknown command "%s"\n', "test_u49_typo_a");
+    expect(cmdConfigNoise.count).toBe(0);
+    printSpy.mockRestore();
+  });
+
+  test("developer keeps the per-line print for a two-token line even on a dedicated server", () => {
+    sysState.isDedicated = true;
+    developer.value = 1;
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    Cmd_ExecuteString("test_u49_setting_dev 5", CmdSourceT.src_command);
+    expect(printSpy).toHaveBeenCalledWith('Unknown command "%s"\n', "test_u49_setting_dev");
+    expect(cmdConfigNoise.count).toBe(0);
+    printSpy.mockRestore();
+  });
+
+  test("a two-token unknown command on a non-dedicated process prints as before", () => {
+    sysState.isDedicated = false;
+    developer.value = 0;
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    Cmd_ExecuteString("test_u49_setting_nd 5", CmdSourceT.src_command);
+    expect(printSpy).toHaveBeenCalledWith('Unknown command "%s"\n', "test_u49_setting_nd");
+    expect(cmdConfigNoise.count).toBe(0);
+    printSpy.mockRestore();
+  });
+
+  test("Cbuf_Execute prints nothing when the pass counted no config noise", () => {
+    sysState.isDedicated = true;
+    developer.value = 0;
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    Cbuf_AddText("testrecord one two\n");
+    Cbuf_Execute();
+    expect(printSpy).not.toHaveBeenCalled();
+    printSpy.mockRestore();
+  });
+
+  test("Cbuf_Execute flushes one summary line for the whole pass, then resets the count", () => {
+    sysState.isDedicated = true;
+    developer.value = 0;
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    // three settings-shaped lines in one buffer -- an exec'd config.cfg
+    // would insert all of these into the same pass the same way.
+    Cbuf_AddText("test_u49_pass_one 1\ntest_u49_pass_two 2\ntest_u49_pass_three 3\n");
+    Cbuf_Execute();
+    expect(printSpy).toHaveBeenCalledTimes(1);
+    expect(printSpy).toHaveBeenCalledWith(
+      "config: %i client-only settings ignored on a dedicated server (%s)\n",
+      3,
+      "test_u49_pass_one, test_u49_pass_two, test_u49_pass_three",
+    );
+    expect(cmdConfigNoise.count).toBe(0);
+    expect(cmdConfigNoise.names).toEqual([]);
+    printSpy.mockRestore();
+  });
+
+  test("a second Cbuf_Execute pass accumulates and summarises independently of the first", () => {
+    sysState.isDedicated = true;
+    developer.value = 0;
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    Cbuf_AddText("test_u49_second_a 1\n");
+    Cbuf_Execute();
+    Cbuf_AddText("test_u49_second_b 2\ntest_u49_second_c 3\n");
+    Cbuf_Execute();
+    expect(printSpy).toHaveBeenCalledTimes(2);
+    expect(printSpy.mock.calls[0]).toEqual(["config: %i client-only settings ignored on a dedicated server (%s)\n", 1, "test_u49_second_a"]);
+    expect(printSpy.mock.calls[1]).toEqual([
+      "config: %i client-only settings ignored on a dedicated server (%s)\n",
+      2,
+      "test_u49_second_b, test_u49_second_c",
+    ]);
+    printSpy.mockRestore();
+  });
+
+  test("the summary caps the listed names at 16 and marks the list as truncated", () => {
+    sysState.isDedicated = true;
+    developer.value = 0;
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    let text = "";
+    for (let i = 0; i < 20; i++) text += `test_u49_cap_${i} 1\n`;
+    Cbuf_AddText(text);
+    Cbuf_Execute();
+    expect(printSpy).toHaveBeenCalledTimes(1);
+    const [fmt, count, names] = printSpy.mock.calls[0];
+    expect(fmt).toBe("config: %i client-only settings ignored on a dedicated server (%s)\n");
+    expect(count).toBe(20);
+    const nameList = String(names).split(", ");
+    expect(nameList.length).toBe(17); // 16 names + the truncation marker
+    expect(nameList[16]).toBe("...");
+    printSpy.mockRestore();
   });
 });
