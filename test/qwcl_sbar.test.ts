@@ -9,7 +9,7 @@
 // (`togglemenu`, `+showscores`, `-showscores`, `menu_main`, `menu_options`,
 // `menu_keys`, `menu_video`, `help`, `menu_quit`), per the unit brief.
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test, afterAll } from "bun:test";
 
 import { cl, cls } from "../src/client/client";
 import { EntityT, ParticleT, re } from "../src/client/render";
@@ -219,6 +219,8 @@ function resetMenuState(): void {
   menuState.wasInMenus = false;
 }
 
+let savedHostClock: { realtime: number; oldrealtime: number; frametime: number } | null = null;
+
 beforeEach(() => {
   cl.clear();
   cl.qw.clear();
@@ -237,11 +239,25 @@ beforeEach(() => {
   cl_hudswap.value = 0;
   scr_viewsize.value = 100;
 
+  // The host clock is a process-wide singleton: zeroing realtime while
+  // oldrealtime keeps an earlier suite's value makes Host_FilterTime reject
+  // every frame of the next real boot (time appears to run backwards), so the
+  // three fields are restored in afterAll below (U46's rule).
+  if (savedHostClock === null) savedHostClock = { realtime: host.realtime, oldrealtime: host.oldrealtime, frametime: host.frametime };
   host.realtime = 0;
+  host.oldrealtime = 0;
   cl.qw.last_ping_request = 0;
 
   keyState.key_dest = KeydestT.key_game;
   resetMenuState();
+});
+
+afterAll(() => {
+  if (savedHostClock !== null) {
+    host.realtime = savedHostClock.realtime;
+    host.oldrealtime = savedHostClock.oldrealtime;
+    host.frametime = savedHostClock.frametime;
+  }
 });
 
 //=============================================================================
