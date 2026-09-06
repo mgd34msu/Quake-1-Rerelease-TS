@@ -905,6 +905,7 @@ describe.skipIf(!HAVE_RERELEASE)("retail: two bots on dm4 with its real .nav", (
 
     Cvar_SetValue("bot_count", 0);
     Cvar_SetValue("deathmatch", 1);
+    Cvar_SetValue("sv_randomseed", 7); // F13: pin the retail statistics
     Cmd_ExecuteString("map dm4", CmdSourceT.src_command);
     navNodes = Bot_Nav()?.nodeCount ?? 0;
 
@@ -1005,6 +1006,7 @@ describe.skipIf(!HAVE_RERELEASE)("retail: monster walkpathtogoal on e1m1 with it
     // cooperative-rules level.
     Cvar_SetValue("deathmatch", 0);
     Cvar_SetValue("bot_count", 0);
+    Cvar_SetValue("sv_randomseed", 7); // F13: pin the retail statistics
     Cmd_ExecuteString("map e1m1", CmdSourceT.src_command);
 
     const nav = Bot_Nav();
