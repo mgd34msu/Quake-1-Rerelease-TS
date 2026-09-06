@@ -1,1 +1,140 @@
-{}
+{
+  "id1/b_batt0": [
+    "error"
+  ],
+  "id1/b_batt1": [
+    "error"
+  ],
+  "id1/b_bh10": [
+    "error"
+  ],
+  "id1/b_bh100": [
+    "error"
+  ],
+  "id1/b_bh25": [
+    "error"
+  ],
+  "id1/b_exbox2": [
+    "error"
+  ],
+  "id1/b_explob": [
+    "error"
+  ],
+  "id1/b_nail0": [
+    "error"
+  ],
+  "id1/b_nail1": [
+    "error"
+  ],
+  "id1/b_rock0": [
+    "error"
+  ],
+  "id1/b_rock1": [
+    "error"
+  ],
+  "id1/b_shell0": [
+    "error"
+  ],
+  "id1/b_shell1": [
+    "error"
+  ],
+  "rerelease/id1/b_batt0": [
+    "error"
+  ],
+  "rerelease/id1/b_batt1": [
+    "error"
+  ],
+  "rerelease/id1/b_bh10": [
+    "error"
+  ],
+  "rerelease/id1/b_bh100": [
+    "error"
+  ],
+  "rerelease/id1/b_bh25": [
+    "error"
+  ],
+  "rerelease/id1/b_exbox2": [
+    "error"
+  ],
+  "rerelease/id1/b_explob": [
+    "error"
+  ],
+  "rerelease/id1/b_nail0": [
+    "error"
+  ],
+  "rerelease/id1/b_nail1": [
+    "error"
+  ],
+  "rerelease/id1/b_rock0": [
+    "error"
+  ],
+  "rerelease/id1/b_rock1": [
+    "error"
+  ],
+  "rerelease/id1/b_shell0": [
+    "error"
+  ],
+  "rerelease/id1/b_shell1": [
+    "error"
+  ],
+  "rerelease/id1/e4m6": [
+    "is_not_a_field"
+  ],
+  "rerelease/id1/vault/jrwiz3": [
+    "no_spawn_function"
+  ],
+  "rerelease/id1/vault/tboss": [
+    "no_spawn_function"
+  ],
+  "rerelease/id1/vault/tim": [
+    "no_spawn_function"
+  ],
+  "rerelease/id1/vault/tim10a": [
+    "no_spawn_function"
+  ],
+  "rerelease/id1/vault/tim25": [
+    "no_spawn_function"
+  ],
+  "rerelease/mg3/bmodel/b_shot2": [
+    "error"
+  ],
+  "rerelease/mg3/bmodel/b_splash": [
+    "error"
+  ],
+  "rerelease/rogue/b_lnail0": [
+    "error"
+  ],
+  "rerelease/rogue/b_lnail1": [
+    "error"
+  ],
+  "rerelease/rogue/b_mrock0": [
+    "error"
+  ],
+  "rerelease/rogue/b_mrock1": [
+    "error"
+  ],
+  "rerelease/rogue/b_plas0": [
+    "error"
+  ],
+  "rerelease/rogue/b_plas1": [
+    "error"
+  ],
+  "rogue/b_lnail0": [
+    "error"
+  ],
+  "rogue/b_lnail1": [
+    "error"
+  ],
+  "rogue/b_mrock0": [
+    "error"
+  ],
+  "rogue/b_mrock1": [
+    "error"
+  ],
+  "rogue/b_plas0": [
+    "error"
+  ],
+  "rogue/b_plas1": [
+    "error"
+  ]
+}
