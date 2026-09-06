@@ -33,6 +33,16 @@ export class ZipFormatError extends Error {}
 export class JpgDecodeError extends Error {}
 
 /**
+ * Thrown by md5_model.ts's parseMd5Mesh/parseMd5Anim on a malformed MD5
+ * skeletal model file: a wrong MD5Version, an unexpected token, a value out
+ * of range (joint/weight/vertex/triangle index, component count), a vertex
+ * whose weight range overruns numweights, a joint hierarchy entry whose
+ * parent index isn't already built, or an anim whose numJoints doesn't
+ * match its paired mesh.
+ */
+export class Md5FormatError extends Error {}
+
+/**
  * Optional logging seam for a src/lib function that used to call an engine
  * printf directly (loc.ts's Com_Printf calls, specifically). Every call is a
  * non-fatal warning or informational message; a caller that omits `log`
