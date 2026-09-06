@@ -1,0 +1,42 @@
+{
+  "family": "t",
+  "drivers": [
+    { "name": "t_matrix_classic_id1_15", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "classic-id1", "--protocol", "15", "--ruleset", "classic", "--port", "26310"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_matrix_classic_id1_666", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "classic-id1", "--protocol", "666", "--ruleset", "auto", "--port", "26311"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_matrix_classic_id1_999", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "classic-id1", "--protocol", "999", "--ruleset", "auto", "--port", "26312"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_matrix_classic_id1_auto", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "classic-id1", "--protocol", "auto", "--ruleset", "auto", "--port", "26313"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_matrix_classic_id1_rrruleset", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "classic-id1", "--protocol", "auto", "--ruleset", "rerelease", "--port", "26314"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_matrix_classic_hipnotic_666", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "classic-hipnotic", "--protocol", "666", "--ruleset", "classic", "--port", "26315"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_matrix_classic_rogue_999", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "classic-rogue", "--protocol", "999", "--ruleset", "auto", "--port", "26316"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_matrix_rr_id1_auto", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "rr-id1", "--protocol", "auto", "--ruleset", "auto", "--port", "26317"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_rr_id1_666", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "rr-id1", "--protocol", "666", "--ruleset", "rerelease", "--port", "26318"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_rr_id1_15", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "rr-id1", "--protocol", "15", "--ruleset", "classic", "--port", "26319"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_rr_hipnotic_999", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "rr-hipnotic", "--protocol", "999", "--ruleset", "auto", "--port", "26320"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_rr_rogue_auto", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "rr-rogue", "--protocol", "auto", "--ruleset", "rerelease", "--port", "26321"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_mg1_auto", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "mg1", "--protocol", "auto", "--ruleset", "auto", "--port", "26322"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 900, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_mg1_15_invalid", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "mg1", "--protocol", "15", "--ruleset", "auto", "--port", "26323"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_mg1_999", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "mg1", "--protocol", "999", "--ruleset", "rerelease", "--port", "26324"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 900, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_mg3_auto", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "mg3", "--protocol", "auto", "--ruleset", "auto", "--port", "26325"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 900, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_dopa_auto", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "dopa", "--protocol", "auto", "--ruleset", "auto", "--port", "26326"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 900, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_dopa_999", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "dopa", "--protocol", "999", "--ruleset", "auto", "--port", "26327"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 900, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_ctf_auto", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "ctf", "--protocol", "auto", "--ruleset", "auto", "--port", "26328"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "rerelease"] },
+    { "name": "t_matrix_ctf_999", "cmd": ["bun", "test/e2e/t_matrix.ts", "--content", "ctf", "--protocol", "999", "--ruleset", "rerelease", "--port", "26329"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "rerelease"] },
+
+    { "name": "t_dm_classic_dm4_666", "cmd": ["bun", "test/e2e/t_deathmatch.ts", "--mode", "dm", "--content", "classic-id1", "--map", "dm4", "--protocol", "666", "--port", "26330"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_dm_classic_dm4_999", "cmd": ["bun", "test/e2e/t_deathmatch.ts", "--mode", "dm", "--content", "classic-id1", "--map", "dm4", "--protocol", "999", "--port", "26331"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_dm_ctf_666", "cmd": ["bun", "test/e2e/t_deathmatch.ts", "--mode", "dm", "--content", "ctf", "--map", "ctf1", "--protocol", "666", "--port", "26332"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "rerelease"] },
+    { "name": "t_dm_ctf_999", "cmd": ["bun", "test/e2e/t_deathmatch.ts", "--mode", "dm", "--content", "ctf", "--map", "ctf1", "--protocol", "999", "--port", "26333"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "rerelease"] },
+    { "name": "t_coop_classic_e1m1", "cmd": ["bun", "test/e2e/t_deathmatch.ts", "--mode", "coop", "--content", "classic-id1", "--map", "e1m1", "--protocol", "666", "--port", "26334"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+
+    { "name": "t_cross_pairings", "cmd": ["bun", "test/e2e/t_cross.ts", "--port", "26360"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 900, "needs": ["binary", "classic", "rerelease", "qw"], "lock": "qwclient" },
+
+    { "name": "t_qw_28", "cmd": ["bun", "test/e2e/t_qw.ts", "--protocol", "28", "--port", "26340"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 900, "needs": ["binary", "qw"], "lock": "qwclient" },
+    { "name": "t_qw_29", "cmd": ["bun", "test/e2e/t_qw.ts", "--protocol", "29", "--port", "26350"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 900, "needs": ["binary", "qw"], "lock": "qwclient" },
+
+    { "name": "t_demos_net_15", "cmd": ["bun", "test/e2e/t_demos_net.ts", "--protocol", "15", "--port", "26370"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_demos_net_666", "cmd": ["bun", "test/e2e/t_demos_net.ts", "--protocol", "666", "--port", "26372"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_demos_net_999", "cmd": ["bun", "test/e2e/t_demos_net.ts", "--protocol", "999", "--port", "26374"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["binary", "classic"] },
+    { "name": "t_demos_net_28", "cmd": ["bun", "test/e2e/t_demos_net.ts", "--protocol", "28", "--port", "26376"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 900, "needs": ["binary", "qw"], "lock": "qwclient" },
+    { "name": "t_demos_net_29", "cmd": ["bun", "test/e2e/t_demos_net.ts", "--protocol", "29", "--port", "26378"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 900, "needs": ["binary", "qw"], "lock": "qwclient" }
+  ]
+}
