@@ -1,0 +1,89 @@
+{
+  "family": "u",
+  "drivers": [
+    {
+      "name": "u_nav_id1",
+      "cmd": ["bun", "test/e2e/u_navmaps.ts", "--tree", "id1"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 900,
+      "needs": ["rerelease", "long"]
+    },
+    {
+      "name": "u_nav_hipnotic",
+      "cmd": ["bun", "test/e2e/u_navmaps.ts", "--tree", "hipnotic"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "u_nav_rogue",
+      "cmd": ["bun", "test/e2e/u_navmaps.ts", "--tree", "rogue"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "u_nav_mg1",
+      "cmd": ["bun", "test/e2e/u_navmaps.ts", "--tree", "mg1"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 600,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "u_nav_mg3",
+      "cmd": ["bun", "test/e2e/u_navmaps.ts", "--tree", "mg3"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "u_nav_dopa",
+      "cmd": ["bun", "test/e2e/u_navmaps.ts", "--tree", "dopa"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "u_nav_ctf",
+      "cmd": ["bun", "test/e2e/u_navmaps.ts", "--tree", "ctf"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 600,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "u_commands",
+      "cmd": ["bun", "test/e2e/u_commands.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 900,
+      "needs": ["rerelease", "long"]
+    },
+    {
+      "name": "u_ctf",
+      "cmd": ["bun", "test/e2e/u_ctf.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 900,
+      "needs": ["rerelease", "long"]
+    },
+    {
+      "name": "u_coop",
+      "cmd": ["bun", "test/e2e/u_coop.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "u_monsters",
+      "cmd": ["bun", "test/e2e/u_monsters.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 600,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "u_chat",
+      "cmd": ["bun", "test/e2e/u_chat.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 600,
+      "needs": ["rerelease"]
+    }
+  ]
+}
