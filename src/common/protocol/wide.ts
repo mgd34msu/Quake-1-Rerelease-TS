@@ -26,6 +26,17 @@ Deliberately not ported from Ironwail:
 - `qcvm->effects_mask`: the re-release effects mask is a ruleset question, not
   a protocol one; this engine's server writes `effects` whole, as FitzQuake
   and QuakeSpasm do.
+
+Taken from QuakeSpasm rather than Ironwail:
+- writeClientdata's non-`standard_quake` weapon field (`sv_main.c:970-986`,
+  also vkQuake `sv_main.c:2456-2472`): the search for the lowest set bit of
+  `.weapon` fills a local that is written unconditionally, where WinQuake and
+  Ironwail (`sv_main.c:1128-1142`) `MSG_WriteByte` inside the loop and so emit
+  NOTHING when `.weapon` is 0. The client reads that byte unconditionally, so
+  the WinQuake form truncates svc_clientdata by one byte and every later byte
+  in the packet is read at the wrong offset -- reached by mg1's Horde mode,
+  which spawns the player with `.weapon` 0. `standard_quake` content is
+  untouched, and for any `.weapon` with a bit set the bytes are identical.
 */
 
 import {
@@ -411,12 +422,14 @@ export function makeWideCodec(protocol: number, name: string, defaultFlags: numb
       if (cd.standardQuake) {
         MSG_WriteByte(sb, cd.weapon);
       } else {
+        let weapon = 0;
         for (let i = 0; i < 32; i++) {
           if ((cd.weapon | 0) & (1 << i)) {
-            MSG_WriteByte(sb, i);
+            weapon = i;
             break;
           }
         }
+        MSG_WriteByte(sb, weapon);
       }
 
       if (bits & SU_WEAPON2) MSG_WriteByte(sb, cd.weaponmodelindex >> 8);

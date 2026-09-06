@@ -18,7 +18,7 @@ export Q1TS_RERELEASE_DATA="${Q1TS_RERELEASE_DATA:-/home/buzzkill/Projects/qfile
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 300 bash scripts/check.sh || exit 1
 # Full output is kept next to the worktree (sandbox-last.log) so a failing
 # gate names its tests; the summary lines are what the caller sees.
-FULL="$(dirname "$W")/sandbox-last.log"
+FULL="$(dirname "$W")/sandbox-last-$(basename "$W").log"
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 300 bun test > "$FULL" 2>&1
 out=$(grep -E '^ *[0-9]+ (pass|fail)' "$FULL")
 echo "$out"

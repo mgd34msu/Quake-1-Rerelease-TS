@@ -145,6 +145,16 @@ Deviations from PORTING.md / the C source:
   cvar. `developer` and a one-token (typo) line are unaffected; a listen
   server or the client boot never dedicated, so neither counts nor prints
   differently.
+- F5 (quality-of-life addition, not in WinQuake/QuakeSpasm/Ironwail/vkQuake,
+  all four of which hand the file to Cbuf_InsertText exactly as loaded):
+  `Cmd_Exec_f` terminates the file's last line with a newline when the file
+  does not already end in one. Cbuf_InsertText splices the file in FRONT of
+  whatever is already queued, so an unterminated last line and the next queued
+  line become a single line and both are lost -- the re-release id1's quake.rc
+  ends `alias quickswitch_left "switchweapon 6 7"` with no trailing newline,
+  which swallowed the first command queued behind Host_Init's `exec quake.rc`.
+  WinQuake's own CRLF quake.rc does end in a newline, so every file the
+  original engine could exec is spliced byte-for-byte as it was before.
 */
 
 import { SizeBuf, SZ_Alloc, SZ_Clear, SZ_Write } from "./sizebuf";
@@ -430,7 +440,10 @@ export function Cmd_Exec_f(): void {
   // f carries one trailing NUL byte (common.ts's COM_LoadHunkFile ruling);
   // drop it so Cbuf_InsertText sees exactly what the C's Q_strlen(f) would.
   const text = latin1BytesToString(f.subarray(0, f.length - 1));
-  Cbuf_InsertText(text);
+  // A file whose last line has no terminator would otherwise be spliced
+  // straight onto whatever was already queued behind the exec -- see the
+  // file header's F5 note.
+  Cbuf_InsertText(text.endsWith("\n") ? text : `${text}\n`);
   Hunk_FreeToLowMark(mark);
 }
 

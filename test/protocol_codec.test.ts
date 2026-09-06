@@ -769,6 +769,61 @@ describe("svc_clientdata", () => {
     expect(tail.weaponalpha).toBe(128);
   });
 
+  // `-mg1` clears standard_quake, and mg1's horde.qc puts the player in with
+  // `.weapon` 0. WinQuake and Ironwail (sv_main.c:1128-1142) MSG_WriteByte the
+  // weapon field from inside the lowest-set-bit loop, so a zero `.weapon`
+  // emitted no byte at all; the client reads that byte unconditionally, so it
+  // ate the next svc's first byte and the connection died with "Illegible
+  // server message" on horde1..horde7. QuakeSpasm (sv_main.c:970-986) and
+  // vkQuake (sv_main.c:2456-2472) write the byte after the loop instead; the
+  // vector below is the horde spawn frame this engine captured, extended by
+  // that one trailing byte.
+  test("a zero .weapon still writes its byte when standard_quake is off", () => {
+    function hordeSpawn(weapon: number): ClientdataT {
+      const cd = new ClientdataT();
+      cd.viewheight = 1; // != DEFAULT_VIEWHEIGHT, so SU_VIEWHEIGHT is set
+      cd.items = 0x1101; // IT_SHOTGUN | IT_SHELLS | IT_AXE
+      cd.weaponmodelindex = 0;
+      cd.health = 100;
+      cd.currentammo = 25;
+      cd.ammo_shells = 25;
+      cd.weapon = weapon;
+      cd.standardQuake = false;
+      return cd;
+    }
+
+    //   bits = SU_VIEWHEIGHT(0x0001) | SU_ITEMS(0x0200) | SU_WEAPON(0x4000)
+    //        = 0x4201
+    //   svc_clientdata = 15 -> 0F, short bits -> 01 42,
+    //   SU_VIEWHEIGHT char 1 -> 01,
+    //   long items 0x1101 -> 01 11 00 00,
+    //   SU_WEAPON byte weaponmodelindex 0 -> 00,
+    //   short health 100 -> 64 00,
+    //   byte currentammo 25 -> 19, shells 25 -> 19, nails/rockets/cells -> 00,
+    //   the non-standard_quake weapon byte: no bit is set in 0, so 00
+    const expected = [0x0f, 0x01, 0x42, 0x01, 0x01, 0x11, 0x00, 0x00, 0x00, 0x64, 0x00, 0x19, 0x19, 0x00, 0x00, 0x00, 0x00];
+
+    const a = buf();
+    nq15Codec.writeClientdata(a, hordeSpawn(0), 0);
+    expect(bytes(a)).toEqual(expected);
+
+    const b = buf();
+    fitz666Codec.writeClientdata(b, hordeSpawn(0), 0);
+    expect(bytes(b)).toEqual(expected);
+
+    // Clientdata carries no coordinate or angle, so 999's flag word cannot
+    // change these bytes.
+    const c = buf();
+    rmq999Codec.writeClientdata(c, hordeSpawn(0), RMQ_FLAGS);
+    expect(bytes(c)).toEqual(expected);
+
+    // A weapon with a bit set is unchanged: the byte is still the bit's index,
+    // and the message is the same length as the zero case.
+    const d = buf();
+    nq15Codec.writeClientdata(d, hordeSpawn(1 << 3), 0);
+    expect(bytes(d)).toEqual([...expected.slice(0, -1), 0x03]);
+  });
+
   test("protocol 15's clientdata reader takes exactly the two bit bytes", () => {
     readFrom([0x00, 0x42, 0xaa]);
     expect(nq15Codec.readClientdataBits()).toBe(0x4200);

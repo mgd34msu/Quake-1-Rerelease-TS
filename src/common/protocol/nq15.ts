@@ -21,6 +21,17 @@ seed never had to make, both taken from Ironwail's protocol-15 branch:
   not fit, which is Ironwail's "don't send any info protocol can't support"
   (`pr_cmds.c` PF_makestatic/PF_ambientsound, `sv_main.c` SV_StartSound). The
   seed had no such case for the same reason.
+
+writeClientdata's non-`standard_quake` weapon field takes QuakeSpasm's form
+(`sv_main.c:970-986`, also vkQuake `sv_main.c:2456-2472`): the search for the
+lowest set bit of `.weapon` fills a local that is written unconditionally,
+where WinQuake and Ironwail (`sv_main.c:1128-1142`) `MSG_WriteByte` inside the
+loop and so emit NOTHING when `.weapon` is 0. The client reads that byte
+unconditionally, so the WinQuake form truncates svc_clientdata by one byte and
+every later byte in the packet is read at the wrong offset -- reached by mg1's
+Horde mode, which spawns the player with `.weapon` 0. `standard_quake` content
+is untouched (that branch already wrote the byte unconditionally), and for any
+`.weapon` with a bit set the bytes are identical to before.
 */
 
 import {
@@ -298,12 +309,14 @@ export const nq15Codec: ProtocolCodec = {
     if (cd.standardQuake) {
       MSG_WriteByte(sb, cd.weapon);
     } else {
+      let weapon = 0;
       for (let i = 0; i < 32; i++) {
         if ((cd.weapon | 0) & (1 << i)) {
-          MSG_WriteByte(sb, i);
+          weapon = i;
           break;
         }
       }
+      MSG_WriteByte(sb, weapon);
     }
   },
 

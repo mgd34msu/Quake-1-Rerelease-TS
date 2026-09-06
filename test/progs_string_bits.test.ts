@@ -103,8 +103,22 @@ const scratchDir = mkdtempSync(join(scratchRoot, "progs-string-bits-"));
 
 const savedNostdout = sysState.nostdout;
 
+// Both hosts' `sv`/`svs` are process-wide singletons this file spawns a
+// synthetic world into (worldmodel, model_precache, the three staging
+// buffers, num_edicts, state, svs.maxclients/clients). Everything it writes
+// there is put back below, the same way test/protocol_live.test.ts does it,
+// so a later suite that calls SV_SpawnServer starts from a clean server.
+const savedNqMaxclients = nqsvs.maxclients;
+const savedNqMaxclientslimit = nqsvs.maxclientslimit;
+const savedNqClients = nqsvs.clients;
+
 afterAll(() => {
   sysState.nostdout = savedNostdout;
+  nqsv.clear();
+  qwsv.clear();
+  nqsvs.maxclients = savedNqMaxclients;
+  nqsvs.maxclientslimit = savedNqMaxclientslimit;
+  nqsvs.clients = savedNqClients;
   setComSearchpaths(null);
   setComModified(false);
   rmSync(scratchDir, { recursive: true, force: true });

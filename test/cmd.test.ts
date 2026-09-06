@@ -23,7 +23,9 @@
 // test/compat_spawn.test.ts (a bare, per-test spy, restored with
 // .mockRestore() at the end of each test, per rule 15).
 
-import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   CmdSourceT,
   cmdState,
@@ -42,6 +44,7 @@ import {
   Cmd_ExecuteString,
   Cmd_CheckParm,
 } from "../src/common/cmd";
+import { COM_AddGameDirectory, com_searchpaths, setComSearchpaths } from "../src/common/common";
 import { sysState } from "../src/platform/sys";
 import { developer } from "../src/common/host";
 import * as consoleMod from "../src/client/console";
@@ -322,5 +325,67 @@ describe("Cmd_ExecuteString / Cbuf_Execute: dedicated-server config noise (U49)"
     expect(nameList.length).toBe(17); // 16 names + the truncation marker
     expect(nameList[16]).toBe("...");
     printSpy.mockRestore();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F5: Cmd_Exec_f terminates a file whose last line has none.
+//
+// The scratch gamedir below is this block's own: it is built here, mounted
+// with COM_AddGameDirectory (which prepends, so these files are found first),
+// and com_searchpaths is put back in afterAll.
+// ---------------------------------------------------------------------------
+
+describe("Cmd_Exec_f and a file with no trailing newline", () => {
+  const savedSearchpaths = com_searchpaths;
+  const scratchRoot = process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests";
+  let scratchDir = "";
+
+  beforeAll(() => {
+    mkdirSync(scratchRoot, { recursive: true });
+    scratchDir = mkdtempSync(join(scratchRoot, "cmd-exec-"));
+
+    // The shape of the re-release id1's quake.rc: CRLF line ends, and a last
+    // line -- an `alias` -- with nothing after it at all.
+    writeFileSync(join(scratchDir, "f5_bare.cfg"), 'testrecord fromfile\r\nalias f5_alias "testrecord aliased"');
+    // The same file WinQuake's own quake.rc shape: terminated with CRLF.
+    writeFileSync(join(scratchDir, "f5_crlf.cfg"), 'testrecord fromfile\r\nalias f5_alias "testrecord aliased"\r\n');
+
+    COM_AddGameDirectory(scratchDir);
+  });
+
+  afterAll(() => {
+    setComSearchpaths(savedSearchpaths);
+  });
+
+  test("the command queued behind the exec is not fused onto the file's last line", () => {
+    recorded = [];
+    Cbuf_AddText("exec f5_bare.cfg\ntestrecord queued\n");
+    Cbuf_Execute();
+    // Without the terminator the buffer reads
+    // `alias f5_alias "testrecord aliased"testrecord queued` as ONE line, so
+    // the alias takes a mangled body and `testrecord queued` never runs.
+    expect(recorded).toEqual(["testrecord|fromfile", "testrecord|queued"]);
+  });
+
+  test("the file's own last line still takes effect", () => {
+    recorded = [];
+    Cbuf_AddText("exec f5_bare.cfg\n");
+    Cbuf_Execute();
+    Cbuf_AddText("f5_alias\n");
+    Cbuf_Execute();
+    expect(recorded).toEqual(["testrecord|fromfile", "testrecord|aliased"]);
+  });
+
+  test("a file that already ends in CRLF is spliced unchanged", () => {
+    recorded = [];
+    Cbuf_AddText("exec f5_crlf.cfg\ntestrecord queued\n");
+    Cbuf_Execute();
+    expect(recorded).toEqual(["testrecord|fromfile", "testrecord|queued"]);
+
+    recorded = [];
+    Cbuf_AddText("f5_alias\n");
+    Cbuf_Execute();
+    expect(recorded).toEqual(["testrecord|aliased"]);
   });
 });

@@ -171,6 +171,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every restart, so `vid_ref gl; vid_restart` works after a `-vid_ref soft`
   boot. Minimizing the window releases the mouse like losing focus, and
   restoring re-activates only when the window has input focus.
+- Every mg1 Horde map aborted the client with "Illegible server message":
+  when the player's weapon field is 0 (horde.qc spawns it that way) the
+  non-`standard_quake` clientdata writer skipped the weapon byte the client
+  reads unconditionally, shifting every later byte. The byte is written
+  always, as QuakeSpasm and vkQuake do, on protocols 15, 666 and 999.
+- An exec'd file that lacks a final newline (the re-release quake.rc) no
+  longer fuses its last line with the next queued command.
 - Localization files decode as UTF-8 (the re-release tables are UTF-8:
   Russian, accented French/German/Italian/Spanish, the trademark sign in
   English), and kfont text walks code points, so non-ASCII strings render

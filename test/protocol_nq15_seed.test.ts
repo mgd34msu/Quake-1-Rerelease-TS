@@ -487,6 +487,12 @@ describe("nq15 clientdata is byte-identical to the seed's", () => {
         ammo_nails: rndByte(),
         ammo_rockets: rndByte(),
         ammo_cells: rndByte(),
+        // The one clientdata field the codec no longer encodes the way the
+        // seed did is a zero `.weapon` with standard_quake off, where the seed
+        // (WinQuake's and Ironwail's form) wrote no byte at all: see nq15.ts's
+        // header and test/protocol_codec.test.ts. These cases pair every
+        // non-standard_quake frame with a weapon that has a bit set, so the
+        // whole range the seed and the codec still share is covered here.
         weapon: i % 2 ? 1 << i % 32 : rndByte(),
         standardQuake: i % 2 === 0,
       });
