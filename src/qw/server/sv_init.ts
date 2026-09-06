@@ -93,6 +93,8 @@ Deviations from PORTING.md / the C source:
 import type * as SvMainModule from "./sv_main";
 import type * as SvPhysModule from "./sv_phys";
 import { PR_AllocEdicts, PR_LoadProgs, ED_LoadFromFile, setSvFlushSignonHook } from "./pr_edict";
+import { PR_SetProfile } from "../../progs/profiles/profile";
+import { qwProfile } from "../../progs/profiles/qw";
 import { PR_ExecuteProgram } from "./pr_exec";
 import { SV_ClearWorld } from "./world";
 import { EDICT_NUM, EDICT_TO_PROG, PR_GetString, PR_SetString, qwpr } from "./progs";
@@ -402,6 +404,7 @@ export function SV_SpawnServer(server: string): void {
 
   // load progs to get entity field count
   // which determines how big each edict is
+  PR_SetProfile(qwProfile); // this binary's QuakeC host profile (ARCHITECTURE.md, "Core model")
   PR_LoadProgs();
 
   // allocate edicts

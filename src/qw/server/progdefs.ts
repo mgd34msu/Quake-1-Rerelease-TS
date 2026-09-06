@@ -27,422 +27,186 @@ one field renamed -- exactly what QW's separate `QW/progs` source tree
 implies. PROGHEADER_CRC 54730 is checked against
 `../qsrc/quake/QW/progs/qwprogs.dat`'s header word in this unit's test.
 
-`QW_GLOBAL_OFS`/`QW_ENTVARS_OFS`, `QwGlobalVars`/`QwEntVars` follow the exact
-same generation technique as src/progs/progdefs.ts's `GLOBAL_OFS`/
-`ENTVARS_OFS`/`GlobalVars`/`EntVars` (see that file's header for the technique
-itself) -- QW gets its own copy because its offsets differ, not because the
-technique differs. This is the QW server's own progs host, per PORTING.md
-("The QW server is its own progs host": `src/qw/server/progdefs.ts`).
+The offset tables and the `QwGlobalVars`/`QwEntVars` accessor classes are
+generated from src/progs/progdefs_layout.ts's union field tables by the same
+generator src/progs/progdefs.ts uses for WinQuake's layout; the ordered name
+lists below are the whole of QuakeWorld's difference. See that module's
+header for the technique and for the union-accessor deviation (reaching for
+`deathmatch`/`coop`/`teamplay`/`punchangle`/`idealpitch` on a QuakeWorld
+layout throws, naming the field).
 */
 
-import type { Vec3 } from "../../common/mathlib";
+import {
+  ENTVARS_FIELDS,
+  GLOBALVARS_FIELDS,
+  ProgsVarsT,
+  buildProgsLayout,
+  installVarAccessors,
+  layoutOffsets,
+  type EntVarFieldsT,
+  type GlobalVarFieldsT,
+} from "../../progs/progdefs_layout";
 
 export const PROGHEADER_CRC = 54730;
 
-export const QW_GLOBAL_OFS = {
-  self: 28,
-  other: 29,
-  world: 30,
-  time: 31,
-  frametime: 32,
-  newmis: 33,
-  force_retouch: 34,
-  mapname: 35,
-  serverflags: 36,
-  total_secrets: 37,
-  total_monsters: 38,
-  found_secrets: 39,
-  killed_monsters: 40,
-  parm1: 41,
-  parm2: 42,
-  parm3: 43,
-  parm4: 44,
-  parm5: 45,
-  parm6: 46,
-  parm7: 47,
-  parm8: 48,
-  parm9: 49,
-  parm10: 50,
-  parm11: 51,
-  parm12: 52,
-  parm13: 53,
-  parm14: 54,
-  parm15: 55,
-  parm16: 56,
-  v_forward: 57,
-  v_up: 60,
-  v_right: 63,
-  trace_allsolid: 66,
-  trace_startsolid: 67,
-  trace_fraction: 68,
-  trace_endpos: 69,
-  trace_plane_normal: 72,
-  trace_plane_dist: 75,
-  trace_ent: 76,
-  trace_inopen: 77,
-  trace_inwater: 78,
-  msg_entity: 79,
-  main: 80,
-  StartFrame: 81,
-  PlayerPreThink: 82,
-  PlayerPostThink: 83,
-  ClientKill: 84,
-  ClientConnect: 85,
-  PutClientInServer: 86,
-  ClientDisconnect: 87,
-  SetNewParms: 88,
-  SetChangeParms: 89,
-} as const;
+const QW_GLOBAL_NAMES = [
+  "self",
+  "other",
+  "world",
+  "time",
+  "frametime",
+  "newmis",
+  "force_retouch",
+  "mapname",
+  "serverflags",
+  "total_secrets",
+  "total_monsters",
+  "found_secrets",
+  "killed_monsters",
+  "parm1",
+  "parm2",
+  "parm3",
+  "parm4",
+  "parm5",
+  "parm6",
+  "parm7",
+  "parm8",
+  "parm9",
+  "parm10",
+  "parm11",
+  "parm12",
+  "parm13",
+  "parm14",
+  "parm15",
+  "parm16",
+  "v_forward",
+  "v_up",
+  "v_right",
+  "trace_allsolid",
+  "trace_startsolid",
+  "trace_fraction",
+  "trace_endpos",
+  "trace_plane_normal",
+  "trace_plane_dist",
+  "trace_ent",
+  "trace_inopen",
+  "trace_inwater",
+  "msg_entity",
+  "main",
+  "StartFrame",
+  "PlayerPreThink",
+  "PlayerPostThink",
+  "ClientKill",
+  "ClientConnect",
+  "PutClientInServer",
+  "ClientDisconnect",
+  "SetNewParms",
+  "SetChangeParms",
+] as const;
 
-export const QW_NUM_GLOBAL_WORDS = 90;
+export const QW_GLOBALS_LAYOUT = buildProgsLayout(28, GLOBALVARS_FIELDS, QW_GLOBAL_NAMES);
 
-export class QwGlobalVars {
-  readonly v_forward: Vec3;
-  readonly v_up: Vec3;
-  readonly v_right: Vec3;
-  readonly trace_endpos: Vec3;
-  readonly trace_plane_normal: Vec3;
+export const QW_GLOBAL_OFS = layoutOffsets(QW_GLOBALS_LAYOUT, QW_GLOBAL_NAMES);
 
-  constructor(private readonly f: Float32Array, private readonly i: Int32Array) {
-    this.v_forward = f.subarray(QW_GLOBAL_OFS.v_forward, QW_GLOBAL_OFS.v_forward + 3);
-    this.v_up = f.subarray(QW_GLOBAL_OFS.v_up, QW_GLOBAL_OFS.v_up + 3);
-    this.v_right = f.subarray(QW_GLOBAL_OFS.v_right, QW_GLOBAL_OFS.v_right + 3);
-    this.trace_endpos = f.subarray(QW_GLOBAL_OFS.trace_endpos, QW_GLOBAL_OFS.trace_endpos + 3);
-    this.trace_plane_normal = f.subarray(QW_GLOBAL_OFS.trace_plane_normal, QW_GLOBAL_OFS.trace_plane_normal + 3);
+export const QW_NUM_GLOBAL_WORDS = QW_GLOBALS_LAYOUT.words;
+
+export interface QwGlobalVars extends GlobalVarFieldsT {}
+export class QwGlobalVars extends ProgsVarsT {
+  constructor(f: Float32Array, i: Int32Array) {
+    super(f, i, QW_GLOBALS_LAYOUT);
   }
-
-  get self(): number { return this.i[QW_GLOBAL_OFS.self]; }
-  set self(value: number) { this.i[QW_GLOBAL_OFS.self] = value; }
-  get other(): number { return this.i[QW_GLOBAL_OFS.other]; }
-  set other(value: number) { this.i[QW_GLOBAL_OFS.other] = value; }
-  get world(): number { return this.i[QW_GLOBAL_OFS.world]; }
-  set world(value: number) { this.i[QW_GLOBAL_OFS.world] = value; }
-  get time(): number { return this.f[QW_GLOBAL_OFS.time]; }
-  set time(value: number) { this.f[QW_GLOBAL_OFS.time] = value; }
-  get frametime(): number { return this.f[QW_GLOBAL_OFS.frametime]; }
-  set frametime(value: number) { this.f[QW_GLOBAL_OFS.frametime] = value; }
-  get newmis(): number { return this.i[QW_GLOBAL_OFS.newmis]; }
-  set newmis(value: number) { this.i[QW_GLOBAL_OFS.newmis] = value; }
-  get force_retouch(): number { return this.f[QW_GLOBAL_OFS.force_retouch]; }
-  set force_retouch(value: number) { this.f[QW_GLOBAL_OFS.force_retouch] = value; }
-  get mapname(): number { return this.i[QW_GLOBAL_OFS.mapname]; }
-  set mapname(value: number) { this.i[QW_GLOBAL_OFS.mapname] = value; }
-  get serverflags(): number { return this.f[QW_GLOBAL_OFS.serverflags]; }
-  set serverflags(value: number) { this.f[QW_GLOBAL_OFS.serverflags] = value; }
-  get total_secrets(): number { return this.f[QW_GLOBAL_OFS.total_secrets]; }
-  set total_secrets(value: number) { this.f[QW_GLOBAL_OFS.total_secrets] = value; }
-  get total_monsters(): number { return this.f[QW_GLOBAL_OFS.total_monsters]; }
-  set total_monsters(value: number) { this.f[QW_GLOBAL_OFS.total_monsters] = value; }
-  get found_secrets(): number { return this.f[QW_GLOBAL_OFS.found_secrets]; }
-  set found_secrets(value: number) { this.f[QW_GLOBAL_OFS.found_secrets] = value; }
-  get killed_monsters(): number { return this.f[QW_GLOBAL_OFS.killed_monsters]; }
-  set killed_monsters(value: number) { this.f[QW_GLOBAL_OFS.killed_monsters] = value; }
-  get parm1(): number { return this.f[QW_GLOBAL_OFS.parm1]; }
-  set parm1(value: number) { this.f[QW_GLOBAL_OFS.parm1] = value; }
-  get parm2(): number { return this.f[QW_GLOBAL_OFS.parm2]; }
-  set parm2(value: number) { this.f[QW_GLOBAL_OFS.parm2] = value; }
-  get parm3(): number { return this.f[QW_GLOBAL_OFS.parm3]; }
-  set parm3(value: number) { this.f[QW_GLOBAL_OFS.parm3] = value; }
-  get parm4(): number { return this.f[QW_GLOBAL_OFS.parm4]; }
-  set parm4(value: number) { this.f[QW_GLOBAL_OFS.parm4] = value; }
-  get parm5(): number { return this.f[QW_GLOBAL_OFS.parm5]; }
-  set parm5(value: number) { this.f[QW_GLOBAL_OFS.parm5] = value; }
-  get parm6(): number { return this.f[QW_GLOBAL_OFS.parm6]; }
-  set parm6(value: number) { this.f[QW_GLOBAL_OFS.parm6] = value; }
-  get parm7(): number { return this.f[QW_GLOBAL_OFS.parm7]; }
-  set parm7(value: number) { this.f[QW_GLOBAL_OFS.parm7] = value; }
-  get parm8(): number { return this.f[QW_GLOBAL_OFS.parm8]; }
-  set parm8(value: number) { this.f[QW_GLOBAL_OFS.parm8] = value; }
-  get parm9(): number { return this.f[QW_GLOBAL_OFS.parm9]; }
-  set parm9(value: number) { this.f[QW_GLOBAL_OFS.parm9] = value; }
-  get parm10(): number { return this.f[QW_GLOBAL_OFS.parm10]; }
-  set parm10(value: number) { this.f[QW_GLOBAL_OFS.parm10] = value; }
-  get parm11(): number { return this.f[QW_GLOBAL_OFS.parm11]; }
-  set parm11(value: number) { this.f[QW_GLOBAL_OFS.parm11] = value; }
-  get parm12(): number { return this.f[QW_GLOBAL_OFS.parm12]; }
-  set parm12(value: number) { this.f[QW_GLOBAL_OFS.parm12] = value; }
-  get parm13(): number { return this.f[QW_GLOBAL_OFS.parm13]; }
-  set parm13(value: number) { this.f[QW_GLOBAL_OFS.parm13] = value; }
-  get parm14(): number { return this.f[QW_GLOBAL_OFS.parm14]; }
-  set parm14(value: number) { this.f[QW_GLOBAL_OFS.parm14] = value; }
-  get parm15(): number { return this.f[QW_GLOBAL_OFS.parm15]; }
-  set parm15(value: number) { this.f[QW_GLOBAL_OFS.parm15] = value; }
-  get parm16(): number { return this.f[QW_GLOBAL_OFS.parm16]; }
-  set parm16(value: number) { this.f[QW_GLOBAL_OFS.parm16] = value; }
-  get trace_allsolid(): number { return this.f[QW_GLOBAL_OFS.trace_allsolid]; }
-  set trace_allsolid(value: number) { this.f[QW_GLOBAL_OFS.trace_allsolid] = value; }
-  get trace_startsolid(): number { return this.f[QW_GLOBAL_OFS.trace_startsolid]; }
-  set trace_startsolid(value: number) { this.f[QW_GLOBAL_OFS.trace_startsolid] = value; }
-  get trace_fraction(): number { return this.f[QW_GLOBAL_OFS.trace_fraction]; }
-  set trace_fraction(value: number) { this.f[QW_GLOBAL_OFS.trace_fraction] = value; }
-  get trace_plane_dist(): number { return this.f[QW_GLOBAL_OFS.trace_plane_dist]; }
-  set trace_plane_dist(value: number) { this.f[QW_GLOBAL_OFS.trace_plane_dist] = value; }
-  get trace_ent(): number { return this.i[QW_GLOBAL_OFS.trace_ent]; }
-  set trace_ent(value: number) { this.i[QW_GLOBAL_OFS.trace_ent] = value; }
-  get trace_inopen(): number { return this.f[QW_GLOBAL_OFS.trace_inopen]; }
-  set trace_inopen(value: number) { this.f[QW_GLOBAL_OFS.trace_inopen] = value; }
-  get trace_inwater(): number { return this.f[QW_GLOBAL_OFS.trace_inwater]; }
-  set trace_inwater(value: number) { this.f[QW_GLOBAL_OFS.trace_inwater] = value; }
-  get msg_entity(): number { return this.i[QW_GLOBAL_OFS.msg_entity]; }
-  set msg_entity(value: number) { this.i[QW_GLOBAL_OFS.msg_entity] = value; }
-  get main(): number { return this.i[QW_GLOBAL_OFS.main]; }
-  set main(value: number) { this.i[QW_GLOBAL_OFS.main] = value; }
-  get StartFrame(): number { return this.i[QW_GLOBAL_OFS.StartFrame]; }
-  set StartFrame(value: number) { this.i[QW_GLOBAL_OFS.StartFrame] = value; }
-  get PlayerPreThink(): number { return this.i[QW_GLOBAL_OFS.PlayerPreThink]; }
-  set PlayerPreThink(value: number) { this.i[QW_GLOBAL_OFS.PlayerPreThink] = value; }
-  get PlayerPostThink(): number { return this.i[QW_GLOBAL_OFS.PlayerPostThink]; }
-  set PlayerPostThink(value: number) { this.i[QW_GLOBAL_OFS.PlayerPostThink] = value; }
-  get ClientKill(): number { return this.i[QW_GLOBAL_OFS.ClientKill]; }
-  set ClientKill(value: number) { this.i[QW_GLOBAL_OFS.ClientKill] = value; }
-  get ClientConnect(): number { return this.i[QW_GLOBAL_OFS.ClientConnect]; }
-  set ClientConnect(value: number) { this.i[QW_GLOBAL_OFS.ClientConnect] = value; }
-  get PutClientInServer(): number { return this.i[QW_GLOBAL_OFS.PutClientInServer]; }
-  set PutClientInServer(value: number) { this.i[QW_GLOBAL_OFS.PutClientInServer] = value; }
-  get ClientDisconnect(): number { return this.i[QW_GLOBAL_OFS.ClientDisconnect]; }
-  set ClientDisconnect(value: number) { this.i[QW_GLOBAL_OFS.ClientDisconnect] = value; }
-  get SetNewParms(): number { return this.i[QW_GLOBAL_OFS.SetNewParms]; }
-  set SetNewParms(value: number) { this.i[QW_GLOBAL_OFS.SetNewParms] = value; }
-  get SetChangeParms(): number { return this.i[QW_GLOBAL_OFS.SetChangeParms]; }
-  set SetChangeParms(value: number) { this.i[QW_GLOBAL_OFS.SetChangeParms] = value; }
 }
+installVarAccessors(QwGlobalVars.prototype, QW_GLOBALS_LAYOUT, GLOBALVARS_FIELDS);
 
-export const QW_ENTVARS_OFS = {
-  modelindex: 0,
-  absmin: 1,
-  absmax: 4,
-  ltime: 7,
-  lastruntime: 8,
-  movetype: 9,
-  solid: 10,
-  origin: 11,
-  oldorigin: 14,
-  velocity: 17,
-  angles: 20,
-  avelocity: 23,
-  classname: 26,
-  model: 27,
-  frame: 28,
-  skin: 29,
-  effects: 30,
-  mins: 31,
-  maxs: 34,
-  size: 37,
-  touch: 40,
-  use: 41,
-  think: 42,
-  blocked: 43,
-  nextthink: 44,
-  groundentity: 45,
-  health: 46,
-  frags: 47,
-  weapon: 48,
-  weaponmodel: 49,
-  weaponframe: 50,
-  currentammo: 51,
-  ammo_shells: 52,
-  ammo_nails: 53,
-  ammo_rockets: 54,
-  ammo_cells: 55,
-  items: 56,
-  takedamage: 57,
-  chain: 58,
-  deadflag: 59,
-  view_ofs: 60,
-  button0: 63,
-  button1: 64,
-  button2: 65,
-  impulse: 66,
-  fixangle: 67,
-  v_angle: 68,
-  netname: 71,
-  enemy: 72,
-  flags: 73,
-  colormap: 74,
-  team: 75,
-  max_health: 76,
-  teleport_time: 77,
-  armortype: 78,
-  armorvalue: 79,
-  waterlevel: 80,
-  watertype: 81,
-  ideal_yaw: 82,
-  yaw_speed: 83,
-  aiment: 84,
-  goalentity: 85,
-  spawnflags: 86,
-  target: 87,
-  targetname: 88,
-  dmg_take: 89,
-  dmg_save: 90,
-  dmg_inflictor: 91,
-  owner: 92,
-  movedir: 93,
-  message: 96,
-  sounds: 97,
-  noise: 98,
-  noise1: 99,
-  noise2: 100,
-  noise3: 101,
-} as const;
+const QW_ENTVARS_NAMES = [
+  "modelindex",
+  "absmin",
+  "absmax",
+  "ltime",
+  "lastruntime",
+  "movetype",
+  "solid",
+  "origin",
+  "oldorigin",
+  "velocity",
+  "angles",
+  "avelocity",
+  "classname",
+  "model",
+  "frame",
+  "skin",
+  "effects",
+  "mins",
+  "maxs",
+  "size",
+  "touch",
+  "use",
+  "think",
+  "blocked",
+  "nextthink",
+  "groundentity",
+  "health",
+  "frags",
+  "weapon",
+  "weaponmodel",
+  "weaponframe",
+  "currentammo",
+  "ammo_shells",
+  "ammo_nails",
+  "ammo_rockets",
+  "ammo_cells",
+  "items",
+  "takedamage",
+  "chain",
+  "deadflag",
+  "view_ofs",
+  "button0",
+  "button1",
+  "button2",
+  "impulse",
+  "fixangle",
+  "v_angle",
+  "netname",
+  "enemy",
+  "flags",
+  "colormap",
+  "team",
+  "max_health",
+  "teleport_time",
+  "armortype",
+  "armorvalue",
+  "waterlevel",
+  "watertype",
+  "ideal_yaw",
+  "yaw_speed",
+  "aiment",
+  "goalentity",
+  "spawnflags",
+  "target",
+  "targetname",
+  "dmg_take",
+  "dmg_save",
+  "dmg_inflictor",
+  "owner",
+  "movedir",
+  "message",
+  "sounds",
+  "noise",
+  "noise1",
+  "noise2",
+  "noise3",
+] as const;
 
-export const QW_ENTVARS_SIZE_WORDS = 102;
+export const QW_ENTVARS_LAYOUT = buildProgsLayout(0, ENTVARS_FIELDS, QW_ENTVARS_NAMES);
 
-export class QwEntVars {
-  readonly absmin: Vec3;
-  readonly absmax: Vec3;
-  readonly origin: Vec3;
-  readonly oldorigin: Vec3;
-  readonly velocity: Vec3;
-  readonly angles: Vec3;
-  readonly avelocity: Vec3;
-  readonly mins: Vec3;
-  readonly maxs: Vec3;
-  readonly size: Vec3;
-  readonly view_ofs: Vec3;
-  readonly v_angle: Vec3;
-  readonly movedir: Vec3;
+export const QW_ENTVARS_OFS = layoutOffsets(QW_ENTVARS_LAYOUT, QW_ENTVARS_NAMES);
 
-  constructor(private readonly f: Float32Array, private readonly i: Int32Array) {
-    this.absmin = f.subarray(QW_ENTVARS_OFS.absmin, QW_ENTVARS_OFS.absmin + 3);
-    this.absmax = f.subarray(QW_ENTVARS_OFS.absmax, QW_ENTVARS_OFS.absmax + 3);
-    this.origin = f.subarray(QW_ENTVARS_OFS.origin, QW_ENTVARS_OFS.origin + 3);
-    this.oldorigin = f.subarray(QW_ENTVARS_OFS.oldorigin, QW_ENTVARS_OFS.oldorigin + 3);
-    this.velocity = f.subarray(QW_ENTVARS_OFS.velocity, QW_ENTVARS_OFS.velocity + 3);
-    this.angles = f.subarray(QW_ENTVARS_OFS.angles, QW_ENTVARS_OFS.angles + 3);
-    this.avelocity = f.subarray(QW_ENTVARS_OFS.avelocity, QW_ENTVARS_OFS.avelocity + 3);
-    this.mins = f.subarray(QW_ENTVARS_OFS.mins, QW_ENTVARS_OFS.mins + 3);
-    this.maxs = f.subarray(QW_ENTVARS_OFS.maxs, QW_ENTVARS_OFS.maxs + 3);
-    this.size = f.subarray(QW_ENTVARS_OFS.size, QW_ENTVARS_OFS.size + 3);
-    this.view_ofs = f.subarray(QW_ENTVARS_OFS.view_ofs, QW_ENTVARS_OFS.view_ofs + 3);
-    this.v_angle = f.subarray(QW_ENTVARS_OFS.v_angle, QW_ENTVARS_OFS.v_angle + 3);
-    this.movedir = f.subarray(QW_ENTVARS_OFS.movedir, QW_ENTVARS_OFS.movedir + 3);
+export const QW_ENTVARS_SIZE_WORDS = QW_ENTVARS_LAYOUT.words;
+
+export interface QwEntVars extends EntVarFieldsT {}
+export class QwEntVars extends ProgsVarsT {
+  constructor(f: Float32Array, i: Int32Array) {
+    super(f, i, QW_ENTVARS_LAYOUT);
   }
-
-  get modelindex(): number { return this.f[QW_ENTVARS_OFS.modelindex]; }
-  set modelindex(value: number) { this.f[QW_ENTVARS_OFS.modelindex] = value; }
-  get ltime(): number { return this.f[QW_ENTVARS_OFS.ltime]; }
-  set ltime(value: number) { this.f[QW_ENTVARS_OFS.ltime] = value; }
-  get lastruntime(): number { return this.f[QW_ENTVARS_OFS.lastruntime]; }
-  set lastruntime(value: number) { this.f[QW_ENTVARS_OFS.lastruntime] = value; }
-  get movetype(): number { return this.f[QW_ENTVARS_OFS.movetype]; }
-  set movetype(value: number) { this.f[QW_ENTVARS_OFS.movetype] = value; }
-  get solid(): number { return this.f[QW_ENTVARS_OFS.solid]; }
-  set solid(value: number) { this.f[QW_ENTVARS_OFS.solid] = value; }
-  get classname(): number { return this.i[QW_ENTVARS_OFS.classname]; }
-  set classname(value: number) { this.i[QW_ENTVARS_OFS.classname] = value; }
-  get model(): number { return this.i[QW_ENTVARS_OFS.model]; }
-  set model(value: number) { this.i[QW_ENTVARS_OFS.model] = value; }
-  get frame(): number { return this.f[QW_ENTVARS_OFS.frame]; }
-  set frame(value: number) { this.f[QW_ENTVARS_OFS.frame] = value; }
-  get skin(): number { return this.f[QW_ENTVARS_OFS.skin]; }
-  set skin(value: number) { this.f[QW_ENTVARS_OFS.skin] = value; }
-  get effects(): number { return this.f[QW_ENTVARS_OFS.effects]; }
-  set effects(value: number) { this.f[QW_ENTVARS_OFS.effects] = value; }
-  get touch(): number { return this.i[QW_ENTVARS_OFS.touch]; }
-  set touch(value: number) { this.i[QW_ENTVARS_OFS.touch] = value; }
-  get use(): number { return this.i[QW_ENTVARS_OFS.use]; }
-  set use(value: number) { this.i[QW_ENTVARS_OFS.use] = value; }
-  get think(): number { return this.i[QW_ENTVARS_OFS.think]; }
-  set think(value: number) { this.i[QW_ENTVARS_OFS.think] = value; }
-  get blocked(): number { return this.i[QW_ENTVARS_OFS.blocked]; }
-  set blocked(value: number) { this.i[QW_ENTVARS_OFS.blocked] = value; }
-  get nextthink(): number { return this.f[QW_ENTVARS_OFS.nextthink]; }
-  set nextthink(value: number) { this.f[QW_ENTVARS_OFS.nextthink] = value; }
-  get groundentity(): number { return this.i[QW_ENTVARS_OFS.groundentity]; }
-  set groundentity(value: number) { this.i[QW_ENTVARS_OFS.groundentity] = value; }
-  get health(): number { return this.f[QW_ENTVARS_OFS.health]; }
-  set health(value: number) { this.f[QW_ENTVARS_OFS.health] = value; }
-  get frags(): number { return this.f[QW_ENTVARS_OFS.frags]; }
-  set frags(value: number) { this.f[QW_ENTVARS_OFS.frags] = value; }
-  get weapon(): number { return this.f[QW_ENTVARS_OFS.weapon]; }
-  set weapon(value: number) { this.f[QW_ENTVARS_OFS.weapon] = value; }
-  get weaponmodel(): number { return this.i[QW_ENTVARS_OFS.weaponmodel]; }
-  set weaponmodel(value: number) { this.i[QW_ENTVARS_OFS.weaponmodel] = value; }
-  get weaponframe(): number { return this.f[QW_ENTVARS_OFS.weaponframe]; }
-  set weaponframe(value: number) { this.f[QW_ENTVARS_OFS.weaponframe] = value; }
-  get currentammo(): number { return this.f[QW_ENTVARS_OFS.currentammo]; }
-  set currentammo(value: number) { this.f[QW_ENTVARS_OFS.currentammo] = value; }
-  get ammo_shells(): number { return this.f[QW_ENTVARS_OFS.ammo_shells]; }
-  set ammo_shells(value: number) { this.f[QW_ENTVARS_OFS.ammo_shells] = value; }
-  get ammo_nails(): number { return this.f[QW_ENTVARS_OFS.ammo_nails]; }
-  set ammo_nails(value: number) { this.f[QW_ENTVARS_OFS.ammo_nails] = value; }
-  get ammo_rockets(): number { return this.f[QW_ENTVARS_OFS.ammo_rockets]; }
-  set ammo_rockets(value: number) { this.f[QW_ENTVARS_OFS.ammo_rockets] = value; }
-  get ammo_cells(): number { return this.f[QW_ENTVARS_OFS.ammo_cells]; }
-  set ammo_cells(value: number) { this.f[QW_ENTVARS_OFS.ammo_cells] = value; }
-  get items(): number { return this.f[QW_ENTVARS_OFS.items]; }
-  set items(value: number) { this.f[QW_ENTVARS_OFS.items] = value; }
-  get takedamage(): number { return this.f[QW_ENTVARS_OFS.takedamage]; }
-  set takedamage(value: number) { this.f[QW_ENTVARS_OFS.takedamage] = value; }
-  get chain(): number { return this.i[QW_ENTVARS_OFS.chain]; }
-  set chain(value: number) { this.i[QW_ENTVARS_OFS.chain] = value; }
-  get deadflag(): number { return this.f[QW_ENTVARS_OFS.deadflag]; }
-  set deadflag(value: number) { this.f[QW_ENTVARS_OFS.deadflag] = value; }
-  get button0(): number { return this.f[QW_ENTVARS_OFS.button0]; }
-  set button0(value: number) { this.f[QW_ENTVARS_OFS.button0] = value; }
-  get button1(): number { return this.f[QW_ENTVARS_OFS.button1]; }
-  set button1(value: number) { this.f[QW_ENTVARS_OFS.button1] = value; }
-  get button2(): number { return this.f[QW_ENTVARS_OFS.button2]; }
-  set button2(value: number) { this.f[QW_ENTVARS_OFS.button2] = value; }
-  get impulse(): number { return this.f[QW_ENTVARS_OFS.impulse]; }
-  set impulse(value: number) { this.f[QW_ENTVARS_OFS.impulse] = value; }
-  get fixangle(): number { return this.f[QW_ENTVARS_OFS.fixangle]; }
-  set fixangle(value: number) { this.f[QW_ENTVARS_OFS.fixangle] = value; }
-  get netname(): number { return this.i[QW_ENTVARS_OFS.netname]; }
-  set netname(value: number) { this.i[QW_ENTVARS_OFS.netname] = value; }
-  get enemy(): number { return this.i[QW_ENTVARS_OFS.enemy]; }
-  set enemy(value: number) { this.i[QW_ENTVARS_OFS.enemy] = value; }
-  get flags(): number { return this.f[QW_ENTVARS_OFS.flags]; }
-  set flags(value: number) { this.f[QW_ENTVARS_OFS.flags] = value; }
-  get colormap(): number { return this.f[QW_ENTVARS_OFS.colormap]; }
-  set colormap(value: number) { this.f[QW_ENTVARS_OFS.colormap] = value; }
-  get team(): number { return this.f[QW_ENTVARS_OFS.team]; }
-  set team(value: number) { this.f[QW_ENTVARS_OFS.team] = value; }
-  get max_health(): number { return this.f[QW_ENTVARS_OFS.max_health]; }
-  set max_health(value: number) { this.f[QW_ENTVARS_OFS.max_health] = value; }
-  get teleport_time(): number { return this.f[QW_ENTVARS_OFS.teleport_time]; }
-  set teleport_time(value: number) { this.f[QW_ENTVARS_OFS.teleport_time] = value; }
-  get armortype(): number { return this.f[QW_ENTVARS_OFS.armortype]; }
-  set armortype(value: number) { this.f[QW_ENTVARS_OFS.armortype] = value; }
-  get armorvalue(): number { return this.f[QW_ENTVARS_OFS.armorvalue]; }
-  set armorvalue(value: number) { this.f[QW_ENTVARS_OFS.armorvalue] = value; }
-  get waterlevel(): number { return this.f[QW_ENTVARS_OFS.waterlevel]; }
-  set waterlevel(value: number) { this.f[QW_ENTVARS_OFS.waterlevel] = value; }
-  get watertype(): number { return this.f[QW_ENTVARS_OFS.watertype]; }
-  set watertype(value: number) { this.f[QW_ENTVARS_OFS.watertype] = value; }
-  get ideal_yaw(): number { return this.f[QW_ENTVARS_OFS.ideal_yaw]; }
-  set ideal_yaw(value: number) { this.f[QW_ENTVARS_OFS.ideal_yaw] = value; }
-  get yaw_speed(): number { return this.f[QW_ENTVARS_OFS.yaw_speed]; }
-  set yaw_speed(value: number) { this.f[QW_ENTVARS_OFS.yaw_speed] = value; }
-  get aiment(): number { return this.i[QW_ENTVARS_OFS.aiment]; }
-  set aiment(value: number) { this.i[QW_ENTVARS_OFS.aiment] = value; }
-  get goalentity(): number { return this.i[QW_ENTVARS_OFS.goalentity]; }
-  set goalentity(value: number) { this.i[QW_ENTVARS_OFS.goalentity] = value; }
-  get spawnflags(): number { return this.f[QW_ENTVARS_OFS.spawnflags]; }
-  set spawnflags(value: number) { this.f[QW_ENTVARS_OFS.spawnflags] = value; }
-  get target(): number { return this.i[QW_ENTVARS_OFS.target]; }
-  set target(value: number) { this.i[QW_ENTVARS_OFS.target] = value; }
-  get targetname(): number { return this.i[QW_ENTVARS_OFS.targetname]; }
-  set targetname(value: number) { this.i[QW_ENTVARS_OFS.targetname] = value; }
-  get dmg_take(): number { return this.f[QW_ENTVARS_OFS.dmg_take]; }
-  set dmg_take(value: number) { this.f[QW_ENTVARS_OFS.dmg_take] = value; }
-  get dmg_save(): number { return this.f[QW_ENTVARS_OFS.dmg_save]; }
-  set dmg_save(value: number) { this.f[QW_ENTVARS_OFS.dmg_save] = value; }
-  get dmg_inflictor(): number { return this.i[QW_ENTVARS_OFS.dmg_inflictor]; }
-  set dmg_inflictor(value: number) { this.i[QW_ENTVARS_OFS.dmg_inflictor] = value; }
-  get owner(): number { return this.i[QW_ENTVARS_OFS.owner]; }
-  set owner(value: number) { this.i[QW_ENTVARS_OFS.owner] = value; }
-  get message(): number { return this.i[QW_ENTVARS_OFS.message]; }
-  set message(value: number) { this.i[QW_ENTVARS_OFS.message] = value; }
-  get sounds(): number { return this.f[QW_ENTVARS_OFS.sounds]; }
-  set sounds(value: number) { this.f[QW_ENTVARS_OFS.sounds] = value; }
-  get noise(): number { return this.i[QW_ENTVARS_OFS.noise]; }
-  set noise(value: number) { this.i[QW_ENTVARS_OFS.noise] = value; }
-  get noise1(): number { return this.i[QW_ENTVARS_OFS.noise1]; }
-  set noise1(value: number) { this.i[QW_ENTVARS_OFS.noise1] = value; }
-  get noise2(): number { return this.i[QW_ENTVARS_OFS.noise2]; }
-  set noise2(value: number) { this.i[QW_ENTVARS_OFS.noise2] = value; }
-  get noise3(): number { return this.i[QW_ENTVARS_OFS.noise3]; }
-  set noise3(value: number) { this.i[QW_ENTVARS_OFS.noise3] = value; }
 }
+installVarAccessors(QwEntVars.prototype, QW_ENTVARS_LAYOUT, ENTVARS_FIELDS);

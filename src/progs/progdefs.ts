@@ -9,438 +9,193 @@ its own, so there is nothing to reconcile).
 `globalvars_t` and `entvars_t` are qcc-generated layouts: every global and
 every entity field QuakeC declares is addressed by a fixed word offset into
 one shared `Float32Array`/`Int32Array` pair (`pr_globals` for globals, an
-edict's own field block for entvars). PORTING.md's ruling for this VM:
-- `GLOBAL_OFS`/`ENTVARS_OFS` are the offset tables, in 4-byte-word units,
-  computed once from an ordered field list (pad[28] first for globalvars_t,
-  entvars_t start at 0) so the numbers below and the accessor classes can
-  never desync -- every getter/setter reads its offset symbolically off
-  these tables rather than repeating a literal.
-- `GlobalVars`/`EntVars` are accessor classes over a caller-supplied
-  `{ f: Float32Array; i: Int32Array }` view pair (they do not own the
-  buffer -- pr_edict.ts/pr_globals.ts allocate it). Float fields are
-  getters/setters on `f`; `string_t`/`func_t`/entity/int fields are on `i`;
-  `vec3_t` fields return one persistent `subarray` view built in the
-  constructor, so `VectorCopy(ent.v.origin, out)` costs no allocation and
-  the view is a `Vec3` (mathlib's `Float32Array` alias) directly.
+edict's own field block for entvars). This is WinQuake's build of that pair
+(PROGHEADER_CRC 5927); QuakeWorld's is src/qw/server/progdefs.ts. Both are
+now ordered name lists filtered out of progdefs_layout.ts's union field
+tables, and both get their offset tables and their accessor classes from
+that module's one generator -- see its header for the technique and for the
+one deviation the sharing introduces (a field the other host declares and
+this one does not throws when reached, instead of being a compile error as
+it was while the two hosts had separate hand-written accessor classes).
 */
 
-import type { Vec3 } from "../common/mathlib";
+import {
+  ENTVARS_FIELDS,
+  GLOBALVARS_FIELDS,
+  ProgsVarsT,
+  buildProgsLayout,
+  installVarAccessors,
+  layoutOffsets,
+  type EntVarFieldsT,
+  type GlobalVarFieldsT,
+} from "./progdefs_layout";
 
 export const PROGHEADER_CRC = 5927;
 
-export const GLOBAL_OFS = {
-  self: 28,
-  other: 29,
-  world: 30,
-  time: 31,
-  frametime: 32,
-  force_retouch: 33,
-  mapname: 34,
-  deathmatch: 35,
-  coop: 36,
-  teamplay: 37,
-  serverflags: 38,
-  total_secrets: 39,
-  total_monsters: 40,
-  found_secrets: 41,
-  killed_monsters: 42,
-  parm1: 43,
-  parm2: 44,
-  parm3: 45,
-  parm4: 46,
-  parm5: 47,
-  parm6: 48,
-  parm7: 49,
-  parm8: 50,
-  parm9: 51,
-  parm10: 52,
-  parm11: 53,
-  parm12: 54,
-  parm13: 55,
-  parm14: 56,
-  parm15: 57,
-  parm16: 58,
-  v_forward: 59,
-  v_up: 62,
-  v_right: 65,
-  trace_allsolid: 68,
-  trace_startsolid: 69,
-  trace_fraction: 70,
-  trace_endpos: 71,
-  trace_plane_normal: 74,
-  trace_plane_dist: 77,
-  trace_ent: 78,
-  trace_inopen: 79,
-  trace_inwater: 80,
-  msg_entity: 81,
-  main: 82,
-  StartFrame: 83,
-  PlayerPreThink: 84,
-  PlayerPostThink: 85,
-  ClientKill: 86,
-  ClientConnect: 87,
-  PutClientInServer: 88,
-  ClientDisconnect: 89,
-  SetNewParms: 90,
-  SetChangeParms: 91,
-} as const;
+// globalvars_t's `int pad[28]` is the base; QuakeC's own globals follow the
+// struct, so the last name below is the last *system* global, not the last
+// global in the file.
+const NQ_GLOBAL_NAMES = [
+  "self",
+  "other",
+  "world",
+  "time",
+  "frametime",
+  "force_retouch",
+  "mapname",
+  "deathmatch",
+  "coop",
+  "teamplay",
+  "serverflags",
+  "total_secrets",
+  "total_monsters",
+  "found_secrets",
+  "killed_monsters",
+  "parm1",
+  "parm2",
+  "parm3",
+  "parm4",
+  "parm5",
+  "parm6",
+  "parm7",
+  "parm8",
+  "parm9",
+  "parm10",
+  "parm11",
+  "parm12",
+  "parm13",
+  "parm14",
+  "parm15",
+  "parm16",
+  "v_forward",
+  "v_up",
+  "v_right",
+  "trace_allsolid",
+  "trace_startsolid",
+  "trace_fraction",
+  "trace_endpos",
+  "trace_plane_normal",
+  "trace_plane_dist",
+  "trace_ent",
+  "trace_inopen",
+  "trace_inwater",
+  "msg_entity",
+  "main",
+  "StartFrame",
+  "PlayerPreThink",
+  "PlayerPostThink",
+  "ClientKill",
+  "ClientConnect",
+  "PutClientInServer",
+  "ClientDisconnect",
+  "SetNewParms",
+  "SetChangeParms",
+] as const;
 
-export const NUM_GLOBAL_WORDS = 92;
+export const NQ_GLOBALS_LAYOUT = buildProgsLayout(28, GLOBALVARS_FIELDS, NQ_GLOBAL_NAMES);
 
-export class GlobalVars {
-  readonly v_forward: Vec3;
-  readonly v_up: Vec3;
-  readonly v_right: Vec3;
-  readonly trace_endpos: Vec3;
-  readonly trace_plane_normal: Vec3;
+export const GLOBAL_OFS = layoutOffsets(NQ_GLOBALS_LAYOUT, NQ_GLOBAL_NAMES);
 
-  constructor(private readonly f: Float32Array, private readonly i: Int32Array) {
-    this.v_forward = f.subarray(GLOBAL_OFS.v_forward, GLOBAL_OFS.v_forward + 3);
-    this.v_up = f.subarray(GLOBAL_OFS.v_up, GLOBAL_OFS.v_up + 3);
-    this.v_right = f.subarray(GLOBAL_OFS.v_right, GLOBAL_OFS.v_right + 3);
-    this.trace_endpos = f.subarray(GLOBAL_OFS.trace_endpos, GLOBAL_OFS.trace_endpos + 3);
-    this.trace_plane_normal = f.subarray(GLOBAL_OFS.trace_plane_normal, GLOBAL_OFS.trace_plane_normal + 3);
+export const NUM_GLOBAL_WORDS = NQ_GLOBALS_LAYOUT.words;
+
+export interface GlobalVars extends GlobalVarFieldsT {}
+export class GlobalVars extends ProgsVarsT {
+  constructor(f: Float32Array, i: Int32Array) {
+    super(f, i, NQ_GLOBALS_LAYOUT);
   }
-
-  get self(): number { return this.i[GLOBAL_OFS.self]; }
-  set self(value: number) { this.i[GLOBAL_OFS.self] = value; }
-  get other(): number { return this.i[GLOBAL_OFS.other]; }
-  set other(value: number) { this.i[GLOBAL_OFS.other] = value; }
-  get world(): number { return this.i[GLOBAL_OFS.world]; }
-  set world(value: number) { this.i[GLOBAL_OFS.world] = value; }
-  get time(): number { return this.f[GLOBAL_OFS.time]; }
-  set time(value: number) { this.f[GLOBAL_OFS.time] = value; }
-  get frametime(): number { return this.f[GLOBAL_OFS.frametime]; }
-  set frametime(value: number) { this.f[GLOBAL_OFS.frametime] = value; }
-  get force_retouch(): number { return this.f[GLOBAL_OFS.force_retouch]; }
-  set force_retouch(value: number) { this.f[GLOBAL_OFS.force_retouch] = value; }
-  get mapname(): number { return this.i[GLOBAL_OFS.mapname]; }
-  set mapname(value: number) { this.i[GLOBAL_OFS.mapname] = value; }
-  get deathmatch(): number { return this.f[GLOBAL_OFS.deathmatch]; }
-  set deathmatch(value: number) { this.f[GLOBAL_OFS.deathmatch] = value; }
-  get coop(): number { return this.f[GLOBAL_OFS.coop]; }
-  set coop(value: number) { this.f[GLOBAL_OFS.coop] = value; }
-  get teamplay(): number { return this.f[GLOBAL_OFS.teamplay]; }
-  set teamplay(value: number) { this.f[GLOBAL_OFS.teamplay] = value; }
-  get serverflags(): number { return this.f[GLOBAL_OFS.serverflags]; }
-  set serverflags(value: number) { this.f[GLOBAL_OFS.serverflags] = value; }
-  get total_secrets(): number { return this.f[GLOBAL_OFS.total_secrets]; }
-  set total_secrets(value: number) { this.f[GLOBAL_OFS.total_secrets] = value; }
-  get total_monsters(): number { return this.f[GLOBAL_OFS.total_monsters]; }
-  set total_monsters(value: number) { this.f[GLOBAL_OFS.total_monsters] = value; }
-  get found_secrets(): number { return this.f[GLOBAL_OFS.found_secrets]; }
-  set found_secrets(value: number) { this.f[GLOBAL_OFS.found_secrets] = value; }
-  get killed_monsters(): number { return this.f[GLOBAL_OFS.killed_monsters]; }
-  set killed_monsters(value: number) { this.f[GLOBAL_OFS.killed_monsters] = value; }
-  get parm1(): number { return this.f[GLOBAL_OFS.parm1]; }
-  set parm1(value: number) { this.f[GLOBAL_OFS.parm1] = value; }
-  get parm2(): number { return this.f[GLOBAL_OFS.parm2]; }
-  set parm2(value: number) { this.f[GLOBAL_OFS.parm2] = value; }
-  get parm3(): number { return this.f[GLOBAL_OFS.parm3]; }
-  set parm3(value: number) { this.f[GLOBAL_OFS.parm3] = value; }
-  get parm4(): number { return this.f[GLOBAL_OFS.parm4]; }
-  set parm4(value: number) { this.f[GLOBAL_OFS.parm4] = value; }
-  get parm5(): number { return this.f[GLOBAL_OFS.parm5]; }
-  set parm5(value: number) { this.f[GLOBAL_OFS.parm5] = value; }
-  get parm6(): number { return this.f[GLOBAL_OFS.parm6]; }
-  set parm6(value: number) { this.f[GLOBAL_OFS.parm6] = value; }
-  get parm7(): number { return this.f[GLOBAL_OFS.parm7]; }
-  set parm7(value: number) { this.f[GLOBAL_OFS.parm7] = value; }
-  get parm8(): number { return this.f[GLOBAL_OFS.parm8]; }
-  set parm8(value: number) { this.f[GLOBAL_OFS.parm8] = value; }
-  get parm9(): number { return this.f[GLOBAL_OFS.parm9]; }
-  set parm9(value: number) { this.f[GLOBAL_OFS.parm9] = value; }
-  get parm10(): number { return this.f[GLOBAL_OFS.parm10]; }
-  set parm10(value: number) { this.f[GLOBAL_OFS.parm10] = value; }
-  get parm11(): number { return this.f[GLOBAL_OFS.parm11]; }
-  set parm11(value: number) { this.f[GLOBAL_OFS.parm11] = value; }
-  get parm12(): number { return this.f[GLOBAL_OFS.parm12]; }
-  set parm12(value: number) { this.f[GLOBAL_OFS.parm12] = value; }
-  get parm13(): number { return this.f[GLOBAL_OFS.parm13]; }
-  set parm13(value: number) { this.f[GLOBAL_OFS.parm13] = value; }
-  get parm14(): number { return this.f[GLOBAL_OFS.parm14]; }
-  set parm14(value: number) { this.f[GLOBAL_OFS.parm14] = value; }
-  get parm15(): number { return this.f[GLOBAL_OFS.parm15]; }
-  set parm15(value: number) { this.f[GLOBAL_OFS.parm15] = value; }
-  get parm16(): number { return this.f[GLOBAL_OFS.parm16]; }
-  set parm16(value: number) { this.f[GLOBAL_OFS.parm16] = value; }
-  get trace_allsolid(): number { return this.f[GLOBAL_OFS.trace_allsolid]; }
-  set trace_allsolid(value: number) { this.f[GLOBAL_OFS.trace_allsolid] = value; }
-  get trace_startsolid(): number { return this.f[GLOBAL_OFS.trace_startsolid]; }
-  set trace_startsolid(value: number) { this.f[GLOBAL_OFS.trace_startsolid] = value; }
-  get trace_fraction(): number { return this.f[GLOBAL_OFS.trace_fraction]; }
-  set trace_fraction(value: number) { this.f[GLOBAL_OFS.trace_fraction] = value; }
-  get trace_plane_dist(): number { return this.f[GLOBAL_OFS.trace_plane_dist]; }
-  set trace_plane_dist(value: number) { this.f[GLOBAL_OFS.trace_plane_dist] = value; }
-  get trace_ent(): number { return this.i[GLOBAL_OFS.trace_ent]; }
-  set trace_ent(value: number) { this.i[GLOBAL_OFS.trace_ent] = value; }
-  get trace_inopen(): number { return this.f[GLOBAL_OFS.trace_inopen]; }
-  set trace_inopen(value: number) { this.f[GLOBAL_OFS.trace_inopen] = value; }
-  get trace_inwater(): number { return this.f[GLOBAL_OFS.trace_inwater]; }
-  set trace_inwater(value: number) { this.f[GLOBAL_OFS.trace_inwater] = value; }
-  get msg_entity(): number { return this.i[GLOBAL_OFS.msg_entity]; }
-  set msg_entity(value: number) { this.i[GLOBAL_OFS.msg_entity] = value; }
-  get main(): number { return this.i[GLOBAL_OFS.main]; }
-  set main(value: number) { this.i[GLOBAL_OFS.main] = value; }
-  get StartFrame(): number { return this.i[GLOBAL_OFS.StartFrame]; }
-  set StartFrame(value: number) { this.i[GLOBAL_OFS.StartFrame] = value; }
-  get PlayerPreThink(): number { return this.i[GLOBAL_OFS.PlayerPreThink]; }
-  set PlayerPreThink(value: number) { this.i[GLOBAL_OFS.PlayerPreThink] = value; }
-  get PlayerPostThink(): number { return this.i[GLOBAL_OFS.PlayerPostThink]; }
-  set PlayerPostThink(value: number) { this.i[GLOBAL_OFS.PlayerPostThink] = value; }
-  get ClientKill(): number { return this.i[GLOBAL_OFS.ClientKill]; }
-  set ClientKill(value: number) { this.i[GLOBAL_OFS.ClientKill] = value; }
-  get ClientConnect(): number { return this.i[GLOBAL_OFS.ClientConnect]; }
-  set ClientConnect(value: number) { this.i[GLOBAL_OFS.ClientConnect] = value; }
-  get PutClientInServer(): number { return this.i[GLOBAL_OFS.PutClientInServer]; }
-  set PutClientInServer(value: number) { this.i[GLOBAL_OFS.PutClientInServer] = value; }
-  get ClientDisconnect(): number { return this.i[GLOBAL_OFS.ClientDisconnect]; }
-  set ClientDisconnect(value: number) { this.i[GLOBAL_OFS.ClientDisconnect] = value; }
-  get SetNewParms(): number { return this.i[GLOBAL_OFS.SetNewParms]; }
-  set SetNewParms(value: number) { this.i[GLOBAL_OFS.SetNewParms] = value; }
-  get SetChangeParms(): number { return this.i[GLOBAL_OFS.SetChangeParms]; }
-  set SetChangeParms(value: number) { this.i[GLOBAL_OFS.SetChangeParms] = value; }
 }
+installVarAccessors(GlobalVars.prototype, NQ_GLOBALS_LAYOUT, GLOBALVARS_FIELDS);
 
-export const ENTVARS_OFS = {
-  modelindex: 0,
-  absmin: 1,
-  absmax: 4,
-  ltime: 7,
-  movetype: 8,
-  solid: 9,
-  origin: 10,
-  oldorigin: 13,
-  velocity: 16,
-  angles: 19,
-  avelocity: 22,
-  punchangle: 25,
-  classname: 28,
-  model: 29,
-  frame: 30,
-  skin: 31,
-  effects: 32,
-  mins: 33,
-  maxs: 36,
-  size: 39,
-  touch: 42,
-  use: 43,
-  think: 44,
-  blocked: 45,
-  nextthink: 46,
-  groundentity: 47,
-  health: 48,
-  frags: 49,
-  weapon: 50,
-  weaponmodel: 51,
-  weaponframe: 52,
-  currentammo: 53,
-  ammo_shells: 54,
-  ammo_nails: 55,
-  ammo_rockets: 56,
-  ammo_cells: 57,
-  items: 58,
-  takedamage: 59,
-  chain: 60,
-  deadflag: 61,
-  view_ofs: 62,
-  button0: 65,
-  button1: 66,
-  button2: 67,
-  impulse: 68,
-  fixangle: 69,
-  v_angle: 70,
-  idealpitch: 73,
-  netname: 74,
-  enemy: 75,
-  flags: 76,
-  colormap: 77,
-  team: 78,
-  max_health: 79,
-  teleport_time: 80,
-  armortype: 81,
-  armorvalue: 82,
-  waterlevel: 83,
-  watertype: 84,
-  ideal_yaw: 85,
-  yaw_speed: 86,
-  aiment: 87,
-  goalentity: 88,
-  spawnflags: 89,
-  target: 90,
-  targetname: 91,
-  dmg_take: 92,
-  dmg_save: 93,
-  dmg_inflictor: 94,
-  owner: 95,
-  movedir: 96,
-  message: 99,
-  sounds: 100,
-  noise: 101,
-  noise1: 102,
-  noise2: 103,
-  noise3: 104,
-} as const;
+const NQ_ENTVARS_NAMES = [
+  "modelindex",
+  "absmin",
+  "absmax",
+  "ltime",
+  "movetype",
+  "solid",
+  "origin",
+  "oldorigin",
+  "velocity",
+  "angles",
+  "avelocity",
+  "punchangle",
+  "classname",
+  "model",
+  "frame",
+  "skin",
+  "effects",
+  "mins",
+  "maxs",
+  "size",
+  "touch",
+  "use",
+  "think",
+  "blocked",
+  "nextthink",
+  "groundentity",
+  "health",
+  "frags",
+  "weapon",
+  "weaponmodel",
+  "weaponframe",
+  "currentammo",
+  "ammo_shells",
+  "ammo_nails",
+  "ammo_rockets",
+  "ammo_cells",
+  "items",
+  "takedamage",
+  "chain",
+  "deadflag",
+  "view_ofs",
+  "button0",
+  "button1",
+  "button2",
+  "impulse",
+  "fixangle",
+  "v_angle",
+  "idealpitch",
+  "netname",
+  "enemy",
+  "flags",
+  "colormap",
+  "team",
+  "max_health",
+  "teleport_time",
+  "armortype",
+  "armorvalue",
+  "waterlevel",
+  "watertype",
+  "ideal_yaw",
+  "yaw_speed",
+  "aiment",
+  "goalentity",
+  "spawnflags",
+  "target",
+  "targetname",
+  "dmg_take",
+  "dmg_save",
+  "dmg_inflictor",
+  "owner",
+  "movedir",
+  "message",
+  "sounds",
+  "noise",
+  "noise1",
+  "noise2",
+  "noise3",
+] as const;
 
-export const ENTVARS_SIZE_WORDS = 105;
+export const NQ_ENTVARS_LAYOUT = buildProgsLayout(0, ENTVARS_FIELDS, NQ_ENTVARS_NAMES);
 
-export class EntVars {
-  readonly absmin: Vec3;
-  readonly absmax: Vec3;
-  readonly origin: Vec3;
-  readonly oldorigin: Vec3;
-  readonly velocity: Vec3;
-  readonly angles: Vec3;
-  readonly avelocity: Vec3;
-  readonly punchangle: Vec3;
-  readonly mins: Vec3;
-  readonly maxs: Vec3;
-  readonly size: Vec3;
-  readonly view_ofs: Vec3;
-  readonly v_angle: Vec3;
-  readonly movedir: Vec3;
+export const ENTVARS_OFS = layoutOffsets(NQ_ENTVARS_LAYOUT, NQ_ENTVARS_NAMES);
 
-  constructor(private readonly f: Float32Array, private readonly i: Int32Array) {
-    this.absmin = f.subarray(ENTVARS_OFS.absmin, ENTVARS_OFS.absmin + 3);
-    this.absmax = f.subarray(ENTVARS_OFS.absmax, ENTVARS_OFS.absmax + 3);
-    this.origin = f.subarray(ENTVARS_OFS.origin, ENTVARS_OFS.origin + 3);
-    this.oldorigin = f.subarray(ENTVARS_OFS.oldorigin, ENTVARS_OFS.oldorigin + 3);
-    this.velocity = f.subarray(ENTVARS_OFS.velocity, ENTVARS_OFS.velocity + 3);
-    this.angles = f.subarray(ENTVARS_OFS.angles, ENTVARS_OFS.angles + 3);
-    this.avelocity = f.subarray(ENTVARS_OFS.avelocity, ENTVARS_OFS.avelocity + 3);
-    this.punchangle = f.subarray(ENTVARS_OFS.punchangle, ENTVARS_OFS.punchangle + 3);
-    this.mins = f.subarray(ENTVARS_OFS.mins, ENTVARS_OFS.mins + 3);
-    this.maxs = f.subarray(ENTVARS_OFS.maxs, ENTVARS_OFS.maxs + 3);
-    this.size = f.subarray(ENTVARS_OFS.size, ENTVARS_OFS.size + 3);
-    this.view_ofs = f.subarray(ENTVARS_OFS.view_ofs, ENTVARS_OFS.view_ofs + 3);
-    this.v_angle = f.subarray(ENTVARS_OFS.v_angle, ENTVARS_OFS.v_angle + 3);
-    this.movedir = f.subarray(ENTVARS_OFS.movedir, ENTVARS_OFS.movedir + 3);
+export const ENTVARS_SIZE_WORDS = NQ_ENTVARS_LAYOUT.words;
+
+export interface EntVars extends EntVarFieldsT {}
+export class EntVars extends ProgsVarsT {
+  constructor(f: Float32Array, i: Int32Array) {
+    super(f, i, NQ_ENTVARS_LAYOUT);
   }
-
-  get modelindex(): number { return this.f[ENTVARS_OFS.modelindex]; }
-  set modelindex(value: number) { this.f[ENTVARS_OFS.modelindex] = value; }
-  get ltime(): number { return this.f[ENTVARS_OFS.ltime]; }
-  set ltime(value: number) { this.f[ENTVARS_OFS.ltime] = value; }
-  get movetype(): number { return this.f[ENTVARS_OFS.movetype]; }
-  set movetype(value: number) { this.f[ENTVARS_OFS.movetype] = value; }
-  get solid(): number { return this.f[ENTVARS_OFS.solid]; }
-  set solid(value: number) { this.f[ENTVARS_OFS.solid] = value; }
-  get classname(): number { return this.i[ENTVARS_OFS.classname]; }
-  set classname(value: number) { this.i[ENTVARS_OFS.classname] = value; }
-  get model(): number { return this.i[ENTVARS_OFS.model]; }
-  set model(value: number) { this.i[ENTVARS_OFS.model] = value; }
-  get frame(): number { return this.f[ENTVARS_OFS.frame]; }
-  set frame(value: number) { this.f[ENTVARS_OFS.frame] = value; }
-  get skin(): number { return this.f[ENTVARS_OFS.skin]; }
-  set skin(value: number) { this.f[ENTVARS_OFS.skin] = value; }
-  get effects(): number { return this.f[ENTVARS_OFS.effects]; }
-  set effects(value: number) { this.f[ENTVARS_OFS.effects] = value; }
-  get touch(): number { return this.i[ENTVARS_OFS.touch]; }
-  set touch(value: number) { this.i[ENTVARS_OFS.touch] = value; }
-  get use(): number { return this.i[ENTVARS_OFS.use]; }
-  set use(value: number) { this.i[ENTVARS_OFS.use] = value; }
-  get think(): number { return this.i[ENTVARS_OFS.think]; }
-  set think(value: number) { this.i[ENTVARS_OFS.think] = value; }
-  get blocked(): number { return this.i[ENTVARS_OFS.blocked]; }
-  set blocked(value: number) { this.i[ENTVARS_OFS.blocked] = value; }
-  get nextthink(): number { return this.f[ENTVARS_OFS.nextthink]; }
-  set nextthink(value: number) { this.f[ENTVARS_OFS.nextthink] = value; }
-  get groundentity(): number { return this.i[ENTVARS_OFS.groundentity]; }
-  set groundentity(value: number) { this.i[ENTVARS_OFS.groundentity] = value; }
-  get health(): number { return this.f[ENTVARS_OFS.health]; }
-  set health(value: number) { this.f[ENTVARS_OFS.health] = value; }
-  get frags(): number { return this.f[ENTVARS_OFS.frags]; }
-  set frags(value: number) { this.f[ENTVARS_OFS.frags] = value; }
-  get weapon(): number { return this.f[ENTVARS_OFS.weapon]; }
-  set weapon(value: number) { this.f[ENTVARS_OFS.weapon] = value; }
-  get weaponmodel(): number { return this.i[ENTVARS_OFS.weaponmodel]; }
-  set weaponmodel(value: number) { this.i[ENTVARS_OFS.weaponmodel] = value; }
-  get weaponframe(): number { return this.f[ENTVARS_OFS.weaponframe]; }
-  set weaponframe(value: number) { this.f[ENTVARS_OFS.weaponframe] = value; }
-  get currentammo(): number { return this.f[ENTVARS_OFS.currentammo]; }
-  set currentammo(value: number) { this.f[ENTVARS_OFS.currentammo] = value; }
-  get ammo_shells(): number { return this.f[ENTVARS_OFS.ammo_shells]; }
-  set ammo_shells(value: number) { this.f[ENTVARS_OFS.ammo_shells] = value; }
-  get ammo_nails(): number { return this.f[ENTVARS_OFS.ammo_nails]; }
-  set ammo_nails(value: number) { this.f[ENTVARS_OFS.ammo_nails] = value; }
-  get ammo_rockets(): number { return this.f[ENTVARS_OFS.ammo_rockets]; }
-  set ammo_rockets(value: number) { this.f[ENTVARS_OFS.ammo_rockets] = value; }
-  get ammo_cells(): number { return this.f[ENTVARS_OFS.ammo_cells]; }
-  set ammo_cells(value: number) { this.f[ENTVARS_OFS.ammo_cells] = value; }
-  get items(): number { return this.f[ENTVARS_OFS.items]; }
-  set items(value: number) { this.f[ENTVARS_OFS.items] = value; }
-  get takedamage(): number { return this.f[ENTVARS_OFS.takedamage]; }
-  set takedamage(value: number) { this.f[ENTVARS_OFS.takedamage] = value; }
-  get chain(): number { return this.i[ENTVARS_OFS.chain]; }
-  set chain(value: number) { this.i[ENTVARS_OFS.chain] = value; }
-  get deadflag(): number { return this.f[ENTVARS_OFS.deadflag]; }
-  set deadflag(value: number) { this.f[ENTVARS_OFS.deadflag] = value; }
-  get button0(): number { return this.f[ENTVARS_OFS.button0]; }
-  set button0(value: number) { this.f[ENTVARS_OFS.button0] = value; }
-  get button1(): number { return this.f[ENTVARS_OFS.button1]; }
-  set button1(value: number) { this.f[ENTVARS_OFS.button1] = value; }
-  get button2(): number { return this.f[ENTVARS_OFS.button2]; }
-  set button2(value: number) { this.f[ENTVARS_OFS.button2] = value; }
-  get impulse(): number { return this.f[ENTVARS_OFS.impulse]; }
-  set impulse(value: number) { this.f[ENTVARS_OFS.impulse] = value; }
-  get fixangle(): number { return this.f[ENTVARS_OFS.fixangle]; }
-  set fixangle(value: number) { this.f[ENTVARS_OFS.fixangle] = value; }
-  get idealpitch(): number { return this.f[ENTVARS_OFS.idealpitch]; }
-  set idealpitch(value: number) { this.f[ENTVARS_OFS.idealpitch] = value; }
-  get netname(): number { return this.i[ENTVARS_OFS.netname]; }
-  set netname(value: number) { this.i[ENTVARS_OFS.netname] = value; }
-  get enemy(): number { return this.i[ENTVARS_OFS.enemy]; }
-  set enemy(value: number) { this.i[ENTVARS_OFS.enemy] = value; }
-  get flags(): number { return this.f[ENTVARS_OFS.flags]; }
-  set flags(value: number) { this.f[ENTVARS_OFS.flags] = value; }
-  get colormap(): number { return this.f[ENTVARS_OFS.colormap]; }
-  set colormap(value: number) { this.f[ENTVARS_OFS.colormap] = value; }
-  get team(): number { return this.f[ENTVARS_OFS.team]; }
-  set team(value: number) { this.f[ENTVARS_OFS.team] = value; }
-  get max_health(): number { return this.f[ENTVARS_OFS.max_health]; }
-  set max_health(value: number) { this.f[ENTVARS_OFS.max_health] = value; }
-  get teleport_time(): number { return this.f[ENTVARS_OFS.teleport_time]; }
-  set teleport_time(value: number) { this.f[ENTVARS_OFS.teleport_time] = value; }
-  get armortype(): number { return this.f[ENTVARS_OFS.armortype]; }
-  set armortype(value: number) { this.f[ENTVARS_OFS.armortype] = value; }
-  get armorvalue(): number { return this.f[ENTVARS_OFS.armorvalue]; }
-  set armorvalue(value: number) { this.f[ENTVARS_OFS.armorvalue] = value; }
-  get waterlevel(): number { return this.f[ENTVARS_OFS.waterlevel]; }
-  set waterlevel(value: number) { this.f[ENTVARS_OFS.waterlevel] = value; }
-  get watertype(): number { return this.f[ENTVARS_OFS.watertype]; }
-  set watertype(value: number) { this.f[ENTVARS_OFS.watertype] = value; }
-  get ideal_yaw(): number { return this.f[ENTVARS_OFS.ideal_yaw]; }
-  set ideal_yaw(value: number) { this.f[ENTVARS_OFS.ideal_yaw] = value; }
-  get yaw_speed(): number { return this.f[ENTVARS_OFS.yaw_speed]; }
-  set yaw_speed(value: number) { this.f[ENTVARS_OFS.yaw_speed] = value; }
-  get aiment(): number { return this.i[ENTVARS_OFS.aiment]; }
-  set aiment(value: number) { this.i[ENTVARS_OFS.aiment] = value; }
-  get goalentity(): number { return this.i[ENTVARS_OFS.goalentity]; }
-  set goalentity(value: number) { this.i[ENTVARS_OFS.goalentity] = value; }
-  get spawnflags(): number { return this.f[ENTVARS_OFS.spawnflags]; }
-  set spawnflags(value: number) { this.f[ENTVARS_OFS.spawnflags] = value; }
-  get target(): number { return this.i[ENTVARS_OFS.target]; }
-  set target(value: number) { this.i[ENTVARS_OFS.target] = value; }
-  get targetname(): number { return this.i[ENTVARS_OFS.targetname]; }
-  set targetname(value: number) { this.i[ENTVARS_OFS.targetname] = value; }
-  get dmg_take(): number { return this.f[ENTVARS_OFS.dmg_take]; }
-  set dmg_take(value: number) { this.f[ENTVARS_OFS.dmg_take] = value; }
-  get dmg_save(): number { return this.f[ENTVARS_OFS.dmg_save]; }
-  set dmg_save(value: number) { this.f[ENTVARS_OFS.dmg_save] = value; }
-  get dmg_inflictor(): number { return this.i[ENTVARS_OFS.dmg_inflictor]; }
-  set dmg_inflictor(value: number) { this.i[ENTVARS_OFS.dmg_inflictor] = value; }
-  get owner(): number { return this.i[ENTVARS_OFS.owner]; }
-  set owner(value: number) { this.i[ENTVARS_OFS.owner] = value; }
-  get message(): number { return this.i[ENTVARS_OFS.message]; }
-  set message(value: number) { this.i[ENTVARS_OFS.message] = value; }
-  get sounds(): number { return this.f[ENTVARS_OFS.sounds]; }
-  set sounds(value: number) { this.f[ENTVARS_OFS.sounds] = value; }
-  get noise(): number { return this.i[ENTVARS_OFS.noise]; }
-  set noise(value: number) { this.i[ENTVARS_OFS.noise] = value; }
-  get noise1(): number { return this.i[ENTVARS_OFS.noise1]; }
-  set noise1(value: number) { this.i[ENTVARS_OFS.noise1] = value; }
-  get noise2(): number { return this.i[ENTVARS_OFS.noise2]; }
-  set noise2(value: number) { this.i[ENTVARS_OFS.noise2] = value; }
-  get noise3(): number { return this.i[ENTVARS_OFS.noise3]; }
-  set noise3(value: number) { this.i[ENTVARS_OFS.noise3] = value; }
 }
+installVarAccessors(EntVars.prototype, NQ_ENTVARS_LAYOUT, ENTVARS_FIELDS);

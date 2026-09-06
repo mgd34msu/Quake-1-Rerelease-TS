@@ -157,6 +157,8 @@ import {
 } from "./server";
 import { SV_ClearWorld } from "./world";
 import { GetEdictFieldValue, PR_AllocEdicts, ED_LoadFromFile, PR_LoadProgs } from "../progs/pr_edict";
+import { PR_SetProfile } from "../progs/profiles/profile";
+import { nqProfile } from "../progs/profiles/nq";
 import { PR_ExecuteProgram } from "../progs/pr_exec";
 import { E_FLOAT, EDICT_NUM, EDICT_TO_PROG, NUM_FOR_EDICT, PROG_TO_EDICT, PR_GetString, PR_SetEngineString, pr, type EdictT } from "../progs/progs";
 import { GLOBAL_OFS, type GlobalVars } from "../progs/progdefs";
@@ -1058,6 +1060,7 @@ export function SV_SpawnServer(server: string): void {
   sv.name = server;
 
   // load progs to get entity field count
+  PR_SetProfile(nqProfile); // this binary's QuakeC host profile (ARCHITECTURE.md, "Core model")
   PR_LoadProgs();
 
   // allocate server memory
