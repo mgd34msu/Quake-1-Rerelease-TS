@@ -45,6 +45,76 @@
 // otherwise unused by SCR_LoadKFont too, which discards it via a bare
 // `COM_Parse(&data)`) until a lone `}`.
 //
+// U31 -- FULL GLYPH SET (verified against the real retail files extracted
+// from Quake 1's rerelease/QuakeEX.kpf, not just the q2repro-derived
+// fixture above): the classic-kfont path serves TWO real assets in this
+// project, fonts/qfont.kfont (the large HUD font) and fonts/qconfont.kfont
+// (the console font), plus a third variant fonts/confont.kfont that uses
+// the SAME grammar over a .tga texture instead of .png. All three were
+// tokenized with COM_Parse (as ParseKfont already does) and their full
+// mapchar bodies inspected byte-for-byte:
+//
+//   fonts/qfont.kfont:    217 mapchar entries, codepoints 32..7838
+//                         (includes the Cyrillic block, e.g. 1040-1103,
+//                         and U+1E9E/7838 LATIN CAPITAL LETTER SHARP S).
+//   fonts/qconfont.kfont: 221 mapchar entries, codepoints 32..8592
+//                         (Cyrillic plus a handful of Latin Extended-A/
+//                         General Punctuation codepoints: 305 dotless i,
+//                         339 <oe>, 8217 right single quote, 8592 <-).
+//   fonts/confont.kfont:  256 mapchar entries, codepoints 0..255 exactly
+//                         (the raw byte-indexed classic charset re-shaped
+//                         into kfont form) -- and critically, this file
+//                         has NO "unicode" token at all, unlike the other
+//                         two. `unicode` is therefore not a semantic flag
+//                         this port needs to branch on (SCR_LoadKFont's own
+//                         `else if (!strcmp(token, "unicode")) {}` treats
+//                         it as a pure no-op either way) -- it just marks
+//                         which of the two codepoint spaces (raw byte vs.
+//                         real Unicode) the author intended, informational
+//                         only.
+//
+// No kerning data anywhere: every glyph line is exactly 6 tokens
+// (codepoint, x, y, w, h, and a trailing token that is always literal "0"
+// in all three real files and, like SCR_LoadKFont's own bare `COM_Parse`
+// discard, unused) -- confirmed by scanning every mapchar line in all
+// three files for a token count other than 6, and every trailing token
+// value other than "0": none found. There is no separate per-glyph advance
+// distinct from `w`, and no cross-glyph kerning pair table -- advance width
+// for a drawn string is the plain sum of each glyph's own `w` (see
+// Text_Width in kfont_text.ts).
+//
+// No declared "glyph count" field either: unlike a binary format with a
+// header count, the mapchar block is just tokens up to the closing `}` --
+// the number of glyphs a parse produces is exactly the number of 6-token
+// lines found, nothing to cross-check against except a second independent
+// count of the same tokens (which is what test/lib_kfont.test.ts's guarded
+// real-data section does).
+//
+// Per-glyph height is NOT constant within one file: fonts/qconfont.kfont's
+// own entries range over h in {6, 10, 11, 12} (accented/lowercase glyphs
+// are shorter than full-height ones), so `line_height` genuinely means "the
+// tallest glyph this font defines," not a fixed cell height -- ParseKfont's
+// pre-existing `if (h > line_height) line_height = h` convention already
+// captures this correctly and needed no change.
+//
+// Atlas size: not part of the .kfont text at all -- it's simply the pixel
+// dimensions of whatever image the `texture` line points at (a PNG for
+// qfont.kfont/qconfont.kfont, decoded by src/lib/png.ts; a TGA for
+// confont.kfont, decoded by src/ref_soft/tga.ts or equivalent) -- glyph x/y/
+// w/h rects are already absolute pixel coordinates into that image, no
+// separate normalization step.
+//
+// GLYPH STORAGE: ParsedKfontT/KfontT now carry BOTH representations --
+// `chars`, the original fixed 95-entry ASCII (32-126) array kept
+// byte-identical for existing callers and the FIDELITY RAZOR deviation
+// documented below, and `glyphs`, a `Map<number, KfontCharT>` covering
+// EVERY codepoint the file defines with no upper bound at all (unlike
+// `chars`, this is not a q2repro-derived structure, so there is no
+// off-by-31 array-sizing bug to reproduce or deviate from -- a Map has no
+// fixed capacity to overrun). `kfontHasGlyph`/`kfontGlyph` below are the
+// map-based lookup, with the same "present but zero-width counts as
+// missing" contract as SCR_KFontLookup/TtfKfont_Lookup.
+//
 // KNOWN q2repro BUG, NOT REPRODUCED (FIDELITY RAZOR, rule 17): SCR_LoadKFont
 // computes the array index as `codepoint - KFONT_ASCII_MIN` and bounds-checks
 // it against `KFONT_ASCII_MAX` (126) -- but `chars[]` is sized
@@ -90,6 +160,7 @@ export interface KfontCharT {
 export interface ParsedKfontT {
   textureToken: string;
   chars: (KfontCharT | null)[]; // length KFONT_NUM_CHARS, index = codepoint - KFONT_ASCII_MIN
+  glyphs: Map<number, KfontCharT>; // every codepoint the file defines, no ASCII bound (see U31 note above)
   line_height: number;
 }
 
@@ -117,6 +188,7 @@ export function ParseKfont(text: string): ParsedKfontT | null {
   const state: ComParseState = { data: text, index: 0 };
   let textureToken: string | null = null;
   const chars: (KfontCharT | null)[] = new Array(KFONT_NUM_CHARS).fill(null);
+  const glyphs = new Map<number, KfontCharT>();
   let line_height = 0;
 
   for (;;) {
@@ -144,13 +216,33 @@ export function ParseKfont(text: string): ParsedKfontT | null {
           return parseError("malformed mapchar entry");
         }
 
+        const glyph: KfontCharT = { x, y, w, h };
+
+        // `glyphs` stores every codepoint the file defines, with no upper
+        // bound -- see this file's U31 header note on why the fixed-array
+        // FIDELITY RAZOR deviation below is specific to `chars` (a
+        // q2repro-shaped structure) and does not apply here.
+        glyphs.set(codepoint, glyph);
+        // U31 DOCUMENTED BEHAVIOR CHANGE: line_height is now the max `h`
+        // across EVERY parsed glyph, not just the ones that also fit the
+        // legacy ASCII `chars` array (pre-U31, this update lived inside the
+        // `index` bounds-check below, so a taller non-ASCII glyph -- real
+        // data confirms fonts/qconfont.kfont's own Cyrillic entries are NOT
+        // always the same height as its ASCII ones -- could never widen
+        // line_height). This is the file's true declared line height, per
+        // the unit brief's "line height/advance semantics as the file
+        // defines them"; no real asset in this repo's fixtures happens to
+        // have a taller non-ASCII glyph than its tallest ASCII one, so this
+        // has no observable effect on today's data, but is a real
+        // correction for any future asset that does.
+        if (h > line_height) line_height = h;
+
         const index = codepoint - KFONT_ASCII_MIN;
         // See this file's header comment: bounds-checked against the real
         // array size (KFONT_NUM_CHARS), not q2repro's own off-by-31 check
         // against KFONT_ASCII_MAX.
         if (index >= 0 && index < KFONT_NUM_CHARS) {
-          chars[index] = { x, y, w, h };
-          if (h > line_height) line_height = h;
+          chars[index] = glyph;
         }
       }
     }
@@ -158,12 +250,13 @@ export function ParseKfont(text: string): ParsedKfontT | null {
 
   if (textureToken === null) return parseError("missing texture line");
 
-  return { textureToken, chars, line_height };
+  return { textureToken, chars, glyphs, line_height };
 }
 
 export interface KfontT {
   pic: string; // renderer-registered pic name (the "/"-prefixed exact path); presence of a KfontT at all means this loaded
   chars: (KfontCharT | null)[];
+  glyphs: Map<number, KfontCharT>; // every codepoint the file defines -- see this file's U31 header note
   line_height: number;
 }
 
@@ -172,13 +265,31 @@ export interface KfontT {
 // NULL`) -- e.g. the real fonts/qconfont.kfont has no entry at all for `
 // (backtick, 96) or ~ (tilde, 126), and this is how q2repro's own callers
 // (CG_MeasureKFontWidth, draw_kfont_char) skip codepoints the atlas has no
-// glyph for.
+// glyph for. Kept exactly as-is (still only reachable for [KFONT_ASCII_MIN,
+// KFONT_ASCII_MAX]) for any existing caller that still wants the
+// q2repro-shaped ASCII-only view; kfontGlyph/kfontHasGlyph below are the
+// U31 general replacement that reaches every codepoint the file defines.
 export function SCR_KFontLookup(font: KfontT, codepoint: number): KfontCharT | null {
   const index = codepoint - KFONT_ASCII_MIN;
   if (index < 0 || index >= KFONT_NUM_CHARS) return null;
   const ch = font.chars[index];
   if (!ch || !ch.w) return null;
   return ch;
+}
+
+// U31 -- general codepoint lookup over EVERY glyph the file defines (not
+// just [KFONT_ASCII_MIN, KFONT_ASCII_MAX]). Same "present but zero-width
+// counts as missing" contract as SCR_KFontLookup/TtfKfont_Lookup above/
+// below -- a real .kfont can define a zero-width placeholder entry the same
+// way the ASCII-bounded path already treats one as absent.
+export function kfontGlyph(font: KfontT, codepoint: number): KfontCharT | null {
+  const ch = font.glyphs.get(codepoint);
+  if (!ch || !ch.w) return null;
+  return ch;
+}
+
+export function kfontHasGlyph(font: KfontT, codepoint: number): boolean {
+  return kfontGlyph(font, codepoint) !== null;
 }
 
 // ---------------------------------------------------------------------------

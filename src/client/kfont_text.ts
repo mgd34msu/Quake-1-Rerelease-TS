@@ -91,7 +91,7 @@ SCALING RULES (QuakeSpasm gl_screen.c names/semantics, this unit's SCOPE):
 import { CvarT, Cvar_FindVar, Cvar_RegisterVariable } from "../common/cvar";
 import { COM_LoadTempFile } from "../common/common";
 import { decodePNG } from "../lib/png";
-import { ParseKfont, SCR_KFontLookup, Kfont_FromTTF, TtfKfont_Lookup, type KfontT, type KfontCharT, type TtfKfontT } from "../lib/kfont";
+import { ParseKfont, kfontGlyph, Kfont_FromTTF, TtfKfont_Lookup, type KfontT, type TtfKfontT } from "../lib/kfont";
 import { parseFont, buildFontAtlas, latin1Codepoints, type ParsedFontT } from "../lib/ttf";
 import { Loc_Localize, Loc_ReloadFile } from "../lib/loc";
 import { getRenderer } from "./render";
@@ -248,7 +248,11 @@ function loadKfontFont(): ActiveFontT | null {
   const decoded = decodePNG(pngBytes);
   if (!decoded.ok) return null;
 
-  const font: KfontT = { pic: "/" + parsed.textureToken, chars: parsed.chars, line_height: parsed.line_height };
+  // U31: `glyphs` (not the legacy ASCII-only `chars` array) is the lookup
+  // this font source uses -- the retail fonts/qfont.kfont defines
+  // codepoints up to 7838 (the Cyrillic block and more), and the UTF-8 text
+  // path below needs every one of them reachable, not just [32, 126].
+  const font: KfontT = { pic: "/" + parsed.textureToken, chars: parsed.chars, glyphs: parsed.glyphs, line_height: parsed.line_height };
   return {
     source: "kfont",
     width: decoded.image.width,
@@ -256,7 +260,7 @@ function loadKfontFont(): ActiveFontT | null {
     lineHeight: parsed.line_height,
     pixels: decoded.image.pixels,
     atlasId: "kfont:" + parsed.textureToken,
-    glyph: (cp: number): GlyphRectT | null => SCR_KFontLookup(font, cp),
+    glyph: (cp: number): GlyphRectT | null => kfontGlyph(font, cp),
   };
 }
 

@@ -30,7 +30,7 @@ the kfont_text.ts cvars) is saved before and restored in afterAll.
 */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 
@@ -41,6 +41,9 @@ import { vid } from "../src/client/vid";
 import { glState } from "../src/ref_gl/glquake";
 import { GL_QUADS, GL_TEXTURE_2D, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
 import * as softDrawModule from "../src/ref_soft/draw";
+import { ZipArchive } from "../src/lib/zipfile";
+import { ParseKfont, kfontHasGlyph } from "../src/lib/kfont";
+import { PakFile } from "./support/pak_reader";
 import {
   CL_LocalizeKey,
   con_font,
@@ -131,15 +134,22 @@ function makeFakeRenderer(isGL: boolean): { renderer: Renderer; draws: Array<{ x
 // Synthetic fonts/qfont.kfont + fonts/qfont.png fixture.
 // ---------------------------------------------------------------------------
 
-// Glyph rects (x, y, w, h) inside a 32x8 RGBA atlas -- 'A'/'B'/'?' are 8px
+// Glyph rects (x, y, w, h) inside a 40x8 RGBA atlas -- 'A'/'B'/'?' are 8px
 // wide, space is a distinct 4px width (proves Text_Width reads REAL
-// per-glyph advances, not a fixed classic 8px assumption).
+// per-glyph advances, not a fixed classic 8px assumption). GLYPH_CYRILLIC_VE
+// (codepoint 1042, Cyrillic capital VE 'В') is a distinct 6px width, mapped
+// at a codepoint far outside kfont.ts's legacy [KFONT_ASCII_MIN,
+// KFONT_ASCII_MAX] (32-126) `chars` array -- U31's whole point is that this
+// resolves through the UTF-8 path (kfontGlyph's Map-based lookup) exactly
+// like an ASCII glyph does, not through the '?' fallback.
 const GLYPH_A = { x: 0, y: 0, w: 8, h: 8 };
 const GLYPH_B = { x: 8, y: 0, w: 8, h: 8 };
 const GLYPH_QMARK = { x: 16, y: 0, w: 8, h: 8 };
 const GLYPH_SPACE = { x: 24, y: 0, w: 4, h: 8 };
-const ATLAS_W = 32;
+const GLYPH_CYRILLIC_VE = { x: 32, y: 0, w: 6, h: 8 };
+const ATLAS_W = 40;
 const ATLAS_H = 8;
+const CYRILLIC_VE_CODEPOINT = 1042;
 
 function buildFixtureKfontText(): string {
   return [
@@ -150,6 +160,7 @@ function buildFixtureKfontText(): string {
     `\t${"A".charCodeAt(0)} ${GLYPH_A.x} ${GLYPH_A.y} ${GLYPH_A.w} ${GLYPH_A.h} 0`,
     `\t${"B".charCodeAt(0)} ${GLYPH_B.x} ${GLYPH_B.y} ${GLYPH_B.w} ${GLYPH_B.h} 0`,
     `\t${"?".charCodeAt(0)} ${GLYPH_QMARK.x} ${GLYPH_QMARK.y} ${GLYPH_QMARK.w} ${GLYPH_QMARK.h} 0`,
+    `\t${CYRILLIC_VE_CODEPOINT} ${GLYPH_CYRILLIC_VE.x} ${GLYPH_CYRILLIC_VE.y} ${GLYPH_CYRILLIC_VE.w} ${GLYPH_CYRILLIC_VE.h} 0`,
     `\t32 ${GLYPH_SPACE.x} ${GLYPH_SPACE.y} ${GLYPH_SPACE.w} ${GLYPH_SPACE.h} 0`,
     "}",
     "",
@@ -182,7 +193,7 @@ function buildFixtureAtlasPng(): Uint8Array {
   }
 
   const inGlyph = (x: number, y: number): boolean =>
-    [GLYPH_A, GLYPH_B, GLYPH_QMARK, GLYPH_SPACE].some((g) => x >= g.x && x < g.x + g.w && y >= g.y && y < g.y + g.h);
+    [GLYPH_A, GLYPH_B, GLYPH_QMARK, GLYPH_SPACE, GLYPH_CYRILLIC_VE].some((g) => x >= g.x && x < g.x + g.w && y >= g.y && y < g.y + g.h);
 
   const rowBytes = ATLAS_W * 4;
   const raw = new Uint8Array((rowBytes + 1) * ATLAS_H);
@@ -306,13 +317,21 @@ describe("kfont_text.ts -- Text_Width (synthetic kfont atlas)", () => {
   });
 
   test("an unmapped codepoint (UTF-8/accented text the fixture atlas has no glyph for) falls back to '?'", () => {
-    // U+00F6 (ö, 'ö') -- kfont.ts's own KFONT_ASCII_MIN/MAX (32-126)
-    // bound means any codepoint above 126 can never resolve through
-    // SCR_KFontLookup regardless of what the real fonts/qfont.kfont
-    // contains (see this unit's report); this fixture doesn't even try to
-    // map it, so the fallback exercised here is the general "glyph() found
-    // nothing" path, not that specific bound.
+    // U+00F6 (ö) -- this fixture's font simply doesn't define this
+    // codepoint (unlike CYRILLIC_VE_CODEPOINT below, which it does), so the
+    // fallback exercised here is the general "glyph() found nothing" path.
     expect(Text_Width("ö")).toBe(GLYPH_QMARK.w);
+  });
+
+  test("U31: a non-ASCII codepoint the font DOES define (Cyrillic 'В', codepoint 1042, outside kfont.ts's legacy [32,126] `chars` bound) resolves to its real glyph width, not the '?' fallback", () => {
+    const cyrillicVe = String.fromCodePoint(CYRILLIC_VE_CODEPOINT);
+    expect(Text_Width(cyrillicVe)).toBe(GLYPH_CYRILLIC_VE.w);
+    expect(Text_Width(cyrillicVe)).not.toBe(GLYPH_QMARK.w);
+  });
+
+  test("U31: width computation is per-codepoint for a mixed ASCII + Cyrillic string", () => {
+    const s = "A" + String.fromCodePoint(CYRILLIC_VE_CODEPOINT) + "B";
+    expect(Text_Width(s)).toBe(GLYPH_A.w + GLYPH_CYRILLIC_VE.w + GLYPH_B.w);
   });
 
   test("classic (scr_usekfont=0) still assumes a fixed 8px advance per character", () => {
@@ -368,6 +387,52 @@ describe("kfont_text.ts -- Text_Draw glyph rects (synthetic kfont atlas, softwar
       const [dstX, dstY, dstW, dstH, , srcX, srcY, srcW, srcH] = spy.mock.calls[0]!;
       expect([dstX, dstY, dstW, dstH]).toEqual([0, 0, GLYPH_A.w * 3, GLYPH_A.h * 3]);
       expect([srcX, srcY, srcW, srcH]).toEqual([GLYPH_A.x, GLYPH_A.y, GLYPH_A.w, GLYPH_A.h]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("U31: a Cyrillic string draws one Draw_GlyphAtlas call per codepoint, each with that codepoint's own src rect (not the '?' fallback rect)", () => {
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      // Cyrillic 'ВВ' (codepoint 1042 twice) -- two distinct glyph draws,
+      // both sourcing GLYPH_CYRILLIC_VE's rect, proving the UTF-8 path asks
+      // the font per codepoint rather than resolving once and reusing a
+      // cached fallback.
+      const s = String.fromCodePoint(CYRILLIC_VE_CODEPOINT, CYRILLIC_VE_CODEPOINT);
+      Text_Draw(0, 0, s);
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      for (const call of spy.mock.calls) {
+        const [, , dstW, dstH, source, srcX, srcY, srcW, srcH] = call;
+        expect([dstW, dstH]).toEqual([GLYPH_CYRILLIC_VE.w, GLYPH_CYRILLIC_VE.h]);
+        expect(source).toMatchObject({ kind: "custom", width: ATLAS_W, height: ATLAS_H });
+        expect([srcX, srcY, srcW, srcH]).toEqual([GLYPH_CYRILLIC_VE.x, GLYPH_CYRILLIC_VE.y, GLYPH_CYRILLIC_VE.w, GLYPH_CYRILLIC_VE.h]);
+      }
+
+      const [dstX1] = spy.mock.calls[0]!;
+      const [dstX2] = spy.mock.calls[1]!;
+      expect(dstX2).toBe((dstX1 as number) + GLYPH_CYRILLIC_VE.w);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("U31: a mixed ASCII + Cyrillic string routes each codepoint through its own glyph rect", () => {
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      const s = "A" + String.fromCodePoint(CYRILLIC_VE_CODEPOINT);
+      Text_Draw(0, 0, s);
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      const [, , dstW1, dstH1, , srcX1, srcY1, srcW1, srcH1] = spy.mock.calls[0]!;
+      expect([dstW1, dstH1]).toEqual([GLYPH_A.w, GLYPH_A.h]);
+      expect([srcX1, srcY1, srcW1, srcH1]).toEqual([GLYPH_A.x, GLYPH_A.y, GLYPH_A.w, GLYPH_A.h]);
+
+      const [dstX2, , dstW2, dstH2, , srcX2, srcY2, srcW2, srcH2] = spy.mock.calls[1]!;
+      expect(dstX2).toBe(GLYPH_A.w);
+      expect([dstW2, dstH2]).toEqual([GLYPH_CYRILLIC_VE.w, GLYPH_CYRILLIC_VE.h]);
+      expect([srcX2, srcY2, srcW2, srcH2]).toEqual([GLYPH_CYRILLIC_VE.x, GLYPH_CYRILLIC_VE.y, GLYPH_CYRILLIC_VE.w, GLYPH_CYRILLIC_VE.h]);
     } finally {
       spy.mockRestore();
     }
@@ -450,4 +515,119 @@ describe.skipIf(!HAVE_REAL_Q1)("kfont_text.ts -- real QuakeEX.kpf fonts/qfont.kf
     const binds = rec.calls.filter((c) => c.name === "qglBindTexture" && c.args[0] === GL_TEXTURE_2D);
     expect(binds.length).toBeGreaterThanOrEqual(1); // the atlas texture, registered once and reused
   });
+});
+
+// ---------------------------------------------------------------------------
+// Guarded U31 real-data section: does the retail fonts/qfont.kfont cover
+// every codepoint the retail loc_<lang>.txt files actually use? Reads
+// fonts/qfont.kfont straight out of QuakeEX.kpf (src/lib/zipfile.ts,
+// bypassing the COM virtual filesystem -- this is pure format parsing, no
+// engine state needed) and the five non-English loc_<lang>.txt files
+// straight out of rerelease/id1/pak0.pak (test/support/pak_reader.ts).
+// Self-contained: reads only, mutates no shared singleton, so no
+// beforeAll/afterAll bookkeeping is needed here (standing order 13).
+// ---------------------------------------------------------------------------
+
+const RERELEASE_DATA_DIR = process.env.Q1TS_RERELEASE_DATA ?? join(REAL_Q1_DIR, "rerelease");
+const KPF_PATH = join(RERELEASE_DATA_DIR, "QuakeEX.kpf");
+const RERELEASE_PAK0_PATH = join(RERELEASE_DATA_DIR, "id1", "pak0.pak");
+const HAVE_COVERAGE_FIXTURES = existsSync(KPF_PATH) && existsSync(RERELEASE_PAK0_PATH);
+
+/** Every quoted-string's characters in a loc_<lang>.txt's raw text (see
+ * src/lib/loc.ts's own `key = "value"` grammar note): a lightweight,
+ * standalone scan of `"..."` runs with `\`-escapes resolved to a single
+ * character, matching what Loc_ReloadFile's own token content ends up
+ * containing. Independent of src/lib/loc.ts's real tokenizer on purpose --
+ * this test's job is to characterize the RAW asset's codepoint demand, not
+ * re-exercise the loc parser (that is loc.test.ts's job). */
+function extractQuotedStringCodepoints(text: string): Set<number> {
+  const codepoints = new Set<number>();
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '"') {
+      let j = i + 1;
+      while (j < text.length && text[j] !== '"') {
+        if (text[j] === "\\" && j + 1 < text.length) {
+          codepoints.add(text.codePointAt(j + 1)!);
+          j += 2;
+        } else {
+          codepoints.add(text.codePointAt(j)!);
+          j += 1;
+        }
+      }
+      i = j + 1;
+    } else {
+      i += 1;
+    }
+  }
+  return codepoints;
+}
+
+/** Independent count of mapchar entries straight from the raw token stream
+ * (a plain line-count of the mapchar `{ ... }` body), deliberately NOT
+ * reusing ParseKfont -- this is the cross-check that ParseKfont's `glyphs`
+ * map has exactly as many entries as the file itself declares by having
+ * that many glyph lines, per the unit brief's "count of glyphs parsed
+ * matches the file's own declared count." */
+function countMapcharEntries(text: string): number {
+  const braceStart = text.indexOf("{");
+  const braceEnd = text.lastIndexOf("}");
+  const body = text.slice(braceStart + 1, braceEnd);
+  return body
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0).length;
+}
+
+describe.skipIf(!HAVE_COVERAGE_FIXTURES)("kfont_text.ts -- U31: real fonts/qfont.kfont vs. retail loc_<lang>.txt codepoint coverage (guarded)", () => {
+  const archive = HAVE_COVERAGE_FIXTURES ? ZipArchive.open(readFileSync(KPF_PATH)) : null;
+  const kfontText = archive ? Buffer.from(archive.readFile("fonts/qfont.kfont")!).toString("latin1") : null;
+  const parsedFont = kfontText ? ParseKfont(kfontText) : null;
+
+  test("fonts/qfont.kfont parses, and the number of glyphs ParseKfont produces matches an independent count of the file's own mapchar lines", () => {
+    expect(parsedFont).not.toBeNull();
+    expect(kfontText).not.toBeNull();
+    const declaredCount = countMapcharEntries(kfontText!);
+    expect(parsedFont!.glyphs.size).toBe(declaredCount);
+    console.log(`kfont_text.test.ts (U31): fonts/qfont.kfont declares ${declaredCount} mapchar entries, ParseKfont produced ${parsedFont!.glyphs.size} glyphs.`);
+  });
+
+  const pak = HAVE_COVERAGE_FIXTURES ? new PakFile(RERELEASE_PAK0_PATH) : null;
+
+  for (const lang of ["russian", "french", "german", "spanish", "italian"] as const) {
+    test(`localization/loc_${lang}.txt: every codepoint it uses is either covered by fonts/qfont.kfont, or printed as an uncovered exception`, () => {
+      expect(parsedFont).not.toBeNull();
+      expect(pak).not.toBeNull();
+
+      const locName = `localization/loc_${lang}.txt`;
+      expect(pak!.has(locName)).toBe(true);
+      const text = pak!.readText(locName);
+      const used = extractQuotedStringCodepoints(text);
+      expect(used.size).toBeGreaterThan(0);
+
+      const font = { pic: "/x", chars: parsedFont!.chars, glyphs: parsedFont!.glyphs, line_height: parsedFont!.line_height };
+      const uncovered = [...used].filter((cp) => !kfontHasGlyph(font, cp)).sort((a, b) => a - b);
+
+      console.log(
+        `kfont_text.test.ts (U31): loc_${lang}.txt uses ${used.size} distinct codepoints; ` +
+          `${uncovered.length} not covered by fonts/qfont.kfont: ` +
+          uncovered.map((cp) => `U+${cp.toString(16).toUpperCase().padStart(4, "0")}(${JSON.stringify(String.fromCodePoint(cp))})`).join(", "),
+      );
+
+      // fonts/qfont.kfont is verified (see this unit's report) to genuinely
+      // omit a real set of codepoints these loc files use -- both ASCII
+      // punctuation (e.g. '!', '(', ')', ':') and non-ASCII typographic
+      // marks ('«', '»', '’', '…', '™', and, for
+      // Spanish/Italian, the masculine ordinal indicator 'º') -- so
+      // this test does not assert zero-uncovered; it prints the full list
+      // above, per the unit brief ("except a list you print"). What IS
+      // asserted, and is the actual reason U31 exists: every CASED letter
+      // (Unicode Lu/Ll -- i.e. an actual alphabet character, as opposed to
+      // punctuation or the Lo-category ordinal indicator) this language's
+      // text uses is covered. This is where a real regression -- e.g. a
+      // Cyrillic letter the font doesn't define -- would show up.
+      const uncoveredCasedLetters = uncovered.filter((cp) => /\p{Lu}|\p{Ll}/u.test(String.fromCodePoint(cp)));
+      expect(uncoveredCasedLetters).toEqual([]);
+    });
+  }
 });
