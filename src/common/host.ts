@@ -110,6 +110,15 @@ Deviations from PORTING.md / the C source:
 - `#ifdef FPS_20`'s `_Host_ServerFrame` / sub-stepped `Host_ServerFrame`,
   `#ifdef QUAKE2`'s `developer` default, and the `_WIN32`/`GLQUAKE` ordering
   branches inside `Host_Init`'s client block are the dropped `#ifdef`s.
+- ADDITION (U43, local splitscreen): `Host_Error` is scoped to the client it
+  was raised for. The C has one client, so "this shuts down both the client
+  and server" is the only answer it can give; a splitscreen session has one
+  local client per seat, and an error in seat 2's message stream is seat 2's
+  to die of. The two `ssActiveSeat`/`ssSeatFailed` hooks below carry that:
+  with a seat past 0 bound, `Host_Error` drops that seat and throws
+  `SeatError` instead of shutting the server and the primary client down.
+  Seat 0 -- and every session with only one seat, which is every session the
+  C could have had -- takes the C's own path unchanged.
 */
 
 import { CvarT, Cvar_RegisterVariable, Cvar_SetValue, Cvar_WriteVariables, setCvarServerHooks } from "./cvar";
@@ -251,6 +260,10 @@ export interface HostClientHooks {
   setClsMapstring: ((s: string) => void) | null; // cls.mapstring
   setClsSpawnparms: ((s: string) => void) | null; // cls.spawnparms
 
+  // U43 (local splitscreen), see the file header's addition note
+  ssActiveSeat: (() => number) | null; // SS_ActiveSeat
+  ssSeatFailed: ((seat: number) => void) | null; // SS_SeatFailed
+
   clIntermission: (() => number) | null; // cl.intermission
   clLevelname: (() => string) | null; // cl.levelname
   clStat: ((n: number) => number) | null; // cl.stats[n]
@@ -321,6 +334,9 @@ export const hostClientHooks: HostClientHooks = {
   setClsDemos: null,
   setClsMapstring: null,
   setClsSpawnparms: null,
+
+  ssActiveSeat: null,
+  ssSeatFailed: null,
 
   clIntermission: null,
   clLevelname: null,
@@ -522,6 +538,22 @@ export class HostEndGame extends Error {
   }
 }
 
+/*
+U43: one seat's failure, thrown where the C threw a whole-session HostError.
+It extends HostError so every catch that already stands for the C's
+`setjmp (host_abortserver)` -- `_Host_Frame`'s, the demo loop's, pr_exec's --
+keeps treating it as the abort it is; splitscreen.ts's seat window catches it
+first and lets the rest of the frame finish.
+*/
+export class SeatError extends HostError {
+  readonly seat: number;
+  constructor(message: string, seat: number) {
+    super(message);
+    this.name = "SeatError";
+    this.seat = seat;
+  }
+}
+
 function globalStruct(): GlobalVars {
   if (pr.global_struct === null) Sys_Error("host: pr.global_struct not set (PR_LoadProgs not called)");
   return pr.global_struct;
@@ -554,6 +586,10 @@ This shuts down both the client and server
 ================
 */
 let inerror = false;
+// U43: true while a failed seat is being torn down. An error raised in there
+// is a failure of the teardown itself, not of one more seat, so it takes the
+// C's own whole-session path.
+let inseaterror = false;
 
 export function Host_Error(error: string, ...args: Array<string | number>): never {
   if (inerror) Sys_Error("Host_Error: recursively entered");
@@ -563,6 +599,25 @@ export function Host_Error(error: string, ...args: Array<string | number>): neve
 
   const string = Com_sprintf(error, ...args);
   Con_Printf("Host_Error: %s\n", string);
+
+  /*
+  U43 (see the file header's addition note): with a seat past 0 bound, the
+  client that failed is that seat's, and neither the server nor the primary
+  client is part of it. The seat and every seat above it go, and the throw
+  says so. Reached before Host_ShutdownServer and CL_Disconnect, which are
+  exactly the two things a seat's error must not do.
+  */
+  const seat = hostClientHooks.ssActiveSeat?.() ?? 0;
+  if (seat > 0 && !inseaterror) {
+    inerror = false;
+    inseaterror = true;
+    try {
+      hostClientHooks.ssSeatFailed?.(seat);
+    } finally {
+      inseaterror = false;
+    }
+    throw new SeatError(string, seat);
+  }
 
   if (sv.active) Host_ShutdownServer(false);
 

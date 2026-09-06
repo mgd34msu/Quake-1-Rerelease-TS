@@ -75,6 +75,40 @@ LIMITS (documented rather than hidden)
   and netchan state in `cl.qw`/`cls.qw`, which the seat switch would have to
   cover connection by connection.
 
+ONE SHARED CONSOLE
+==================
+There is one console for the machine, and the server writes to it once per
+CONNECTION: SV_BroadcastPrintf leaves an svc_print on all four seats' streams
+and SV_ClientPrintf leaves one on a single seat's, and nothing on the wire
+tells the two apart. Printed as they arrive, a four-way session reads "beefy
+fell to his death" four times. The seats' copies are folded instead (see
+SS_PrintLine): the first seat to see a line prints it, the seats that see the
+same text in the same frame do not, and what is left -- a line only one seat
+was sent -- is printed once and says whose it is, "[P2] You got the nailgun".
+The number goes in front of the console LINE: one line is often several
+svc_prints (id1 sends a pickup as three) and labelling each of them would put
+the seat's number in the middle of its own sentence.
+
+The frame is the window because that is a broadcast's own granularity: one
+server frame writes every client's copy, and one client frame reads every
+seat's stream. Two limits come with that, both of them a line lost rather
+than a wrong line gained: two seats picking up the same item in one frame
+send identical text and collapse onto one line, and a broadcast that reaches
+one seat a frame late (a seat still signing on, whose reliable buffer is
+flushed on its own schedule) is printed twice.
+Centerprints are NOT folded: each seat has its own set of screen.ts's
+centerprint variables and each is drawn inside that seat's own pane, so a
+message every player is sent belongs on every player's screen.
+
+A SEAT'S OWN FAILURES
+=====================
+Host_Error is the C's "this shuts down both the client and server", written
+when there was one local client to shut down. A seat is a client of its own,
+so an error raised while a seat past 0 is bound belongs to that seat: it and
+the seats above it are dropped (SS_SeatFailed) and the throw is a SeatError,
+which the seat window below swallows so the primary's frame carries on. Seat
+0 is the session itself and keeps the C's behaviour exactly.
+
 svc_setviews (45)
 =================
 OUR SEMANTICS, since the KEX engine's are not observable: the server sends
@@ -95,6 +129,7 @@ import { clientProfile } from "../common/profile";
 import { Q_atoi } from "../common/common";
 import { SZ_Alloc } from "../common/sizebuf";
 import { setNetMaxLocalClients } from "../common/net_main";
+import { SeatError, hostClientHooks } from "../common/host";
 import { sv, svs } from "../server/server";
 import { svMainHooks } from "../server/sv_main";
 import { vid } from "./vid";
@@ -244,6 +279,26 @@ export function SS_WithSeat<T>(index: number, fn: () => T): T {
     return fn();
   } finally {
     SS_ActivateSeat(previous);
+  }
+}
+
+/*
+==================
+SS_RunSeat
+
+One seat's window, with that seat's own failures contained. A SeatError
+arriving here has already done everything it is going to do -- Host_Error
+dropped the seat before it threw -- and the frame the other seats are halfway
+through is not the dropped seat's to end, so it stops here. Anything else
+(HostEndGame, a SysError, seat 0's own HostError) unwinds as it always did.
+==================
+*/
+function SS_RunSeat(index: number, fn: () => void): void {
+  try {
+    SS_WithSeat(index, fn);
+  } catch (e) {
+    if (e instanceof SeatError) return;
+    throw e;
   }
 }
 
@@ -638,6 +693,25 @@ export function SS_DropSeat(index: number): void {
 }
 
 /*
+==================
+SS_SeatFailed
+
+A Host_Error raised while a seat past 0 was bound: that seat's client is the
+one that failed and the session it is a passenger in is not, so the server
+keeps running and the primary keeps playing. The seat goes, and so does every
+seat above it -- their panes are cut from the seat count, and a seat left
+holding pane 3 of a two-pane screen has nowhere to draw. The count is not
+remembered for the next map either: SS_SetSeats clears `resumeSeats`, so a
+level change does not bring back a player who has just died of an error.
+==================
+*/
+export function SS_SeatFailed(index: number): void {
+  if (index <= 0) return;
+  Con_Printf("cl_splitscreen: player %i dropped\n", index + 1);
+  SS_SetSeats(index);
+}
+
+/*
 cl_main.ts installs CL_Disconnect / CL_EstablishConnection / CL_ReadFromServer
 / CL_SendCmd here rather than being imported by this module: this file is
 reached from cl_main.ts, cl_parse.ts, screen.ts and sbar.ts, and importing it
@@ -682,7 +756,7 @@ export function SS_Reconcile(): void {
     if (!seat.wanted) continue;
     if (seat.binding.cls.state !== CactiveT.ca_disconnected) continue;
     if (svs.maxclients <= i) continue;
-    SS_WithSeat(i, () => {
+    SS_RunSeat(i, () => {
       seatDisconnectHooks.establishConnection?.("local");
     });
   }
@@ -700,13 +774,16 @@ still unwinds with seat 0 bound (SS_WithSeat restores in a finally).
 ==================
 */
 export function SS_ReadFromServer(): number {
+  // The frame the shared console folds a broadcast over starts here: every
+  // seat's copy of one server frame's messages is read below.
+  framePrints.clear();
   SS_Reconcile();
   const ret = seatDisconnectHooks.readFromServer?.() ?? 0;
   if (seatCount <= 1) return ret;
   for (let i = 1; i < seatCount; i++) {
     const seat = seatAt(i);
     if (seat.binding.cls.state !== CactiveT.ca_connected) continue;
-    SS_WithSeat(i, () => {
+    SS_RunSeat(i, () => {
       seatDisconnectHooks.readFromServer?.();
     });
   }
@@ -719,7 +796,7 @@ export function SS_SendCmd(): void {
   for (let i = 1; i < seatCount; i++) {
     const seat = seatAt(i);
     if (seat.binding.cls.state !== CactiveT.ca_connected) continue;
-    SS_WithSeat(i, () => {
+    SS_RunSeat(i, () => {
       seatDisconnectHooks.sendCmd?.();
     });
   }
@@ -734,6 +811,69 @@ export function SS_Shutdown(): void {
   for (let i = 1; i < seats.length; i++) SS_DropSeat(i);
   SS_ActivateSeat(0);
   seatCount = 1;
+  framePrints.clear();
+}
+
+//=============================================================================
+// ONE SHARED CONSOLE
+//=============================================================================
+
+/*
+Which seat printed a line this frame, keyed by the line itself. Cleared at the
+top of every SS_ReadFromServer -- see this file's header. A seat that prints
+the same line twice in one frame prints it twice (the key is remembered
+against the seat that wrote it, not against the session), because two pickups
+in one frame are two pickups.
+*/
+const framePrints = new Map<string, number>();
+
+function hasPrintableText(text: string): boolean {
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) > 32) return true;
+  }
+  return false;
+}
+
+/*
+Whether the console is at the start of a line. One console line is often
+several svc_prints -- id1's item pickup is `sprint (other, "You got the ");
+sprint (other, self.netname); sprint (other, "\n");` -- and the seat's number
+belongs in front of the LINE, not in front of each of its pieces.
+*/
+let atLineStart = true;
+
+function noteLineState(text: string): void {
+  if (text.length > 0) atLineStart = text.charCodeAt(text.length - 1) === 10;
+}
+
+/*
+==================
+SS_PrintLine
+
+The console text this seat's svc_print should produce, or null when another
+seat has already printed the same line this frame (a broadcast, arriving once
+per connection). A line only this seat was sent carries the seat's player
+number, so four players sharing one console can tell whose pickup, whose
+death message and whose progs error they are reading. See this file's header.
+==================
+*/
+export function SS_PrintLine(text: string): string | null {
+  if (seatCount <= 1) {
+    noteLineState(text);
+    return text;
+  }
+  const printer = framePrints.get(text);
+  if (printer !== undefined && printer !== activeSeat) return null;
+  framePrints.set(text, activeSeat);
+  const labelled = activeSeat > 0 && atLineStart && hasPrintableText(text);
+  noteLineState(text);
+  return labelled ? `[P${activeSeat + 1}] ${text}` : text;
+}
+
+/** svc_print's console write, folded across the seats. */
+export function SS_ConsolePrint(text: string): void {
+  const line = SS_PrintLine(text);
+  if (line !== null) Con_Printf("%s", line);
 }
 
 function CL_Splitscreen_f(): void {
@@ -762,6 +902,10 @@ svMainHooks.localSeatCount = SS_SeatCount;
 // SV_SpawnServer asks, at the point it sizes svs.clients, for a slot count a
 // `cl_splitscreen` could not apply to the server that was already running.
 svMainHooks.serverSpawned = SS_ServerSpawned;
+// Host_Error asks which seat's window it was raised in, and hands a seat that
+// failed back here instead of shutting the session down; see SS_SeatFailed.
+hostClientHooks.ssActiveSeat = SS_ActiveSeat;
+hostClientHooks.ssSeatFailed = SS_SeatFailed;
 // Every seat is a full loopback CONNECTION, and a loopback connection costs
 // two qsockets. NET_Init sizes its pool before any seat exists, so it is told
 // here how many local clients this process can ever run at once.

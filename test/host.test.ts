@@ -41,6 +41,7 @@ import { setBuiltins } from "../src/progs/pr_exec";
 import { HAVE_PROGS106 } from "./support/fixture_availability";
 import {
   HostError,
+  Host_Error,
   Host_FilterTime,
   Host_Frame,
   Host_Init,
@@ -48,6 +49,7 @@ import {
   SV_BroadcastPrintf,
   SV_ClientPrintf,
   SV_DropClient,
+  SeatError,
   host,
   hostClientHooks,
   host_framerate,
@@ -586,5 +588,155 @@ describe.skipIf(!HAVE_PROGS106)("Host_ShutdownServer", () => {
   test("returns immediately when no server is active", () => {
     sv.active = false;
     expect(() => Host_ShutdownServer(false)).not.toThrow();
+  });
+});
+
+//============================================================================
+
+/*
+U43 (local splitscreen): Host_Error's scope is the client it was raised for.
+This block drives host.ts's own contract with fake ssActiveSeat/ssSeatFailed
+hooks rather than importing splitscreen.ts, which is where the other half of
+the pair is tested (test/splitscreen.test.ts).
+*/
+describe("Host_Error is scoped to the seat it was raised in", () => {
+  const savedHooks = {
+    ssActiveSeat: hostClientHooks.ssActiveSeat,
+    ssSeatFailed: hostClientHooks.ssSeatFailed,
+    clDisconnect: hostClientHooks.clDisconnect,
+    setClsDemonum: hostClientHooks.setClsDemonum,
+    scrEndLoadingPlaque: hostClientHooks.scrEndLoadingPlaque,
+  };
+  const savedIsDedicatedHere = sysState.isDedicated;
+  const savedSvActive = sv.active;
+
+  let seat = 0;
+  let dropped: number[] = [];
+  let disconnects = 0;
+  let demonum = 0;
+
+  beforeAll(() => {
+    // Host_Error's dedicated branch is Sys_Error, which never returns; a
+    // splitscreen session is a client one by definition.
+    sysState.isDedicated = false;
+    hostClientHooks.scrEndLoadingPlaque = null;
+    hostClientHooks.ssActiveSeat = () => seat;
+    hostClientHooks.ssSeatFailed = (n: number) => {
+      dropped.push(n);
+    };
+    hostClientHooks.clDisconnect = () => {
+      disconnects++;
+    };
+    hostClientHooks.setClsDemonum = (n: number) => {
+      demonum = n;
+    };
+  });
+
+  afterAll(() => {
+    hostClientHooks.ssActiveSeat = savedHooks.ssActiveSeat;
+    hostClientHooks.ssSeatFailed = savedHooks.ssSeatFailed;
+    hostClientHooks.clDisconnect = savedHooks.clDisconnect;
+    hostClientHooks.setClsDemonum = savedHooks.setClsDemonum;
+    hostClientHooks.scrEndLoadingPlaque = savedHooks.scrEndLoadingPlaque;
+    sysState.isDedicated = savedIsDedicatedHere;
+    sv.active = savedSvActive;
+  });
+
+  function reset(active: number): void {
+    seat = active;
+    dropped = [];
+    disconnects = 0;
+    demonum = 0;
+  }
+
+  function raise(message: string): unknown {
+    try {
+      Host_Error(message);
+    } catch (e) {
+      return e;
+    }
+    return null;
+  }
+
+  test("a seat past 0 loses the seat, not the server and not the primary client", () => {
+    reset(2);
+    sv.active = true; // the thing a seat's error must not shut down
+
+    const thrown = raise("CL_ParseServerMessage: Illegible server message");
+
+    expect(thrown).toBeInstanceOf(SeatError);
+    expect(thrown instanceof SeatError ? thrown.seat : -1).toBe(2);
+    expect(dropped).toEqual([2]);
+    // neither Host_ShutdownServer nor CL_Disconnect ran
+    expect(sv.active).toBe(true);
+    expect(disconnects).toBe(0);
+    expect(demonum).toBe(0);
+
+    sv.active = false;
+  });
+
+  test("the SeatError is still a HostError, so _Host_Frame's own catch stands", () => {
+    reset(1);
+    sv.active = false;
+    expect(raise("bad")).toBeInstanceOf(HostError);
+  });
+
+  test("seat 0 takes the C's path: disconnect, cls.demonum = -1, a plain HostError", () => {
+    reset(0);
+    sv.active = false;
+
+    const thrown = raise("CL_ParseServerMessage: Illegible server message");
+
+    expect(thrown).toBeInstanceOf(HostError);
+    expect(thrown instanceof SeatError).toBe(false);
+    expect(dropped).toEqual([]);
+    expect(disconnects).toBe(1);
+    expect(demonum).toBe(-1);
+  });
+
+  test("with no seat hooks installed at all -- a dedicated server, a single-seat client -- it is seat 0's path", () => {
+    reset(0);
+    sv.active = false;
+    hostClientHooks.ssActiveSeat = null;
+
+    const thrown = raise("no hooks");
+
+    expect(thrown).toBeInstanceOf(HostError);
+    expect(thrown instanceof SeatError).toBe(false);
+    expect(disconnects).toBe(1);
+
+    hostClientHooks.ssActiveSeat = () => seat;
+  });
+
+  test("an error raised while the failed seat is being torn down takes the whole host down", () => {
+    reset(3);
+    sv.active = false;
+    let inner: unknown = null;
+    hostClientHooks.ssSeatFailed = (n: number) => {
+      dropped.push(n);
+      inner = raise("the teardown itself failed");
+    };
+
+    const thrown = raise("CL_ParseServerMessage: Illegible server message");
+
+    // the outer call still reports its own seat failure ...
+    expect(thrown).toBeInstanceOf(SeatError);
+    // ... but the one raised inside the teardown is the session's
+    expect(inner).toBeInstanceOf(HostError);
+    expect(inner instanceof SeatError).toBe(false);
+    expect(disconnects).toBe(1);
+    expect(dropped).toEqual([3]);
+
+    hostClientHooks.ssSeatFailed = (n: number) => {
+      dropped.push(n);
+    };
+  });
+
+  test("and `inerror` is left clear, so the next Host_Error is not a recursive one", () => {
+    reset(0);
+    sv.active = false;
+    expect(raise("first")).toBeInstanceOf(HostError);
+    expect(raise("second")).toBeInstanceOf(HostError);
+    expect(disconnects).toBe(2);
   });
 });

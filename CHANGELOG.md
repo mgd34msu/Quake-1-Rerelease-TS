@@ -153,6 +153,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   within about a second, roam when a map has no navigation, and chat
   through the localized `m_bot_chat_*` variants for every event type
   (`bot_chat 0` silences them).
+- Splitscreen: an error raised inside a non-primary seat's window drops that
+  seat (and the seats above it) instead of shutting the server and the first
+  player down; with several seats sharing one console a broadcast prints
+  once and a seat-directed line once with a `[P<n>]` label.
 - Splitscreen: `cl_splitscreen N` on an active server defers the widen to
   the next level instead of resizing a live client table; a seat that has
   not signed on shows the loading plaque instead of rendering without a

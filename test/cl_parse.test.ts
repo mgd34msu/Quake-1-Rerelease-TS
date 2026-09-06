@@ -21,7 +21,7 @@
 // COM_CheckRegistered/Mod_Init once in beforeAll, and never depends on
 // another test file having run first.
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -31,6 +31,7 @@ import { Mod_Init, ModelT, TextureT, setModelLoaderHooks, type ModelLoaderHooks 
 import {
   ClcOpsT,
   PROTOCOL_FITZQUAKE,
+  svc_rawprint,
   PROTOCOL_VERSION,
   SU_ITEMS,
   SU_VIEWHEIGHT,
@@ -62,6 +63,9 @@ import { sysState } from "../src/platform/sys";
 import { sv } from "../src/server/server";
 
 import { ScoreboardT, cl, cl_entities, cl_lightstyle, cl_static_entities, cls } from "../src/client/client";
+import * as consoleMod from "../src/client/console";
+import * as screenMod from "../src/client/screen";
+import * as splitscreenMod from "../src/client/splitscreen";
 import { CL_KeepaliveMessage, CL_ParseServerMessage } from "../src/client/cl_parse";
 import type { EntityT, ParticleT, Renderer } from "../src/client/render";
 import { BOTTOM_RANGE, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, TOP_RANGE, re } from "../src/client/render";
@@ -743,6 +747,71 @@ describe("CL_ParseServerMessage: svc_disconnect / bad opcode", () => {
     }
     expect(caught).toBeInstanceOf(HostError);
     expect((caught as Error).message).toContain("Illegible");
+  });
+});
+
+/*
+U43 (local splitscreen): where a print goes. There is one console for the
+machine and one view per seat, so svc_print goes through splitscreen.ts's
+shared-console fold (which prints a broadcast once and labels a line only one
+seat was sent) while svc_centerprint goes to the seat's own view. This suite
+runs on one seat, where the fold is the identity -- what it pins down is the
+ROUTING, which is what decides the four-seat case.
+*/
+describe("CL_ParseServerMessage: svc_print goes to the one console, svc_centerprint to the seat's own view", () => {
+  test("svc_print hands the wire text to the shared console print", () => {
+    const printSpy = spyOn(splitscreenMod, "SS_ConsolePrint");
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, SvcOpsT.svc_print);
+      MSG_WriteString(sb, "beefy fell to his death\n");
+    });
+    CL_ParseServerMessage();
+
+    expect(printSpy).toHaveBeenCalledWith("beefy fell to his death\n");
+    printSpy.mockRestore();
+  });
+
+  test("the re-release's own svc_rawprint takes the same route", () => {
+    const printSpy = spyOn(splitscreenMod, "SS_ConsolePrint");
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, svc_rawprint);
+      MSG_WriteString(sb, "raw\n");
+    });
+    CL_ParseServerMessage();
+
+    expect(printSpy).toHaveBeenCalledWith("raw\n");
+    printSpy.mockRestore();
+  });
+
+  test("with one seat that reaches Con_Printf with the text as an argument, exactly as before", () => {
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, SvcOpsT.svc_print);
+      MSG_WriteString(sb, "100% dead\n");
+    });
+    CL_ParseServerMessage();
+
+    expect(printSpy).toHaveBeenCalledWith("%s", "100% dead\n");
+    printSpy.mockRestore();
+  });
+
+  test("svc_centerprint is the seat's own, and is never folded into the console", () => {
+    const centerSpy = spyOn(screenMod, "SCR_CenterPrint");
+    const printSpy = spyOn(splitscreenMod, "SS_ConsolePrint");
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, SvcOpsT.svc_centerprint);
+      MSG_WriteString(sb, "You got the silver key");
+    });
+    CL_ParseServerMessage();
+
+    expect(centerSpy).toHaveBeenCalledWith("You got the silver key");
+    expect(printSpy).not.toHaveBeenCalled();
+    centerSpy.mockRestore();
+    printSpy.mockRestore();
   });
 });
 

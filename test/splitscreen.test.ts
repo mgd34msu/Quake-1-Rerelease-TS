@@ -27,7 +27,7 @@
 //     pane through a recording fake renderer, and a fake second controller
 //     reaching seat 1's usercmd and nobody else's.
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -36,7 +36,7 @@ import { CvarT, Cvar_FindVar, Cvar_RegisterVariable, Cvar_Set } from "../src/com
 import { Cmd_ExecuteString, CmdSourceT } from "../src/common/cmd";
 import { Mod_Init } from "../src/common/model";
 import { PR_LoadProgs } from "../src/progs/pr_edict";
-import { coop, deathmatch, max_edicts, skill } from "../src/common/host";
+import { HostError, Host_Error, SeatError, coop, deathmatch, hostClientHooks, max_edicts, skill } from "../src/common/host";
 import { sysState } from "../src/platform/sys";
 import { ClientT, sv, svs } from "../src/server/server";
 import { SV_ConnectClient, SV_Init, SV_SpawnServer, sv_protocol, svMainHooks } from "../src/server/sv_main";
@@ -69,10 +69,13 @@ import {
   SS_ActiveSeat,
   SS_ApplySeatRect,
   SS_Canvas,
+  SS_ConsolePrint,
   SS_DropSeat,
   SS_Init,
   SS_IsPrimary,
   SS_Layout,
+  SS_PrintLine,
+  SS_ReadFromServer,
   SS_Seat,
   SS_SeatButtons,
   SS_SeatColorCvar,
@@ -87,6 +90,7 @@ import {
   cl_splitscreen_layout,
   seatDisconnectHooks,
 } from "../src/client/splitscreen";
+import * as consoleMod from "../src/client/console";
 import {
   SDL_GamepadDevices,
   SDL_InjectFakeGamepadForTests,
@@ -1376,6 +1380,223 @@ whole map list off that cvar) once made four of test/menu.test.ts's Bots-page
 tests fail whenever that file ran after this one, because `.value` had been
 restored and `.string` had not.
 */
+//=============================================================================
+// 6. A SEAT'S OWN FAILURES, AND THE ONE SHARED CONSOLE
+//=============================================================================
+
+/*
+Host_Error's C comment is "This shuts down both the client and server", which
+is the only answer a one-client engine can give. A seat is a client of its
+own, so these two blocks pin down whose error it is (U43) and whose console
+line it is.
+*/
+describe("a Host_Error raised in a seat's window is that seat's, not the session's", () => {
+  const savedIsDedicated = sysState.isDedicated;
+  const savedHooks = {
+    clDisconnect: hostClientHooks.clDisconnect,
+    setClsDemonum: hostClientHooks.setClsDemonum,
+    scrEndLoadingPlaque: hostClientHooks.scrEndLoadingPlaque,
+  };
+  const savedReadFromServer = seatDisconnectHooks.readFromServer;
+
+  beforeAll(() => {
+    // Host_Error's dedicated branch is Sys_Error, which never returns; a
+    // splitscreen session is a client one by definition. SCR_EndLoadingPlaque
+    // is unhooked so this block does not reach into screen.ts's own state.
+    sysState.isDedicated = false;
+    hostClientHooks.scrEndLoadingPlaque = null;
+  });
+
+  afterAll(() => {
+    sysState.isDedicated = savedIsDedicated;
+    hostClientHooks.clDisconnect = savedHooks.clDisconnect;
+    hostClientHooks.setClsDemonum = savedHooks.setClsDemonum;
+    hostClientHooks.scrEndLoadingPlaque = savedHooks.scrEndLoadingPlaque;
+    seatDisconnectHooks.readFromServer = savedReadFromServer;
+    resetSuiteState();
+  });
+
+  function raiseInSeat(index: number, message: string): unknown {
+    try {
+      SS_WithSeat(index, () => {
+        Host_Error(message);
+      });
+    } catch (e) {
+      return e;
+    }
+    return null;
+  }
+
+  test("the seat and every seat above it go, and the server and the primary client stay", () => {
+    oneSeat();
+    sv.active = false;
+    svs.maxclients = 4;
+    svs.maxclientslimit = 4;
+    SS_SetSeats(4);
+    expect(SS_SeatCount()).toBe(4);
+    sv.active = true; // the thing a seat's error must not shut down
+
+    const thrown = raiseInSeat(2, "CL_ParseServerMessage: Illegible server message");
+
+    expect(thrown).toBeInstanceOf(SeatError);
+    expect(thrown instanceof SeatError ? thrown.seat : -1).toBe(2);
+    expect(SS_SeatCount()).toBe(2);
+    expect(SS_Seat(2).wanted).toBe(false);
+    expect(SS_Seat(3).wanted).toBe(false);
+    // the seat below it is untouched, and so is the server
+    expect(SS_Seat(1).wanted).toBe(true);
+    expect(sv.active).toBe(true);
+    // SS_WithSeat's finally put the primary back
+    expect(SS_IsPrimary()).toBe(true);
+
+    sv.active = false;
+    oneSeat();
+  });
+
+  test("a seat that dies mid-frame does not end the frame the other seats are in", () => {
+    oneSeat();
+    sv.active = false; // SS_Reconcile has no server to connect the seats to
+    svs.maxclients = 4;
+    svs.maxclientslimit = 4;
+    SS_SetSeats(3);
+    for (let i = 1; i < 3; i++) SS_Seat(i).binding.cls.state = CactiveT.ca_connected;
+
+    const read: number[] = [];
+    seatDisconnectHooks.readFromServer = (): number => {
+      const seat = SS_ActiveSeat();
+      read.push(seat);
+      if (seat === 2) Host_Error("CL_ParseServerMessage: Bad server message");
+      return 0;
+    };
+
+    expect(() => SS_ReadFromServer()).not.toThrow();
+
+    expect(read).toEqual([0, 1, 2]);
+    expect(SS_SeatCount()).toBe(2);
+    expect(SS_IsPrimary()).toBe(true);
+
+    seatDisconnectHooks.readFromServer = savedReadFromServer;
+    oneSeat();
+  });
+
+  test("the primary client's own Host_Error still ends the session, as it always has", () => {
+    oneSeat();
+    sv.active = false;
+    let disconnects = 0;
+    let demonum = 0;
+    hostClientHooks.clDisconnect = () => {
+      disconnects++;
+    };
+    hostClientHooks.setClsDemonum = (n: number) => {
+      demonum = n;
+    };
+
+    const thrown = raiseInSeat(0, "CL_ParseServerMessage: Illegible server message");
+
+    expect(thrown).toBeInstanceOf(HostError);
+    expect(thrown instanceof SeatError).toBe(false);
+    expect(disconnects).toBe(1);
+    expect(demonum).toBe(-1);
+
+    hostClientHooks.clDisconnect = savedHooks.clDisconnect;
+    hostClientHooks.setClsDemonum = savedHooks.setClsDemonum;
+  });
+});
+
+describe("one console for the machine, however many seats are reading", () => {
+  const savedReadFromServer = seatDisconnectHooks.readFromServer;
+
+  afterAll(() => {
+    seatDisconnectHooks.readFromServer = savedReadFromServer;
+    resetSuiteState();
+  });
+
+  const DEATH = "beefy fell to his death\n";
+
+  test("a line the server broadcast to every seat prints once", () => {
+    oneSeat();
+    seats(3);
+    expect(SS_WithSeat(0, () => SS_PrintLine(DEATH))).toBe(DEATH);
+    expect(SS_WithSeat(1, () => SS_PrintLine(DEATH))).toBeNull();
+    expect(SS_WithSeat(2, () => SS_PrintLine(DEATH))).toBeNull();
+  });
+
+  test("a line only one seat was sent prints once and says whose it is", () => {
+    oneSeat();
+    seats(2);
+    expect(SS_WithSeat(1, () => SS_PrintLine("You got the nailgun\n"))).toBe("[P2] You got the nailgun\n");
+    // the primary player is the console's owner and is never labelled
+    expect(SS_WithSeat(0, () => SS_PrintLine("You got the rocket launcher\n"))).toBe("You got the rocket launcher\n");
+  });
+
+  test("the seat's number goes in front of the line, not in front of each svc_print that makes it up", () => {
+    oneSeat();
+    seats(2);
+    // id1's item pickup: sprint (other, "You got the "); sprint (other,
+    // self.netname); sprint (other, "\n").
+    expect(SS_WithSeat(1, () => SS_PrintLine("You got the "))).toBe("[P2] You got the ");
+    expect(SS_WithSeat(1, () => SS_PrintLine("nailgun"))).toBe("nailgun");
+    expect(SS_WithSeat(1, () => SS_PrintLine("\n"))).toBe("\n");
+    // and the next line starts a new label. The last print here closes the
+    // line, because where the console stands is shared state (rule 13).
+    expect(SS_WithSeat(1, () => SS_PrintLine("You got the rocket launcher\n"))).toBe("[P2] You got the rocket launcher\n");
+  });
+
+  test("two pickups in one frame are two lines -- the fold is across seats, not within one", () => {
+    oneSeat();
+    seats(2);
+    expect(SS_WithSeat(1, () => SS_PrintLine("You got the nailgun\n"))).toBe("[P2] You got the nailgun\n");
+    expect(SS_WithSeat(1, () => SS_PrintLine("You got the nailgun\n"))).toBe("[P2] You got the nailgun\n");
+  });
+
+  test("with one seat nothing is folded and nothing is labelled", () => {
+    oneSeat();
+    expect(SS_PrintLine(DEATH)).toBe(DEATH);
+    expect(SS_PrintLine(DEATH)).toBe(DEATH);
+  });
+
+  test("a blank line keeps its shape rather than becoming a labelled one", () => {
+    oneSeat();
+    seats(2);
+    expect(SS_WithSeat(1, () => SS_PrintLine("\n"))).toBe("\n");
+  });
+
+  test("the fold lasts one frame: the next frame's copy of the same line prints again", () => {
+    oneSeat();
+    sv.active = false; // SS_Reconcile returns before it can connect anything
+    seats(2);
+    seatDisconnectHooks.readFromServer = (): number => 0;
+
+    expect(SS_WithSeat(0, () => SS_PrintLine(DEATH))).toBe(DEATH);
+    expect(SS_WithSeat(1, () => SS_PrintLine(DEATH))).toBeNull();
+
+    SS_ReadFromServer(); // the next frame
+
+    expect(SS_WithSeat(0, () => SS_PrintLine(DEATH))).toBe(DEATH);
+
+    seatDisconnectHooks.readFromServer = savedReadFromServer;
+  });
+
+  test("SS_ConsolePrint is the console sink, and hands Con_Printf the text as an argument", () => {
+    oneSeat();
+    seats(2);
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    SS_WithSeat(1, () => {
+      SS_ConsolePrint("100% of the way there\n");
+    });
+    // "%s" with the text as an argument, never the text as the format: a
+    // server line with a % in it is not a format string.
+    expect(printSpy).toHaveBeenCalledWith("%s", "[P2] 100% of the way there\n");
+
+    printSpy.mockClear();
+    SS_WithSeat(0, () => {
+      SS_ConsolePrint("100% of the way there\n");
+    });
+    expect(printSpy).not.toHaveBeenCalled(); // seat 1 already printed it this frame
+    printSpy.mockRestore();
+  });
+});
+
 describe("this suite restores every singleton it touched", () => {
   test("seat 0 is bound and the client's live bindings are client.ts's own objects", () => {
     expect(SS_SeatCount()).toBe(1);

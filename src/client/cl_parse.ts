@@ -160,7 +160,7 @@ import { CL_ParseTEnt } from "./cl_tent";
 import { Con_DPrintf, Con_Printf } from "./console";
 import { PromptChoiceT, SIGNONS, ScoreboardT, cl, cl_entities, cl_lightstyle, cl_static_entities, cls, growEntities, growStaticEntities } from "./client";
 import { BOTTOM_RANGE, EntityT, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, LERP_RESETMOVE, TOP_RANGE, getRenderer } from "./render";
-import { SS_IsPrimary } from "./splitscreen";
+import { SS_ConsolePrint, SS_IsPrimary } from "./splitscreen";
 // r_part.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { R_ParseParticleEffect } from "./r_part";
 // sbar.c (concurrent sibling, not yet landed -- absent-at-gate rule)
@@ -990,7 +990,10 @@ export function CL_ParseServerMessage(): void {
       // falls through: Host_EndGame never returns, matching the C's missing `break`
 
       case SvcOpsT.svc_print:
-        Con_Printf("%s", MSG_ReadString());
+        // U43: one console for the machine, however many seats are reading
+        // from the server; see splitscreen.ts's SS_PrintLine. With one seat
+        // this is Con_Printf ("%s", MSG_ReadString ()) and nothing else.
+        SS_ConsolePrint(MSG_ReadString());
         break;
 
       case SvcOpsT.svc_centerprint:
@@ -1203,15 +1206,15 @@ export function CL_ParseServerMessage(): void {
         break;
 
       case svc_chat:
-        Con_Printf("%s", MSG_ReadString());
+        SS_ConsolePrint(MSG_ReadString());
         break;
 
       case svc_botchat:
-        Con_Printf("%s", MSG_ReadString());
+        SS_ConsolePrint(MSG_ReadString());
         break;
 
       case svc_rawprint:
-        Con_Printf("%s", MSG_ReadString());
+        SS_ConsolePrint(MSG_ReadString());
         break;
 
       case svc_levelcompleted:
