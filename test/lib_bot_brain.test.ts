@@ -369,6 +369,21 @@ function buildKnowledge(): BotKnowledge {
   });
 }
 
+/** ctf/bots/items.txt: item_flag_team1 is `team 5`, item_flag_team2 `team 14`. */
+function buildCtfKnowledge(): BotKnowledge {
+  return new BotKnowledge({
+    characters: CHARACTERS_TXT,
+    weapons: WEAPONS_TXT,
+    items: `${ITEMS_TXT}\n{\n  name "item_flag_team1"\n  team 5\n  flags objective\n}\n{\n  name "item_flag_team2"\n  team 14\n  flags objective\n}\n`,
+    monsters: MONSTERS_TXT,
+    interactables: INTERACTABLES_TXT,
+    gameRules: GAME_RULES_TXT,
+    teams: TEAMS_TXT,
+    chats: CHATS_TXT,
+    settings: SETTINGS_TXT,
+  });
+}
+
 //=============================================================================
 // A*
 //=============================================================================
@@ -1085,7 +1100,7 @@ function stubEnemy(id: number, origin: BotVec3): BotEntityT {
   };
 }
 
-function stubItem(id: number, classname: string, origin: BotVec3): BotEntityT {
+function stubItem(id: number, classname: string, origin: BotVec3, team = 0): BotEntityT {
   return {
     id,
     kind: BotEntityKind.Item,
@@ -1096,7 +1111,7 @@ function stubItem(id: number, classname: string, origin: BotVec3): BotEntityT {
     feet: { x: origin.x, y: origin.y, z: origin.z },
     velocity: bvec(),
     health: 0,
-    team: 0,
+    team,
     dead: false,
     invisible: false,
     waterLevel: 0,
@@ -1107,8 +1122,14 @@ function stubItem(id: number, classname: string, origin: BotVec3): BotEntityT {
   };
 }
 
-function makeBrain(seed: number, gameMode: { gameType: string; weaponStay: boolean } = { gameType: "deathmatch", weaponStay: false }): BotBrain {
-  const knowledge = buildKnowledge();
+function stubMonster(id: number, classname: string, origin: BotVec3): BotEntityT {
+  const ent = stubEnemy(id, origin);
+  ent.kind = BotEntityKind.Monster;
+  ent.classname = classname;
+  return ent;
+}
+
+function makeBrain(seed: number, gameMode: { gameType: string; weaponStay: boolean } = { gameType: "deathmatch", weaponStay: false }, knowledge = buildKnowledge()): BotBrain {
   return new BotBrain({
     knowledge,
     skill: "medium",
@@ -1168,7 +1189,7 @@ describe("brain", () => {
     const world = new StubWorld(bvec(0, 0, 0));
     world.selfState.items = 1 | 2 | 4096;
     world.ents = [stubEnemy(2, bvec(300, 0, 0))];
-    const brain = makeBrain(4);
+    const brain = makeBrain(8); // rng.ts's warm-up moved the roam draws seed 4 used to reach the target quickly
 
     let sawImpulse = 0;
     for (let i = 0; i < 20; i++) {
@@ -1427,6 +1448,42 @@ describe("brain", () => {
     expect(gaveUpAt).toBeLessThan(5);
   });
 
+  test("with no graph at all, only the wedge timer can give a goal up -- and it does", () => {
+    // No nav graph means followPath reports NoPath and the brain steers
+    // straight at the goal, a branch with no stuck detection of its own. The
+    // wedge timer is the only thing that can end this, which is what it was
+    // added for.
+    const world = new StubWorld(bvec(0, 0, 0)); // graph stays null
+    const brain = makeBrain(23);
+    brain.requestMoveToPoint(bvec(4096, 0, 0));
+
+    let gaveUpAt = -1;
+    for (let i = 0; i < 200 && gaveUpAt < 0; i++) {
+      world.now += 0.05;
+      brain.think(world);
+      if (brain.goalStatus() === BotGoalStatus.Error) gaveUpAt = world.now;
+    }
+    expect(gaveUpAt).toBeGreaterThan(0);
+    expect(gaveUpAt).toBeLessThan(6);
+  });
+
+  test("a bot circling a target is not treated as wedged", () => {
+    // Net displacement is how the wedge timer measures being stuck, and a bot
+    // in a fight keeps its net displacement small on purpose. Same setup as
+    // the case above, plus somebody to shoot at.
+    const world = new StubWorld(bvec(0, 0, 0));
+    world.ents = [stubEnemy(2, bvec(300, 0, 0))];
+    const brain = makeBrain(23);
+    brain.requestMoveToPoint(bvec(4096, 0, 0));
+
+    for (let i = 0; i < 200; i++) {
+      world.now += 0.05;
+      brain.think(world);
+    }
+    expect(brain.currentTarget()).toBe(2);
+    expect(brain.goalStatus()).toBe(BotGoalStatus.InProgress);
+  });
+
   test("the unstick window produces sidestep/jump input", () => {
     const positions = [bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0)];
     const world = new StubWorld(bvec(0, 0, 0));
@@ -1445,6 +1502,179 @@ describe("brain", () => {
       if (Math.abs(cmd.sidemove) === BOT_RUN_SPEED && (cmd.buttons & BOT_BUTTON_JUMP) !== 0) sawUnstick = true;
     }
     expect(sawUnstick).toBe(true);
+  });
+});
+
+//=============================================================================
+// objectives and coop
+//=============================================================================
+
+/** Own base at node 0, midfield at node 1, the enemy base at node 2. */
+const OWN_BASE = bvec(0, 0, 0);
+const MIDFIELD = bvec(512, 0, 0);
+const ENEMY_BASE = bvec(1024, 0, 0);
+
+function ctfWorld(origin: BotVec3): StubWorld {
+  const world = new StubWorld(origin);
+  world.selfState.team = 5;
+  world.graph = navGraphFromNav2(buildNav([OWN_BASE, MIDFIELD, ENEMY_BASE], chainLinks(3)));
+  return world;
+}
+
+/** Where the brain's current plan ends, or null while it has no plan. */
+function pathEnd(brain: BotBrain): BotVec3 | null {
+  const path = brain.currentPath();
+  if (path === null || path.points.length === 0) return null;
+  return path.points[path.points.length - 1]!;
+}
+
+function runFrames(brain: BotBrain, world: StubWorld, count: number): void {
+  for (let i = 0; i < count; i++) {
+    world.now += 0.05;
+    brain.think(world);
+  }
+}
+
+describe("objectives", () => {
+  // ctf/bots/items.txt: item_flag_team1 is `team 5`, item_flag_team2 is
+  // `team 14` -- see the "objective value" suite above.
+  const flags = (): BotEntityT[] => [stubItem(20, "item_flag_team1", OWN_BASE, 5), stubItem(21, "item_flag_team2", ENEMY_BASE, 14)];
+
+  test("a carrier runs the flag to where its own team's flag spawned", () => {
+    // A carried flag stops being an entity the world reports at all, so the
+    // base has to be remembered from when the flag was still standing on it.
+    const world = ctfWorld(ENEMY_BASE);
+    world.ents = flags();
+    const brain = makeBrain(40, { gameType: "ctf", weaponStay: false }, buildCtfKnowledge());
+
+    runFrames(brain, world, 2); // sees both flags, remembers both bases
+    world.selfState.carryingObjective = true;
+    world.ents = [stubItem(20, "item_flag_team1", OWN_BASE, 5)]; // the carried one is gone
+    runFrames(brain, world, 2);
+
+    const end = pathEnd(brain);
+    expect(end).not.toBeNull();
+    expect(bvecDistance(end!, OWN_BASE)).toBeLessThan(64);
+  });
+
+  test("a team's own flag lying in the field is fetched, whichever role the bot drew", () => {
+    // Touching a dropped flag is what sends it back, so this outranks both
+    // halves of the attack/defend split -- which is why it does not matter
+    // which way the role rolled here.
+    for (const seed of [40, 41, 42]) {
+      const world = ctfWorld(ENEMY_BASE);
+      world.ents = flags();
+      const brain = makeBrain(seed, { gameType: "ctf", weaponStay: false }, buildCtfKnowledge());
+      runFrames(brain, world, 2); // home for flag 20 is recorded as OWN_BASE
+
+      world.ents = [stubItem(20, "item_flag_team1", MIDFIELD, 5), stubItem(21, "item_flag_team2", ENEMY_BASE, 14)];
+      runFrames(brain, world, 4);
+      const end = pathEnd(brain);
+      expect(end).not.toBeNull();
+      expect(bvecDistance(end!, MIDFIELD)).toBeLessThan(64);
+    }
+  });
+
+  test("the roster splits into attackers and defenders, and neither stands on its own flag", () => {
+    // The role is one roll per bot, so this sweeps seeds rather than
+    // asserting on one: what must hold is that both roles occur, rather than
+    // the whole roster camping its own base the way it did before the split.
+    // The seeds are spread by a large odd multiplier because xorshift32's
+    // first outputs from a small seed are still correlated across adjacent
+    // seeds even after the warm-up in rng.ts -- see that file's header; the
+    // real binding seeds from a full-width random word.
+    let attackers = 0;
+    let defenders = 0;
+    for (let seed = 1; seed <= 16; seed++) {
+      const world = ctfWorld(MIDFIELD);
+      world.ents = flags();
+      const brain = makeBrain(Math.imul(seed, 2654435761) | 0, { gameType: "ctf", weaponStay: false }, buildCtfKnowledge());
+      runFrames(brain, world, 4);
+      const end = pathEnd(brain);
+      if (end === null) continue;
+      if (bvecDistance(end, ENEMY_BASE) < 64) attackers++;
+      else if (bvecDistance(end, OWN_BASE) < 64) defenders++;
+    }
+    // A defender walks to its own base to guard it, which is not the same as
+    // treating the flag as a pickup: itemValue scores that at zero (see the
+    // "objective value" suite above).
+    expect(attackers).toBeGreaterThan(0);
+    expect(defenders).toBeGreaterThan(0);
+    expect(attackers).toBeGreaterThan(defenders); // roughly three in four attack
+  });
+});
+
+// Every case here blocks line of sight. A monster the bot can SEE is a
+// combat target, and combat outranks the whole coop branch in selectGoal --
+// so with sight open these would be testing target selection instead of the
+// hunt. Deciding where to walk toward a monster it cannot see yet is exactly
+// what the hunt is for.
+describe("coop", () => {
+  function coopWorld(nodes: BotVec3[]): StubWorld {
+    const world = new StubWorld(bvec(0, 0, 0));
+    world.selfState.team = 5;
+    world.blocked = true;
+    world.graph = navGraphFromNav2(buildNav(nodes, chainLinks(nodes.length)));
+    return world;
+  }
+
+  function human(origin: BotVec3): BotEntityT {
+    const ent = stubEnemy(2, origin);
+    ent.team = 5;
+    return ent;
+  }
+
+  test("a bot with the human in reach hunts what is still standing near them", () => {
+    const world = coopWorld([bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0)]);
+    // Inside COOP_REGROUP_NEAR, so the regroup finishes at once and the hunt
+    // is what is left.
+    world.ents = [human(bvec(200, 0, 0)), stubMonster(3, "monster_ogre", bvec(512, 0, 0))];
+
+    const brain = makeBrain(50, { gameType: "coop", weaponStay: true });
+    runFrames(brain, world, 6);
+
+    const end = pathEnd(brain);
+    expect(end).not.toBeNull();
+    expect(bvecDistance(end!, bvec(512, 0, 0))).toBeLessThan(64);
+    expect(brain.currentTarget()).toBe(-1); // a teammate is not a target
+  });
+
+  test("a bot that has lost the human walks back to them before anything else", () => {
+    const world = coopWorld([bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0)]);
+    // The human is well outside COOP_REGROUP_NEAR and the monster is closer,
+    // so the regroup has to win to be visible here at all.
+    world.ents = [human(bvec(512, 0, 0)), stubMonster(3, "monster_ogre", bvec(256, 0, 0))];
+
+    const brain = makeBrain(51, { gameType: "coop", weaponStay: true });
+    runFrames(brain, world, 6);
+
+    const end = pathEnd(brain);
+    expect(end).not.toBeNull();
+    expect(bvecDistance(end!, bvec(512, 0, 0))).toBeLessThan(64);
+  });
+
+  test("a monster nowhere near the human is not worth crossing the level for", () => {
+    const world = coopWorld([bvec(0, 0, 0), bvec(256, 0, 0), bvec(9000, 0, 0)]);
+    // Further from the human than COOP_HUNT_RADIUS, so the hunt skips it.
+    world.ents = [human(bvec(200, 0, 0)), stubMonster(3, "monster_ogre", bvec(9000, 0, 0))];
+
+    const brain = makeBrain(52, { gameType: "coop", weaponStay: true });
+    runFrames(brain, world, 6);
+
+    const end = pathEnd(brain);
+    if (end !== null) expect(bvecDistance(end, bvec(9000, 0, 0))).toBeGreaterThan(64);
+  });
+
+  test("horde hunts the same way coop does", () => {
+    const world = coopWorld([bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0)]);
+    world.ents = [human(bvec(200, 0, 0)), stubMonster(3, "monster_ogre", bvec(512, 0, 0))];
+
+    const brain = makeBrain(53, { gameType: "horde", weaponStay: true });
+    runFrames(brain, world, 6);
+
+    const end = pathEnd(brain);
+    expect(end).not.toBeNull();
+    expect(bvecDistance(end!, bvec(512, 0, 0))).toBeLessThan(64);
   });
 });
 

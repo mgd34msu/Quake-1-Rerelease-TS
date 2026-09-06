@@ -51,6 +51,8 @@
 // and leaned on the same wall for the rest of the level. `wedgeOrigin` is a
 // second, plainer test that belongs to the brain: displacement over time,
 // whatever the path state is. An oscillation is as stuck as a standstill.
+// It is held off while the bot has a target, because a bot circling one has
+// small net displacement by design -- see `updateWedge`.
 //
 // OBJECTIVES. In a game with team-owned `objective` items (Quake 1's CTF
 // flags), the enemy's is a goal, a team's own is one only when it has been
@@ -451,7 +453,7 @@ export class BotBrain {
 
     // Pressing into geometry without moving, whether or not there is a path
     // to blame. See the file header.
-    const wedged = this.updateWedge(self.origin, now);
+    const wedged = this.updateWedge(self.origin, now, target !== null);
 
     //---- 3: goal ------------------------------------------------------------
     const goal = this.selectGoal(world, entities, target, now);
@@ -723,11 +725,18 @@ export class BotBrain {
    * world without going anywhere. The path follower's own stuck test only
    * watches a path, and the branch that steers straight at a goal with no
    * path has none at all.
+   *
+   * NOT WHILE FIGHTING. A bot in a fight circles its target on purpose, so
+   * its NET displacement stays small however fast it is actually moving --
+   * which this timer, measuring displacement, reads as a wedge. Combat
+   * steering is not pathing, so a wedge says nothing about it; the two
+   * states the timer exists for -- bouncing between two path points, and
+   * leaning on a wall with no path -- are both out of combat anyway.
    */
-  private updateWedge(origin: BotVec3, now: number): boolean {
+  private updateWedge(origin: BotVec3, now: number, inCombat: boolean): boolean {
     const cmd = this.lastCmd;
     const pressing = cmd.forwardmove !== 0 || cmd.sidemove !== 0;
-    if (this.wedgeOrigin === null || !pressing || bvecDistance(origin, this.wedgeOrigin) > WEDGED_DISPLACEMENT) {
+    if (inCombat || this.wedgeOrigin === null || !pressing || bvecDistance(origin, this.wedgeOrigin) > WEDGED_DISPLACEMENT) {
       this.wedgeOrigin = { x: origin.x, y: origin.y, z: origin.z };
       this.wedgeSince = now;
       return false;

@@ -145,6 +145,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checked `fopen` for NULL (config.cfg, saves, demo record, the GL mesh
   cache, QuakeWorld downloads and config) fails with its original message
   instead of aborting the engine.
+- Bots: the wedge timer no longer fires on a bot circling its target in
+  combat (it rested the goal it was fighting toward for twenty seconds); the
+  seeded bot generator discards eight warm-up draws so adjacent small seeds
+  no longer share their first decisions (seeded sequences change, unseeded
+  behaviour does not).
 - Horde maps (mg1) were unplayable under `deathmatch 1` for humans and bots
   alike: mg1's coop spawn points remove themselves outside coop, so
   everyone was parked at the intermission camera; a map `mapdb.json` flags
