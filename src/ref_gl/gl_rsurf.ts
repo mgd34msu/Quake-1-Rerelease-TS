@@ -37,7 +37,7 @@ Deviations from PORTING.md / the C source:
 - `glRect_t` is a gl_rsurf.c-local typedef; it becomes the exported
   `GlRectT` class here. Its four `unsigned char` fields are plain numbers:
   every value stored in them is bounded by BLOCK_WIDTH / BLOCK_HEIGHT
-  (128), so the C's byte wraparound never occurs.
+  (256, U15), so the C's byte wraparound never occurs.
 - `int allocated[MAX_LIGHTMAPS][BLOCK_WIDTH]` becomes one flat Int32Array
   indexed `texnum * BLOCK_WIDTH + i`, the same flattening gl_model_types.ts
   uses for `gl_texturenum[MAX_SKINS][4]`.
@@ -82,6 +82,50 @@ Deviations from PORTING.md / the C source:
   cycle resolves without a lazy `require` (PORTING.md's import-cycle rule:
   reported, not worked around).
 
+U15 (colored lightmaps, re-release surface sizes -- QuakeSpasm/Ironwail
+gl_rsurf.c/gl_rlight.c/gl_model.c, no C original for the QoL half):
+- blocklights, R_AddDynamicLights and R_BuildLightMap are generalized to
+  three interleaved channels per luxel (r,g,b), matching QuakeSpasm's own
+  `blocklights[...*3]` layout. Classic dlights stay white (the same scalar
+  `(rad-dist)*256` term is added to all three channels); a per-dlight color
+  field is a later unit's addition to src/client/client.ts's DlightT (out
+  of this unit's scope).
+- R_BuildLightMap's real RGB source is `cl.worldmodel.lightdata_rgb`, not
+  the owning model's own field: MsurfaceT carries no back-reference to its
+  model (and gains none here -- src/common/model.ts is out of scope), so
+  this mirrors the file's PRE-EXISTING quirk-preserving choice of reading
+  `cl.worldmodel->lightdata` unconditionally for the has-data / fullbright
+  check even though `surf.samples` was resolved against the surface's own
+  owning model at load time (see the older deviation note above). Every
+  inline brush submodel (`*1`, `*2`, ...) shares its parent worldmodel's
+  `lightdata_rgb` array reference byte-for-byte (src/common/model.ts's
+  submodel clone copies the field), so this is exact, not approximate, for
+  every surface that can reach GL_BuildLightmaps/R_RenderBrushPoly in the
+  first place.
+- Colored output is written UNINVERTED (true brightness, clamped 0..255,
+  alpha forced to 255), unlike the classic per-format paths below it, which
+  all store `255 - brightness` for the ZERO/ONE_MINUS_SRC_COLOR (or
+  SRC_ALPHA/ONE_MINUS_SRC_ALPHA) "multiply by inverting and blending
+  towards black" trick. Multiplying by a real color instead of black needs
+  a real multiply, not an invert: R_BlendLightmaps uses
+  `glBlendFunc(GL_ZERO, GL_SRC_COLOR)` when colored (`dst*srcColor`), and
+  the two multitexture paths in R_DrawSequentialPoly select
+  `GL_TEXTURE_ENV_MODE = GL_MODULATE` for the lightmap unit instead of
+  `GL_BLEND`, both gated on the same `coloredLightmapsAvailable()` check
+  R_BuildLightMap and GL_BuildLightmaps use, so a map with no RGB data (or
+  gl_coloredlight 0) drives the exact pre-existing classic paths, byte for
+  byte.
+- gl_coloredlight forces GL_RGBA whenever it and the map's RGB data are
+  both available, running AFTER the `-lm_*` parm handling below (so those
+  parms still work exactly as before when color is not active, per this
+  unit's brief; when it is active, only RGBA can carry real color, so it
+  wins). `gl_lightmap_format` and `-lm_1`/`qw.active` keep selecting the
+  grey path's format exactly as before whenever color is not active.
+- GL_MAX_SURFACE_EXTENTS (glquake.ts) replaces gl_model.c's hardcoded 512
+  as the cap Mod_LoadFaces' CalcSurfaceExtents call uses (gl_model.ts);
+  BLOCK_WIDTH/BLOCK_HEIGHT there grow from 128 to QuakeSpasm's own 256 so
+  one surface at the new cap (up to 126 texels/axis) still fits a block.
+
 Dropped:
 - The `#if 0` R_DrawSequentialPoly (gl_rsurf.c:304-400) and the `#if 0`
   R_DrawWaterSurfaces (gl_rsurf.c:899-947); the `#else` bodies are the ones
@@ -122,6 +166,8 @@ import {
   BLOCK_WIDTH,
   d_lightstylevalue,
   EntityT,
+  gl_coloredlight,
+  GL_MAX_SURFACE_EXTENTS,
   GlpolyT,
   glState,
   MAX_LIGHTMAPS,
@@ -148,6 +194,7 @@ import {
   GL_RGBA,
   GL_RGBA4,
   GL_SRC_ALPHA,
+  GL_SRC_COLOR,
   GL_TEXTURE_2D,
   GL_TEXTURE_ENV,
   GL_TEXTURE_ENV_MODE,
@@ -165,7 +212,14 @@ import { R_StoreEfrags } from "./gl_refrag";
 import { isPermedia } from "./gl_vid";
 import { EmitBothSkyLayers, EmitSkyPolys, EmitWaterPolys, glWarpState, R_DrawSkyChain } from "./gl_warp";
 
-export const blocklights = new Uint32Array(18 * 18);
+// U15: was `18*18` (a single channel sized for the old 256-unit extents
+// cap); colored lighting needs three channels per luxel (r,g,b interleaved,
+// exactly as QuakeSpasm's own `blocklights[LMBLOCK_WIDTH*LMBLOCK_HEIGHT*3]`
+// is laid out), and the cap itself is now GL_MAX_SURFACE_EXTENTS. This
+// buffer only ever holds ONE surface's texel grid at a time (R_BuildLightMap
+// overwrites it per call), so it is sized off the per-surface texel-grid
+// bound, not the lightmap block's full area.
+export const blocklights = new Uint32Array(((GL_MAX_SURFACE_EXTENTS >> 4) + 2) ** 2 * 3);
 
 export class GlRectT {
   l = 0;
@@ -251,10 +305,27 @@ export function R_AddDynamicLights(surf: MsurfaceT): void {
         if (sd < 0) sd = -sd;
         if (sd > td) dist = sd + (td >> 1);
         else dist = td + (sd >> 1);
-        if (dist < minlight) blocklights[t * smax + s] += (rad - dist) * 256;
+        if (dist < minlight) {
+          // classic dlights are white: the same contribution lands on all
+          // three channels (see this file's header, U15 note).
+          const add = (rad - dist) * 256;
+          const idx = (t * smax + s) * 3;
+          blocklights[idx] += add;
+          blocklights[idx + 1] += add;
+          blocklights[idx + 2] += add;
+        }
       }
     }
   }
+}
+
+// U15: true (gl_coloredlight on) when the loaded map actually carries RGB
+// light samples; the single predicate GL_BuildLightmaps (format selection)
+// and R_BuildLightMap (per-surface sample source) both consult, so the two
+// can never disagree about which path is active. See this file's header.
+function coloredLightmapsAvailable(): boolean {
+  const worldmodel = cl.worldmodel;
+  return gl_coloredlight.value !== 0 && worldmodel !== null && worldmodel.lightdata_rgb !== null;
 }
 
 /*
@@ -274,13 +345,23 @@ export function R_BuildLightMap(surf: MsurfaceT, dest: Uint8Array, destOfs: numb
 
   const worldmodel = cl.worldmodel;
 
+  // U15: the real RGB sample source, when colored lighting is active for
+  // this map (see coloredLightmapsAvailable's header note on why this reads
+  // cl.worldmodel rather than the surface's own owning model).
+  const colored = coloredLightmapsAvailable();
+  const rgbLightdata = colored && worldmodel !== null ? worldmodel.lightdata_rgb : null;
+  const rgbSamples = rgbLightdata !== null && surf.lightofs !== -1 ? rgbLightdata.subarray(surf.lightofs * 3) : null;
+
   // set to full bright if no light data. QW/client/gl_rsurf.c comments out
   // the r_fullbright.value check (dynamic lightmaps always rebuild).
   if ((!qw.active && r_fullbright.value) || worldmodel === null || !worldmodel.lightdata) {
-    for (let i = 0; i < size; i++) blocklights[i] = 255 * 256;
+    for (let i = 0; i < size; i++) {
+      const i3 = i * 3;
+      blocklights[i3] = blocklights[i3 + 1] = blocklights[i3 + 2] = 255 * 256;
+    }
   } else {
     // clear to no light
-    for (let i = 0; i < size; i++) blocklights[i] = 0;
+    for (let i = 0; i < size * 3; i++) blocklights[i] = 0;
 
     // add all the lightmaps
     if (lightmap) {
@@ -288,7 +369,23 @@ export function R_BuildLightMap(surf: MsurfaceT, dest: Uint8Array, destOfs: numb
       for (let maps = 0; maps < MAXLIGHTMAPS && surf.styles[maps] !== 255; maps++) {
         const scale = d_lightstylevalue[surf.styles[maps]];
         surf.cached_light[maps] = scale; // 8.8 fraction
-        for (let i = 0; i < size; i++) blocklights[i] += lightmap[lightofs + i] * scale;
+        if (rgbSamples) {
+          for (let i = 0; i < size; i++) {
+            const s3 = (lightofs + i) * 3;
+            const i3 = i * 3;
+            blocklights[i3] += rgbSamples[s3] * scale;
+            blocklights[i3 + 1] += rgbSamples[s3 + 1] * scale;
+            blocklights[i3 + 2] += rgbSamples[s3 + 2] * scale;
+          }
+        } else {
+          for (let i = 0; i < size; i++) {
+            const v = lightmap[lightofs + i] * scale;
+            const i3 = i * 3;
+            blocklights[i3] += v;
+            blocklights[i3 + 1] += v;
+            blocklights[i3 + 2] += v;
+          }
+        }
         lightofs += size; // skip to next lightmap
       }
     }
@@ -297,14 +394,47 @@ export function R_BuildLightMap(surf: MsurfaceT, dest: Uint8Array, destOfs: numb
     if (surf.dlightframe === glState.r_framecount) R_AddDynamicLights(surf);
   }
 
-  // bound, invert, and shift
+  // U15: colored output is written uninverted, with a forced-opaque alpha
+  // (see this file's header note on why this needs GL_SRC_COLOR/GL_MODULATE
+  // downstream instead of the classic invert-and-blend-to-black trick).
+  if (colored) {
+    stride -= smax << 2;
+    let bl = 0;
+    for (let i = 0; i < tmax; i++, destOfs += stride) {
+      for (let j = 0; j < smax; j++) {
+        const base = bl * 3;
+        bl++;
+        let r = blocklights[base] | 0;
+        let g = blocklights[base + 1] | 0;
+        let b = blocklights[base + 2] | 0;
+        r >>= 7;
+        g >>= 7;
+        b >>= 7;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
+        dest[destOfs] = r;
+        dest[destOfs + 1] = g;
+        dest[destOfs + 2] = b;
+        dest[destOfs + 3] = 255;
+        destOfs += 4;
+      }
+    }
+    return;
+  }
+
+  // bound, invert, and shift -- unchanged classic paths. blocklights[bl*3]
+  // (the red channel) equals the old single-channel accumulator exactly:
+  // the non-colored branch above always writes the same value into all
+  // three channels, so this reproduces the pre-U15 output byte for byte.
   switch (glDrawState.gl_lightmap_format) {
     case GL_RGBA: {
       stride -= smax << 2;
       let bl = 0;
       for (let i = 0; i < tmax; i++, destOfs += stride) {
         for (let j = 0; j < smax; j++) {
-          let t = blocklights[bl++] | 0;
+          let t = blocklights[bl * 3] | 0;
+          bl++;
           t >>= 7;
           if (t > 255) t = 255;
           dest[destOfs + 3] = 255 - t;
@@ -319,7 +449,8 @@ export function R_BuildLightMap(surf: MsurfaceT, dest: Uint8Array, destOfs: numb
       let bl = 0;
       for (let i = 0; i < tmax; i++, destOfs += stride) {
         for (let j = 0; j < smax; j++) {
-          let t = blocklights[bl++] | 0;
+          let t = blocklights[bl * 3] | 0;
+          bl++;
           t >>= 7;
           if (t > 255) t = 255;
           dest[destOfs + j] = 255 - t;
@@ -510,7 +641,9 @@ export function R_DrawSequentialPoly(s: MsurfaceT): void {
       GL_EnableMultitexture(); // Same as SelectTexture (TEXTURE1)
       GL_Bind(glState.lightmap_textures + s.lightmaptexturenum);
       uploadModifiedLightmapRect(s.lightmaptexturenum);
-      gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_BLEND);
+      // U15: a real color multiply needs GL_MODULATE, not the classic
+      // invert-and-GL_BLEND-texenv trick (see this file's header note).
+      gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, coloredLightmapsAvailable() ? GL_MODULATE : GL_BLEND);
       gl.qglBegin(GL_POLYGON);
       for (let i = 0, v = 0; i < p.numverts; i++, v += VERTEXSIZE) {
         mtex(TEXTURE0_SGIS, p.verts[v + 3], p.verts[v + 4]);
@@ -596,7 +729,8 @@ export function R_DrawSequentialPoly(s: MsurfaceT): void {
     GL_EnableMultitexture();
     GL_Bind(glState.lightmap_textures + s.lightmaptexturenum);
     uploadModifiedLightmapRect(s.lightmaptexturenum);
-    gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_BLEND);
+    // U15: see the multitexture branch above -- real color needs GL_MODULATE.
+    gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, coloredLightmapsAvailable() ? GL_MODULATE : GL_BLEND);
     gl.qglBegin(GL_TRIANGLE_FAN);
     for (let i = 0, v = 0; i < p.numverts; i++, v += VERTEXSIZE) {
       mtex(TEXTURE0_SGIS, p.verts[v + 3], p.verts[v + 4]);
@@ -696,7 +830,12 @@ export function R_BlendLightmaps(): void {
 
   gl.qglDepthMask(false); // don't bother writing Z
 
-  if (glDrawState.gl_lightmap_format === GL_LUMINANCE) gl.qglBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR);
+  // U15: colored lightmaps store true (uninverted) brightness, so the
+  // framebuffer multiply needs GL_SRC_COLOR, not the classic invert-and-
+  // blend-to-black trick the other formats use (see this file's header).
+  const colored = coloredLightmapsAvailable();
+  if (colored) gl.qglBlendFunc(GL_ZERO, GL_SRC_COLOR);
+  else if (glDrawState.gl_lightmap_format === GL_LUMINANCE) gl.qglBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR);
   else if (glDrawState.gl_lightmap_format === GL_INTENSITY) {
     gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
     gl.qglColor4f(0, 0, 0, 1);
@@ -744,7 +883,8 @@ export function R_BlendLightmaps(): void {
   }
 
   gl.qglDisable(GL_BLEND);
-  if (glDrawState.gl_lightmap_format === GL_LUMINANCE) gl.qglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  if (colored) gl.qglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+  else if (glDrawState.gl_lightmap_format === GL_LUMINANCE) gl.qglBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
   else if (glDrawState.gl_lightmap_format === GL_INTENSITY) {
     gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
     gl.qglColor4f(1, 1, 1, 1);
@@ -1459,6 +1599,12 @@ export function GL_BuildLightmaps(): void {
   if (COM_CheckParm("-lm_i")) glDrawState.gl_lightmap_format = GL_INTENSITY;
   if (COM_CheckParm("-lm_2")) glDrawState.gl_lightmap_format = GL_RGBA4;
   if (COM_CheckParm("-lm_4")) glDrawState.gl_lightmap_format = GL_RGBA;
+
+  // U15: colored lighting needs real RGB, which only GL_RGBA can carry.
+  // Runs after every -lm_* override above, so those still behave exactly as
+  // before whenever color is not active (gl_coloredlight 0, or the map has
+  // no RGB samples); see this file's header note.
+  if (coloredLightmapsAvailable()) glDrawState.gl_lightmap_format = GL_RGBA;
 
   switch (glDrawState.gl_lightmap_format) {
     case GL_RGBA:

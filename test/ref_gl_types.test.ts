@@ -246,11 +246,14 @@ describe("src/ref_gl/glquake.ts -- glquake.h's constants and globals", () => {
     expect(BACKFACE_EPSILON).toBe(0.01);
     expect(TEXTURE0_SGIS).toBe(0x835e);
     expect(TEXTURE1_SGIS).toBe(0x835f);
-    // gl_draw.c's table size and gl_rsurf.c's lightmap block
+    // gl_draw.c's table size and gl_rsurf.c's lightmap block. U15 raises
+    // BLOCK_WIDTH/BLOCK_HEIGHT from 128 to QuakeSpasm's own 256 (see
+    // glquake.ts's header note) so a surface at the new
+    // GL_MAX_SURFACE_EXTENTS cap still fits one block.
     expect(MAX_GLTEXTURES).toBe(1024);
     expect(MAX_LIGHTMAPS).toBe(64);
-    expect(BLOCK_WIDTH).toBe(128);
-    expect(BLOCK_HEIGHT).toBe(128);
+    expect(BLOCK_WIDTH).toBe(256);
+    expect(BLOCK_HEIGHT).toBe(256);
   });
 
   test("glState carries gl_rmain.c's/gl_draw.c's/gl_vidlinuxglx.c's initialisers", () => {

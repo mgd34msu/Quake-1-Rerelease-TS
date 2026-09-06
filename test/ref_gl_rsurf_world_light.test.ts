@@ -171,9 +171,13 @@ describe("R_BuildLightMap (world light regression)", () => {
 
     R_BuildLightMap(surf, dest, 0, BLOCK_WIDTH);
 
+    // U15: blocklights is now three interleaved channels per luxel
+    // (index*3 + channel); the grey path replicates the same accumulator
+    // value into all three, so channel 0 (index*3) is luxel N's old
+    // single-channel value.
     expect(blocklights[0]).toBe(13992);
-    expect(blocklights[1]).toBe(27984);
-    expect(blocklights[2]).toBe(35376);
+    expect(blocklights[3]).toBe(27984);
+    expect(blocklights[6]).toBe(35376);
 
     // 13992 >> 7 = 109, 27984 >> 7 = 218, 35376 >> 7 = 276 -> clamped to 255
     expect(dest[0]).toBe(146);

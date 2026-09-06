@@ -245,7 +245,7 @@ import { Cache_Alloc, Hunk_AllocName, Hunk_FreeToLowMark, Hunk_LowMark } from ".
 import { CvarT } from "../common/cvar";
 import { Sys_Error } from "../platform/sys";
 import { d_8to24table } from "../client/vid";
-import { ALIAS_BASE_SIZE_RATIO, MAX_LBM_HEIGHT, glState } from "./glquake";
+import { ALIAS_BASE_SIZE_RATIO, GL_MAX_SURFACE_EXTENTS, MAX_LBM_HEIGHT, glState } from "./glquake";
 import { GL_LINEAR, GL_LINEAR_MIPMAP_NEAREST } from "./qgl";
 import {
   AliashdrT,
@@ -306,6 +306,12 @@ export function textureLoaded(tx: TextureT): void {
 CalcSurfaceExtents is src/common/model.ts's; gl_model.c's copy is identical
 except for the 512 cap (passed as this hook's own argument below) instead of
 model.c's 256.
+
+U15: raised from 512 to GL_MAX_SURFACE_EXTENTS (glquake.ts, 2000) so
+re-release surfaces with much larger lightmapped faces than any classic map
+ever needed don't hit CalcSurfaceExtents' "Bad surface extents" guard; the
+lightmap block dimensions and blocklights scratch buffer in gl_rsurf.ts are
+sized off the same constant.
 ================
 */
 
@@ -350,8 +356,9 @@ export function Mod_LoadFaces(mod: ModelT, buffer: Uint8Array, l: LumpT): void {
     // (src/common/model.ts's shared CalcSurfaceExtents takes the cap as a
     // parameter for exactly this reason -- reads loadState.loadmodel, which
     // must equal `mod` when this hook runs, exactly as it does when
-    // Mod_LoadBrushModel calls this hook).
-    CalcSurfaceExtents(out, 512);
+    // Mod_LoadBrushModel calls this hook). U15 raises this renderer's own
+    // cap further, to GL_MAX_SURFACE_EXTENTS (see this function's header).
+    CalcSurfaceExtents(out, GL_MAX_SURFACE_EXTENTS);
 
     // lighting info
     for (let i = 0; i < MAXLIGHTMAPS; i++) out.styles[i] = inf.styles[i];

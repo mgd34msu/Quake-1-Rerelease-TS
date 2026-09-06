@@ -43,6 +43,24 @@ under qw.active:
   `glColor3f(0.2,0.1,0.0)` to `glColor4f(light->color[0..3])`, reading the
   per-dlight `color[4]` field QW's dlight_t gains (`DlightT.color`,
   src/client/client.ts). Both branches are ported below.
+
+U15 (colored lighting -- QuakeSpasm gl_rlight.c's R_LightPoint/
+RecursiveLightPoint, which return a genuine RGB color via a file-scope
+`lightcolor` vec3 instead of a single scalar): RecursiveLightPoint/
+R_LightPoint here keep this port's PRE-EXISTING single-lookup algorithm
+(no bilinear interpolation across the four nearest luxels, unlike current
+QuakeSpasm's much-rewritten version) and only generalize its lightmap read
+from one channel to three, exactly the way gl_rsurf.ts's R_BuildLightMap
+does: `lightcolor` (exported here, alongside `lightspot`) receives the real
+per-channel sample when gl_coloredlight is on and the map has RGB data,
+else the same grey value replicated across all three channels -- so classic
+maps and gl_coloredlight 0 reproduce the pre-U15 scalar bit for bit (see
+RecursiveLightPoint's own comment). The scalar RecursiveLightPoint/
+R_LightPoint still return, for every existing caller that only reads a
+single brightness, is the AVERAGE of the three channels (exactly equal to
+any one of them when they are all the same, i.e. whenever color is not
+active). gl_rmain.ts's R_DrawAliasModel reads `lightcolor` directly to
+shade alias models per channel; see that file's own header note.
 */
 
 import { DotProduct, Length, M_PI, MplaneT, type Vec3, VectorCopy, VectorSubtract, vec3 } from "../common/mathlib";
@@ -53,7 +71,7 @@ import { SURF_DRAWTILED, type MleafT, type MnodeT, isMleaf } from "../common/mod
 import { Sys_Error } from "../platform/sys";
 import { MAX_DLIGHTS, cl, cl_dlights, cl_lightstyle, type DlightT } from "../client/client";
 import { r_origin, vpn, vright, vup } from "../client/render";
-import { d_lightstylevalue, glState } from "./glquake";
+import { d_lightstylevalue, gl_coloredlight, glState } from "./glquake";
 import { GL_BLEND, GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_SMOOTH, GL_SRC_ALPHA, GL_TEXTURE_2D, GL_TRIANGLE_FAN, qgl } from "./qgl";
 import { gl_flashblend, v_blend } from "./gl_rmain";
 
@@ -272,6 +290,22 @@ LIGHT SAMPLING
 =============================================================================
 */
 
+// U15: the RGB light color the last successful RecursiveLightPoint/
+// R_LightPoint call sampled -- a real per-channel value when gl_coloredlight
+// is on and the map has RGB data, else the same grey value in all three
+// channels (see this file's header). gl_rmain.ts's R_DrawAliasModel reads
+// this directly to shade alias models per channel.
+export const lightcolor: Vec3 = vec3();
+
+// U15: true when this map's surfaces should be sampled for real color
+// (mirrors gl_rsurf.ts's identically-named predicate, which this module
+// cannot import without closing a new gl_rsurf<->gl_rlight cycle -- see
+// glquake.ts's gl_coloredlight comment).
+function coloredLightingAvailable(): boolean {
+  const worldmodel = cl.worldmodel;
+  return gl_coloredlight.value !== 0 && worldmodel !== null && worldmodel.lightdata_rgb !== null;
+}
+
 export function RecursiveLightPoint(node: MnodeT | MleafT, start: Vec3, end: Vec3): number {
   if (isMleaf(node)) return -1; // didn't hit anything
 
@@ -309,7 +343,10 @@ export function RecursiveLightPoint(node: MnodeT | MleafT, start: Vec3, end: Vec
   rlightState.lightplane = plane;
 
   if (cl.worldmodel === null) Sys_Error("RecursiveLightPoint: no worldmodel");
-  const surfaces = cl.worldmodel.surfaces;
+  const worldmodel = cl.worldmodel;
+  const colored = coloredLightingAvailable();
+  const rgbLightdata = colored ? worldmodel.lightdata_rgb : null;
+  const surfaces = worldmodel.surfaces;
   for (let i = 0; i < node.numsurfaces; i++) {
     const surf = surfaces[node.firstsurface + i];
 
@@ -328,26 +365,51 @@ export function RecursiveLightPoint(node: MnodeT | MleafT, start: Vec3, end: Vec
 
     if (ds > surf.extents[0] || dt > surf.extents[1]) continue;
 
-    if (surf.samples === null) return 0;
+    if (surf.samples === null) {
+      lightcolor[0] = lightcolor[1] = lightcolor[2] = 0;
+      return 0;
+    }
 
     ds >>= 4;
     dt >>= 4;
 
     const lightmap = surf.samples;
+    const rgbSamples = rgbLightdata !== null && surf.lightofs !== -1 ? rgbLightdata.subarray(surf.lightofs * 3) : null;
     let lightmapOfs = 0;
-    r = 0;
+    let rr = 0;
+    let gg = 0;
+    let bb = 0;
 
     lightmapOfs += dt * ((surf.extents[0] >> 4) + 1) + ds;
 
     for (let maps = 0; maps < MAXLIGHTMAPS && surf.styles[maps] !== 255; maps++) {
       const scale = d_lightstylevalue[surf.styles[maps]];
-      r += lightmap[lightmapOfs] * scale;
+      if (rgbSamples) {
+        const base = lightmapOfs * 3;
+        rr += rgbSamples[base] * scale;
+        gg += rgbSamples[base + 1] * scale;
+        bb += rgbSamples[base + 2] * scale;
+      } else {
+        const v = lightmap[lightmapOfs] * scale;
+        rr += v;
+        gg += v;
+        bb += v;
+      }
       lightmapOfs += ((surf.extents[0] >> 4) + 1) * ((surf.extents[1] >> 4) + 1);
     }
 
-    r >>= 8;
+    rr >>= 8;
+    gg >>= 8;
+    bb >>= 8;
+    lightcolor[0] = rr;
+    lightcolor[1] = gg;
+    lightcolor[2] = bb;
 
-    return r;
+    // the classic scalar callers get the average of the three channels --
+    // exactly `rr` (any one of them) whenever they are all equal, i.e.
+    // whenever color is not active, so this is byte-identical to the
+    // pre-U15 return for every existing caller.
+    return ((rr + gg + bb) / 3) | 0;
   }
 
   // go down back side
@@ -357,7 +419,10 @@ export function RecursiveLightPoint(node: MnodeT | MleafT, start: Vec3, end: Vec
 }
 
 export function R_LightPoint(p: Vec3): number {
-  if (cl.worldmodel === null || cl.worldmodel.lightdata === null) return 255;
+  if (cl.worldmodel === null || cl.worldmodel.lightdata === null) {
+    lightcolor[0] = lightcolor[1] = lightcolor[2] = 255;
+    return 255;
+  }
   if (cl.worldmodel.nodes.length === 0) Sys_Error("R_LightPoint: bad worldmodel");
 
   const end: Vec3 = vec3();
@@ -365,9 +430,13 @@ export function R_LightPoint(p: Vec3): number {
   end[1] = p[1];
   end[2] = p[2] - 2048;
 
+  lightcolor[0] = lightcolor[1] = lightcolor[2] = 0;
   let r = RecursiveLightPoint(cl.worldmodel.nodes[0], p, end);
 
-  if (r === -1) r = 0;
+  if (r === -1) {
+    r = 0;
+    lightcolor[0] = lightcolor[1] = lightcolor[2] = 0;
+  }
 
   return r;
 }

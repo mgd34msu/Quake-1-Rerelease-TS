@@ -77,6 +77,25 @@ Deviations from PORTING.md / the C source:
   comment and the local is dropped with it.
 - Dropped `#ifdef GLTEST`: R_RenderScene's `Test_Draw ()`.
 
+U15 (colored lighting for alias models -- QuakeSpasm's `lightcolor`, no C
+original for the per-channel shading path itself): R_DrawAliasModel's
+scalar `rmainState.ambientlight`/`shadelight` computation (from
+R_LightPoint's returned average) is UNCHANGED, still exactly the classic
+clamp/hack sequence, since every other consumer of a single brightness
+number still reads it. Immediately after, the same clamp/hack sequence is
+replayed once per channel, seeded from gl_rlight.ts's `lightcolor` (which
+R_LightPoint just filled as a side effect of the call above) instead of the
+scalar average, writing `rmainState.shadelightColor`. GL_DrawAliasFrame
+reads `shadelightColor` instead of the scalar `shadelight` for its
+`qglColor3f` call. Classic maps and gl_coloredlight 0 give `lightcolor`
+identical values in all three channels (see gl_rlight.ts's header), so
+`shadelightColor` ends up `[shadelight, shadelight, shadelight]` and the
+rendered color is byte-identical to before -- the per-channel replay is
+pure duplication of the classic arithmetic, not a different curve. The
+per-dlight `add` term does not depend on channel (classic dlights stay
+white), so it is recomputed identically in each of the three passes rather
+than cached, trading a few redundant additions for a smaller diff.
+
 QuakeWorld deltas (QW/client/gl_rmain.c vs WinQuake/gl_rmain.c), folded under
 qw.active:
 - `r_netgraph` cvar: NOT declared here. r_main.c and gl_rmain.c each declare
@@ -248,7 +267,7 @@ import {
 } from "./qgl";
 import { GL_Bind } from "./gl_draw";
 import { GL_DisableMultitexture, R_DrawBrushModel, R_DrawWaterSurfaces, R_DrawWorld, R_MarkLeaves, R_RenderBrushPoly } from "./gl_rsurf";
-import { R_AnimateLight, R_LightPoint, R_RenderDlights, lightspot } from "./gl_rlight";
+import { R_AnimateLight, R_LightPoint, R_RenderDlights, lightcolor, lightspot } from "./gl_rlight";
 
 // gl_vidlinuxglx.c:75's `cvar_t gl_ztrick = {"gl_ztrick","1"};` (see the
 // header note on why the definition lives here and not in gl_vid.ts).
@@ -447,11 +466,15 @@ export const rmainState: {
   ambientlight: number;
   shadedots: Float32Array;
   lastposenum: number;
+  // U15: per-channel shadelight (see this file's header note); what
+  // GL_DrawAliasFrame actually reads.
+  shadelightColor: Vec3;
 } = {
   shadelight: 0,
   ambientlight: 0,
   shadedots: r_avertexnormal_dots.subarray(0, ANORM_DOTS_ROW),
   lastposenum: 0,
+  shadelightColor: vec3(),
 };
 
 /*
@@ -487,8 +510,10 @@ export function GL_DrawAliasFrame(paliashdr: AliashdrT, posenum: number): void {
 
       // normals and vertexes come from the frame list
       const verts = posedata[vertnum];
-      const l = rmainState.shadedots[verts.lightnormalindex] * rmainState.shadelight;
-      qgl().qglColor3f(l, l, l);
+      // U15: per-channel shadelight (see this file's header note); reduces
+      // to the classic `qglColor3f(l, l, l)` whenever color is not active.
+      const dot = rmainState.shadedots[verts.lightnormalindex];
+      qgl().qglColor3f(dot * rmainState.shadelightColor[0], dot * rmainState.shadelightColor[1], dot * rmainState.shadelightColor[2]);
       qgl().qglVertex3f(verts.v[0], verts.v[1], verts.v[2]);
       vertnum++;
     } while (--count);
@@ -647,6 +672,47 @@ export function R_DrawAliasModel(e: EntityT): void {
   const shaderow = ((e.angles[1] * (SHADEDOT_QUANT / 360.0)) | 0) & (SHADEDOT_QUANT - 1);
   rmainState.shadedots = r_avertexnormal_dots.subarray(shaderow * ANORM_DOTS_ROW, (shaderow + 1) * ANORM_DOTS_ROW);
   rmainState.shadelight = rmainState.shadelight / 200.0;
+
+  // U15: replay the exact same clamp/hack sequence per channel, seeded from
+  // gl_rlight.ts's `lightcolor` (the RGB sample the R_LightPoint call above
+  // just took, or the grey value replicated across all three channels when
+  // gl_coloredlight is off or the map carries no RGB data -- see this
+  // file's header note).
+  for (let c = 0; c < 3; c++) {
+    let ambientc = lightcolor[c];
+    let shadec = lightcolor[c];
+
+    if (e === cl.viewent && ambientc < 24) ambientc = shadec = 24;
+
+    for (let lnum = 0; lnum < MAX_DLIGHTS; lnum++) {
+      if (cl_dlights[lnum].die >= cl.time) {
+        VectorSubtract(currententity.origin, cl_dlights[lnum].origin, aliasDist);
+        const add = cl_dlights[lnum].radius - Length(aliasDist);
+        if (add > 0) {
+          ambientc += add;
+          shadec += add;
+        }
+      }
+    }
+
+    if (ambientc > 128) ambientc = 128;
+    if (ambientc + shadec > 192) shadec = 192 - ambientc;
+
+    if (qw.active) {
+      if (clmodel.name === "progs/player.mdl") {
+        if (ambientc < 8) ambientc = shadec = 8;
+      } else if (clmodel.name === "progs/flame2.mdl" || clmodel.name === "progs/flame.mdl") {
+        ambientc = shadec = 256;
+      }
+    } else {
+      if (i >= 1 && i <= cl.maxclients) {
+        if (ambientc < 8) ambientc = shadec = 8;
+      }
+      if (clmodel.name === "progs/flame2.mdl" || clmodel.name === "progs/flame.mdl") ambientc = shadec = 256;
+    }
+
+    rmainState.shadelightColor[c] = shadec / 200.0;
+  }
 
   const an = (e.angles[1] / 180) * M_PI;
   shadevector[0] = Math.cos(-an);

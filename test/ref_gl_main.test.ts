@@ -125,6 +125,7 @@ const saved = {
   ambientlight: rmainState.ambientlight,
   lastposenum: rmainState.lastposenum,
   shadedots: rmainState.shadedots,
+  shadelightColor: [rmainState.shadelightColor[0], rmainState.shadelightColor[1], rmainState.shadelightColor[2]],
   gl_cull: gl_cull.value,
   gl_polyblend: gl_polyblend.value,
   r_novis: r_novis.value,
@@ -184,6 +185,9 @@ afterAll(() => {
   rmainState.ambientlight = saved.ambientlight;
   rmainState.lastposenum = saved.lastposenum;
   rmainState.shadedots = saved.shadedots;
+  rmainState.shadelightColor[0] = saved.shadelightColor[0];
+  rmainState.shadelightColor[1] = saved.shadelightColor[1];
+  rmainState.shadelightColor[2] = saved.shadelightColor[2];
   gl_cull.value = saved.gl_cull;
   gl_polyblend.value = saved.gl_polyblend;
   r_novis.value = saved.r_novis;
@@ -444,7 +448,12 @@ describe("GL_DrawAliasFrame", () => {
     cmdI[7] = 0; // terminator
     paliashdr.commands = cmdI;
 
-    rmainState.shadelight = 1;
+    // U15: GL_DrawAliasFrame reads rmainState.shadelightColor (per-channel),
+    // not the scalar shadelight -- [1,1,1] reproduces the classic grey
+    // shading this test pins.
+    rmainState.shadelightColor[0] = 1;
+    rmainState.shadelightColor[1] = 1;
+    rmainState.shadelightColor[2] = 1;
     const dots = rmainState.shadedots;
 
     GL_DrawAliasFrame(paliashdr, 0);

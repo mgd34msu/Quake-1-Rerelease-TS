@@ -114,6 +114,7 @@ import type { MleafT, MsurfaceT, TextureT } from "../common/model";
 import { EntityT } from "../client/render";
 import { GlpolyT } from "./gl_model_types";
 import { GL_LINEAR } from "./qgl";
+import { CvarT } from "../common/cvar";
 
 export { EntityT, ParticleT, PtypeT, RefdefT, r_refdef, r_origin, vpn, vright, vup } from "../client/render";
 
@@ -163,9 +164,48 @@ export class GltextureT {
 // BLOCK_WIDTH/BLOCK_HEIGHT of 256 for the scrap atlas; those stay private to
 // gl_draw.ts, exactly as the two file-scope #defines stay private to their
 // translation units in the C.
+//
+// U15 (re-release surface sizes / colored lighting): raised from 128x128 to
+// 256x256, QuakeSpasm's own LMBLOCK_WIDTH/LMBLOCK_HEIGHT value (r_brush.c),
+// so a single surface built against GL_MAX_SURFACE_EXTENTS (below) still
+// fits one block with room to spare -- AllocBlock needs BLOCK_WIDTH/HEIGHT
+// strictly greater than the widest/tallest surface it is ever asked to
+// place, and (GL_MAX_SURFACE_EXTENTS>>4)+1 = 126. MAX_LIGHTMAPS stays 64:
+// four times the texel area per block means four times fewer blocks are
+// needed for the same set of surfaces, so the extra headroom more than
+// covers the larger cap. Memory cost: the `lightmaps` CPU-side staging
+// buffer in gl_rsurf.ts is 4 * MAX_LIGHTMAPS * BLOCK_WIDTH * BLOCK_HEIGHT
+// bytes = 16 MiB (up from 4 MiB at 128x128); `allocated` is
+// MAX_LIGHTMAPS * BLOCK_WIDTH int32s = 64 KiB.
 export const MAX_LIGHTMAPS = 64;
-export const BLOCK_WIDTH = 128;
-export const BLOCK_HEIGHT = 128;
+export const BLOCK_WIDTH = 256;
+export const BLOCK_HEIGHT = 256;
+
+// U15 addition: this renderer's own cap on CalcSurfaceExtents' `maxextents`
+// parameter (src/common/model.ts), replacing gl_model.c's hardcoded 512.
+// Named "locally" per this unit's brief but placed here rather than in
+// gl_rsurf.ts/gl_model.ts themselves because both of those modules need the
+// same value and gl_rsurf.ts already imports from gl_warp.ts which imports
+// from gl_model.ts -- defining it in either would close a NEW import cycle
+// this unit did not inherit from the C. glquake.ts is the GL tree's shared
+// header (BLOCK_WIDTH/MAX_LIGHTMAPS live here for the same reason) and has
+// no dependency on either module, so it is the cycle-free common ancestor.
+// blocklights (gl_rsurf.ts) is sized off this value: a per-surface scratch
+// buffer only ever needs to hold ONE surface's texel grid at a time, so it
+// is ((GL_MAX_SURFACE_EXTENTS>>4)+2)^2*3 samples (three channels), not the
+// full lightmap block's area.
+export const GL_MAX_SURFACE_EXTENTS = 2000;
+
+// U15 addition: no C original (colored lightmaps are a QuakeSpasm/Ironwail
+// feature ported here as a documented quality-of-life addition, per
+// PORTING.md's fidelity razor). Declared here rather than in gl_rsurf.ts or
+// gl_rlight.ts, its two readers, for the same cycle-avoidance reason as
+// GL_MAX_SURFACE_EXTENTS above: gl_rsurf.ts already imports R_MarkLights
+// from gl_rlight.ts, so a cvar declared in gl_rsurf.ts and imported back by
+// gl_rlight.ts would close a new cycle. Registered by gl_rmisc.ts's R_Init.
+// Default 1 (colored lightmaps on whenever the loaded map has RGB samples);
+// 0 forces the classic grey path even when `.lit`/BSPX RGB data is present.
+export const gl_coloredlight = new CvarT("gl_coloredlight", "1");
 
 // gl_vidnt.c:104's `glvert_t glv`, the GL_EXT_vertex_array staging vertex.
 export class GlvertT {

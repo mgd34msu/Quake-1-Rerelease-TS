@@ -33,9 +33,9 @@ import { buildBsp, ensureDir, writeGameFile } from "./support/bsp_builder";
 import { writePakToDisk } from "./support/pak_builder";
 import { MAX_DLIGHTS, cl, cl_dlights, cl_efrags, cl_entities, cl_lightstyle, cl_visedicts, clState } from "../src/client/client";
 import { EntityT, r_origin, vpn, vright, vup } from "../src/client/render";
-import { d_lightstylevalue, glState } from "../src/ref_gl/glquake";
+import { d_lightstylevalue, gl_coloredlight, glState } from "../src/ref_gl/glquake";
 import { GL_BLEND, GL_ONE, GL_TEXTURE_2D, GL_TRIANGLE_FAN, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
-import { AddLightBlend, R_AnimateLight, R_LightPoint, R_PushDlights, R_RenderDlights, lightspot, rlightState } from "../src/ref_gl/gl_rlight";
+import { AddLightBlend, R_AnimateLight, R_LightPoint, R_PushDlights, R_RenderDlights, lightcolor, lightspot, rlightState } from "../src/ref_gl/gl_rlight";
 import { R_AddEfrags, R_RemoveEfrags, R_StoreEfrags, refragState } from "../src/ref_gl/gl_refrag";
 import { gl_flashblend, v_blend } from "../src/ref_gl/gl_rmain";
 
@@ -72,6 +72,7 @@ const saved = {
   d_lightstylevalue0: d_lightstylevalue[0],
   d_lightstylevalue10: d_lightstylevalue[10],
   d_lightstylevalue63: d_lightstylevalue[63],
+  gl_coloredlight: { value: gl_coloredlight.value, string: gl_coloredlight.string },
 };
 
 let world: InstanceType<typeof ModelT>;
@@ -144,6 +145,8 @@ afterAll(() => {
   d_lightstylevalue[0] = saved.d_lightstylevalue0;
   d_lightstylevalue[10] = saved.d_lightstylevalue10;
   d_lightstylevalue[63] = saved.d_lightstylevalue63;
+  gl_coloredlight.value = saved.gl_coloredlight.value;
+  gl_coloredlight.string = saved.gl_coloredlight.string;
 });
 
 function clearDlights(): void {
@@ -372,6 +375,85 @@ describe("R_LightPoint", () => {
 
     world.lightdata = null;
     surf.samples = null;
+  });
+});
+
+// U15: colored lighting -- R_LightPoint/RecursiveLightPoint keep returning
+// the classic scalar (now the average of gl_rlight.ts's `lightcolor`, see
+// that file's header note) but also fill `lightcolor` with the real RGB
+// sample when gl_coloredlight is on and the map has RGB data.
+describe("R_LightPoint / lightcolor (colored, U15)", () => {
+  afterAll(() => {
+    world.lightdata = null;
+    world.lightdata_rgb = null;
+    world.surfaces[0].samples = null;
+    world.surfaces[0].lightofs = -1;
+  });
+
+  test("fills lightcolor with the real per-channel sample and returns the average", () => {
+    cl.worldmodel = world;
+    world.lightdata = new Uint8Array(1);
+    world.lightdata_rgb = new Uint8Array([10, 20, 30]);
+    gl_coloredlight.value = 1;
+
+    const surf = world.surfaces[0];
+    surf.texturemins[0] = 0;
+    surf.texturemins[1] = 0;
+    surf.extents[0] = 256;
+    surf.extents[1] = 256;
+    surf.samples = new Uint8Array([128]); // grey path's value, must NOT be read
+    surf.lightofs = 0;
+    d_lightstylevalue[0] = 256; // 8.8 fixed-point 1.0, for round numbers
+
+    const p = new Float32Array([0, 0, 64]);
+    // (10+20+30)/3 = 20, truncated
+    expect(R_LightPoint(p)).toBe(20);
+    expect(lightcolor[0]).toBe(10);
+    expect(lightcolor[1]).toBe(20);
+    expect(lightcolor[2]).toBe(30);
+  });
+
+  test("gl_coloredlight 0 ignores the RGB data and reproduces the grey scalar", () => {
+    cl.worldmodel = world;
+    world.lightdata = new Uint8Array(1);
+    world.lightdata_rgb = new Uint8Array([10, 20, 30]); // present but must be ignored
+    gl_coloredlight.value = 0;
+
+    const surf = world.surfaces[0];
+    surf.texturemins[0] = 0;
+    surf.texturemins[1] = 0;
+    surf.extents[0] = 256;
+    surf.extents[1] = 256;
+    surf.samples = new Uint8Array([128]);
+    surf.lightofs = 0;
+    d_lightstylevalue[0] = 264;
+
+    const p = new Float32Array([0, 0, 64]);
+    expect(R_LightPoint(p)).toBe((128 * 264) >> 8);
+    expect(lightcolor[0]).toBe(lightcolor[1]);
+    expect(lightcolor[1]).toBe(lightcolor[2]);
+    expect(lightcolor[0]).toBe((128 * 264) >> 8);
+  });
+
+  test("no RGB data on the map reproduces the grey scalar even with gl_coloredlight on", () => {
+    cl.worldmodel = world;
+    world.lightdata = new Uint8Array(1);
+    world.lightdata_rgb = null;
+    gl_coloredlight.value = 1;
+
+    const surf = world.surfaces[0];
+    surf.texturemins[0] = 0;
+    surf.texturemins[1] = 0;
+    surf.extents[0] = 256;
+    surf.extents[1] = 256;
+    surf.samples = new Uint8Array([128]);
+    surf.lightofs = 0;
+    d_lightstylevalue[0] = 264;
+
+    const p = new Float32Array([0, 0, 64]);
+    expect(R_LightPoint(p)).toBe((128 * 264) >> 8);
+    expect(lightcolor[0]).toBe(lightcolor[1]);
+    expect(lightcolor[1]).toBe(lightcolor[2]);
   });
 });
 

@@ -99,7 +99,7 @@ import { R_InitBubble } from "./gl_rlight";
 import { ngraphState } from "./gl_ngraph";
 import { R_ClearParticles, R_InitParticles, R_ReadPointFile_f } from "../client/r_part";
 import type * as QwRPartModule from "../qw/client/r_part";
-import { d_lightstylevalue, glState, r_worldentity } from "./glquake";
+import { d_lightstylevalue, gl_coloredlight, glState, r_worldentity } from "./glquake";
 import { AliashdrT } from "./gl_model_types";
 import {
   GL_BACK,
@@ -344,6 +344,9 @@ export function R_Init(): void {
   Cvar_RegisterVariable(gl_reporttjunctions);
 
   Cvar_RegisterVariable(gl_doubleeyes);
+
+  // U15 addition: no C original (see glquake.ts's header note).
+  Cvar_RegisterVariable(gl_coloredlight);
 
   if (qw.active) qwRPartMod().R_InitParticles();
   else R_InitParticles();
