@@ -564,16 +564,22 @@ function outPathFor(outDir: string, job: SweepJobT): string {
 }
 
 /**
- * One driver subprocess for one (gamedir, map) pair, under `timeout 300` --
- * this unit's brief calls for a hard per-subprocess timeout, on top of
- * sweep_driver.ts's own internal 60s watchdog, so a boot that somehow gets
- * past that internal watchdog (a genuinely unkillable synchronous hang)
- * still cannot stall the sweep forever.
+ * One driver subprocess for one (gamedir, map) pair, under `timeout -k 10
+ * 300` -- this unit's brief calls for a hard per-subprocess timeout, on top
+ * of sweep_driver.ts's own internal 60s watchdog, so a boot that somehow
+ * gets past that internal watchdog (a genuinely unkillable synchronous
+ * hang) still cannot stall the sweep forever. The `-k 10` matters: a driver
+ * spinning inside one synchronous frame never returns to the event loop, so
+ * Bun never sees timeout's SIGTERM and the process ran until the whole
+ * sweep was killed by hand (seen 2026-09-06 on rerelease/hipnotic hip1m2);
+ * ten seconds after the SIGTERM, timeout follows up with SIGKILL.
  */
 export async function runOneJob(job: SweepJobT, outDir: string, opts: SweepRunOptsT): Promise<SweepRecordT> {
   const outPath = outPathFor(outDir, job);
   const args = [
     "timeout",
+    "-k",
+    "10",
     "300",
     "bun",
     DRIVER_PATH,
