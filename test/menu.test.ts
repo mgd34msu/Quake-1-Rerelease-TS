@@ -35,7 +35,7 @@
 // com_classic_root/com_basedir have no exported setter -- see this file's
 // afterAll for the compensating final COM_InitFilesystem reset).
 
-import { afterAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -57,8 +57,9 @@ import {
   setComGamedir,
   setComSearchpaths,
 } from "../src/common/common";
+import * as cmdModule from "../src/common/cmd";
 import { Cbuf_Init, Cbuf_Execute } from "../src/common/cmd";
-import { host, sv_autosave } from "../src/common/host";
+import { host, sv_autosave, coop, teamplay } from "../src/common/host";
 import "../src/common/host_cmd";
 import { hostCacheCount, hostcache } from "../src/common/net_main";
 import { svs, sv } from "../src/server/server";
@@ -83,17 +84,29 @@ import { vid } from "../src/client/vid";
 import "../src/client/screen_types";
 import "../src/client/screen";
 import "../src/client/cl_main";
-import { cl_weaponswitch } from "../src/client/cl_main";
+import { cl_weaponswitch, cl_protocol } from "../src/client/cl_main";
 import { snd_speed } from "../src/client/sound";
 import { joy_enable } from "../src/platform/sdl";
 import { gl_coloredlight } from "../src/ref_gl/glquake";
 import { language, sv_ruleset, campaign } from "../src/progs/ext/ruleset";
+import { sv_protocol } from "../src/server/sv_main";
+import { Bot_ForgetKnowledge, Bot_ForgetMapdb, bot_count, bot_skill } from "../src/bots";
 import * as menu from "../src/client/menu";
 
 // cmd_text (cmd.ts's command buffer) is unallocated until Cbuf_Init runs;
 // without this, Cbuf_AddText/Cbuf_InsertText immediately "overflow" (maxsize
 // is 0). Host_Init calls this in the real engine; this test does it directly.
 Cbuf_Init();
+
+// U40 addition: a bare spyOn (rule 15) recording every Cbuf_AddText call
+// without changing its behavior -- the New Game/Bots/Join Game launch-string
+// tests below read `.mock.calls` off this rather than re-implementing
+// Cbuf_Execute-driven end-to-end checks (menu_content.test.ts's own
+// Content_PerformLaunch describe block explains why: exercising the queued
+// commands for real needs a mounted gamedir/bsp, out of this file's scope).
+// Cleared before every test (this file's own beforeEach below) and restored
+// in this file's own afterAll.
+const cbufAddTextSpy = spyOn(cmdModule, "Cbuf_AddText");
 
 // resetMenuState() (below) parks cls.state at ca_disconnected as this file's
 // own beforeEach baseline, not the pristine ca_dedicated default, and this
@@ -118,6 +131,19 @@ const savedCampaign = { string: campaign.string, value: campaign.value };
 const savedComSearchpaths = com_searchpaths;
 const savedComGamedir = com_gamedir;
 
+// U40: cl_protocol/sv_protocol/coop/teamplay (real objects, each registered
+// inside its own module's init function rather than at module load -- see
+// this file's own header note above on why every cvar this file exercises
+// gets registered here explicitly) plus bot_count/bot_skill (registered as a
+// module-load side effect of importing "../src/bots" transitively through
+// menu_content.ts -- see that module's own header).
+const savedClProtocol = { string: cl_protocol.string, value: cl_protocol.value };
+const savedSvProtocol = { string: sv_protocol.string, value: sv_protocol.value };
+const savedCoop = { string: coop.string, value: coop.value };
+const savedTeamplay = { string: teamplay.string, value: teamplay.value };
+const savedBotCount = { string: bot_count.string, value: bot_count.value };
+const savedBotSkill = { string: bot_skill.string, value: bot_skill.value };
+
 Cvar_RegisterVariable(gl_coloredlight);
 Cvar_RegisterVariable(snd_speed);
 Cvar_RegisterVariable(cl_weaponswitch);
@@ -126,6 +152,10 @@ Cvar_RegisterVariable(joy_enable);
 Cvar_RegisterVariable(language);
 Cvar_RegisterVariable(sv_ruleset);
 Cvar_RegisterVariable(campaign);
+Cvar_RegisterVariable(cl_protocol);
+Cvar_RegisterVariable(sv_protocol);
+Cvar_RegisterVariable(coop);
+Cvar_RegisterVariable(teamplay);
 
 // A neutral scratch root (no mapdb.json) this file's afterAll re-mounts as
 // its last act, so COM_IsRereleaseRoot()/COM_ClassicDir()/COM_RereleaseDir()
@@ -156,6 +186,21 @@ afterAll(() => {
   sv_ruleset.value = savedSvRuleset.value;
   campaign.string = savedCampaign.string;
   campaign.value = savedCampaign.value;
+  cl_protocol.string = savedClProtocol.string;
+  cl_protocol.value = savedClProtocol.value;
+  sv_protocol.string = savedSvProtocol.string;
+  sv_protocol.value = savedSvProtocol.value;
+  coop.string = savedCoop.string;
+  coop.value = savedCoop.value;
+  teamplay.string = savedTeamplay.string;
+  teamplay.value = savedTeamplay.value;
+  bot_count.string = savedBotCount.string;
+  bot_count.value = savedBotCount.value;
+  bot_skill.string = savedBotSkill.string;
+  bot_skill.value = savedBotSkill.value;
+  Bot_ForgetKnowledge();
+  Bot_ForgetMapdb();
+  cbufAddTextSpy.mockRestore();
 
   COM_InitArgv(["q1ts", "-basedir", neutralScratchRoot]);
   COM_InitFilesystem();
@@ -260,6 +305,12 @@ const fakeRenderer: Renderer = {
   SCR_DrawCrosshair(): void {},
   Draw_SubPic(): void {},
   Draw_Alt_String(): void {},
+  // Renderer interface addition (U19/U44, landed concurrently with this
+  // unit): menu.ts never calls this (it's kfont_text.ts's own primitive),
+  // but the Renderer interface requires every implementer to have it. Not
+  // this unit's own work -- see this file's own header note if this test
+  // ever needs to assert on it.
+  Draw_GlyphAtlas(): void {},
   isGL: false,
   SCR_ScreenShot_f(): void {},
 };
@@ -324,10 +375,22 @@ function resetMenuState(): void {
   menu.menuState.startepisode = 0;
   menu.menuState.startlevel = 0;
   menu.menuState.m_serverInfoMessage = false;
+
+  // U40 additions.
+  menu.menuState.qexBotsCursor = 0;
+  menu.menuState.gameoptionsRulesetIndex = 1;
+  menu.menuState.gameoptionsProtocolIndex = 0;
+  menu.menuState.gameoptionsBotCount = 0;
+  menu.menuState.gameoptionsBotSkillIndex = 2;
+  menu.menuState.gameoptionsCtf = false;
+  menu.menuState.setupTeamIndex = 0;
+  menu.menuState.m_multiplayer_cursor = 0;
+  menu.menuState.setup_cursor = 4;
 }
 
 beforeEach(() => {
   resetMenuState();
+  cbufAddTextSpy.mockClear();
 });
 
 //=============================================================================
@@ -901,5 +964,549 @@ describe("M_Load_Key / M_Save_Key: Autosave row", () => {
     menu.menuState.load_cursor = 0;
     menu.M_Load_Key(K_UPARROW);
     expect(menu.menuState.load_cursor).toBe(menu.LOAD_ROWS - 1);
+  });
+});
+
+//=============================================================================
+// U40: "the multiplayer menus learn bots, rulesets, protocols and the
+// unified client." A shared fixture root -- id1/mapdb.json (dm/coop/ctf
+// maps), id1/bots/*.txt (two characters, two skills), and an empty "ctf"
+// gamedir -- mounted fresh before every test in this section, the same
+// setComSearchpaths(null) + full remount pattern the "U17 re-release content
+// screens" block above uses and explains (bun:test interleaves file
+// execution, so nothing here trusts another test/file's mount to still be
+// in effect).
+
+const U40_WEAPONS_TXT = `
+{
+  name "axe"
+  number 4096
+  damage 20
+  min_range 0
+  max_range 72
+  min_height 0
+  max_height 0
+  priority 1
+  ammo none
+  ammo_name ""
+  min_ammo 0
+  max_ammo 0
+  flags melee | starting
+  aim_point center
+}
+`;
+
+function u40SettingsBlock(skill: string): string {
+  return `
+skill ${skill}
+{
+  aiming.max_acceleration 360
+  aiming.spring_stiffness 125
+  aiming.damping 20
+  aiming.velocity_offset -0.1
+  aiming.modifier.max_angle 30
+  aiming.modifier.apply_time 0.75
+  aiming.modifier.accel_scalar 1.25
+  aiming.modifier.spring_scalar 1.25
+  aiming.modifier.damping_scalar 1.25
+  behaviors.allow_combat true
+  behaviors.allow_grab_items_in_combat false
+  behaviors.allow_melee true
+  behaviors.allow_check_six false
+  behaviors.allow_grab_items true
+  behaviors.allow_grab_power_items true
+  behaviors.defer_power_items_to_humans false
+  behaviors.min_respawn_time 1
+  behaviors.max_respawn_time 1.5
+  movement.allow_jumping_in_combat true
+  movement.jump_chance 35
+  movement.jump_cooldown 1
+  movement.walk_only false
+  senses.sight_time 0.25
+  senses.sight_decay_time 0.3
+  senses.invis_enemy_sight_scalar 2
+  senses.max_invis_enemy_sight_dist 256
+  senses.fov_angle 140
+  senses.forget_non_vis_enemy_time 1.5
+  senses.sound_range 640
+  senses.sound_time 0.4
+  senses.sound_decay_time 2.5
+  senses.sound_persist_time 0.4
+  weapons.decay_time 2
+  weapons.fov_angle 40
+  weapons.sight_time 0.2
+}
+`;
+}
+
+const U40_SETTINGS_TXT = u40SettingsBlock("easy") + u40SettingsBlock("medium");
+
+const U40_CHARACTERS_TXT = `
+{
+  fun_name Grunt
+  name grunt
+  shirt_color 4
+  pants_color 11
+}
+{
+  fun_name Ogre
+  name ogre
+  shirt_color 2
+  pants_color 6
+}
+`;
+
+const U40_MAPDB_TEXT = JSON.stringify({
+  episodes: [{ dir: "id1", name: "$m_quake" }],
+  maps: [
+    { title: "Entrance", bsp: "start", episode: "id1", game: "id1", sp: true },
+    { title: "Slipgate Complex", bsp: "e1m1", episode: "id1", game: "id1", sp: true },
+    { title: "Place of Two Deaths", bsp: "dm1", episode: "id1", game: "id1", dm: true, bots: true },
+    { title: "The Cistern", bsp: "dm5", episode: "id1", game: "id1", dm: true, bots: false },
+    { title: "Bounce", bsp: "coop1", episode: "id1", game: "id1", coop: true },
+    { title: "McKinley Base", bsp: "ctf1", episode: "id1", game: "ctf", ctf: true, bots: true },
+  ],
+});
+
+describe("U40: bots/rulesets/protocols, ctf-and-bots root mounted", () => {
+  const root = mkdtempSync(join(scratchRoot, "menu-u40-ctf-bots-"));
+
+  beforeEach(() => {
+    setComSearchpaths(null);
+    mkdirSync(join(root, "id1", "bots"), { recursive: true });
+    mkdirSync(join(root, "ctf"), { recursive: true });
+    writeFileSync(join(root, "id1", "mapdb.json"), U40_MAPDB_TEXT);
+    writeFileSync(join(root, "id1", "bots", "weapons.txt"), U40_WEAPONS_TXT);
+    writeFileSync(join(root, "id1", "bots", "settings_PC.txt"), U40_SETTINGS_TXT);
+    writeFileSync(join(root, "id1", "bots", "characters.txt"), U40_CHARACTERS_TXT);
+
+    COM_InitArgv(["q1ts", "-rerelease", root]);
+    COM_InitFilesystem();
+    expect(COM_IsRereleaseRoot()).toBe(true);
+    Bot_ForgetKnowledge();
+    Bot_ForgetMapdb();
+
+    // Refreshes menu.ts's own cached content model against this mount --
+    // ctfMounted()/mpEpisodesForCurrentGameType() (GameOptions, the Bots
+    // page's currentOrSelectedMapName, and Setup's Team row) all read that
+    // cache rather than re-scanning the filesystem on every call, the same
+    // way M_Menu_QexAddons_f refreshes it on entry.
+    menu.M_Menu_GameOptions_f();
+    menu.menuState.startepisode = 0;
+    menu.menuState.startlevel = 0;
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  //---------------------------------------------------------------------
+  // Multiplayer -> Bots
+
+  test("Multiplayer gains a fourth Bots item, reaching m_qex_bots", () => {
+    setMState(menu.MStateT.m_multiplayer);
+    menu.menuState.m_multiplayer_cursor = 3;
+    menu.M_MultiPlayer_Key(K_ENTER);
+    expect(menu.menuState.m_state).toBe(menu.MStateT.m_qex_bots);
+  });
+
+  test("K_ESCAPE from the Bots page returns to Multiplayer", () => {
+    setMState(menu.MStateT.m_qex_bots);
+    menu.M_QexBots_Key(K_ESCAPE);
+    expect(menu.menuState.m_state).toBe(menu.MStateT.m_multiplayer);
+  });
+
+  //---------------------------------------------------------------------
+  // Bots page: enable/disable by map flag
+
+  test("enabled on dm1 (mapdb bots:true), disabled on dm5 (bots:false)", () => {
+    // Game Type defaults to Deathmatch, so resolveGameOptionsMap()'s mapdb-
+    // driven dm list is [dm1, dm5]; startlevel selects between them.
+    menu.menuState.startlevel = 0;
+    expect(menu.M_QexBots_Draw).not.toThrow(); // sanity: Draw runs over both states below
+
+    menu.menuState.qexBotsCursor = 2; // Grunt's roster row
+    menu.M_QexBots_Key(K_ENTER);
+    expect(cbufAddTextSpy).toHaveBeenCalledWith('addbot "grunt" "medium"\n');
+
+    cbufAddTextSpy.mockClear();
+    menu.menuState.startlevel = 1; // dm5, bots:false
+    menu.M_QexBots_Key(K_ENTER);
+    expect(cbufAddTextSpy).not.toHaveBeenCalled();
+  });
+
+  test("Draw prints a note when disabled", () => {
+    menu.menuState.startlevel = 1; // dm5, bots:false
+    setMState(menu.MStateT.m_qex_bots);
+    expect(() => menu.M_QexBots_Draw()).not.toThrow();
+  });
+
+  //---------------------------------------------------------------------
+  // Bots page: roster add/kick and Add Random, issued through Cbuf
+
+  test("roster row ENTER (inactive) issues addbot \"<characterName>\" \"<skill>\"", () => {
+    menu.menuState.startlevel = 0; // dm1, bots:true
+    Cvar_Set("bot_skill", "easy");
+    menu.menuState.qexBotsCursor = 3; // Ogre's roster row (0=count,1=skill,2=Grunt,3=Ogre)
+    menu.M_QexBots_Key(K_ENTER);
+    expect(cbufAddTextSpy).toHaveBeenCalledWith('addbot "ogre" "easy"\n');
+  });
+
+  test("Add Random row issues addbot random \"<skill>\"", () => {
+    menu.menuState.startlevel = 0; // dm1, bots:true
+    Cvar_Set("bot_skill", "medium");
+    menu.menuState.qexBotsCursor = 4; // 2 roster rows + Add Random == row 4
+    menu.M_QexBots_Key(K_ENTER);
+    expect(cbufAddTextSpy).toHaveBeenCalledWith('addbot random "medium"\n');
+  });
+
+  test("Bot Count/Bot Skill rows adjust bot_count/bot_skill only when enabled", () => {
+    menu.menuState.startlevel = 0; // dm1, bots:true
+    Cvar_SetValue("bot_count", 2);
+    menu.menuState.qexBotsCursor = 0;
+    menu.M_QexBots_Key(K_RIGHTARROW);
+    expect(Cvar_VariableValue("bot_count")).toBe(3);
+
+    Cvar_Set("bot_skill", "easy");
+    menu.menuState.qexBotsCursor = 1;
+    menu.M_QexBots_Key(K_RIGHTARROW);
+    expect(Cvar_VariableString("bot_skill")).toBe("medium");
+
+    // disabled (dm5, bots:false): no-op
+    menu.menuState.startlevel = 1;
+    Cvar_SetValue("bot_count", 2);
+    menu.menuState.qexBotsCursor = 0;
+    menu.M_QexBots_Key(K_RIGHTARROW);
+    expect(Cvar_VariableValue("bot_count")).toBe(2);
+  });
+
+  //---------------------------------------------------------------------
+  // GameOptions: Ruleset/Protocol/Bot Count/Bot Skill rows
+
+  test("Ruleset (9) and Protocol (10) rows cycle RULESETS/SV_PROTOCOLS", () => {
+    menu.menuState.gameoptions_cursor = 9;
+    menu.menuState.gameoptionsRulesetIndex = 0;
+    menu.M_NetStart_Change(1);
+    expect(menu.menuState.gameoptionsRulesetIndex).toBe(1);
+    menu.M_NetStart_Change(1);
+    expect(menu.menuState.gameoptionsRulesetIndex).toBe(0); // wraps
+
+    menu.menuState.gameoptions_cursor = 10;
+    menu.menuState.gameoptionsProtocolIndex = 0;
+    menu.M_NetStart_Change(-1);
+    expect(menu.menuState.gameoptionsProtocolIndex).toBe(3); // wraps to "999"
+  });
+
+  test("Bot Count (11) wraps 0-8, Bot Skill (12) cycles the mounted skill list", () => {
+    menu.menuState.gameoptions_cursor = 11;
+    menu.menuState.gameoptionsBotCount = 8;
+    menu.M_NetStart_Change(1);
+    expect(menu.menuState.gameoptionsBotCount).toBe(0);
+    menu.M_NetStart_Change(-1);
+    expect(menu.menuState.gameoptionsBotCount).toBe(8);
+
+    menu.menuState.gameoptions_cursor = 12;
+    menu.menuState.gameoptionsBotSkillIndex = 0;
+    menu.M_NetStart_Change(-1);
+    expect(menu.menuState.gameoptionsBotSkillIndex).toBe(1); // wraps to "medium" (2-entry mounted list)
+  });
+
+  //---------------------------------------------------------------------
+  // GameOptions: mapdb-driven Game Type / Episode / Level
+
+  test("Game Type cycles Deathmatch -> Cooperative -> CTF -> Deathmatch when ctf is mounted", () => {
+    menu.menuState.gameoptions_cursor = 2;
+    Cvar_SetValue("coop", 0);
+    menu.menuState.gameoptionsCtf = false;
+
+    menu.M_NetStart_Change(1); // -> Cooperative
+    expect(Cvar_VariableValue("coop")).toBe(1);
+    expect(menu.menuState.gameoptionsCtf).toBe(false);
+
+    menu.M_NetStart_Change(1); // -> CTF
+    expect(Cvar_VariableValue("coop")).toBe(0);
+    expect(menu.menuState.gameoptionsCtf).toBe(true);
+
+    menu.M_NetStart_Change(1); // -> Deathmatch
+    expect(Cvar_VariableValue("coop")).toBe(0);
+    expect(menu.menuState.gameoptionsCtf).toBe(false);
+  });
+
+  test("Episode/Level rows source from mapdb's dm flag for Deathmatch", () => {
+    Cvar_SetValue("coop", 0);
+    menu.menuState.gameoptionsCtf = false;
+    menu.menuState.gameoptions_cursor = 8; // Level
+    menu.menuState.startlevel = 0;
+
+    menu.M_NetStart_Change(1);
+    expect(menu.menuState.startlevel).toBe(1);
+    menu.M_NetStart_Change(1);
+    expect(menu.menuState.startlevel).toBe(0); // wraps: only 2 dm maps (dm1, dm5)
+  });
+
+  test("Episode/Level rows source from mapdb's coop flag for Cooperative", () => {
+    Cvar_SetValue("coop", 1);
+    menu.menuState.gameoptionsCtf = false;
+    menu.menuState.gameoptions_cursor = 8;
+    menu.menuState.startlevel = 0;
+
+    menu.M_NetStart_Change(1);
+    expect(menu.menuState.startlevel).toBe(0); // wraps: only 1 coop map (coop1)
+  });
+
+  //---------------------------------------------------------------------
+  // GameOptions: Begin Game launch strings
+
+  test("Begin Game (classic ruleset, mapdb dm mounted, with bots) queues sv_ruleset/sv_protocol/game/bot_count/bot_skill/map in order", () => {
+    Cvar_SetValue("coop", 0);
+    menu.menuState.gameoptionsCtf = false;
+    menu.menuState.maxplayers = 4;
+    menu.menuState.startlevel = 0; // dm1
+    menu.menuState.gameoptionsRulesetIndex = 0; // classic
+    menu.menuState.gameoptionsProtocolIndex = 0; // auto
+    menu.menuState.gameoptionsBotCount = 4;
+    menu.menuState.gameoptionsBotSkillIndex = 1; // "medium" (mounted list: easy, medium)
+    menu.menuState.gameoptions_cursor = 0;
+    sv.active = false;
+
+    menu.M_GameOptions_Key(K_ENTER);
+
+    const calls = cbufAddTextSpy.mock.calls.map(([s]) => s);
+    expect(calls).toEqual([
+      "listen 0\n",
+      "maxplayers 4\n",
+      "sv_ruleset classic\n",
+      "sv_protocol auto\n",
+      "game id1\n",
+      "bot_count 4\n",
+      "bot_skill medium\n",
+      "map dm1\n",
+    ]);
+  });
+
+  test("Begin Game (rerelease ruleset, disconnect prefix when sv.active)", () => {
+    Cvar_SetValue("coop", 0);
+    menu.menuState.gameoptionsCtf = false;
+    menu.menuState.maxplayers = 2;
+    menu.menuState.startlevel = 1; // dm5
+    menu.menuState.gameoptionsRulesetIndex = 1; // rerelease
+    menu.menuState.gameoptionsProtocolIndex = 2; // "666"
+    menu.menuState.gameoptionsBotCount = 0;
+    menu.menuState.gameoptionsBotSkillIndex = 0; // "easy"
+    menu.menuState.gameoptions_cursor = 0;
+    sv.active = true;
+
+    menu.M_GameOptions_Key(K_ENTER);
+
+    const calls = cbufAddTextSpy.mock.calls.map(([s]) => s);
+    expect(calls).toEqual([
+      "disconnect\n",
+      "listen 0\n",
+      "maxplayers 2\n",
+      "sv_ruleset rerelease\n",
+      "sv_protocol 666\n",
+      "game id1\n",
+      "bot_count 0\n",
+      "bot_skill easy\n",
+      "map dm5\n",
+    ]);
+  });
+
+  test("Begin Game with CTF Game Type queues game ctf and teamplay 1, map from CtfMaps", () => {
+    // Cycle Game Type to CTF the same way a player would (row 2's ENTER).
+    menu.menuState.gameoptions_cursor = 2;
+    Cvar_SetValue("coop", 0);
+    menu.menuState.gameoptionsCtf = false;
+    menu.M_NetStart_Change(1); // -> Cooperative
+    menu.M_NetStart_Change(1); // -> CTF
+    expect(menu.menuState.gameoptionsCtf).toBe(true);
+
+    menu.menuState.maxplayers = 8;
+    menu.menuState.gameoptionsRulesetIndex = 1;
+    menu.menuState.gameoptionsProtocolIndex = 0;
+    menu.menuState.gameoptionsBotCount = 1;
+    menu.menuState.gameoptionsBotSkillIndex = 1;
+    menu.menuState.gameoptions_cursor = 0;
+    sv.active = false;
+
+    menu.M_GameOptions_Key(K_ENTER);
+
+    const calls = cbufAddTextSpy.mock.calls.map(([s]) => s);
+    expect(calls).toEqual([
+      "listen 0\n",
+      "maxplayers 8\n",
+      "sv_ruleset rerelease\n",
+      "sv_protocol auto\n",
+      "game ctf\n",
+      "teamplay 1\n",
+      "bot_count 1\n",
+      "bot_skill medium\n",
+      "map ctf1\n",
+    ]);
+  });
+
+  //---------------------------------------------------------------------
+  // Join Game: Protocol row (cl_protocol), keeping the classic entries
+
+  test("Join Game gains a Protocol row cycling cl_protocol auto/nq/qw", () => {
+    menu.menuState.m_multiplayer_cursor = 0; // JoiningGame()
+    Cvar_Set("cl_protocol", "auto");
+    menu.menuState.lanConfig_cursor = 3; // the new Protocol row
+
+    menu.M_LanConfig_Key(K_RIGHTARROW);
+    expect(Cvar_VariableString("cl_protocol")).toBe("nq");
+    menu.M_LanConfig_Key(K_RIGHTARROW);
+    expect(Cvar_VariableString("cl_protocol")).toBe("qw");
+    menu.M_LanConfig_Key(K_RIGHTARROW);
+    expect(Cvar_VariableString("cl_protocol")).toBe("auto");
+  });
+
+  test("Join Game with a host:port address: cl_protocol set via the Protocol row, connect still queues the typed address", () => {
+    menu.menuState.m_multiplayer_cursor = 0; // JoiningGame()
+    menu.menuState.lanConfig_cursor = 3;
+    Cvar_Set("cl_protocol", "auto");
+    menu.M_LanConfig_Key(K_RIGHTARROW);
+    menu.M_LanConfig_Key(K_RIGHTARROW);
+    expect(Cvar_VariableString("cl_protocol")).toBe("qw");
+
+    menu.menuState.lanConfig_cursor = 2; // "Join game at:"
+    menu.menuState.lanConfig_joinname = "example.com:27500";
+    setKeyDest(KeydestT.key_menu);
+    menu.M_LanConfig_Key(K_ENTER);
+
+    expect(cbufAddTextSpy).toHaveBeenCalledWith('connect "example.com:27500"\n');
+    expect(keyState.key_dest).toBe(KeydestT.key_game);
+  });
+
+  test("StartingGame's LanConfig path keeps its classic 3-row shape -- Protocol row unreachable", () => {
+    menu.menuState.m_multiplayer_cursor = 1; // StartingGame()
+    menu.menuState.lanConfig_cursor = 1;
+    menu.M_LanConfig_Key(K_DOWNARROW);
+    // Classic StartingGame bounce (unchanged): cursor 2 is immediately
+    // routed off, landing back on 0 -- lanConfigRowCount() never returns 4
+    // for this path, so the new Protocol row is never reachable here.
+    expect(menu.menuState.lanConfig_cursor).not.toBe(3);
+  });
+
+  //---------------------------------------------------------------------
+  // Setup: Team row (CTF colours), only with the ctf gamedir mounted
+
+  test("Setup gains a Team row cycling Red/Blue, pushing Accept Changes to row 5", () => {
+    setMState(menu.MStateT.m_setup);
+    menu.menuState.setup_cursor = 4; // Team row (ctf mounted: 0..5, Team=4, Accept=5)
+    menu.menuState.setupTeamIndex = 0;
+
+    menu.M_Setup_Key(K_RIGHTARROW);
+    expect(menu.menuState.setupTeamIndex).toBe(1); // Blue
+    expect(menu.menuState.setup_top).toBe(13);
+    expect(menu.menuState.setup_bottom).toBe(13);
+
+    menu.M_Setup_Key(K_DOWNARROW);
+    expect(menu.menuState.setup_cursor).toBe(5); // Accept Changes
+
+    expect(() => menu.M_Setup_Draw()).not.toThrow();
+  });
+});
+
+//=============================================================================
+// U40: classic screens stay byte-identical (same row counts/behavior) with no
+// re-release data mounted -- no bots/ directory, no "ctf" gamedir, no
+// mapdb.json. Reuses the plain-classic-root pattern from
+// "M_SinglePlayer_Key New Game: classic path preserved" above.
+
+describe("U40: classic screens byte-identical with no re-release data mounted", () => {
+  test("Multiplayer stays a 3-item menu; cursor 2 ENTER reaches Setup, not Bots", () => {
+    const plainRoot = mkdtempSync(join(scratchRoot, "menu-u40-classic-mp-"));
+    mkdirSync(join(plainRoot, "id1"), { recursive: true });
+    try {
+      setComSearchpaths(null);
+      COM_InitArgv(["q1ts", "-basedir", plainRoot]);
+      COM_InitFilesystem();
+      Bot_ForgetKnowledge();
+      Bot_ForgetMapdb();
+      expect(COM_IsRereleaseRoot()).toBe(false);
+
+      setMState(menu.MStateT.m_multiplayer);
+      menu.menuState.m_multiplayer_cursor = menu.MULTIPLAYER_ITEMS - 1; // 2, "Setup"
+      menu.M_MultiPlayer_Key(K_DOWNARROW);
+      expect(menu.menuState.m_multiplayer_cursor).toBe(0); // wraps at 3, not 4
+
+      menu.menuState.m_multiplayer_cursor = 2;
+      menu.M_MultiPlayer_Key(K_ENTER);
+      expect(menu.menuState.m_state).toBe(menu.MStateT.m_setup);
+    } finally {
+      rmSync(plainRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("GameOptions Episode/Level keep the exact classic per-build counts (no mapdb mounted)", () => {
+    const plainRoot = mkdtempSync(join(scratchRoot, "menu-u40-classic-go-"));
+    mkdirSync(join(plainRoot, "id1"), { recursive: true });
+    try {
+      setComSearchpaths(null);
+      COM_InitArgv(["q1ts", "-basedir", plainRoot]);
+      COM_InitFilesystem();
+      Bot_ForgetKnowledge();
+      Bot_ForgetMapdb();
+      menu.M_Menu_GameOptions_f(); // refresh the cached content model against this (mapdb-less) mount
+
+      expect(rogue).toBe(false);
+      menu.menuState.gameoptions_cursor = 7; // Episode
+      registered.value = 1;
+      menu.menuState.startepisode = 0;
+      menu.M_NetStart_Change(-1); // classic registered count is 7
+      expect(menu.menuState.startepisode).toBe(6);
+      registered.value = 0;
+    } finally {
+      rmSync(plainRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("Setup stays a classic 5-row screen (no Team row, Accept Changes at row 4)", () => {
+    const plainRoot = mkdtempSync(join(scratchRoot, "menu-u40-classic-setup-"));
+    mkdirSync(join(plainRoot, "id1"), { recursive: true });
+    try {
+      setComSearchpaths(null);
+      COM_InitArgv(["q1ts", "-basedir", plainRoot]);
+      COM_InitFilesystem();
+      menu.M_Menu_GameOptions_f(); // refresh the cached content model (ctfMounted() reads it) against this mount
+
+      setMState(menu.MStateT.m_setup);
+      menu.menuState.setup_cursor = menu.NUM_SETUP_CMDS - 1; // 4, Accept Changes
+      menu.M_Setup_Key(K_DOWNARROW);
+      expect(menu.menuState.setup_cursor).toBe(0); // wraps at 5, not 6
+
+      expect(() => menu.M_Setup_Draw()).not.toThrow();
+    } finally {
+      rmSync(plainRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("LanConfig's StartingGame path keeps its classic 3-row shape regardless of what's mounted", () => {
+    // The Join Game Protocol row is a deliberate always-on addition (cl_protocol
+    // is a universal engine concept, not re-release content -- see this
+    // file's own U40 header note), so it is JoiningGame()-gated, not
+    // mapdb-gated; what stays byte-identical with no re-release data mounted
+    // is the StartingGame (New Game) path, which never reaches it either way
+    // (lanConfigRowCount() returns NUM_LANCONFIG_CMDS for StartingGame no
+    // matter what's mounted).
+    const plainRoot = mkdtempSync(join(scratchRoot, "menu-u40-classic-lan-"));
+    mkdirSync(join(plainRoot, "id1"), { recursive: true });
+    try {
+      setComSearchpaths(null);
+      COM_InitArgv(["q1ts", "-basedir", plainRoot]);
+      COM_InitFilesystem();
+
+      menu.menuState.m_multiplayer_cursor = 1; // StartingGame()
+      menu.menuState.lanConfig_cursor = menu.NUM_LANCONFIG_CMDS - 1; // 2
+      menu.M_LanConfig_Key(K_DOWNARROW);
+      // classic StartingGame behavior, unchanged: DOWNARROW wraps 2 -> 0
+      // (lanConfigRowCount() is NUM_LANCONFIG_CMDS === 3 for this path no
+      // matter what's mounted), and the post-switch StartingGame bounce
+      // (cursor === 2 only) doesn't re-fire once it's already left 2.
+      expect(menu.menuState.lanConfig_cursor).toBe(0);
+    } finally {
+      rmSync(plainRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -128,6 +128,58 @@ snd_speed, sv_autosave, cl_weaponswitch, language, joy_enable, Add-Ons) --
 all read/set BY NAME through cvar.ts, exactly like every other Options row
 in this file (see this header's own cvars-by-name note above), since none of
 those cvars are owned by a module this unit is scoped to import directly.
+
+U40 addition (2026-09-06, "the multiplayer menus learn bots, rulesets,
+protocols and the unified client"): no WinQuake C original for any of this --
+menu.c predates bots, `sv_ruleset`/`sv_protocol`/`cl_protocol` and QuakeWorld
+entirely.
+
+- Multiplayer gains a fourth "Bots" item (`m_qex_bots`, a new screen with no
+  C original) whenever BotsMenuAvailable() is true (bots/ data mounted in the
+  current game directory -- every classic-only install has none, so the
+  classic 3-item Multiplayer menu is unchanged, byte-for-byte, with no
+  re-release data mounted). The page lists Bot Count/Bot Skill plus a roster
+  read from characters.txt (menu_content.ts's BuildBotsPageModel), with
+  add/kick per row and an "Add Random" row, all issued through Cbuf
+  (`addbot`/`kickbot`) rather than calling src/bots's Bot_Add/Bot_Remove
+  directly -- this file's SCOPE excludes src/bots/**, and the console command
+  path is what a human player would type anyway. Every control is a no-op
+  when BotsPageEnabled() is false (no bots data, or the current/selected map
+  lacks mapdb.json's `bots` flag); the Draw function prints a note instead.
+- GameOptions (the classic "New Game" -- start a listen server) keeps its
+  original nine rows (0-8) untouched, byte-for-byte, and gains four more
+  (9 Ruleset, 10 Protocol, 11 Bot Count, 12 Bot Skill) appended after them --
+  NUM_GAMEOPTIONS/gameoptions_cursor_table grow accordingly, but every
+  existing row's cursor position/behavior is unchanged. Game Type (row 2)
+  gains a third state, CTF, only when the "ctf" gamedir is mounted
+  (qexModel().addonDirs) -- with no ctf mount it stays the classic
+  Deathmatch/Cooperative toggle exactly. Episode/Level (rows 7-8) source
+  their map list from mapdb.json's `dm`/`coop` flags (menu_content.ts's
+  BuildMpEpisodes/CtfMaps) whenever a mapdb.json is mounted for the current
+  game type, falling back to the classic hardcoded levels/episodes tables
+  (unchanged) otherwise -- so with no re-release data mounted, Episode/Level
+  behave exactly as before. The Begin Game launch (ENTER on row 0) queues
+  `disconnect; listen 0; maxplayers N` (unchanged classic prefix), then the
+  new `sv_ruleset <id>`, `sv_protocol <val>`, `game <dir>` (only when a
+  mapdb-driven episode/ctf dir applies), `teamplay 1` (ctf only), `bot_count
+  <n>`, `bot_skill <name>`, and finally the classic `map <bsp>` suffix.
+- LanConfig's Join Game path (JoiningGame()) gains a fourth row, Protocol,
+  cycling `cl_protocol` through CL_PROTOCOLS (auto/nq/qw) -- the New Game
+  (StartingGame()) path is untouched (NUM_LANCONFIG_CMDS/lanConfig_cursor_table
+  keep their classic 3-row shape and values for that path; see
+  lanConfigRowCount below). The classic "Join game at:" address field and LAN
+  search entries are unchanged; profile.ts's own connectProfileFor already
+  reads the address's `:port` (QuakeWorld per the connect rule) or
+  `cl_protocol` at `connect` time, so this row only needs to set the cvar.
+- Setup gains a Team row, cycling two preset shirt/pants colors (CTF's own
+  "team via color" convention per this repo's PORTING notes), only when the
+  "ctf" gamedir is mounted -- NUM_SETUP_CMDS/setup_cursor_table keep their
+  classic 5-row shape and values otherwise. DEVIATION: quakec_ctf itself is
+  not ported into this repo yet (no ground truth to check the exact
+  Red/Blue color indices against), so CTF_TEAM_COLORS below documents its
+  own assumption (colors 4/13, the commonly cited id1-era CTF mod's Red/Blue)
+  rather than asserting it against source; follow-up: revisit once
+  quakec_ctf lands.
 */
 
 import { readdirSync } from "node:fs";
@@ -178,8 +230,12 @@ import { S_LocalSound, S_ExtraUpdate } from "./snd_dma";
 import {
   type ContentModel,
   type ContentEpisode,
+  type MpEpisode,
+  type BotsPageModel,
   RULESETS,
   DIFFICULTIES,
+  SV_PROTOCOLS,
+  CL_PROTOCOLS,
   LoadContentModel,
   LoadMenuLocalization,
   LocalizedEpisodeName,
@@ -187,6 +243,15 @@ import {
   ResolveLaunch,
   Content_PerformLaunch,
   AvailableLanguages,
+  BuildMpEpisodes,
+  CtfMaps,
+  AvailableBotSkillNames,
+  BotsMenuAvailable,
+  BuildBotsPageModel,
+  BotsPageEnabled,
+  BotAddCommand,
+  BotKickCommand,
+  BotAddRandomCommand,
 } from "./menu_content";
 
 // net_ser.c / IPX were not ported; see file header.
@@ -227,6 +292,8 @@ export enum MStateT {
   m_qex_episodes,
   m_qex_levels,
   m_qex_addons,
+  // U40 addition -- see file header.
+  m_qex_bots,
 }
 
 // see file header: every scalar file-scope global in menu.c lives here.
@@ -301,6 +368,16 @@ export const menuState = {
   qexRulesetIndex: 1, // RULESETS[1] === "rerelease" -- mapdb.json only ever appears under a mounted re-release root
   qexSkill: 1, // Normal
   qexAddonsCursor: 0,
+
+  // U40 additions -- see file header. Not WinQuake C globals; kept on this
+  // same shared-state object per this file's own convention.
+  qexBotsCursor: 0,
+  gameoptionsRulesetIndex: 1, // RULESETS[1] === "rerelease"
+  gameoptionsProtocolIndex: 0, // SV_PROTOCOLS[0] === "auto"
+  gameoptionsBotCount: 0,
+  gameoptionsBotSkillIndex: 2, // the six-name list's "medium" -- bot_skill's own cvar default
+  gameoptionsCtf: false, // Game Type's third state, only reachable when the ctf gamedir is mounted
+  setupTeamIndex: 0, // CTF_TEAM_COLORS index for the Setup screen's Team row
 };
 
 // U17 additions -- see file header. Cached content model, refreshed each
@@ -318,6 +395,8 @@ const EMPTY_CONTENT_MODEL: ContentModel = {
   mapdbErrors: [],
   episodes: [],
   addonDirs: [],
+  rawMapdb: null,
+  mountedDirs: [],
 };
 
 function qexModel(): ContentModel {
@@ -347,6 +426,13 @@ function IPXConfig(): boolean {
 // #define TCPIPConfig (m_net_cursor == 3)
 function TCPIPConfig(): boolean {
   return menuState.m_net_cursor === 3;
+}
+
+// U40 addition: whether the "ctf" gamedir (ADDON_DIRS) is currently mounted
+// -- gates GameOptions' Game Type CTF state, its mapdb-driven CTF map list,
+// and Setup's Team row. Not a WinQuake C concept.
+function ctfMounted(): boolean {
+  return qexModel().addonDirs.includes("ctf");
 }
 
 /*
@@ -1135,7 +1221,16 @@ export function M_QexAddons_Key(key: number): void {
 //=============================================================================
 /* MULTIPLAYER MENU */
 
+// The classic item count -- kept unchanged for the byte-identical no-bots-
+// data case. See multiplayerItemCount below for the U40 dynamic count.
 export const MULTIPLAYER_ITEMS = 3;
+
+// U40 addition: a fourth "Bots" item, only when bots/ data is mounted (see
+// file header). With no re-release data mounted this returns MULTIPLAYER_ITEMS
+// unchanged, so the classic 3-item menu's wraparound is byte-identical.
+function multiplayerItemCount(): number {
+  return BotsMenuAvailable() ? MULTIPLAYER_ITEMS + 1 : MULTIPLAYER_ITEMS;
+}
 
 export function M_Menu_MultiPlayer_f(): void {
   keyState.key_dest = KeydestT.key_menu;
@@ -1149,6 +1244,12 @@ export function M_MultiPlayer_Draw(): void {
   M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
   M_DrawTransPic(72, 32, cachePic("gfx/mp_menu.lmp"));
 
+  // U40 addition: gfx/mp_menu.lmp is a fixed 3-item graphic (Join a
+  // Game/New Game/Setup), so a fourth item has no matching art -- printed as
+  // plain menu text below it instead, the same way M_QexAddons_Draw prints
+  // its own rows with no bespoke pic.
+  if (BotsMenuAvailable()) M_Print(72, 92, "Bots");
+
   const f = Math.trunc(host.time * 10) % 6;
 
   M_DrawTransPic(54, 32 + menuState.m_multiplayer_cursor * 20, cachePic(`gfx/menudot${f + 1}.lmp`));
@@ -1158,6 +1259,8 @@ export function M_MultiPlayer_Draw(): void {
 }
 
 export function M_MultiPlayer_Key(key: number): void {
+  const items = multiplayerItemCount();
+
   switch (key) {
     case K_ESCAPE:
       M_Menu_Main_f();
@@ -1166,13 +1269,13 @@ export function M_MultiPlayer_Key(key: number): void {
     case K_DOWNARROW:
       S_LocalSound("misc/menu1.wav");
       menuState.m_multiplayer_cursor++;
-      if (menuState.m_multiplayer_cursor >= MULTIPLAYER_ITEMS) menuState.m_multiplayer_cursor = 0;
+      if (menuState.m_multiplayer_cursor >= items) menuState.m_multiplayer_cursor = 0;
       break;
 
     case K_UPARROW:
       S_LocalSound("misc/menu1.wav");
       menuState.m_multiplayer_cursor--;
-      if (menuState.m_multiplayer_cursor < 0) menuState.m_multiplayer_cursor = MULTIPLAYER_ITEMS - 1;
+      if (menuState.m_multiplayer_cursor < 0) menuState.m_multiplayer_cursor = items - 1;
       break;
 
     case K_ENTER:
@@ -1189,8 +1292,131 @@ export function M_MultiPlayer_Key(key: number): void {
         case 2:
           M_Menu_Setup_f();
           break;
+
+        case 3: // U40 addition -- only reachable when items > MULTIPLAYER_ITEMS
+          M_Menu_QexBots_f();
+          break;
       }
       break;
+  }
+}
+
+//=============================================================================
+/* BOTS PAGE (U40 addition -- see file header; no WinQuake C original).
+   Reached from Multiplayer's fourth item. Rows: Bot Count, Bot Skill, one
+   per characters.txt roster entry (Add/Kick), then Add Random. */
+
+// The map the Bots page gates on: the running server's own map when one is
+// active, else whatever the New Game (GameOptions) screen currently has
+// selected -- resolveGameOptionsMap is defined in the GameOptions section
+// below (a top-level function declaration, hoisted, so the forward reference
+// here is fine).
+function currentOrSelectedMapName(): string {
+  if (sv.active) return sv.name;
+  return resolveGameOptionsMap().bsp;
+}
+
+function botsPageRowCount(model: BotsPageModel): number {
+  return model.roster.length + 3; // Bot Count, Bot Skill, roster..., Add Random
+}
+
+export function M_Menu_QexBots_f(): void {
+  keyState.key_dest = KeydestT.key_menu;
+  menuState.m_state = MStateT.m_qex_bots;
+  menuState.m_entersound = true;
+  const model = BuildBotsPageModel(currentOrSelectedMapName());
+  const rows = botsPageRowCount(model);
+  if (menuState.qexBotsCursor < 0 || menuState.qexBotsCursor >= rows) menuState.qexBotsCursor = 0;
+}
+
+export function M_QexBots_Draw(): void {
+  M_DrawTransPic(16, 4, cachePic("gfx/qplaque.lmp"));
+  const p = cachePic("gfx/p_multi.lmp");
+  M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
+
+  const model = BuildBotsPageModel(currentOrSelectedMapName());
+
+  M_Print(16, 32, "Bot Count");
+  M_Print(200, 32, `${model.count}`);
+  M_Print(16, 40, "Bot Skill");
+  M_Print(200, 40, model.skillNames[model.skillIndex] ?? "");
+
+  const rowY: number[] = [32, 40];
+  let y = 56;
+  for (const row of model.roster) {
+    M_Print(16, y, row.funName);
+    M_Print(240, y, row.active ? "Kick" : "Add");
+    rowY.push(y);
+    y += 8;
+  }
+  M_Print(16, y, "Add Random");
+  rowY.push(y);
+
+  M_DrawCharacter(8, rowY[menuState.qexBotsCursor] ?? rowY[0], 12 + (Math.trunc(host.realtime * 4) & 1));
+
+  if (!BotsPageEnabled(model)) {
+    const note = !model.available
+      ? "This game directory has no bots data"
+      : `"${model.mapName || "this map"}" is not flagged for bots`;
+    M_PrintWhite(Math.trunc(320 / 2 - (note.length * 8) / 2), 184, note);
+  }
+}
+
+export function M_QexBots_Key(key: number): void {
+  const mapName = currentOrSelectedMapName();
+  const model = BuildBotsPageModel(mapName);
+  const rows = botsPageRowCount(model);
+  const addRandomRow = rows - 1;
+
+  switch (key) {
+    case K_ESCAPE:
+      M_Menu_MultiPlayer_f();
+      return;
+
+    case K_UPARROW:
+      S_LocalSound("misc/menu1.wav");
+      menuState.qexBotsCursor--;
+      if (menuState.qexBotsCursor < 0) menuState.qexBotsCursor = rows - 1;
+      return;
+
+    case K_DOWNARROW:
+      S_LocalSound("misc/menu1.wav");
+      menuState.qexBotsCursor++;
+      if (menuState.qexBotsCursor >= rows) menuState.qexBotsCursor = 0;
+      return;
+
+    case K_LEFTARROW:
+    case K_RIGHTARROW: {
+      if (!BotsPageEnabled(model)) return;
+      const dir = key === K_RIGHTARROW ? 1 : -1;
+      if (menuState.qexBotsCursor === 0) {
+        let n = model.count + dir;
+        if (n < 0) n = 8;
+        if (n > 8) n = 0;
+        S_LocalSound("misc/menu3.wav");
+        Cvar_SetValue("bot_count", n);
+      } else if (menuState.qexBotsCursor === 1) {
+        const idx = (model.skillIndex + dir + model.skillNames.length) % model.skillNames.length;
+        S_LocalSound("misc/menu3.wav");
+        Cvar_Set("bot_skill", model.skillNames[idx]);
+      }
+      return;
+    }
+
+    case K_ENTER: {
+      if (!BotsPageEnabled(model)) return;
+      const skillName = model.skillNames[model.skillIndex] ?? "medium";
+      if (menuState.qexBotsCursor === addRandomRow) {
+        menuState.m_entersound = true;
+        Cbuf_AddText(BotAddRandomCommand(skillName));
+      } else if (menuState.qexBotsCursor >= 2 && menuState.qexBotsCursor < addRandomRow) {
+        const row = model.roster[menuState.qexBotsCursor - 2];
+        if (row === undefined) return;
+        menuState.m_entersound = true;
+        Cbuf_AddText(row.active ? BotKickCommand(row.funName) : BotAddCommand(row.characterName, skillName));
+      }
+      return;
+    }
   }
 }
 
@@ -1199,6 +1425,35 @@ export function M_MultiPlayer_Key(key: number): void {
 
 export const NUM_SETUP_CMDS = 5;
 export const setup_cursor_table = [40, 56, 80, 104, 140];
+
+// U40 addition: two preset shirt/pants colors for CTF's own team-via-color
+// convention (see file header's DEVIATION note on the exact indices).
+const CTF_TEAM_COLORS: ReadonlyArray<{ name: string; color: number }> = [
+  { name: "Red", color: 4 },
+  { name: "Blue", color: 13 },
+];
+
+// U40 additions: with the "ctf" gamedir mounted, Setup grows a Team row
+// between Pants and Accept Changes, pushing Accept Changes down one slot;
+// with no ctf mount these return the classic constants unchanged.
+function setupNumCmds(): number {
+  return ctfMounted() ? NUM_SETUP_CMDS + 1 : NUM_SETUP_CMDS;
+}
+function setupAcceptRow(): number {
+  return ctfMounted() ? NUM_SETUP_CMDS : NUM_SETUP_CMDS - 1;
+}
+function setupTeamRow(): number {
+  return NUM_SETUP_CMDS - 1; // only meaningful when ctfMounted()
+}
+function activeSetupCursorTable(): number[] {
+  return ctfMounted() ? [40, 56, 80, 104, 120, 148] : setup_cursor_table;
+}
+function cycleSetupTeam(dir: number): void {
+  menuState.setupTeamIndex = (menuState.setupTeamIndex + dir + CTF_TEAM_COLORS.length) % CTF_TEAM_COLORS.length;
+  const color = CTF_TEAM_COLORS[menuState.setupTeamIndex]!.color;
+  menuState.setup_top = color;
+  menuState.setup_bottom = color;
+}
 
 export function M_Menu_Setup_f(): void {
   keyState.key_dest = KeydestT.key_menu;
@@ -1216,6 +1471,9 @@ export function M_Setup_Draw(): void {
   const p = cachePic("gfx/p_multi.lmp");
   M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
 
+  const cursorTable = activeSetupCursorTable();
+  const acceptRow = setupAcceptRow();
+
   M_Print(64, 40, "Hostname");
   M_DrawTextBox(160, 32, 16, 1);
   M_Print(168, 40, menuState.setup_hostname);
@@ -1227,8 +1485,15 @@ export function M_Setup_Draw(): void {
   M_Print(64, 80, "Shirt color");
   M_Print(64, 104, "Pants color");
 
-  M_DrawTextBox(64, 140 - 8, 14, 1);
-  M_Print(72, 140, "Accept Changes");
+  // U40 addition: only drawn with the ctf gamedir mounted; Accept Changes'
+  // own box/text move down to cursorTable[acceptRow] to make room.
+  if (ctfMounted()) {
+    M_Print(64, cursorTable[setupTeamRow()]!, "Team");
+    M_Print(168, cursorTable[setupTeamRow()]!, CTF_TEAM_COLORS[menuState.setupTeamIndex]!.name);
+  }
+
+  M_DrawTextBox(64, cursorTable[acceptRow]! - 8, 14, 1);
+  M_Print(72, cursorTable[acceptRow]!, "Accept Changes");
 
   const bigbox = cachePic("gfx/bigbox.lmp");
   M_DrawTransPic(160, 64, bigbox);
@@ -1236,29 +1501,31 @@ export function M_Setup_Draw(): void {
   M_BuildTranslationTable(menuState.setup_top * 16, menuState.setup_bottom * 16);
   M_DrawTransPicTranslate(172, 72, menuplyr);
 
-  M_DrawCharacter(56, setup_cursor_table[menuState.setup_cursor], 12 + (Math.trunc(host.realtime * 4) & 1));
+  M_DrawCharacter(56, cursorTable[menuState.setup_cursor]!, 12 + (Math.trunc(host.realtime * 4) & 1));
 
   if (menuState.setup_cursor === 0)
     M_DrawCharacter(
       168 + 8 * menuState.setup_hostname.length,
-      setup_cursor_table[menuState.setup_cursor],
+      cursorTable[menuState.setup_cursor]!,
       10 + (Math.trunc(host.realtime * 4) & 1),
     );
 
   if (menuState.setup_cursor === 1)
     M_DrawCharacter(
       168 + 8 * menuState.setup_myname.length,
-      setup_cursor_table[menuState.setup_cursor],
+      cursorTable[menuState.setup_cursor]!,
       10 + (Math.trunc(host.realtime * 4) & 1),
     );
 }
 
 // the C's `forward:` label, reached both by K_RIGHTARROW and (via goto) by
-// K_ENTER on cursor 2/3.
+// K_ENTER on cursor 2/3. U40 addition: also advances the Team row's color
+// pair, only reachable when ctfMounted() puts the cursor there.
 function setupForward(): void {
   S_LocalSound("misc/menu3.wav");
   if (menuState.setup_cursor === 2) menuState.setup_top += 1;
   if (menuState.setup_cursor === 3) menuState.setup_bottom += 1;
+  if (ctfMounted() && menuState.setup_cursor === setupTeamRow()) cycleSetupTeam(1);
 }
 
 export function M_Setup_Key(k: number): void {
@@ -1270,13 +1537,13 @@ export function M_Setup_Key(k: number): void {
     case K_UPARROW:
       S_LocalSound("misc/menu1.wav");
       menuState.setup_cursor--;
-      if (menuState.setup_cursor < 0) menuState.setup_cursor = NUM_SETUP_CMDS - 1;
+      if (menuState.setup_cursor < 0) menuState.setup_cursor = setupNumCmds() - 1;
       break;
 
     case K_DOWNARROW:
       S_LocalSound("misc/menu1.wav");
       menuState.setup_cursor++;
-      if (menuState.setup_cursor >= NUM_SETUP_CMDS) menuState.setup_cursor = 0;
+      if (menuState.setup_cursor >= setupNumCmds()) menuState.setup_cursor = 0;
       break;
 
     case K_LEFTARROW:
@@ -1284,6 +1551,7 @@ export function M_Setup_Key(k: number): void {
       S_LocalSound("misc/menu3.wav");
       if (menuState.setup_cursor === 2) menuState.setup_top -= 1;
       if (menuState.setup_cursor === 3) menuState.setup_bottom -= 1;
+      if (ctfMounted() && menuState.setup_cursor === setupTeamRow()) cycleSetupTeam(-1);
       break;
 
     case K_RIGHTARROW:
@@ -1291,15 +1559,15 @@ export function M_Setup_Key(k: number): void {
       setupForward();
       break;
 
-    case K_ENTER:
+    case K_ENTER: {
       if (menuState.setup_cursor === 0 || menuState.setup_cursor === 1) return;
 
-      if (menuState.setup_cursor === 2 || menuState.setup_cursor === 3) {
+      if (menuState.setup_cursor !== setupAcceptRow()) {
         setupForward();
         break;
       }
 
-      // setup_cursor == 4 (OK)
+      // Accept Changes
       if (Cvar_VariableString("_cl_name") !== menuState.setup_myname) Cbuf_AddText(`name "${menuState.setup_myname}"\n`);
       if (Cvar_VariableString("hostname") !== menuState.setup_hostname) Cvar_Set("hostname", menuState.setup_hostname);
       if (menuState.setup_top !== menuState.setup_oldtop || menuState.setup_bottom !== menuState.setup_oldbottom)
@@ -1307,6 +1575,7 @@ export function M_Setup_Key(k: number): void {
       menuState.m_entersound = true;
       M_Menu_MultiPlayer_f();
       break;
+    }
 
     case K_BACKSPACE:
       if (menuState.setup_cursor === 0) {
@@ -2079,6 +2348,21 @@ export function M_Quit_Draw(): void {
 export const NUM_LANCONFIG_CMDS = 3;
 export const lanConfig_cursor_table = [72, 92, 124];
 
+// U40 addition: a fourth row, Protocol, only for the Join Game path
+// (JoiningGame()) -- see file header. StartingGame keeps NUM_LANCONFIG_CMDS/
+// lanConfig_cursor_table's classic 3-row shape and values untouched.
+const LANCONFIG_PROTOCOL_ROW = 3;
+const LANCONFIG_PROTOCOL_Y = 136;
+
+function lanConfigRowCount(): number {
+  return JoiningGame() ? LANCONFIG_PROTOCOL_ROW + 1 : NUM_LANCONFIG_CMDS;
+}
+
+function lanConfigCursorY(index: number): number {
+  if (index === LANCONFIG_PROTOCOL_ROW) return LANCONFIG_PROTOCOL_Y;
+  return lanConfig_cursor_table[index]!;
+}
+
 export function M_Menu_LanConfig_f(): void {
   keyState.key_dest = KeydestT.key_menu;
   menuState.m_state = MStateT.m_lanconfig;
@@ -2119,12 +2403,17 @@ export function M_LanConfig_Draw(): void {
     M_Print(bx, 108, "Join game at:");
     M_DrawTextBox(bx + 8, lanConfig_cursor_table[2] - 8, 22, 1);
     M_Print(bx + 16, lanConfig_cursor_table[2], menuState.lanConfig_joinname);
+
+    // U40 addition: Protocol row, Join Game only.
+    const protocolValue = Cvar_VariableString("cl_protocol").trim().toLowerCase() || "auto";
+    M_Print(bx, LANCONFIG_PROTOCOL_Y, "Protocol");
+    M_Print(bx + 9 * 8, LANCONFIG_PROTOCOL_Y, protocolValue);
   } else {
     M_DrawTextBox(bx, lanConfig_cursor_table[1] - 8, 2, 1);
     M_Print(bx + 8, lanConfig_cursor_table[1], "OK");
   }
 
-  M_DrawCharacter(bx - 8, lanConfig_cursor_table[menuState.lanConfig_cursor], 12 + (Math.trunc(host.realtime * 4) & 1));
+  M_DrawCharacter(bx - 8, lanConfigCursorY(menuState.lanConfig_cursor), 12 + (Math.trunc(host.realtime * 4) & 1));
 
   if (menuState.lanConfig_cursor === 0)
     M_DrawCharacter(
@@ -2140,7 +2429,11 @@ export function M_LanConfig_Draw(): void {
       10 + (Math.trunc(host.realtime * 4) & 1),
     );
 
-  if (menuState.m_return_reason.length > 0) M_PrintWhite(bx, 148, menuState.m_return_reason);
+  // U40 addition: the Protocol row pushes this down 8px on the Join Game
+  // path only, to stay clear of it -- StartingGame's own position (148, no
+  // Protocol row) is unchanged.
+  const returnReasonY = JoiningGame() ? LANCONFIG_PROTOCOL_Y + 16 : 148;
+  if (menuState.m_return_reason.length > 0) M_PrintWhite(bx, returnReasonY, menuState.m_return_reason);
 }
 
 export function M_LanConfig_Key(key: number): void {
@@ -2152,17 +2445,36 @@ export function M_LanConfig_Key(key: number): void {
     case K_UPARROW:
       S_LocalSound("misc/menu1.wav");
       menuState.lanConfig_cursor--;
-      if (menuState.lanConfig_cursor < 0) menuState.lanConfig_cursor = NUM_LANCONFIG_CMDS - 1;
+      if (menuState.lanConfig_cursor < 0) menuState.lanConfig_cursor = lanConfigRowCount() - 1;
       break;
 
     case K_DOWNARROW:
       S_LocalSound("misc/menu1.wav");
       menuState.lanConfig_cursor++;
-      if (menuState.lanConfig_cursor >= NUM_LANCONFIG_CMDS) menuState.lanConfig_cursor = 0;
+      if (menuState.lanConfig_cursor >= lanConfigRowCount()) menuState.lanConfig_cursor = 0;
       break;
 
+    // U40 addition: cycles cl_protocol on the Protocol row (Join Game only
+    // -- lanConfigRowCount() keeps StartingGame from ever landing here).
+    // Previously uncased: K_LEFTARROW/K_RIGHTARROW (128+, see keys.ts) fell
+    // to `default`, which discards anything outside 32..127, so this adds
+    // behavior only where it's now reachable and remains a no-op everywhere
+    // else, exactly as before.
+    case K_LEFTARROW:
+    case K_RIGHTARROW: {
+      if (menuState.lanConfig_cursor !== LANCONFIG_PROTOCOL_ROW || !JoiningGame()) break;
+      S_LocalSound("misc/menu3.wav");
+      const dir = key === K_RIGHTARROW ? 1 : -1;
+      const current = Cvar_VariableString("cl_protocol").trim().toLowerCase() || "auto";
+      let idx = CL_PROTOCOLS.indexOf(current);
+      if (idx === -1) idx = 0;
+      idx = (idx + dir + CL_PROTOCOLS.length) % CL_PROTOCOLS.length;
+      Cvar_Set("cl_protocol", CL_PROTOCOLS[idx]!);
+      break;
+    }
+
     case K_ENTER: {
-      if (menuState.lanConfig_cursor === 0) break;
+      if (menuState.lanConfig_cursor === 0 || menuState.lanConfig_cursor === LANCONFIG_PROTOCOL_ROW) break;
 
       menuState.m_entersound = true;
 
@@ -2362,16 +2674,106 @@ export const rogueepisodes: EpisodeT[] = [
   { description: "Deathmatch Arena", firstLevel: 16, levels: 1 },
 ];
 
+// U40 additions: the mapdb-driven multiplayer map list for the currently
+// selected Game Type (see menu_content.ts's BuildMpEpisodes/CtfMaps and this
+// file's header). Returns [] whenever no mapdb.json is mounted, or the
+// current game type has no matching content -- callers fall back to the
+// classic hardcoded levels/episodes/hipnoticlevels/... tables in that case,
+// leaving those tables' own behavior byte-identical with no re-release data
+// mounted.
+function mpGameType(): "dm" | "coop" | "ctf" {
+  if (menuState.gameoptionsCtf) return "ctf";
+  return Cvar_VariableValue("coop") ? "coop" : "dm";
+}
+
+function mpEpisodesForCurrentGameType(): MpEpisode[] {
+  const model = qexModel();
+  if (!model.mapdbPresent || model.rawMapdb === null) return [];
+  const type = mpGameType();
+  if (type === "ctf") {
+    const maps = CtfMaps(model.rawMapdb);
+    return maps.length > 0 ? [{ dir: "ctf", nameKey: "CTF", maps }] : [];
+  }
+  return BuildMpEpisodes(model.rawMapdb, model.mountedDirs, type);
+}
+
+// Row counts for Episode (7)/Level (8): the mapdb-driven list's own length
+// when present, else the exact classic per-build counts (unchanged).
+function gameOptionsEpisodeCount(): number {
+  const mp = mpEpisodesForCurrentGameType();
+  if (mp.length > 0) return mp.length;
+  if (hipnotic) return 6;
+  if (rogue) return 4;
+  return registered.value ? 7 : 2;
+}
+
+function gameOptionsLevelCount(episodeIndex: number): number {
+  const mp = mpEpisodesForCurrentGameType();
+  if (mp.length > 0) return mp[Math.min(episodeIndex, mp.length - 1)]!.maps.length;
+  if (hipnotic) return hipnoticepisodes[episodeIndex]!.levels;
+  if (rogue) return rogueepisodes[episodeIndex]!.levels;
+  return episodes[episodeIndex]!.levels;
+}
+
+// The Episode row's display name for the current selection.
+function gameOptionsEpisodeName(): string {
+  const mp = mpEpisodesForCurrentGameType();
+  if (mp.length > 0) {
+    if (mpGameType() === "ctf") return "Capture the Flag";
+    const ep = mp[Math.min(menuState.startepisode, mp.length - 1)]!;
+    return LocalizedEpisodeName(ep.nameKey, qexLocLoaded);
+  }
+  if (hipnotic) return hipnoticepisodes[menuState.startepisode]!.description;
+  if (rogue) return rogueepisodes[menuState.startepisode]!.description;
+  return episodes[menuState.startepisode]!.description;
+}
+
+// The Level row's {title, bsp} for the current selection -- also what the
+// Begin Game launch (below) and the Bots page's "selected map" (see
+// currentOrSelectedMapName above) resolve against.
+function resolveGameOptionsMap(): { title: string; bsp: string } {
+  const mp = mpEpisodesForCurrentGameType();
+  if (mp.length > 0) {
+    const ep = mp[Math.min(menuState.startepisode, mp.length - 1)]!;
+    const lvl = ep.maps[Math.min(menuState.startlevel, ep.maps.length - 1)]!;
+    return { title: lvl.title, bsp: lvl.bsp };
+  }
+  if (hipnotic) {
+    const lvl = hipnoticlevels[hipnoticepisodes[menuState.startepisode]!.firstLevel + menuState.startlevel]!;
+    return { title: lvl.description, bsp: lvl.name };
+  }
+  if (rogue) {
+    const lvl = roguelevels[rogueepisodes[menuState.startepisode]!.firstLevel + menuState.startlevel]!;
+    return { title: lvl.description, bsp: lvl.name };
+  }
+  const lvl = levels[episodes[menuState.startepisode]!.firstLevel + menuState.startlevel]!;
+  return { title: lvl.description, bsp: lvl.name };
+}
+
+// The `game <dir>` argument the Begin Game launch queues, or "" when none
+// applies (classic fallback path -- no `game` command queued at all, per
+// this file's header).
+function gameOptionsDirArg(): string {
+  const mp = mpEpisodesForCurrentGameType();
+  if (mp.length === 0) return "";
+  return mpGameType() === "ctf" ? "ctf" : mp[Math.min(menuState.startepisode, mp.length - 1)]!.dir;
+}
+
 export function M_Menu_GameOptions_f(): void {
   keyState.key_dest = KeydestT.key_menu;
   menuState.m_state = MStateT.m_gameoptions;
   menuState.m_entersound = true;
   if (menuState.maxplayers === 0) menuState.maxplayers = svs.maxclients;
   if (menuState.maxplayers < 2) menuState.maxplayers = svs.maxclientslimit;
+
+  // U40 addition: refresh the content model the same way M_Menu_QexAddons_f
+  // does, so Episode/Level/Game Type reflect whatever is mounted right now.
+  qexContentModel = LoadContentModel();
+  qexLocLoaded = LoadMenuLocalization() > 0;
 }
 
-export const gameoptions_cursor_table = [40, 56, 64, 72, 80, 88, 96, 112, 120];
-export const NUM_GAMEOPTIONS = 9;
+export const gameoptions_cursor_table = [40, 56, 64, 72, 80, 88, 96, 112, 120, 136, 144, 152, 160];
+export const NUM_GAMEOPTIONS = 13;
 
 export function M_GameOptions_Draw(): void {
   M_DrawTransPic(16, 4, cachePic("gfx/qplaque.lmp"));
@@ -2385,7 +2787,10 @@ export function M_GameOptions_Draw(): void {
   M_Print(160, 56, `${menuState.maxplayers}`);
 
   M_Print(0, 64, "        Game Type");
-  if (Cvar_VariableValue("coop")) M_Print(160, 64, "Cooperative");
+  // U40 addition: CTF, only when the ctf gamedir is mounted; with no ctf
+  // mount this is the unchanged classic Cooperative/Deathmatch toggle.
+  if (ctfMounted() && menuState.gameoptionsCtf) M_Print(160, 64, "CTF");
+  else if (Cvar_VariableValue("coop")) M_Print(160, 64, "Cooperative");
   else M_Print(160, 64, "Deathmatch");
 
   M_Print(0, 72, "        Teamplay");
@@ -2449,34 +2854,39 @@ export function M_GameOptions_Draw(): void {
   if (timelimitValue === 0) M_Print(160, 96, "none");
   else M_Print(160, 96, `${Math.trunc(timelimitValue)} minutes`);
 
+  // U40: Episode/Level source from mapdb's dm/coop flags when a mapdb.json
+  // is mounted for the current Game Type; the exact classic per-build
+  // lookups (unchanged) otherwise -- see gameOptionsEpisodeName/
+  // resolveGameOptionsMap's own comments above.
   M_Print(0, 112, "         Episode");
-  // MED 01/06/97 added hipnotic episodes
-  if (hipnotic) M_Print(160, 112, hipnoticepisodes[menuState.startepisode].description);
-  // PGM 01/07/97 added rogue episodes
-  else if (rogue) M_Print(160, 112, rogueepisodes[menuState.startepisode].description);
-  else M_Print(160, 112, episodes[menuState.startepisode].description);
+  M_Print(160, 112, gameOptionsEpisodeName());
 
   M_Print(0, 120, "           Level");
-  // MED 01/06/97 added hipnotic episodes
-  if (hipnotic) {
-    const lvl = hipnoticlevels[hipnoticepisodes[menuState.startepisode].firstLevel + menuState.startlevel];
-    M_Print(160, 120, lvl.description);
-    M_Print(160, 128, lvl.name);
-  }
-  // PGM 01/07/97 added rogue episodes
-  else if (rogue) {
-    const lvl = roguelevels[rogueepisodes[menuState.startepisode].firstLevel + menuState.startlevel];
-    M_Print(160, 120, lvl.description);
-    M_Print(160, 128, lvl.name);
-  } else {
-    const lvl = levels[episodes[menuState.startepisode].firstLevel + menuState.startlevel];
-    M_Print(160, 120, lvl.description);
-    M_Print(160, 128, lvl.name);
-  }
+  const selectedLevel = resolveGameOptionsMap();
+  M_Print(160, 120, selectedLevel.title);
+  M_Print(160, 128, selectedLevel.bsp);
+
+  // U40 additions: rows 9-12.
+  M_Print(0, 136, "         Ruleset");
+  M_Print(160, 136, RULESETS[menuState.gameoptionsRulesetIndex]!.name);
+
+  M_Print(0, 144, "        Protocol");
+  M_Print(160, 144, SV_PROTOCOLS[menuState.gameoptionsProtocolIndex]!);
+
+  M_Print(0, 152, "       Bot Count");
+  M_Print(160, 152, `${menuState.gameoptionsBotCount}`);
+
+  M_Print(0, 160, "       Bot Skill");
+  M_Print(160, 160, AvailableBotSkillNames()[menuState.gameoptionsBotSkillIndex] ?? "medium");
 
   // line cursor
-  M_DrawCharacter(144, gameoptions_cursor_table[menuState.gameoptions_cursor], 12 + (Math.trunc(host.realtime * 4) & 1));
+  M_DrawCharacter(144, gameoptions_cursor_table[menuState.gameoptions_cursor]!, 12 + (Math.trunc(host.realtime * 4) & 1));
 
+  // NOTE: this box's own 4-line height (138..186) overlaps the U40 rows
+  // printed above it (136-160) while m_serverInfoMessage is showing -- a
+  // cosmetic tension accepted rather than relocating either one further;
+  // the message is transient (5 seconds, see below) and this port's menu
+  // rendering is 8x8 text with no real pixel-collision test coverage.
   if (menuState.m_serverInfoMessage) {
     if (host.realtime - menuState.m_serverInfoMessageTime < 5.0) {
       const x = Math.trunc((320 - 26 * 8) / 2);
@@ -2507,7 +2917,25 @@ export function M_NetStart_Change(dir: number): void {
       break;
 
     case 2:
-      Cvar_SetValue("coop", Cvar_VariableValue("coop") ? 0 : 1);
+      // U40: a 3-way Deathmatch->Cooperative->CTF cycle when the ctf
+      // gamedir is mounted, direction-independent same as the classic
+      // toggle it extends; with no ctf mount this is the exact classic
+      // toggle, unchanged.
+      if (!ctfMounted()) {
+        Cvar_SetValue("coop", Cvar_VariableValue("coop") ? 0 : 1);
+        break;
+      }
+      if (menuState.gameoptionsCtf) {
+        menuState.gameoptionsCtf = false; // CTF -> Deathmatch
+        Cvar_SetValue("coop", 0);
+      } else if (Cvar_VariableValue("coop")) {
+        Cvar_SetValue("coop", 0); // Cooperative -> CTF
+        menuState.gameoptionsCtf = true;
+      } else {
+        Cvar_SetValue("coop", 1); // Deathmatch -> Cooperative
+      }
+      menuState.startepisode = 0;
+      menuState.startlevel = 0;
       break;
 
     case 3:
@@ -2538,13 +2966,10 @@ export function M_NetStart_Change(dir: number): void {
 
     case 7:
       menuState.startepisode += dir;
-      // MED 01/06/97 added hipnotic count
-      if (hipnotic) count = 6;
-      // PGM 01/07/97 added rogue count
-      // PGM 03/02/97 added 1 for dmatch episode
-      else if (rogue) count = 4;
-      else if (registered.value) count = 7;
-      else count = 2;
+      // U40: gameOptionsEpisodeCount() returns the mapdb-driven list's own
+      // length when one applies, else the exact classic per-build counts
+      // below (unchanged).
+      count = gameOptionsEpisodeCount();
 
       if (menuState.startepisode < 0) menuState.startepisode = count - 1;
 
@@ -2555,16 +2980,33 @@ export function M_NetStart_Change(dir: number): void {
 
     case 8:
       menuState.startlevel += dir;
-      // MED 01/06/97 added hipnotic episodes
-      if (hipnotic) count = hipnoticepisodes[menuState.startepisode].levels;
-      // PGM 01/06/97 added hipnotic episodes
-      else if (rogue) count = rogueepisodes[menuState.startepisode].levels;
-      else count = episodes[menuState.startepisode].levels;
+      // U40: gameOptionsLevelCount() likewise prefers the mapdb-driven list.
+      count = gameOptionsLevelCount(menuState.startepisode);
 
       if (menuState.startlevel < 0) menuState.startlevel = count - 1;
 
       if (menuState.startlevel >= count) menuState.startlevel = 0;
       break;
+
+    // U40 additions: rows 9-12.
+    case 9: // Ruleset
+      menuState.gameoptionsRulesetIndex = (menuState.gameoptionsRulesetIndex + dir + RULESETS.length) % RULESETS.length;
+      break;
+
+    case 10: // Protocol
+      menuState.gameoptionsProtocolIndex = (menuState.gameoptionsProtocolIndex + dir + SV_PROTOCOLS.length) % SV_PROTOCOLS.length;
+      break;
+
+    case 11: // Bot Count (0-8)
+      menuState.gameoptionsBotCount = (menuState.gameoptionsBotCount + dir + 9) % 9;
+      break;
+
+    case 12: {
+      // Bot Skill
+      const names = AvailableBotSkillNames();
+      menuState.gameoptionsBotSkillIndex = (menuState.gameoptionsBotSkillIndex + dir + names.length) % names.length;
+      break;
+    }
   }
 }
 
@@ -2601,15 +3043,26 @@ export function M_GameOptions_Key(key: number): void {
     case K_ENTER:
       S_LocalSound("misc/menu2.wav");
       if (menuState.gameoptions_cursor === 0) {
+        // U40: the classic prefix (disconnect/listen 0/maxplayers) is
+        // unchanged; sv_ruleset/sv_protocol/game/teamplay/bot_count/
+        // bot_skill are new, queued in that order, before the classic
+        // `map <bsp>` suffix -- see file header.
         if (sv.active) Cbuf_AddText("disconnect\n");
         Cbuf_AddText("listen 0\n"); // so host_netport will be re-examined
         Cbuf_AddText(`maxplayers ${menuState.maxplayers}\n`);
-        SCR_BeginLoadingPlaque();
 
-        if (hipnotic)
-          Cbuf_AddText(`map ${hipnoticlevels[hipnoticepisodes[menuState.startepisode].firstLevel + menuState.startlevel].name}\n`);
-        else if (rogue) Cbuf_AddText(`map ${roguelevels[rogueepisodes[menuState.startepisode].firstLevel + menuState.startlevel].name}\n`);
-        else Cbuf_AddText(`map ${levels[episodes[menuState.startepisode].firstLevel + menuState.startlevel].name}\n`);
+        Cbuf_AddText(`sv_ruleset ${RULESETS[menuState.gameoptionsRulesetIndex]!.id}\n`);
+        Cbuf_AddText(`sv_protocol ${SV_PROTOCOLS[menuState.gameoptionsProtocolIndex]}\n`);
+
+        const dir = gameOptionsDirArg();
+        if (dir !== "") Cbuf_AddText(`game ${dir}\n`);
+        if (mpGameType() === "ctf") Cbuf_AddText("teamplay 1\n");
+
+        Cbuf_AddText(`bot_count ${menuState.gameoptionsBotCount}\n`);
+        Cbuf_AddText(`bot_skill ${AvailableBotSkillNames()[menuState.gameoptionsBotSkillIndex] ?? "medium"}\n`);
+
+        SCR_BeginLoadingPlaque();
+        Cbuf_AddText(`map ${resolveGameOptionsMap().bsp}\n`);
 
         return;
       }
@@ -2763,6 +3216,7 @@ export function M_Init(): void {
   Cmd_AddCommand("help", M_Menu_Help_f, "nq");
   Cmd_AddCommand("menu_quit", M_Menu_Quit_f, "nq");
   Cmd_AddCommand("menu_addons", M_Menu_QexAddons_f); // U17 addition
+  Cmd_AddCommand("menu_bots", M_Menu_QexBots_f); // U40 addition
 }
 
 export function M_Draw(): void {
@@ -2870,6 +3324,10 @@ export function M_Draw(): void {
     case MStateT.m_qex_addons:
       M_QexAddons_Draw();
       break;
+
+    case MStateT.m_qex_bots:
+      M_QexBots_Draw();
+      break;
   }
 
   if (menuState.m_entersound) {
@@ -2966,6 +3424,10 @@ export function M_Keydown(key: number): void {
 
     case MStateT.m_qex_addons:
       M_QexAddons_Key(key);
+      return;
+
+    case MStateT.m_qex_bots:
+      M_QexBots_Key(key);
       return;
   }
 }

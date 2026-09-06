@@ -56,10 +56,21 @@
 import { statSync } from "node:fs";
 import { parseMapdb, type Mapdb, type MapdbMap } from "../lib/mapdb";
 import { Loc_Localize, Loc_ReloadFile } from "../lib/loc";
-import { Cvar_Set, Cvar_VariableString } from "../common/cvar";
+import { Cvar_Set, Cvar_VariableString, Cvar_VariableValue } from "../common/cvar";
 import { Cbuf_AddText } from "../common/cmd";
 import { COM_ClassicDir, COM_LoadTempFile, COM_RereleaseDir, COM_IsRereleaseRoot } from "../common/common";
 import { QEX_SetCampaign } from "../progs/ext/ruleset";
+// U40 addition: read-only use of the bots subsystem's public surface (not a
+// write -- this unit's SCOPE excludes src/bots/**, but importing a landed
+// module's exports is the same "cvars/functions by name or by direct import"
+// idiom every other out-of-scope dependency in this file already uses, e.g.
+// QEX_SetCampaign above). Importing this module also runs src/bots/index.ts's
+// own module-load side effect (Bot_RegisterHooks/Bot_RegisterCommands), which
+// is what makes `bot_count`/`bot_skill`/`addbot`/`kickbot` reachable by name
+// for every consumer of menu.ts -- mirroring how src/common/host.ts pulls the
+// same module in "at the end of its imports" for the real engine boot (see
+// src/bots/bot_client.ts's own file header).
+import { Bot_Knowledge, Bot_MapAllowsBots, Bot_SkillName, Bot_Slots } from "../bots";
 
 export interface ContentFsSeam {
   directoryExists(path: string): boolean;
@@ -181,6 +192,15 @@ export interface ContentModel {
   mapdbErrors: string[];
   episodes: ContentEpisode[];
   addonDirs: string[]; // ADDON_DIRS entries actually mounted, for the Add-Ons screen
+  // U40 additions: the raw parsed mapdb.json (null when mapdbPresent is
+  // false) and every EPISODE_DIRS/ADDON_DIRS entry actually mounted,
+  // unfiltered by sp/dm/coop content -- the New Game (start server) screen's
+  // multiplayer map lists (BuildMpEpisodes/CtfMaps below) need both: `episodes`
+  // above is filtered down to sp content only (single-player campaign
+  // picker's own rule), which would wrongly exclude a mounted episode whose
+  // only content is dm/coop maps.
+  rawMapdb: Mapdb | null;
+  mountedDirs: string[];
 }
 
 function toContentMap(m: MapdbMap): ContentMap {
@@ -215,6 +235,8 @@ export function BuildContentModel(roots: MountedRoots, mapdb: Mapdb | null, mapd
     mapdbErrors: [...mapdbErrors],
     episodes,
     addonDirs,
+    rawMapdb: mapdb,
+    mountedDirs: [...mountedDirs],
   };
 }
 
@@ -376,4 +398,190 @@ export function Content_PerformLaunch(plan: LaunchPlan): void {
   Cbuf_AddText(`game ${plan.gameArgs.join(" ")}\n`);
   Cbuf_AddText(`skill ${plan.skill}\n`);
   Cbuf_AddText(`map ${plan.map}\n`);
+}
+
+//=============================================================================
+// U40 additions -- see this unit's own brief: "the multiplayer menus learn
+// bots, rulesets, protocols and the unified client." No WinQuake C original
+// for any of this (menu.c's own GameOptions/LanConfig/Setup screens predate
+// bots, rulesets and QuakeWorld entirely); everything below is new,
+// documented per standing order 4.
+
+/**
+ * The classic multiplayer New Game (GameOptions) screen's Protocol row --
+ * `sv_protocol`'s own accepted values (src/server/sv_main.ts's SV_Protocol_f
+ * comment: "15, 666, 999 or auto"), read/set BY NAME per this file's
+ * established convention for cvars it doesn't statically import.
+ */
+export const SV_PROTOCOLS: readonly string[] = ["auto", "15", "666", "999"];
+
+/**
+ * The Join Game screen's Protocol row -- `cl_protocol`'s own accepted values
+ * (src/common/profile.ts's connectProfileFor: "qw"/"nq" force a profile,
+ * anything else -- "auto" here -- falls back to the address's own `:port`
+ * rule).
+ */
+export const CL_PROTOCOLS: readonly string[] = ["auto", "nq", "qw"];
+
+//=============================================================================
+// MULTIPLAYER MAP LISTS -- "the map list per episode comes from mapdb's dm
+// flag (coop maps for coop)". Distinct from ContentEpisode/BuildContentModel
+// above, which filters mapdb.maps down to `sp` content for the single-player
+// campaign picker; the New Game (start server) screen wants the SAME
+// episodes[] grouping but filtered by `dm` or `coop` instead, and the ctf
+// gamedir's own maps (mapdb's `game: "ctf"` entries -- see this file's own
+// header) as a separate pseudo-episode.
+
+export interface MpMapEntry {
+  title: string;
+  bsp: string;
+}
+
+export interface MpEpisode {
+  dir: string;
+  nameKey: string;
+  maps: MpMapEntry[];
+}
+
+function toMpMapEntry(m: MapdbMap): MpMapEntry {
+  return { title: m.title, bsp: m.bsp };
+}
+
+/** `gameType` selects which mapdb flag filters each episode's map list. */
+export function BuildMpEpisodes(mapdb: Mapdb, mountedDirs: readonly string[], gameType: "dm" | "coop"): MpEpisode[] {
+  const mountedSet = new Set(mountedDirs);
+  const result: MpEpisode[] = [];
+  for (const e of mapdb.episodes) {
+    if (!mountedSet.has(e.dir)) continue;
+    const maps = mapdb.maps.filter((m) => m.episode === e.dir && (gameType === "dm" ? m.dm : m.coop)).map(toMpMapEntry);
+    if (maps.length === 0) continue; // e.g. an episode with no dm content under this filter
+    result.push({ dir: e.dir, nameKey: e.name, maps });
+  }
+  return result;
+}
+
+/**
+ * The ctf gamedir's own maps -- every entry mapdb.json tags `game: "ctf"`
+ * (this file's own header: "every one of its 9 real maps is an
+ * `episode: 'id1', game: 'ctf'` entry, not a seventh episodes[] row"), so
+ * there is no per-episode grouping to preserve here, just the flat list.
+ */
+export function CtfMaps(mapdb: Mapdb): MpMapEntry[] {
+  return mapdb.maps.filter((m) => m.game === "ctf").map(toMpMapEntry);
+}
+
+//=============================================================================
+// BOTS PAGE (Multiplayer -> Bots)
+
+/** Mirrors src/bots/bot_client.ts's own (unexported) DEFAULT_SKILLS -- the
+ * settings_*.txt skill order, used when no bots/ data is mounted at all (the
+ * row still needs six names to cycle through so the New Game screen's Bot
+ * Skill row and the Bots page both work with no server/gamedir mounted yet).
+ * Duplicated rather than imported because bot_client.ts doesn't export it;
+ * see this file's own header note on importing src/bots's PUBLIC surface
+ * only. */
+export const BOT_SKILL_NAMES: readonly string[] = ["practice", "easy", "medium", "hard", "expert", "nightmare"];
+
+/** The skill names actually available: the mounted settings_*.txt's own list
+ * when bots/ data is present (matches what `addbot`/`bot_skill` will
+ * actually resolve to), else BOT_SKILL_NAMES. */
+export function AvailableBotSkillNames(): readonly string[] {
+  const knowledge = Bot_Knowledge();
+  return knowledge !== null && knowledge.skills.length > 0 ? knowledge.skillNames() : BOT_SKILL_NAMES;
+}
+
+/** Whether the Multiplayer menu should offer the Bots page at all -- gates
+ * on bots/ data being mounted (every classic-only install has none), not on
+ * a server being active: characters.txt/settings_*.txt load off the current
+ * game directory's search path regardless (src/bots/bot_data.ts's own
+ * Bot_Knowledge). */
+export function BotsMenuAvailable(): boolean {
+  return Bot_Knowledge() !== null;
+}
+
+export interface BotRosterRow {
+  // characters.txt's own "name" key -- addbot's own match/argument (see
+  // src/bots/bot_client.ts's pickCharacter: it matches `knowledge.character(request)`
+  // against CharacterEntry.name, NOT fun_name).
+  characterName: string;
+  // characters.txt's "fun_name" -- the display label, and also what
+  // Bot_Add sets as the resulting client's name (BotSlot.name), which is
+  // what kickbot matches against (Bot_KickBot_f: `slot.name.toLowerCase()`).
+  funName: string;
+  // true when a live bot's name currently matches this row's funName.
+  active: boolean;
+}
+
+export interface BotsPageModel {
+  available: boolean; // Bot_Knowledge() !== null
+  mapAllowsBots: boolean; // mapdb.json's `bots` flag for `mapName`
+  mapName: string;
+  count: number; // the `bot_count` cvar's current value, truncated
+  skillNames: readonly string[];
+  skillIndex: number; // index into skillNames of the current `bot_skill`
+  roster: BotRosterRow[];
+}
+
+/**
+ * BuildBotsPageModel
+ *
+ * Pure (well, Bot_Knowledge/Bot_MapAllowsBots/Bot_Slots read the current
+ * gamedir/server state, but this function takes no filesystem/server
+ * argument of its own beyond `mapName`) snapshot for the Bots page's Draw/Key
+ * handlers -- menu.ts calls this once per frame/keypress with whichever map
+ * name it resolves as "current or selected" (the running server's map, or
+ * the New Game screen's own selection with no server active).
+ */
+export function BuildBotsPageModel(mapName: string): BotsPageModel {
+  const knowledge = Bot_Knowledge();
+  const skillNames = AvailableBotSkillNames();
+  const currentSkill = Bot_SkillName().toLowerCase();
+  let skillIndex = skillNames.findIndex((s) => s.toLowerCase() === currentSkill);
+  if (skillIndex < 0) skillIndex = 0;
+
+  const activeFunNames = new Set<string>();
+  for (const slot of Bot_Slots().values()) activeFunNames.add(slot.name.toLowerCase());
+
+  const roster: BotRosterRow[] =
+    knowledge !== null
+      ? knowledge.characters.map((c) => ({
+          characterName: c.name,
+          funName: c.funName,
+          active: activeFunNames.has(c.funName.toLowerCase()),
+        }))
+      : [];
+
+  return {
+    available: knowledge !== null,
+    mapAllowsBots: mapName !== "" && Bot_MapAllowsBots(mapName),
+    mapName,
+    count: Math.trunc(Cvar_VariableValue("bot_count")),
+    skillNames,
+    skillIndex,
+    roster,
+  };
+}
+
+/** Whether the Bots page's controls (count/skill/roster add-kick/add-random)
+ * should act, or show the "else a note" fallback per this unit's brief. */
+export function BotsPageEnabled(model: BotsPageModel): boolean {
+  return model.available && model.mapAllowsBots;
+}
+
+// The three console-command lines the Bots page (and the New Game screen's
+// own Bot Count/Bot Skill rows) queue through Cbuf, per this unit's brief
+// ("roster add/kick issuing addbot/kickbot through Cbuf"). Quoted the same
+// way every other menu.ts command line carrying a free-form name is (e.g.
+// M_Setup_Key's `name "${...}"`), since a fun_name/character name may itself
+// contain spaces.
+export function BotAddCommand(characterName: string, skillName: string): string {
+  return `addbot "${characterName}" "${skillName}"\n`;
+}
+
+export function BotKickCommand(funName: string): string {
+  return `kickbot "${funName}"\n`;
+}
+
+export function BotAddRandomCommand(skillName: string): string {
+  return `addbot random "${skillName}"\n`;
 }

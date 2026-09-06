@@ -17,12 +17,23 @@ import { join } from "node:path";
 import type { ContentFsSeam, MountedRoots } from "../src/client/menu_content";
 import {
   ADDON_DIRS,
+  AvailableBotSkillNames,
   AvailableLanguages,
+  BOT_SKILL_NAMES,
+  BotAddCommand,
+  BotAddRandomCommand,
+  BotKickCommand,
+  BotsMenuAvailable,
+  BotsPageEnabled,
+  BuildBotsPageModel,
   BuildContentModel,
+  BuildMpEpisodes,
   ClassicProgsEligible,
   ClassicProgsPlan,
+  CL_PROTOCOLS,
   Content_PerformLaunch,
   ContentRoot,
+  CtfMaps,
   EpisodeAllowsNightmare,
   EPISODE_DIRS,
   LoadContentModel,
@@ -33,13 +44,15 @@ import {
   realContentFsSeam,
   ResolveLaunch,
   RULESETS,
+  SV_PROTOCOLS,
 } from "../src/client/menu_content";
 import { Cbuf_Init } from "../src/common/cmd";
-import { Cvar_RegisterVariable, Cvar_VariableValue, Cvar_VariableString } from "../src/common/cvar";
-import { COM_InitArgv, COM_InitFilesystem } from "../src/common/common";
+import { Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue, Cvar_VariableValue, Cvar_VariableString } from "../src/common/cvar";
+import { COM_InitArgv, COM_InitFilesystem, com_gamedir, com_searchpaths, setComGamedir, setComSearchpaths } from "../src/common/common";
 import { Loc_ReloadFile, Loc_Unload } from "../src/lib/loc";
 import type { Mapdb } from "../src/lib/mapdb";
 import { campaign, sv_ruleset } from "../src/progs/ext/ruleset";
+import { Bot_ForgetKnowledge, Bot_ForgetMapdb, bot_count, bot_skill } from "../src/bots";
 
 Cbuf_Init();
 
@@ -50,6 +63,16 @@ const savedSvRulesetString = sv_ruleset.string;
 const savedSvRulesetValue = sv_ruleset.value;
 const savedCampaignString = campaign.string;
 const savedCampaignValue = campaign.value;
+// U40 additions: bot_count/bot_skill (real objects, registered as a
+// module-load side effect of importing "../src/bots" -- see that module's
+// own header) and the filesystem globals the U40 Bots-model tests below
+// rebuild via COM_InitFilesystem.
+const savedBotCountString = bot_count.string;
+const savedBotCountValue = bot_count.value;
+const savedBotSkillString = bot_skill.string;
+const savedBotSkillValue = bot_skill.value;
+const savedComSearchpaths = com_searchpaths;
+const savedComGamedir = com_gamedir;
 
 afterAll(() => {
   Loc_Unload();
@@ -57,6 +80,14 @@ afterAll(() => {
   sv_ruleset.value = savedSvRulesetValue;
   campaign.string = savedCampaignString;
   campaign.value = savedCampaignValue;
+  bot_count.string = savedBotCountString;
+  bot_count.value = savedBotCountValue;
+  bot_skill.string = savedBotSkillString;
+  bot_skill.value = savedBotSkillValue;
+  Bot_ForgetKnowledge();
+  Bot_ForgetMapdb();
+  setComSearchpaths(savedComSearchpaths);
+  setComGamedir(savedComGamedir);
 });
 
 //=============================================================================
@@ -402,5 +433,287 @@ describe.skipIf(!HAVE_REAL_Q1)("real-data: qfiles/q1's retail mapdb.json", () =>
     expect(model.mapdbPresent).toBe(true);
     expect(model.episodes.length).toBe(6);
     expect(model.episodes.map((e) => e.dir).sort()).toEqual(["dopa", "hipnotic", "id1", "mg1", "mg3", "rogue"].sort());
+  });
+});
+
+//=============================================================================
+// U40: BuildMpEpisodes / CtfMaps -- the New Game (start server) screen's
+// mapdb-driven multiplayer map lists.
+
+describe("BuildMpEpisodes / CtfMaps", () => {
+  const mapdb: Mapdb = {
+    episodes: [
+      { dir: "id1", name: "$m_quake" },
+      { dir: "hipnotic", name: "$m_scourge" },
+    ],
+    maps: [
+      { title: "Entrance", bsp: "start", episode: "id1", game: "id1", sp: true, dm: false, coop: false, bots: false, ctf: false, horde: false },
+      { title: "Place of Two Deaths", bsp: "dm1", episode: "id1", game: "id1", sp: false, dm: true, coop: false, bots: true, ctf: false, horde: false },
+      { title: "The Cistern", bsp: "dm5", episode: "id1", game: "id1", sp: false, dm: true, coop: false, bots: false, ctf: false, horde: false },
+      { title: "Hub", bsp: "start", episode: "id1", game: "id1", sp: true, dm: false, coop: true, bots: false, ctf: false, horde: false },
+      { title: "McKinley Base", bsp: "ctf1", episode: "id1", game: "ctf", sp: false, dm: false, coop: false, bots: true, ctf: true, horde: false },
+      { title: "Focal Point", bsp: "ctf2", episode: "id1", game: "ctf", sp: false, dm: false, coop: false, bots: false, ctf: true, horde: false },
+      // hipnotic has no dm/coop entries in this fixture -- excluded below.
+      { title: "Command HQ", bsp: "start", episode: "hipnotic", game: "hipnotic", sp: true, dm: false, coop: false, bots: false, ctf: false, horde: false },
+    ],
+  };
+
+  test("dm filter: only id1's two dm maps, hipnotic excluded (no dm content)", () => {
+    const result = BuildMpEpisodes(mapdb, ["id1", "hipnotic"], "dm");
+    expect(result.map((e) => e.dir)).toEqual(["id1"]);
+    expect(result[0]?.maps.map((m) => m.bsp)).toEqual(["dm1", "dm5"]);
+  });
+
+  test("coop filter: only the coop-flagged map", () => {
+    const result = BuildMpEpisodes(mapdb, ["id1", "hipnotic"], "coop");
+    expect(result.map((e) => e.dir)).toEqual(["id1"]);
+    expect(result[0]?.maps.map((m) => m.bsp)).toEqual(["start"]);
+  });
+
+  test("an episode dir not in mountedDirs is excluded even though mapdb.json lists it", () => {
+    const result = BuildMpEpisodes(mapdb, ["hipnotic"], "dm");
+    expect(result).toEqual([]);
+  });
+
+  test("CtfMaps: every game==='ctf' entry, regardless of episode", () => {
+    const maps = CtfMaps(mapdb);
+    expect(maps.map((m) => m.bsp)).toEqual(["ctf1", "ctf2"]);
+    expect(maps[0]).toEqual({ title: "McKinley Base", bsp: "ctf1" });
+  });
+});
+
+//=============================================================================
+// U40: SV_PROTOCOLS / CL_PROTOCOLS -- the New Game/Join Game Protocol rows.
+
+describe("SV_PROTOCOLS / CL_PROTOCOLS", () => {
+  test("SV_PROTOCOLS matches sv_protocol's own accepted values", () => {
+    expect(SV_PROTOCOLS).toEqual(["auto", "15", "666", "999"]);
+  });
+
+  test("CL_PROTOCOLS matches cl_protocol's own accepted values", () => {
+    expect(CL_PROTOCOLS).toEqual(["auto", "nq", "qw"]);
+  });
+});
+
+//=============================================================================
+// U40: the Bots page model (BotsMenuAvailable/AvailableBotSkillNames/
+// BuildBotsPageModel/BotsPageEnabled), against a real mounted game directory
+// (Bot_Knowledge/Bot_MapAllowsBots read off COM_LoadTempFile, not a seam --
+// see src/bots/bot_data.ts's own header). Bot_ForgetKnowledge/Bot_ForgetMapdb
+// reset those modules' own caches between mounts, per rule 13.
+
+const BOTS_WEAPONS_TXT = `
+{
+  name "axe"
+  number 4096
+  damage 20
+  min_range 0
+  max_range 72
+  min_height 0
+  max_height 0
+  priority 1
+  ammo none
+  ammo_name ""
+  min_ammo 0
+  max_ammo 0
+  flags melee | starting
+  aim_point center
+}
+`;
+
+const BOTS_SETTINGS_TXT = `
+skill easy
+{
+  aiming.max_acceleration 200
+  aiming.spring_stiffness 80
+  aiming.damping 10
+  aiming.velocity_offset -0.1
+  aiming.modifier.max_angle 30
+  aiming.modifier.apply_time 0.75
+  aiming.modifier.accel_scalar 1
+  aiming.modifier.spring_scalar 1
+  aiming.modifier.damping_scalar 1
+  behaviors.allow_combat true
+  behaviors.allow_grab_items_in_combat false
+  behaviors.allow_melee true
+  behaviors.allow_check_six false
+  behaviors.allow_grab_items true
+  behaviors.allow_grab_power_items true
+  behaviors.defer_power_items_to_humans false
+  behaviors.min_respawn_time 1
+  behaviors.max_respawn_time 1.5
+  movement.allow_jumping_in_combat false
+  movement.jump_chance 10
+  movement.jump_cooldown 1
+  movement.walk_only true
+  senses.sight_time 0.25
+  senses.sight_decay_time 0.3
+  senses.invis_enemy_sight_scalar 2
+  senses.max_invis_enemy_sight_dist 256
+  senses.fov_angle 120
+  senses.forget_non_vis_enemy_time 1.5
+  senses.sound_range 500
+  senses.sound_time 0.4
+  senses.sound_decay_time 2.5
+  senses.sound_persist_time 0.4
+  weapons.decay_time 2
+  weapons.fov_angle 40
+  weapons.sight_time 0.2
+}
+skill medium
+{
+  aiming.max_acceleration 360
+  aiming.spring_stiffness 125
+  aiming.damping 20
+  aiming.velocity_offset -0.1
+  aiming.modifier.max_angle 30
+  aiming.modifier.apply_time 0.75
+  aiming.modifier.accel_scalar 1.25
+  aiming.modifier.spring_scalar 1.25
+  aiming.modifier.damping_scalar 1.25
+  behaviors.allow_combat true
+  behaviors.allow_grab_items_in_combat false
+  behaviors.allow_melee true
+  behaviors.allow_check_six false
+  behaviors.allow_grab_items true
+  behaviors.allow_grab_power_items true
+  behaviors.defer_power_items_to_humans false
+  behaviors.min_respawn_time 1
+  behaviors.max_respawn_time 1.5
+  movement.allow_jumping_in_combat true
+  movement.jump_chance 35
+  movement.jump_cooldown 1
+  movement.walk_only false
+  senses.sight_time 0.25
+  senses.sight_decay_time 0.3
+  senses.invis_enemy_sight_scalar 2
+  senses.max_invis_enemy_sight_dist 256
+  senses.fov_angle 140
+  senses.forget_non_vis_enemy_time 1.5
+  senses.sound_range 640
+  senses.sound_time 0.4
+  senses.sound_decay_time 2.5
+  senses.sound_persist_time 0.4
+  weapons.decay_time 2
+  weapons.fov_angle 40
+  weapons.sight_time 0.2
+}
+`;
+
+const BOTS_CHARACTERS_TXT = `
+{
+  fun_name Grunt
+  name grunt
+  shirt_color 4
+  pants_color 11
+}
+{
+  fun_name Ogre
+  name ogre
+  shirt_color 2
+  pants_color 6
+}
+`;
+
+const BOTS_MAPDB_TEXT = JSON.stringify({
+  episodes: [{ dir: "id1", name: "$m_quake" }],
+  maps: [
+    { title: "Place of Two Deaths", bsp: "dm1", episode: "id1", game: "id1", dm: true, bots: true },
+    { title: "The Cistern", bsp: "dm5", episode: "id1", game: "id1", dm: true, bots: false },
+  ],
+});
+
+describe("Bots page model", () => {
+  const botsRoot = mkdtempSync(join(scratchRoot, "menu-bots-model-"));
+  const plainRoot = mkdtempSync(join(scratchRoot, "menu-bots-none-"));
+
+  mkdirSync(join(botsRoot, "id1", "bots"), { recursive: true });
+  writeFileSync(join(botsRoot, "id1", "bots", "weapons.txt"), BOTS_WEAPONS_TXT);
+  writeFileSync(join(botsRoot, "id1", "bots", "settings_PC.txt"), BOTS_SETTINGS_TXT);
+  writeFileSync(join(botsRoot, "id1", "bots", "characters.txt"), BOTS_CHARACTERS_TXT);
+  writeFileSync(join(botsRoot, "id1", "mapdb.json"), BOTS_MAPDB_TEXT);
+  mkdirSync(join(plainRoot, "id1"), { recursive: true });
+
+  afterAll(() => {
+    rmSync(botsRoot, { recursive: true, force: true });
+    rmSync(plainRoot, { recursive: true, force: true });
+  });
+
+  test("no bots/ data mounted -> BotsMenuAvailable false, model.available false, no roster", () => {
+    setComSearchpaths(null);
+    COM_InitArgv(["q1ts", "-basedir", plainRoot]);
+    COM_InitFilesystem();
+    Bot_ForgetKnowledge();
+    Bot_ForgetMapdb();
+
+    expect(BotsMenuAvailable()).toBe(false);
+    const model = BuildBotsPageModel("dm1");
+    expect(model.available).toBe(false);
+    expect(model.roster).toEqual([]);
+    expect(model.mapAllowsBots).toBe(false);
+    expect(BotsPageEnabled(model)).toBe(false);
+    expect(AvailableBotSkillNames()).toEqual(BOT_SKILL_NAMES);
+  });
+
+  test("bots/ data mounted -> available true, roster from characters.txt, skill names from settings_PC.txt", () => {
+    setComSearchpaths(null);
+    COM_InitArgv(["q1ts", "-basedir", botsRoot]);
+    COM_InitFilesystem();
+    Bot_ForgetKnowledge();
+    Bot_ForgetMapdb();
+
+    expect(BotsMenuAvailable()).toBe(true);
+    expect(AvailableBotSkillNames()).toEqual(["easy", "medium"]);
+
+    const model = BuildBotsPageModel("dm1");
+    expect(model.available).toBe(true);
+    expect(model.roster.map((r) => ({ characterName: r.characterName, funName: r.funName, active: r.active }))).toEqual([
+      { characterName: "grunt", funName: "Grunt", active: false },
+      { characterName: "ogre", funName: "Ogre", active: false },
+    ]);
+  });
+
+  test("mapAllowsBots reflects mapdb.json's own per-map bots flag", () => {
+    setComSearchpaths(null);
+    COM_InitArgv(["q1ts", "-basedir", botsRoot]);
+    COM_InitFilesystem();
+    Bot_ForgetKnowledge();
+    Bot_ForgetMapdb();
+
+    const allowed = BuildBotsPageModel("dm1"); // bots: true
+    expect(allowed.mapAllowsBots).toBe(true);
+    expect(BotsPageEnabled(allowed)).toBe(true);
+
+    const notAllowed = BuildBotsPageModel("dm5"); // bots: false
+    expect(notAllowed.mapAllowsBots).toBe(false);
+    expect(BotsPageEnabled(notAllowed)).toBe(false);
+
+    const unknownMap = BuildBotsPageModel("e1m1"); // not in mapdb.json at all
+    expect(unknownMap.mapAllowsBots).toBe(false);
+  });
+
+  test("count/skillIndex reflect the bot_count/bot_skill cvars", () => {
+    setComSearchpaths(null);
+    COM_InitArgv(["q1ts", "-basedir", botsRoot]);
+    COM_InitFilesystem();
+    Bot_ForgetKnowledge();
+    Bot_ForgetMapdb();
+
+    Cvar_SetValue("bot_count", 3);
+    Cvar_Set("bot_skill", "easy");
+    const model = BuildBotsPageModel("dm1");
+    expect(model.count).toBe(3);
+    expect(model.skillNames[model.skillIndex]).toBe("easy");
+  });
+});
+
+//=============================================================================
+// U40: the addbot/kickbot/addbot-random command-line builders (pure).
+
+describe("BotAddCommand / BotKickCommand / BotAddRandomCommand", () => {
+  test("quotes both the character name and the skill name", () => {
+    expect(BotAddCommand("grunt", "hard")).toBe('addbot "grunt" "hard"\n');
+    expect(BotKickCommand("Grunt")).toBe('kickbot "Grunt"\n');
+    expect(BotAddRandomCommand("medium")).toBe('addbot random "medium"\n');
   });
 });
