@@ -73,7 +73,16 @@ export const qwCvarHooks: QwCvarHooks = {
   serverinfoChanged: null,
 };
 
+// U38 (ARCHITECTURE.md "Unified client and server"): the slot is named
+// explicitly rather than left to `setCvarInfoHook`'s default. That default is
+// chosen by `connectionProfile.serveronly`, which is decided by the command
+// line and is therefore not settled at module-load time in the unified
+// binary; this adapter is QuakeWorld's CLIENT-side userinfo propagation, so
+// it says so. The QuakeWorld server installs its own serverinfo propagation
+// into the "server" slot (src/qw/server/sv_main.ts's SV_Init/SV_InitProfile),
+// and QW/client/cl_main.c's CL_Init replaces this one in the "client" slot
+// with its real CL_CvarInfoChanged, so the two never contend.
 setCvarInfoHook((name, value) => {
   if (qwCvarHooks.userinfoChanged) qwCvarHooks.userinfoChanged(name, value);
   if (qwCvarHooks.serverinfoChanged) qwCvarHooks.serverinfoChanged(name, value);
-});
+}, "client");

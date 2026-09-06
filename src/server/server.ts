@@ -49,6 +49,7 @@ import type { QsocketT } from "../common/net";
 import { SizeBuf } from "../common/sizebuf";
 import { MAX_DATAGRAM, MAX_LIGHTSTYLES, MAX_MODELS, MAX_MSGLEN, MAX_SOUNDS } from "../common/quakedef";
 import { PROTOCOL_NETQUAKE } from "../common/protocol";
+import type { NetProfileT } from "../common/profile";
 import type { Vec3 } from "../common/mathlib";
 import { vec3 } from "../common/mathlib";
 
@@ -68,6 +69,14 @@ export const SIGNON_BUF_NQ15 = 8192;
 
 export class ServerT {
   active = false; // false if only a net client
+
+  // U38 (ARCHITECTURE.md "Unified client and server"): which of the two
+  // server trees this session belongs to. Always "nq" for this class -- the
+  // QuakeWorld server has its own `server_t` (src/qw/server/server.ts) with
+  // its own copy of this field -- but it is a real field rather than a
+  // constant so `sv.profile` reads the same on either server and
+  // SV_SpawnServer has one place to publish `connectionProfile.server` from.
+  profile: NetProfileT = "nq";
 
   paused = false;
   loadgame = false; // handle connections specially
@@ -108,6 +117,7 @@ export class ServerT {
 
   clear(): void {
     this.active = false;
+    this.profile = "nq";
     this.protocol = PROTOCOL_NETQUAKE;
     this.protocolflags = 0;
     this.paused = false;

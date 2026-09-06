@@ -210,9 +210,19 @@ console module at all and the `qw.active` fold in Con_Printf below is what
 gives those calls QW's semantics there. In qwcl the same calls have to reach
 QW's console instead, or "Playing registered version." and "UDP Initialized"
 would go to stdout and to a `con_text` no Con_Init ever allocated, instead of
-into `con_main.text` where the C puts them. src/qw/main_cl.ts installs the
-three forwards at composition time -- the C's link step; qwsv installs none
-and keeps this file's own bodies.
+into `con_main.text` where the C puts them. src/main.ts installs the three
+forwards at composition time -- the C's link step.
+
+Unified binary (ARCHITECTURE.md "Unified client and server", U38): the
+forwards are installed on EVERY boot, not only a `-qw` one, and each of the
+three dispatch sites below takes the hook only while the active profile is
+QuakeWorld. So a NetQuake boot that opens a QuakeWorld connection starts
+routing these prints into QW's console for the life of that connection and
+back into this file's own bodies after the disconnect, with no re-linking at
+the seam. A process with no QuakeWorld console linked at all (a build that
+never imports src/qw/client/console.ts) leaves the slots null and keeps this
+file's bodies either way, which is what the qwsv side does for
+Con_SafePrintf.
 */
 type PrintfFn = (fmt: string, ...args: Array<string | number>) => void;
 
@@ -538,7 +548,7 @@ Handles cursor positioning, line wrapping, etc
 let inupdate = false; // static qboolean inupdate; in the C
 
 export function Con_Printf(fmt: string, ...args: Array<string | number>): void {
-  const qwcl = qwConsoleHooks.Con_Printf; // see qwConsoleHooks
+  const qwcl = qwActive() ? qwConsoleHooks.Con_Printf : null; // see qwConsoleHooks
   if (qwcl) return qwcl(fmt, ...args);
 
   const formatted = Com_sprintf(fmt, ...args);
@@ -613,7 +623,7 @@ A Con_Printf that only shows up if the "developer" cvar is set
 ================
 */
 export function Con_DPrintf(fmt: string, ...args: Array<string | number>): void {
-  const qwcl = qwConsoleHooks.Con_DPrintf; // see qwConsoleHooks
+  const qwcl = qwActive() ? qwConsoleHooks.Con_DPrintf : null; // see qwConsoleHooks
   if (qwcl) return qwcl(fmt, ...args);
 
   if (!developer || !developer.value) return; // don't confuse non-developers with techie stuff...
@@ -630,7 +640,7 @@ Okay to call even when the screen can't be updated
 ==================
 */
 export function Con_SafePrintf(fmt: string, ...args: Array<string | number>): void {
-  const qwcl = qwConsoleHooks.Con_SafePrintf; // see qwConsoleHooks
+  const qwcl = qwActive() ? qwConsoleHooks.Con_SafePrintf : null; // see qwConsoleHooks
   if (qwcl) return qwcl(fmt, ...args);
 
   const msg = Com_sprintf(fmt, ...args);

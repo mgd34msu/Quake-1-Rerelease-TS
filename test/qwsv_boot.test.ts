@@ -47,6 +47,7 @@ import { qwConsoleHooks, Con_Printf as WinQuakeConPrintf } from "../src/client/c
 import { Con_Printf as SvSendConPrintf, SV_BeginRedirect } from "../src/qw/server/sv_send";
 import { RedirectT } from "../src/qw/server/server";
 import { HAVE_QWPROGS } from "./support/fixture_availability";
+import { connectionProfile } from "../src/common/profile";
 
 const repoRoot = join(import.meta.dir, "..");
 
@@ -366,10 +367,17 @@ describe.skipIf(!HAVE_QWPROGS)("Sys_Main_Init + runFrames -- a real qwsv boot", 
 
 describe("qwsv Con_Printf redirect reaches shared modules (.orch/e2e/E.md defect C)", () => {
   const savedHook = qwConsoleHooks.Con_Printf;
+  const savedServer = connectionProfile.server;
+  const savedServeronly = connectionProfile.serveronly;
   const sysPrintfSpy = spyOn(sysModule, "Sys_Printf"); // bare call-through spy (rule 15)
 
   beforeAll(() => {
-    // the same link step src/qw/main_sv.ts's Sys_Main_Init performs
+    // the same link step src/main.ts's Sys_Main_Init_QWSV performs. U38:
+    // src/client/console.ts takes the forward only while the active profile
+    // is QuakeWorld, so the qwsv profile (a server with no client of its own)
+    // is part of the link step this block is emulating.
+    connectionProfile.server = "qw";
+    connectionProfile.serveronly = true;
     qwConsoleHooks.Con_Printf = SvSendConPrintf;
   });
 
@@ -380,6 +388,8 @@ describe("qwsv Con_Printf redirect reaches shared modules (.orch/e2e/E.md defect
 
   afterAll(() => {
     qwConsoleHooks.Con_Printf = savedHook;
+    connectionProfile.server = savedServer;
+    connectionProfile.serveronly = savedServeronly;
     sysPrintfSpy.mockRestore();
   });
 

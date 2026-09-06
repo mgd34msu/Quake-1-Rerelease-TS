@@ -172,6 +172,7 @@ import {
   MSG_WriteLong,
   MSG_WriteShort,
   MSG_WriteString,
+  COM_AdoptSharedFilesystem,
   Q_atoi,
   Q_strcasecmp,
   SZ_Clear,
@@ -188,7 +189,19 @@ import { Netchan_Init, Netchan_OutOfBandPrint, Netchan_Process, Netchan_Setup, N
 import { Cmd_ExecuteString, Cmd_Init } from "../cmd";
 import { Pmove_Init } from "../pmove";
 
-import { Cbuf_AddText, Cbuf_Execute, Cbuf_Init, Cbuf_InsertText, Cmd_AddCommand, Cmd_Argc, Cmd_Argv, Cmd_StuffCmds_f, Cmd_TokenizeString } from "../../common/cmd";
+import {
+  Cbuf_AddText,
+  Cbuf_Execute,
+  Cbuf_Init,
+  Cbuf_InsertText,
+  Cmd_AddCommand,
+  Cmd_Argc,
+  Cmd_Argv,
+  Cmd_StuffCmds_f,
+  Cmd_TokenizeString,
+  Cmd_WithConsoleProfile,
+  Cmd_WithProfileRegistration,
+} from "../../common/cmd";
 import { CvarT, Cvar_RegisterVariable, Cvar_SetValue, setCvarInfoHook } from "../../common/cvar";
 import { max_edicts } from "../../common/host";
 import { Com_sprintf } from "../../common/sprintf";
@@ -196,6 +209,7 @@ import { Hunk_AllocName, Hunk_LowMark, Memory_Init } from "../../common/zone";
 import { Mod_Init } from "../../common/model";
 import type { QuakeParmsT } from "../../common/quakedef";
 import { Sys_ConsoleInput, Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite, Sys_FloatTime } from "../../platform/sys";
+import { serverShutdownHooks } from "../../common/profile";
 import { Sys_Init } from "../sys_sv";
 
 //============================================================================
@@ -418,6 +432,48 @@ or unwillingly.  This is NOT called if the entire server is quiting
 or crashing.
 =====================
 */
+// U38: the QuakeWorld half of src/common/profile.ts's one-server-at-a-time
+// rule. Registered at module load, so a process that never links this file
+// leaves the slot null.
+serverShutdownHooks.qw = (): void => {
+  SV_ShutdownLevel();
+};
+
+/*
+================
+SV_ShutdownLevel
+
+Not in QW/server/sv_main.c: the C's qwsv process hosts one server for its
+whole life, so "take this server down but leave the process up" is a state
+the original never has to reach. The unified binary (U38, ARCHITECTURE.md
+"Unified client and server") does: one process can boot either server, and a
+`map` under the other profile has to put this one away first, because the two
+never run at once. This is SV_Quit_f's body minus the parts that end the
+process -- the clients are told, then the level goes inactive -- leaving the
+UDP socket, the netchan and svs alone so a later `map` under this profile can
+spawn again without re-running SV_Init.
+================
+*/
+export function SV_ShutdownLevel(): void {
+  // QW/server tracks a live server through `sv.state`, not `server_t.active`
+  // (nothing in QW/server ever sets that field true), so ss_dead is the whole
+  // "no server here" test.
+  if (sv.state === ServerStateT.ss_dead) return;
+
+  SV_FinalMessage("server shutdown\n");
+
+  for (let i = 0; i < MAX_CLIENTS; i++) {
+    const cl = svs.clients[i];
+    if (cl.state === ClientStateT.cs_free) continue;
+    cl.state = ClientStateT.cs_free;
+    cl.name = "";
+    cl.connection_started = 0;
+  }
+
+  sv.active = false;
+  sv.state = ServerStateT.ss_dead;
+}
+
 export function SV_DropClient(drop: ClientT): void {
   // add the disconnect
   MSG_WriteByte(drop.netchan.message, SvcOpsT.svc_disconnect);
@@ -908,7 +964,8 @@ export function SVC_RemoteCommand(): void {
       remaining += " ";
     }
 
-    Cmd_ExecuteString(remaining);
+    // U38: an rcon command is this server's console, not the client's.
+    Cmd_ExecuteString(remaining, sv.profile);
   }
 
   SV_EndRedirect();
@@ -1324,7 +1381,10 @@ export function SV_Frame(time: number): void {
   SV_GetConsoleCommands();
 
   // process console commands
-  Cbuf_Execute();
+  // U38: the dedicated console belongs to THIS server, so the drain resolves
+  // command names against the QuakeWorld profile even when the process also
+  // holds a NetQuake client. See src/common/cmd.ts's unified-server note.
+  Cmd_WithConsoleProfile(sv.profile, Cbuf_Execute);
 
   SV_CheckVars();
 
@@ -1417,10 +1477,10 @@ export function SV_InitLocal(): void {
 
   Cvar_RegisterVariable(pausable);
 
-  Cmd_AddCommand("addip", SV_AddIP_f);
-  Cmd_AddCommand("removeip", SV_RemoveIP_f);
-  Cmd_AddCommand("listip", SV_ListIP_f);
-  Cmd_AddCommand("writeip", SV_WriteIP_f);
+  Cmd_AddCommand("addip", SV_AddIP_f, "qw");
+  Cmd_AddCommand("removeip", SV_RemoveIP_f, "qw");
+  Cmd_AddCommand("listip", SV_ListIP_f, "qw");
+  Cmd_AddCommand("writeip", SV_WriteIP_f, "qw");
 
   const localmodels = svInitMod().localmodels;
   for (let i = 0; i < MAX_MODELS; i++) localmodels[i] = Com_sprintf("*%i", i);
@@ -1680,9 +1740,74 @@ function build_number(): number {
 SV_Init
 ====================
 */
+/*
+=================
+SV_InitProfile
+
+Not in QW/server/sv_main.c: the C's qwsv is its own binary, so SV_Init is the
+only way its server ever comes up. The unified binary (U38, ARCHITECTURE.md
+"Unified client and server") has a second way -- a client process that is
+already booted typing `map` under the QuakeWorld profile, the listen server.
+Everything SV_Init does that a booted client has ALREADY done is exactly what
+this function leaves out: COM_InitArgv and the `-game qw` mount (the client's
+CL_InitQwProfile does that through COM_AdoptSharedFilesystem), host_parms,
+Memory_Init, Cbuf_Init, Cmd_Init, COM_Init and Sys_Init. What is left is the
+QuakeWorld server's own half, in SV_Init's own order.
+
+The mirror image of src/client/cl_main.ts's CL_InitQwProfile, down to the
+one-shot guard and the post-host-init command-registration window
+(src/common/cmd.ts's `cmdHost.profileRegistration`, which SV_InitLocal's
+Cmd_AddCommand calls need because host init is long over by now).
+
+`setCvarInfoHook(SV_CvarInfoHook, "server")` names the slot explicitly: the
+default target is chosen by `connectionProfile.serveronly`, which is false in
+a listen server, and installing the serverinfo propagation over the client's
+userinfo one would send the local player's `name` into the serverinfo string.
+=================
+*/
+let qwServerProfileInitialized = false;
+
+export function SV_QwServerProfileInitialized(): boolean {
+  return qwServerProfileInitialized;
+}
+
+export function SV_InitProfile(): void {
+  if (qwServerProfileInitialized) return;
+  qwServerProfileInitialized = true;
+
+  setCvarInfoHook(SV_CvarInfoHook, "server");
+
+  // SV_Init's `COM_AddParm("-game"); COM_AddParm("qw");` ahead of COM_Init,
+  // which has already run here: src/qw/common.ts's COM_AdoptSharedFilesystem
+  // is that mount done against an already-initialized shared search path, and
+  // is what src/client/cl_main.ts's CL_InitQwProfile calls for the same
+  // reason. Without it `maps/<level>.bsp` is looked for in id1 and the
+  // QuakeWorld server can never find its own map.
+  COM_AdoptSharedFilesystem();
+
+  // Host init is long over by the time a listen server asks for this, and
+  // PR_Init, Mod_Init and SV_InitLocal all register console commands. See
+  // src/common/cmd.ts's `cmdHost.profileRegistration`, which is the window
+  // src/client/cl_main.ts's CL_InitQwProfile opens for the same reason.
+  Cmd_WithProfileRegistration(() => {
+    PR_Init();
+    Mod_Init();
+
+    SV_InitNet();
+
+    SV_InitLocal();
+  });
+  Pmove_Init();
+
+  Hunk_AllocName(0, "-HOST_HUNKLEVEL-");
+  svMainState.host_hunklevel = Hunk_LowMark();
+
+  svMainState.host_initialized = true;
+}
+
 export function SV_Init(parms: QuakeParmsT): void {
   // QW/client/cvar.c's SERVERONLY serverinfo propagation -- see file header
-  setCvarInfoHook(SV_CvarInfoHook);
+  setCvarInfoHook(SV_CvarInfoHook, "server");
 
   COM_InitArgv(parms.argv);
   COM_AddParm("-game");
@@ -1730,10 +1855,14 @@ export function SV_Init(parms: QuakeParmsT): void {
   Con_Printf("======== QuakeWorld Initialized ========\n");
 
   // process command line arguments
-  Cmd_StuffCmds_f();
-  Cbuf_Execute();
+  // U38: this server's own console profile, so a `+map` on the command line
+  // resolves against the QuakeWorld registrations.
+  Cmd_WithConsoleProfile(sv.profile, () => {
+    Cmd_StuffCmds_f();
+    Cbuf_Execute();
+  });
 
   // if a map wasn't specified on the command line, spawn start.map
-  if (sv.state === ServerStateT.ss_dead) Cmd_ExecuteString("map start");
+  if (sv.state === ServerStateT.ss_dead) Cmd_ExecuteString("map start", sv.profile);
   if (sv.state === ServerStateT.ss_dead) SV_Error("Couldn't spawn a server");
 }

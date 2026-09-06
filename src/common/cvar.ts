@@ -220,6 +220,24 @@ export function Cvar_Set(var_name: string, value: string): void {
     return;
   }
 
+  Cvar_SetObject(v, value);
+}
+
+/*
+Not in the C: Cvar_Set's body with the `cvar_vars` lookup already done.
+
+U38 (ARCHITECTURE.md "Unified client and server"): QuakeWorld's `name` is a
+cvar (QW/client/cl_main.c) and WinQuake's `name` is a console command
+(host_cmd.c's Host_Name_f). One process has both, and Cvar_RegisterVariable's
+"%s is a command" guard means the QuakeWorld cvar object never gets linked
+into `cvar_vars` -- so `Cvar_Set("name", ...)` cannot reach it. The ruling for
+that collision keeps the command (that is the name players type) and keeps the
+cvar as QuakeWorld's storage, which needs one way to set a cvar object that is
+not reachable by name. Everything else about the set -- the info propagation
+and the `server`-flagged broadcast -- is identical, so it lives here and
+Cvar_Set calls it.
+*/
+export function Cvar_SetObject(v: CvarT, value: string): void {
   const changed = v.string !== value;
 
   v.string = value; // Z_Free the old value string, Z_Malloc + copy the new one -> plain assignment

@@ -62,6 +62,17 @@ export function setBootProfile(profile: NetProfileT): void {
   connectionProfile.client = profile;
 }
 
+// The `-dedicated -qw` boot (and the `qwsv` entry point, which is now that
+// command line): this process has a QuakeWorld server and no client of its
+// own, which is exactly what QW's `SERVERONLY` compile-time split meant.
+// `boot` moves with it so a `map` typed at the dedicated console resolves
+// against the same profile the server is on.
+export function setDedicatedServerProfile(profile: NetProfileT): void {
+  connectionProfile.boot = profile;
+  connectionProfile.server = profile;
+  if (profile === "qw") connectionProfile.serveronly = true;
+}
+
 export function bootProfile(): NetProfileT {
   return connectionProfile.boot;
 }
@@ -114,6 +125,29 @@ export function serverProfile(): NetProfileT {
 }
 
 export function setServerProfile(profile: NetProfileT): void {
+  connectionProfile.server = profile;
+}
+
+// U38 (ARCHITECTURE.md "Unified client and server"): one process holds at
+// most one server. The two server trees keep entirely separate `sv`/`svs`
+// singletons, progs VMs, netchans and hunk state, so a `map` under one
+// profile takes the other one down rather than trying to run both. Each
+// server registers its own level-shutdown here at module load (the NetQuake
+// side from src/server/sv_main.ts, the QuakeWorld side from
+// src/qw/server/sv_main.ts), so a process that never linked one of the two
+// simply finds that slot null -- which is correct, since no server of that
+// profile can be running.
+export const serverShutdownHooks: { nq: (() => void) | null; qw: (() => void) | null } = {
+  nq: null,
+  qw: null,
+};
+
+// Called from both SV_SpawnServer functions: put the other server away, then
+// publish this one as `connectionProfile.server`.
+export function claimServerProfile(profile: NetProfileT): void {
+  const other: NetProfileT = profile === "nq" ? "qw" : "nq";
+  const shutdown = serverShutdownHooks[other];
+  if (shutdown !== null) shutdown();
   connectionProfile.server = profile;
 }
 

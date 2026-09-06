@@ -96,7 +96,8 @@ import { Com_sprintf } from "../common/sprintf";
 import { Con_DPrintf, Con_Printf } from "../client/console";
 import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv, Cmd_ExecuteString, CmdSourceT, cmdState } from "../common/cmd";
 import { Q_atoi, standard_quake } from "../common/common";
-import { coop, deathmatch, host, Host_ClearMemory, Host_MaxEdicts, skill } from "../common/host";
+import { coop, deathmatch, host, Host_ClearMemory, Host_MaxEdicts, Host_ShutdownServer, skill } from "../common/host";
+import { claimServerProfile, serverProfile, serverShutdownHooks, type NetProfileT } from "../common/profile";
 import { hostname, NET_CanSendMessage, NET_CheckNewConnections, NET_SendMessage, NET_SendToAll, NET_SendUnreliableMessage, net_activeconnections, setNetActiveConnections } from "../common/net_main";
 import { CONTENTS_SOLID, MAX_MAP_LEAFS } from "../common/bspfile";
 import { NET_MAXMESSAGE } from "../common/net";
@@ -181,6 +182,13 @@ export const svMainHooks: {
   spawnServer: null,
 };
 
+// U38: the NetQuake half of src/common/profile.ts's one-server-at-a-time
+// rule. host.ts's Host_ShutdownServer is the level-scope shutdown -- it drops
+// every client and clears sv.active without touching the process.
+serverShutdownHooks.nq = (): void => {
+  Host_ShutdownServer(false);
+};
+
 /** True when this client slot is an engine-driven bot rather than a socket. */
 export function SV_ClientIsBot(client: ClientT): boolean {
   return svMainHooks.isBot !== null && svMainHooks.isBot(client);
@@ -211,6 +219,32 @@ function requireWorldmodel(): ModelT {
 // setting is). `15`, `666`, `999` or `auto`; changes take effect at the next
 // map load, exactly as Ironwail's command does.
 export const sv_protocol = new CvarT("sv_protocol", "auto", true);
+
+// U38 (ARCHITECTURE.md "Unified client and server"): which server tree the
+// next `map` spawns -- "nq" (WinQuake's, this file's) or "qw" (QuakeWorld's,
+// src/qw/server/). Not in either C tree: each binary has exactly one server.
+// Like sv_protocol it takes effect at the next map load, and like sv_protocol
+// it is archived, so `-dedicated` plus a config line is a complete way to
+// stand up either server. The `-dedicated -qw` command line (what `qwsv`
+// passes) is the other way in, and does not go through this cvar at all --
+// it never runs this file's SV_Init. src/common/host_cmd.ts's Host_Map_f
+// reads it.
+export const sv_profile = new CvarT("sv_profile", "", true);
+
+// The profile `sv_profile` names. Empty (its default) means "whichever server
+// is running", so a boot that never touches the cvar behaves exactly as it did
+// before this cvar existed: `connectionProfile.server` is "nq" on a WinQuake
+// boot and "qw" on a `-dedicated -qw` one, and each tree's `map` stays on its
+// own server. Both `map` commands consult this -- host_cmd.ts's Host_Map_f
+// and src/qw/server/sv_ccmds.ts's SV_Map_f -- so whichever of the two the
+// console profile in force resolves to, the map lands on the server the
+// operator asked for.
+export function SV_WantedProfile(): NetProfileT {
+  const wanted = sv_profile.string.trim().toLowerCase();
+  if (wanted === "qw" || wanted === "quakeworld" || wanted === "28" || wanted === "29") return "qw";
+  if (wanted === "nq" || wanted === "netquake" || wanted === "15" || wanted === "666" || wanted === "999") return "nq";
+  return serverProfile();
+}
 
 // The codec this session's protocol selects. Never null: getCodec falls back to
 // protocol 15, and sv.protocol is only ever one of the three numbers below.
@@ -309,6 +343,7 @@ export function SV_Init(): void {
   Cvar_RegisterVariable(sv_aim);
   Cvar_RegisterVariable(sv_nostep);
   Cvar_RegisterVariable(sv_protocol);
+  Cvar_RegisterVariable(sv_profile); // U38, see its own comment
   // U9: the behaviour profile's own cvars, the ones the re-release QuakeC
   // reads or sets, and the debug-draw gate.
   QEX_RegisterCvars();
@@ -1192,6 +1227,13 @@ This is called at the start of each level
 ================
 */
 export function SV_SpawnServer(server: string): void {
+  // U38 (ARCHITECTURE.md "Unified client and server"): one process, one
+  // server. `map` under the NetQuake profile takes any QuakeWorld server
+  // this process is running down first and publishes "nq" as
+  // `connectionProfile.server`, which is what the console-source profile
+  // (src/common/cmd.ts) and `sv.profile` below both read.
+  claimServerProfile("nq");
+
   // let's not have any servers with no name
   if (hostname.string === "") Cvar_Set("hostname", "UNNAMED");
   if (svMainHooks.scrCenterTimeOff) svMainHooks.scrCenterTimeOff(); // scr_centertime_off = 0
@@ -1214,6 +1256,8 @@ export function SV_SpawnServer(server: string): void {
   Host_ClearMemory();
 
   sv.clear(); // memset (&sv, 0, sizeof(sv)) -- see file header (Host_ClearMemory already does this; kept for fidelity, matching the C's own double memset)
+
+  sv.profile = "nq"; // U38, see the claimServerProfile call above
 
   sv.name = server;
 

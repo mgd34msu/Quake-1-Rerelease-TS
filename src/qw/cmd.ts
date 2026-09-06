@@ -93,11 +93,19 @@ Deviations from PORTING.md / the C source:
   with the re-exported, unchanged function bodies; `exec`/`cmd` are
   registered with this file's own fresh bodies, and `stuffcmds` with the
   now-shared, qw.active-aware `Cmd_StuffCmds_f`. `#ifndef SERVERONLY`/
-  `#ifdef SERVERONLY` becomes the runtime flag `qw.serveronly`
-  (src/common/quakedef.ts, same "no C source line" idiom as `qw.active`):
-  qwsv (src/qw/server/sv_main.ts's SV_Init) calls this same Cmd_Init and
+  `#ifdef SERVERONLY` becomes the runtime field `connectionProfile.serveronly`
+  (src/common/profile.ts, same "no C source line" idiom the `qw.active` flag
+  had): qwsv (src/qw/server/sv_main.ts's SV_Init) calls this same Cmd_Init and
   must not register "cmd" at all, so the registration is gated on
-  `!qw.serveronly` rather than split into a second Cmd_Init.
+  `!connectionProfile.serveronly` rather than split into a second Cmd_Init.
+
+Unified binary (ARCHITECTURE.md "Unified client and server", U38): all six
+registrations are scoped to the `qw` profile, so this tree's `exec` and `cmd`
+answer only while the QuakeWorld profile is in force. The one build that has
+a client -- and can therefore leave that profile mid-session -- also runs
+src/common/cmd.ts's own Cmd_Init for the unscoped WinQuake set, because a
+`-qw` boot never reaches WinQuake's Host_Init, which is where that call
+otherwise lives. See Cmd_Init below.
 */
 
 import { Con_Printf } from "../client/console";
@@ -105,7 +113,7 @@ import { Hunk_LowMark, Hunk_FreeToLowMark } from "../common/zone";
 import { COM_LoadHunkFile } from "../common/common";
 import { CvarT } from "../common/cvar";
 import { developer } from "../common/host";
-import { qw } from "../common/quakedef";
+import { connectionProfile, type NetProfileT } from "../common/profile";
 import { SizeBuf, MSG_WriteByte, SZ_Print } from "../common/sizebuf";
 import { cls, CactiveT } from "../client/client";
 import { ClcOpsT } from "./protocol";
@@ -128,6 +136,7 @@ import {
   Cmd_Wait_f,
   Cmd_StuffCmds_f,
   Cmd_ExecuteString as CommonCmd_ExecuteString,
+  Cmd_Init as CommonCmd_Init,
   CmdSourceT,
   setForwardToServerHandler,
 } from "../common/cmd";
@@ -195,8 +204,8 @@ own (the "Unknown command" print gate) whenever qw.active is set, closing the
 integration gap this file's header used to document.
 ============
 */
-export function Cmd_ExecuteString(text: string): void {
-  CommonCmd_ExecuteString(text, CmdSourceT.src_command);
+export function Cmd_ExecuteString(text: string, profile?: NetProfileT): void {
+  CommonCmd_ExecuteString(text, CmdSourceT.src_command, profile);
 }
 
 //==============================================================================
@@ -296,12 +305,29 @@ Cmd_Init
 ============
 */
 export function Cmd_Init(): void {
-  // register our commands
-  Cmd_AddCommand("stuffcmds", Cmd_StuffCmds_f);
-  Cmd_AddCommand("exec", Cmd_Exec_f);
-  Cmd_AddCommand("echo", Cmd_Echo_f);
-  Cmd_AddCommand("alias", Cmd_Alias_f);
-  Cmd_AddCommand("wait", Cmd_Wait_f);
+  // register our commands -- all six under the `qw` profile (U38, see the
+  // file header's unified-binary note), so this tree's `exec` and `cmd`
+  // answer while the QuakeWorld profile is in force and WinQuake's answer
+  // otherwise.
+  Cmd_AddCommand("stuffcmds", Cmd_StuffCmds_f, "qw");
+  Cmd_AddCommand("exec", Cmd_Exec_f, "qw");
+  Cmd_AddCommand("echo", Cmd_Echo_f, "qw");
+  Cmd_AddCommand("alias", Cmd_Alias_f, "qw");
+  Cmd_AddCommand("wait", Cmd_Wait_f, "qw");
   // #ifndef SERVERONLY -- qwsv (SERVERONLY) never registers "cmd" at all.
-  if (!qw.serveronly) Cmd_AddCommand("cmd", Cmd_ForwardToServer_f);
+  if (!connectionProfile.serveronly) {
+    Cmd_AddCommand("cmd", Cmd_ForwardToServer_f, "qw");
+
+    // U38: a `-qw` boot never runs WinQuake's Host_Init, so src/common/cmd.ts's
+    // own Cmd_Init -- the unscoped registrations of these same six names --
+    // would never run either, and a `-qw` client that then joined a NetQuake
+    // server would find `exec`/`echo`/`alias`/`wait`/`stuffcmds`/`cmd` gone
+    // with the profile. The unified binary links both trees' cmd.c, so it
+    // registers both sets: the `qw`-scoped ones above win under the
+    // QuakeWorld profile, the unscoped ones serve NetQuake. The dedicated
+    // QuakeWorld server (serveronly) has no client to switch profiles and is
+    // the one build QW compiled with SERVERONLY, so it registers only its
+    // own, exactly as qwsv did.
+    CommonCmd_Init();
+  }
 }

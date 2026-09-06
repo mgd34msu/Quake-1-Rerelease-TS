@@ -66,6 +66,8 @@ Deviations from PORTING.md / the C source:
 */
 
 import type * as SvMainModule from "./sv_main";
+import type * as SvMainNqModule from "../../server/sv_main";
+import type * as HostCmdModule from "../../common/host_cmd";
 import { ClientReliableWrite_Begin, ClientReliableWrite_String } from "./sv_nchan";
 import { Con_DPrintf, Con_Printf, SV_BroadcastCommand, SV_BroadcastPrintf, SV_ClientPrintf, SV_SendMessagesToAll, sv_redirected, svSendFileState } from "./sv_send";
 import { localinfoState, SV_SpawnServer } from "./sv_init";
@@ -97,6 +99,17 @@ import { net_from, net_local_adr, NET_AdrToString, NET_BaseAdrToString, NET_Send
 import { Sys_FileClose, Sys_FileOpenRead, Sys_FileOpenWrite, Sys_FileTime, Sys_mkdir, Sys_Quit, SysError } from "../../platform/sys";
 
 // see file header: sv_main.c-owned names, reached lazily.
+// U38: WinQuake's server and host_cmd, reached lazily. A process that never
+// links them (this file's own tree can be linked alone) never calls these,
+// because `sv_profile` empty resolves to the running server's own profile.
+function svMainNqMod(): typeof SvMainNqModule {
+  return require("../../server/sv_main");
+}
+
+function hostCmdMod(): typeof HostCmdModule {
+  return require("../../common/host_cmd");
+}
+
 function svMainMod(): typeof SvMainModule {
   return require("./sv_main");
 }
@@ -358,6 +371,20 @@ command from the console or progs.
 ======================
 */
 export function SV_Map_f(): void {
+  // U38 (ARCHITECTURE.md "Unified client and server"): the mirror of
+  // src/common/host_cmd.ts's Host_Map_f route. One process has both trees'
+  // `map` -- WinQuake's unscoped, this one scoped to the `qw` profile -- and
+  // the console profile in force decides which of the two a typed `map`
+  // reaches. `sv_profile` decides which SERVER it spawns on, so a `map` that
+  // arrives here while the operator has asked for NetQuake is handed over
+  // rather than spawning the wrong server. `sv_profile` empty (its default)
+  // means "whichever server is running", so a plain qwsv boot never takes
+  // this branch.
+  if (svMainNqMod().SV_WantedProfile() === "nq") {
+    hostCmdMod().Host_Map_f();
+    return;
+  }
+
   if (Cmd_Argc() !== 2) {
     Con_Printf("map <levelname> : continue game on a new level\n");
     return;

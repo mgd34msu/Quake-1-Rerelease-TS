@@ -133,6 +133,7 @@ Deviations from PORTING.md / the C source:
   through, exactly as the C's `model_t *`.
 */
 
+import { activeProfile } from "./profile";
 import {
   BSPVERSION,
   BSP2VERSION_2PSB,
@@ -734,7 +735,7 @@ Mod_ClearAll
 export function Mod_ClearAll(): void {
   for (let i = 0; i < mod_numknown; i++) {
     const mod = mod_known[i];
-    if (qw.active) {
+    if (activeProfile() === "qw") {
       // QW/client/model.c: only non-alias models are marked stale here;
       // alias models are left to cache_user_t eviction (no avail-slot reuse
       // and no sprite cache.data fix -- both dropped, see Mod_FindName below).
@@ -762,7 +763,7 @@ export function Mod_FindName(name: string): ModelT {
   let mod: ModelT = modKnownAt(0);
   let i = 0;
 
-  if (qw.active) {
+  if (activeProfile() === "qw") {
     // QW/client/model.c: no avail-slot reuse -- mod_known only ever grows.
     for (i = 0; i < mod_numknown; i++) {
       mod = mod_known[i];
@@ -2039,7 +2040,7 @@ export function Mod_LoadBrushModel(mod: ModelT, buffer: Uint8Array): void {
   // QW/client/model.c drops this clear (matching gl_model.c's WinQuake
   // behavior, already the case here without qw.active -- see this file's
   // header note on Mod_LoadBrushModel's soft-vs-gl flags disagreement).
-  if (!qw.active) model.flags = 0;
+  if (activeProfile() !== "qw") model.flags = 0;
 
   //
   // set up the submodels (FIXME: this is confusing)
@@ -2056,7 +2057,7 @@ export function Mod_LoadBrushModel(mod: ModelT, buffer: Uint8Array): void {
     model.firstmodelsurface = bm.firstface;
     model.nummodelsurfaces = bm.numfaces;
 
-    if (qw.active) {
+    if (activeProfile() === "qw") {
       // QW/client/model.c reorders this ahead of the VectorCopy calls below,
       // so it reads the PREVIOUS submodel's mins/maxs (or the zeroed initial
       // values on the first submodel) rather than this one's -- exactly as the original.
@@ -2165,7 +2166,7 @@ export function Mod_LoadSpriteModel(mod: ModelT, buffer: Uint8Array): void {
 
   mod.numframes = numframes;
   // QW/client/model.c drops this clear, same as Mod_LoadBrushModel above.
-  if (!qw.active) mod.flags = 0;
+  if (activeProfile() !== "qw") mod.flags = 0;
 
   mod.cache.data = null;
 
@@ -2185,7 +2186,7 @@ export function Mod_Print(): void {
     const mod = mod_known[i];
     Con_Printf("%8s : %s", mod.cache.data === null ? "(null)" : "(cached)", mod.name);
     // QW/client/model.c drops the needload annotations below.
-    if (!qw.active) {
+    if (activeProfile() !== "qw") {
       if (mod.needload & NL_UNREFERENCED) Con_Printf(" (!R)");
       if (mod.needload & NL_NEEDS_LOADED) Con_Printf(" (!P)");
     }

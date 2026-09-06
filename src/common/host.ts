@@ -144,7 +144,8 @@ import type * as HostCmdModule from "./host_cmd";
 import type * as RulesetModule from "../progs/ext/ruleset";
 import { EDICT_TO_PROG, pr } from "../progs/progs";
 import type { GlobalVars } from "../progs/progdefs";
-import { Cbuf_Execute, Cbuf_AddText, Cbuf_InsertText, Cbuf_Init, Cmd_Init, cmdHost } from "./cmd";
+import { Cbuf_Execute, Cbuf_AddText, Cbuf_InsertText, Cbuf_Init, Cmd_Init, Cmd_WithConsoleProfile, cmdHost } from "./cmd";
+import { clientProfile, serverProfile } from "./profile";
 import {
   COM_CheckParm,
   COM_Init,
@@ -438,11 +439,11 @@ function botsMod(): typeof BotsModule {
 }
 
 export function hostBasepal(): Uint8Array | null {
-  return qw.active ? qwClMainMod().host_basepal.data : host_basepal;
+  return clientProfile() === "qw" ? qwClMainMod().host_basepal.data : host_basepal;
 }
 
 export function hostColormap(): Uint8Array | null {
-  return qw.active ? qwClMainMod().host_colormap.data : host_colormap;
+  return clientProfile() === "qw" ? qwClMainMod().host_colormap.data : host_colormap;
 }
 
 export const host_framerate = new CvarT("host_framerate", "0"); // set for slow motion
@@ -1038,7 +1039,12 @@ export function _Host_Frame(time: number): void {
     hostClientHooks.inCommands?.(); // IN_Commands
 
     // process console commands
-    Cbuf_Execute();
+    // U38 (ARCHITECTURE.md "Unified client and server"): on a dedicated
+    // server the console belongs to the server, so the drain resolves
+    // command names against `connectionProfile.server`; on a listen or
+    // pure-client boot it belongs to the player, so it resolves against the
+    // client's. See src/common/cmd.ts's unified-server note.
+    Cmd_WithConsoleProfile(sysState.isDedicated ? serverProfile() : clientProfile(), Cbuf_Execute);
 
     NET_Poll();
 

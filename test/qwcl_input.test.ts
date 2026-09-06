@@ -39,7 +39,7 @@ import * as snd_dma from "../src/client/snd_dma";
 import { keyState, KeydestT, Key_ClearStates, Key_Event } from "../src/client/keys";
 import * as winMenu from "../src/client/menu";
 import * as qwMenu from "../src/qw/client/menu";
-import { Con_Init, Con_Printf } from "../src/client/console";
+import { Con_Init, Con_Printf, qwConsoleHooks } from "../src/client/console";
 import { sysState } from "../src/platform/sys";
 
 // ---------------------------------------------------------------------------
@@ -473,15 +473,31 @@ describe("Key_Message chat send under qw.active", () => {
 
 describe("Con_Printf gating under qw.active", () => {
   let savedVidWidth: number;
+  // This suite exercises the shared console's own fold. An earlier suite in
+  // the process may have linked the QuakeWorld console forward
+  // (qwConsoleHooks), which the fold takes whenever the profile is qw; hold
+  // it off for the duration and put it back (rule 13).
+  let savedQwPrintf: typeof qwConsoleHooks.Con_Printf;
+  let savedQwDPrintf: typeof qwConsoleHooks.Con_DPrintf;
+  let savedQwSafePrintf: typeof qwConsoleHooks.Con_SafePrintf;
 
   beforeAll(() => {
     savedVidWidth = vid.width; // shared singleton -- restored in afterAll (rule 15)
     vid.width = 320;
+    savedQwPrintf = qwConsoleHooks.Con_Printf;
+    savedQwDPrintf = qwConsoleHooks.Con_DPrintf;
+    savedQwSafePrintf = qwConsoleHooks.Con_SafePrintf;
+    qwConsoleHooks.Con_Printf = null;
+    qwConsoleHooks.Con_DPrintf = null;
+    qwConsoleHooks.Con_SafePrintf = null;
     Con_Init();
   });
 
   afterAll(() => {
     vid.width = savedVidWidth;
+    qwConsoleHooks.Con_Printf = savedQwPrintf;
+    qwConsoleHooks.Con_DPrintf = savedQwDPrintf;
+    qwConsoleHooks.Con_SafePrintf = savedQwSafePrintf;
   });
 
   afterEach(() => {

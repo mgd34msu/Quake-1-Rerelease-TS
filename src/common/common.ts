@@ -113,6 +113,7 @@ Deviations from PORTING.md / the C source:
 */
 
 import { GAMENAME, MAX_NUM_ARGVS, QuakeParmsT, qw } from "./quakedef";
+import { activeProfile } from "./profile";
 import { CRC_Init, CRC_ProcessByte } from "./crc";
 import { Con_Printf } from "../client/console";
 import {
@@ -391,7 +392,7 @@ export function COM_Parse(ps: ParseState): string | null {
 
   // parse single characters (QW/client/common.c has no such branch:
   // folded under qw.active per PORTING.md)
-  if (!qw.active && SINGLE_CHAR_TOKENS.has(c0)) {
+  if (activeProfile() !== "qw" && SINGLE_CHAR_TOKENS.has(c0)) {
     ps.index = i + 1;
     return String.fromCharCode(c0);
   }
@@ -403,7 +404,7 @@ export function COM_Parse(ps: ParseState): string | null {
     token += String.fromCharCode(c);
     i++;
     c = byteAt(data, i);
-    if (!qw.active && SINGLE_CHAR_TOKENS.has(c)) break;
+    if (activeProfile() !== "qw" && SINGLE_CHAR_TOKENS.has(c)) break;
   } while (signedByteAt(data, i) > 32);
 
   ps.index = i;

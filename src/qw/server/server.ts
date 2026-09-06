@@ -112,6 +112,7 @@ import { MAX_CLIENTS, PROTOCOL_VERSION, UPDATE_BACKUP, PacketEntitiesT, QwUsercm
 import type { QwProtocolCodec } from "../../common/protocol/codec";
 import { getQwCodec } from "../../common/protocol/registry";
 import type { QwEdictT } from "./progs";
+import type { NetProfileT } from "../../common/profile";
 import {
   MOVETYPE_NONE,
   MOVETYPE_ANGLENOCLIP,
@@ -223,6 +224,13 @@ function makeArray<T>(n: number, make: () => T): T[] {
 
 export class ServerT {
   active = false; // false when server is going down
+
+  // U38 (ARCHITECTURE.md "Unified client and server"): the profile this
+  // server session belongs to, the twin of src/server/server.ts's own
+  // `ServerT.profile`. Always "qw" here; SV_SpawnServer publishes it to
+  // `connectionProfile.server` so the console-source profile and the
+  // one-server-at-a-time rule read it from one place on either tree.
+  profile: NetProfileT = "qw";
   state: ServerStateT = ServerStateT.ss_dead; // precache commands are only valid during load
 
   time = 0;
@@ -294,6 +302,7 @@ export class ServerT {
 
   clear(): void {
     this.active = false;
+    this.profile = "qw";
     this.state = ServerStateT.ss_dead;
     this.time = 0;
     this.lastcheck = 0;

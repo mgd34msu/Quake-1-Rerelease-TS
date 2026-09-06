@@ -89,6 +89,10 @@ import type * as QwNetUdpModule from "../qw/net_udp";
 import type * as QwProtocolModule from "../qw/protocol";
 import type * as QwCommonModule from "../qw/common";
 import type * as QwCmdModule from "../qw/cmd";
+import type * as QwConsoleModule from "../qw/client/console";
+import type * as QwMenuModule from "../qw/client/menu";
+import type * as QwScreenModule from "../qw/client/screen";
+import type * as QwSbarModule from "../qw/client/sbar";
 import type * as HostCmdModule from "../common/host_cmd";
 import { CvarT, Cvar_RegisterVariable } from "../common/cvar";
 import type { Vec3 } from "../common/mathlib";
@@ -325,6 +329,22 @@ function qwCmdMod(): typeof QwCmdModule {
   return require("../qw/cmd");
 }
 
+function qwConsoleMod(): typeof QwConsoleModule {
+  return require("../qw/client/console");
+}
+
+function qwMenuMod(): typeof QwMenuModule {
+  return require("../qw/client/menu");
+}
+
+function qwScreenMod(): typeof QwScreenModule {
+  return require("../qw/client/screen");
+}
+
+function qwSbarMod(): typeof QwSbarModule {
+  return require("../qw/client/sbar");
+}
+
 // cl_protocol: this port's own cvar, the `connect` rule's override (see
 // src/common/profile.ts). "auto" reads the address; "qw"/"28"/"29" force the
 // QuakeWorld handshake; "nq"/"15"/"666"/"999" force NetQuake.
@@ -369,6 +389,22 @@ export function CL_InitQwProfile(): void {
     // shared src/common/cmd.ts registers the WinQuake one, which goes through
     // cls.netcon. Both are needed, one per profile.
     Cmd_AddCommand("cmd", qwCmdMod().Cmd_ForwardToServer_f, "qw");
+
+    // U38 (ARCHITECTURE.md "Unified client and server"): QW/client/cl_main.c's
+    // Host_Init runs Con_Init, M_Init, SCR_Init and Sbar_Init, which a `-qw`
+    // boot still reaches through src/main.ts's Sys_Main_Init_QW. From a
+    // NetQuake boot they have never run, and the draw-time and key-time
+    // choices that select between the two trees -- src/platform/vid.ts's
+    // SCR_Init/Sbar_Init arms and src/platform/vid_menu.ts's `menu()` -- have
+    // nothing on the QuakeWorld side to reach. `-qw` is only a default: which
+    // console, screen, status bar and menu the frame uses is decided per
+    // profile when it draws, so both trees' copies are brought up here.
+    // Con_Init allocates QW's own con_main.text, which every Con_Printf that
+    // src/client/console.ts forwards under the QuakeWorld profile writes into.
+    qwConsoleMod().Con_Init();
+    qwMenuMod().M_Init();
+    qwScreenMod().SCR_Init();
+    qwSbarMod().Sbar_Init();
   });
 }
 

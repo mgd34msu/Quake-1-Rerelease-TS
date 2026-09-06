@@ -154,6 +154,7 @@ Deviations from PORTING.md / the C source (ruled under "Memory (zone.c)"):
 */
 
 import { Sys_Error } from "../platform/sys";
+import { activeProfile } from "./profile";
 import { Con_Printf, Con_DPrintf } from "../client/console";
 import { Com_sprintf } from "./sprintf";
 import { Cmd_AddCommand } from "./cmd";
@@ -174,7 +175,8 @@ import { qw } from "./quakedef";
 //==============================================================================
 
 // QW zone.c: `#define DYNAMIC_SIZE 0x20000` (WinQuake: 0xc000). Read at
-// Memory_Init call time (after the qwcl/qwsv entry point sets qw.active),
+// Memory_Init call time (after the boot has chosen its profile -- see
+// src/common/profile.ts's setBootProfile/setDedicatedServerProfile),
 // not at module load.
 const DYNAMIC_SIZE_WINQUAKE = 0xc000;
 const DYNAMIC_SIZE_QW = 0x20000;
@@ -466,7 +468,7 @@ export function Memory_Init(size: number): void {
 
   Cache_Init();
 
-  let zonesize = qw.active ? DYNAMIC_SIZE_QW : DYNAMIC_SIZE_WINQUAKE;
+  let zonesize = activeProfile() === "qw" ? DYNAMIC_SIZE_QW : DYNAMIC_SIZE_WINQUAKE;
   const p = COM_CheckParm("-zone");
   if (p) {
     if (p < com_argv.length - 1) {

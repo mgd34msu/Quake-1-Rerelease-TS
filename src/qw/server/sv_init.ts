@@ -106,6 +106,7 @@ import { MAX_CLIENTS, PROTOCOL_VERSION, SvcOpsT } from "../protocol";
 import { MAX_MODELS } from "../bothdefs";
 import { COM_LoadStackFile, com_filesize, Info_SetValueForKey, MAX_SERVERINFO_STRING, MSG_WriteByte, MSG_WriteShort } from "../common";
 import type { ModelT } from "../../common/model";
+import { claimServerProfile } from "../../common/profile";
 import { loadState } from "../../common/model";
 import { BSP_WIDTH_29, type BspWidthT } from "../../common/bspfile";
 import { Host_MaxEdicts } from "../../common/host";
@@ -435,6 +436,12 @@ This is only called from the SV_Map_f() function.
 ================
 */
 export function SV_SpawnServer(server: string): void {
+  // U38 (ARCHITECTURE.md "Unified client and server"): one process, one
+  // server. `map` under the QuakeWorld profile takes any NetQuake server
+  // this process is running down first and publishes "qw" as
+  // `connectionProfile.server`.
+  claimServerProfile("qw");
+
   Con_DPrintf("SpawnServer: %s\n", server);
 
   SV_SaveSpawnparms();
@@ -449,6 +456,8 @@ export function SV_SpawnServer(server: string): void {
 
   // wipe the entire per-level structure
   sv.clear(); // memset (&sv, 0, sizeof(sv))
+
+  sv.profile = "qw"; // U38, see the claimServerProfile call above
 
   sv.datagram.maxsize = sv.datagram_buf.length;
   sv.datagram.data = sv.datagram_buf;

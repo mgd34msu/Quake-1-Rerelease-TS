@@ -103,6 +103,28 @@ Deviations from PORTING.md / the C source:
   name. `Cmd_RemoveCommand` is this port's own addition, the inverse the C
   never needed (it never unregisters anything): the unified client uses it to
   take a profile's registrations back out.
+  Unified server (U38): one process can hold a NetQuake server and a
+  QuakeWorld server, and a command line arrives from one of four places --
+  the dedicated stdin console, an rcon packet, a connected client's
+  `clc_stringcmd`, or the local client's own console/binds. The first three
+  belong to a server and must resolve against THAT server's profile no
+  matter what the client is doing; the last belongs to the client. So
+  `Cmd_ExecuteString` takes an optional third argument, the profile the
+  lookup resolves against, and the module keeps a "current console profile"
+  (`cmdConsole.profile`) that `Cmd_WithConsoleProfile` sets around a drain.
+  The command buffer itself is NOT tagged per command: `cmd_text` is one
+  byte buffer that `exec`, `alias` and `stuffcmds` splice into at arbitrary
+  offsets, so a parallel tag array would have to be spliced in lockstep with
+  every one of those, and a `wait` would have to carry its tags across the
+  frame boundary. The executing side owning the profile for the length of
+  its own drain is the same information with none of that bookkeeping: each
+  server drains the buffer inside its own `Cmd_WithConsoleProfile`, and text
+  a server's drain leaves behind (a `wait`) is picked up by whichever drain
+  runs next -- which, since the two servers never run at once (see
+  src/server/sv_main.ts's SV_SpawnServer), is the same one.
+  `Cmd_ExecuteString`'s own profile argument is latched for the duration of
+  the command it runs, so an `exec`/`alias` that command triggers stays on
+  the profile that issued it.
   `Cmd_ForwardToServer` is not folded: it stays hook-based, as it already is
   (`setForwardToServerHandler`); QW's own `Cmd_ForwardToServer`/
   `Cmd_ForwardToServer_f` (src/qw/cmd.ts) write directly into a netchan
@@ -119,7 +141,7 @@ import { Cvar_Command, Cvar_VariableString } from "./cvar";
 import { Hunk_LowMark, Hunk_FreeToLowMark } from "./zone";
 import { Con_Printf } from "../client/console";
 import { Sys_Error } from "../platform/sys";
-import { activeProfile, clientProfile, type NetProfileT } from "./profile";
+import { activeProfile, type NetProfileT } from "./profile";
 import type * as HostModule from "./host";
 
 // see file header's QuakeWorld-track deviation note: host.ts statically
@@ -161,6 +183,29 @@ export enum CmdSourceT {
 }
 
 export const cmdState = { source: CmdSourceT.src_command, wait: false };
+
+// The profile command lookup resolves against right now. `null` means "no
+// console has claimed the process", which is every call the client makes and
+// every call a single-server binary makes: the answer is then `activeProfile()`,
+// exactly as before this holder existed. See the file header's unified-server
+// note.
+export const cmdConsole: { profile: NetProfileT | null } = { profile: null };
+
+export function Cmd_ConsoleProfile(): NetProfileT {
+  return cmdConsole.profile ?? activeProfile();
+}
+
+// Runs `fn` with the console profile pinned, restoring whatever was in force
+// before. A server's frame wraps its own Cbuf_Execute in this.
+export function Cmd_WithConsoleProfile<T>(profile: NetProfileT, fn: () => T): T {
+  const saved = cmdConsole.profile;
+  cmdConsole.profile = profile;
+  try {
+    return fn();
+  } finally {
+    cmdConsole.profile = saved;
+  }
+}
 
 // host_initialized (host.c); host.ts sets this once it exists.
 // `profileRegistration`: the unified client brings a second profile's
@@ -232,7 +277,7 @@ export function Cbuf_InsertText(text: string): void {
   // add the entire text of the file
   // QW/client/cmd.c appends an extra "\n" after the text itself -- folded
   // under qw.active, see file header.
-  Cbuf_AddText(clientProfile() === "qw" ? `${text}\n` : text);
+  Cbuf_AddText(Cmd_ConsoleProfile() === "qw" ? `${text}\n` : text);
 
   // add the copied off data
   if (templen && temp) {
@@ -291,7 +336,7 @@ export function Cbuf_Execute(): void {
 export function Cmd_StuffCmds_f(): void {
   // QW/client/cmd.c has no such guard (added later in retail WinQuake) --
   // folded under qw.active, see file header.
-  if (clientProfile() !== "qw" && Cmd_Argc() !== 1) {
+  if (Cmd_ConsoleProfile() !== "qw" && Cmd_Argc() !== 1) {
     Con_Printf("stuffcmds : execute command line parameters\n");
     return;
   }
@@ -554,8 +599,7 @@ export function Cmd_RemoveCommand(cmd_name: string, profile?: NetProfileT): numb
 
 // The registration in force for `name` right now: the one scoped to the
 // active profile if there is one, else the unscoped one. See the file header.
-function Cmd_FindCommand(cmd_name: string): CmdFunctionT | null {
-  const active = activeProfile();
+function Cmd_FindCommand(cmd_name: string, active: NetProfileT): CmdFunctionT | null {
   let unscoped: CmdFunctionT | null = null;
   for (const cmd of cmd_functions) {
     if (Q_strcasecmp(cmd_name, cmd.name) !== 0) continue;
@@ -581,7 +625,7 @@ export function Cmd_CompleteCommand(partial: string): string | null {
 
   // check functions -- a registration scoped to the other profile is not a
   // command the player can run right now, so it is not a completion either.
-  const active = activeProfile();
+  const active = Cmd_ConsoleProfile();
   for (const cmd of cmd_functions) {
     if (cmd.profile !== null && cmd.profile !== active) continue;
     if (cmd.name.slice(0, len) === partial) return cmd.name;
@@ -592,15 +636,24 @@ export function Cmd_CompleteCommand(partial: string): string | null {
 
 // A complete command line has been parsed, so try to execute it
 // FIXME: lookupnoadd the token to speed search?
-export function Cmd_ExecuteString(text: string, src: CmdSourceT): void {
+export function Cmd_ExecuteString(text: string, src: CmdSourceT, profile?: NetProfileT): void {
+  if (profile !== undefined) {
+    Cmd_WithConsoleProfile(profile, () => {
+      Cmd_ExecuteString(text, src);
+    });
+    return;
+  }
+
   cmdState.source = src;
   Cmd_TokenizeString(text);
 
   // execute the command line
   if (!Cmd_Argc()) return; // no tokens
 
+  const active = Cmd_ConsoleProfile();
+
   // check functions
-  const cmd = Cmd_FindCommand(Cmd_Argv(0));
+  const cmd = Cmd_FindCommand(Cmd_Argv(0), active);
   if (cmd !== null) {
     cmd.fn();
     return;
@@ -619,7 +672,7 @@ export function Cmd_ExecuteString(text: string, src: CmdSourceT): void {
     // QW/client/cmd.c gates this print behind `cl_warncmd.value ||
     // developer.value` instead of printing unconditionally -- folded under
     // qw.active as `developer.value` alone, see file header.
-    if (clientProfile() === "qw") {
+    if (active === "qw") {
       if (hostMod().developer.value) Con_Printf('Unknown command "%s"\n', Cmd_Argv(0));
     } else {
       Con_Printf('Unknown command "%s"\n', Cmd_Argv(0));

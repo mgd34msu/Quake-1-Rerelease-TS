@@ -91,7 +91,7 @@ Deviations from the C:
 import { COM_CheckParm, COM_InitArgv, Q_atof, com_argc, com_argv } from "./common/common";
 import { Host_Frame as NQ_Host_Frame, Host_Init as NQ_Host_Init, sys_ticrate } from "./common/host";
 import { LINUX_VERSION, QuakeParmsT } from "./common/quakedef";
-import { clientProfile, connectProfileFor, setBootProfile } from "./common/profile";
+import { clientProfile, connectProfileFor, serverProfile, setBootProfile, setDedicatedServerProfile } from "./common/profile";
 import { qwConsoleHooks } from "./client/console";
 import { hostClientHooks } from "./common/host";
 import { setHostShutdown } from "./platform/sys";
@@ -102,9 +102,19 @@ import {
 } from "./qw/client/cl_main";
 import { Con_DPrintf as QW_Con_DPrintf, Con_Printf as QW_Con_Printf, Con_SafePrintf as QW_Con_SafePrintf } from "./qw/client/console";
 import { SCR_UpdateScreen as QW_SCR_UpdateScreen } from "./qw/client/screen";
+import { SCR_UpdateScreen as NQ_SCR_UpdateScreen } from "./client/screen";
+import { Host_Shutdown as NQ_Host_Shutdown } from "./common/host";
 import { registerLandriver, vcrState } from "./common/net_main";
 import { udpLandriver } from "./platform/net_udp";
 import { NET_Ready as qwNetReady } from "./qw/net_udp";
+// The qwsv half of the link step: QW/server's own object files. Nothing here
+// runs until the `-dedicated -qw` boot below asks for it.
+import { SV_Frame as QWSV_SV_Frame, SV_Init as QWSV_SV_Init } from "./qw/server/sv_main";
+import { SV_FlushSignon as QWSV_SV_FlushSignon } from "./qw/server/sv_init";
+import { setSvFlushSignonHook as qwSetSvFlushSignonHook } from "./qw/server/pr_edict";
+import { SV_Quit_f as QWSV_SV_Quit_f } from "./qw/server/sv_ccmds";
+import { Con_Printf as QWSV_Con_Printf, Con_DPrintf as QWSV_Con_DPrintf } from "./qw/server/sv_send";
+import { Sys_NostdoutFromCvar as QWSV_Sys_NostdoutFromCvar, sys_extrasleep as qwsv_extrasleep } from "./qw/sys_sv";
 import { Sys_FloatTime, Sys_Init, Sys_Printf, Sys_Quit, SysError, installTerminationSignals, sysState } from "./platform/sys";
 // The client subsystems host.c links against. Each registers its
 // hostClientHooks members at module load, so importing them here is the
@@ -168,14 +178,48 @@ to merge them. See the file header.
 ================
 */
 export function Host_Frame(time: number): void {
+  // U38: the `-dedicated -qw` boot has a QuakeWorld server and no client at
+  // all (QW/server/sys_unix.c's own loop calls SV_Frame, not Host_Frame), so
+  // it is decided before the client profile is even consulted.
+  if (qwDedicated()) {
+    QWSV_SV_Frame(time);
+    return;
+  }
   if (clientProfile() === "qw") QW_Host_Frame(time);
   else NQ_Host_Frame(time);
+}
+
+// True while this process is a dedicated server running the QuakeWorld tree:
+// the `-dedicated -qw` boot (what `qwsv` passes), and equally a `-dedicated`
+// boot whose `sv_profile qw` + `map` moved it onto the QuakeWorld server
+// mid-run (src/common/host_cmd.ts's Host_Map_QW_f). `serverProfile()` is what
+// both SV_SpawnServer functions publish through claimServerProfile, so it is
+// the one thing that has to be read; `connectionProfile.serveronly` says
+// only that the process never had a client of its own, which is true of the
+// first case and not the second.
+function qwDedicated(): boolean {
+  return sysState.isDedicated && serverProfile() === "qw";
 }
 
 // Does this command line ask for the QuakeWorld boot? `-qw` (the `qwcl`
 // entry point's own argument) says so outright; so does a `+connect` whose
 // address carries a port, or `cl_protocol qw` set on the command line, which
 // is the connect rule (src/common/profile.ts) applied before Host_Init.
+// Does this command line ask for the QuakeWorld DEDICATED SERVER boot?
+// `-dedicated -qw` says so outright (which is what the `qwsv` entry point now
+// passes), and so does `+sv_profile qw`, the console name for the same
+// choice. Read straight off argv rather than through COM_CheckParm because
+// `main` has to answer it before COM_InitArgv runs, to pick the termination
+// handler.
+function wantsQwServerBoot(argv: string[]): boolean {
+  if (!argv.includes("-dedicated")) return false;
+  if (argv.includes("-qw")) return true;
+  for (let i = 0; i < argv.length - 1; i++) {
+    if (argv[i] === "+sv_profile") return argv[i + 1].trim().toLowerCase() === "qw";
+  }
+  return false;
+}
+
 function wantsQwBoot(argv: string[]): boolean {
   if (COM_CheckParm("-qw")) return true;
   for (let i = 0; i < argv.length - 1; i++) {
@@ -199,12 +243,6 @@ console.c and screen.c instead of WinQuake's.
 function Sys_Main_Init_QW(parms: QuakeParmsT): void {
   setBootProfile("qw");
 
-  setHostShutdown(QW_Host_Shutdown);
-  qwConsoleHooks.Con_Printf = QW_Con_Printf;
-  qwConsoleHooks.Con_DPrintf = QW_Con_DPrintf;
-  qwConsoleHooks.Con_SafePrintf = QW_Con_SafePrintf;
-  hostClientHooks.scrUpdateScreen = QW_SCR_UpdateScreen;
-
   parms.memsize = 16 * 1024 * 1024; // QW/client/sys_linux.c's own default
 
   const j = COM_CheckParm("-mem");
@@ -217,6 +255,57 @@ function Sys_Main_Init_QW(parms: QuakeParmsT): void {
   Sys_Init();
 
   QW_Host_Init(parms);
+
+  linkClientShutdown();
+}
+
+/*
+================
+Sys_Main_Init_QWSV
+
+QW/server/sys_unix.c's main() up to and including its "run one frame
+immediately for first heartbeat" SV_Frame(0.1), which this binary runs when
+the command line asks for the QuakeWorld dedicated server (U38,
+ARCHITECTURE.md "Unified client and server"). This is src/qw/main_sv.ts's old
+body, moved: that module is now `src/main.ts with -dedicated -qw`, exactly as
+`qwcl` is `src/main.ts with -qw`.
+
+The link step it performs by hand is what QW's qwsv Makefile did by compiling
+with -DSERVERONLY:
+- `setDedicatedServerProfile("qw")` is `qw.active = true; qw.serveronly = true`
+  (the two flags src/qw/main_sv.ts used to set), expressed against
+  src/common/profile.ts instead.
+- `sysState.isDedicated = true`: src/platform/sys.ts's Sys_ConsoleInput
+  returns NULL unless that flag is set, and this server is dedicated by
+  construction -- the C's sys_unix.c has no such test because the qwsv binary
+  is compiled with SERVERONLY.
+- `qwConsoleHooks.Con_Printf`/`Con_DPrintf` point at sv_send.ts's
+  redirect-aware pair, so a Con_Printf from one of the five modules shared
+  with qwcl (src/qw/common.ts, cmd.ts, net_chan.ts, net_udp.ts, pmovetst.ts)
+  reaches a client's `rcon`/`cmd status` redirect instead of only this
+  server's stdout.
+- `setSvFlushSignonHook(SV_FlushSignon)` links the hook
+  src/qw/server/pr_edict.ts calls from ED_LoadFromFile.
+================
+*/
+function Sys_Main_Init_QWSV(parms: QuakeParmsT): void {
+  setDedicatedServerProfile("qw");
+  sysState.isDedicated = true;
+
+  qwConsoleHooks.Con_Printf = QWSV_Con_Printf;
+  qwConsoleHooks.Con_DPrintf = QWSV_Con_DPrintf;
+
+  qwSetSvFlushSignonHook(QWSV_SV_FlushSignon);
+
+  parms.memsize = 16 * 1024 * 1024; // QW/server/sys_unix.c's own default
+
+  const j = COM_CheckParm("-mem");
+  if (j) parms.memsize = (Q_atof(com_argv[j + 1]) * 1024 * 1024) | 0;
+
+  QWSV_SV_Init(parms);
+
+  // run one frame immediately for first heartbeat
+  QWSV_SV_Frame(0.1);
 }
 
 /*
@@ -229,6 +318,50 @@ build quakeparms_t from argv, hand it to Host_Init, then apply the
 cvar -- see platform/sys.ts's own header).
 ================
 */
+/*
+================
+linkClientProfiles
+
+U38 (ARCHITECTURE.md "Unified client and server"): the link step QW/client's
+Makefile made by compiling console.c, screen.c and sys_linux.c INSTEAD of
+WinQuake's. `-qw` used to be what performed it, which made the boot profile
+decide, once and for all, whose console and whose screen the process had. It
+is now made on every client boot, with the choice deferred to the moment each
+hook is called:
+- `qwConsoleHooks` is installed unconditionally; src/client/console.ts's three
+  dispatch sites take the forward only while the active profile is
+  QuakeWorld, so these route to QW's console for the life of a QuakeWorld
+  connection and back to WinQuake's afterwards.
+- `scrUpdateScreen` and the Sys_Quit shutdown hook are one slot each with two
+  bodies, so they get a dispatcher that reads `cls.profile` at call time --
+  every frame for the first, once at shutdown for the second.
+src/client/screen.ts installs WinQuake's SCR_UpdateScreen into the same slot
+at module load, which is why the dispatcher is installed here, after the
+import that does it.
+================
+*/
+function linkClientProfiles(): void {
+  qwConsoleHooks.Con_Printf = QW_Con_Printf;
+  qwConsoleHooks.Con_DPrintf = QW_Con_DPrintf;
+  qwConsoleHooks.Con_SafePrintf = QW_Con_SafePrintf;
+
+  hostClientHooks.scrUpdateScreen = (): void => {
+    if (clientProfile() === "qw") QW_SCR_UpdateScreen();
+    else NQ_SCR_UpdateScreen();
+  };
+
+}
+
+// The Sys_Quit shutdown hook, installed AFTER Host_Init: WinQuake's own
+// Host_Init ends with `setHostShutdown(Host_Shutdown)`, so a dispatcher
+// installed before it would be overwritten. See linkClientProfiles.
+function linkClientShutdown(): void {
+  setHostShutdown((): void => {
+    if (clientProfile() === "qw") QW_Host_Shutdown();
+    else NQ_Host_Shutdown();
+  });
+}
+
 export function Sys_Main_Init(argv: string[]): void {
   // signal (SIGFPE, SIG_IGN); -- dropped, see file header
 
@@ -250,6 +383,17 @@ export function Sys_Main_Init(argv: string[]): void {
 
   // fcntl (0, F_SETFL, fcntl (0, F_GETFL, 0) | FNDELAY); -- dropped, see file header
 
+  // U38: the QuakeWorld dedicated server is checked first -- `-dedicated -qw`
+  // carries `-qw`, which would otherwise be read as the QuakeWorld CLIENT
+  // boot below.
+  if (wantsQwServerBoot(argv)) {
+    Sys_Main_Init_QWSV(parms);
+    return;
+  }
+
+  // The link step both client boots share -- see linkClientProfiles.
+  linkClientProfiles();
+
   if (wantsQwBoot(argv)) {
     Sys_Main_Init_QW(parms);
     return;
@@ -264,6 +408,8 @@ export function Sys_Main_Init(argv: string[]): void {
   }
 
   NQ_Host_Init(parms);
+
+  linkClientShutdown();
 
   Sys_Init();
 
@@ -286,6 +432,33 @@ this at all, so it never has to await an infinite loop.
 ================
 */
 export async function Sys_Main_Loop(): Promise<never> {
+  // U38: QW/server/sys_unix.c's `while (1)` loop, for the `-dedicated -qw`
+  // boot. Its `select` on the net socket and stdin has no port (src/qw/net_udp.ts
+  // is built on Bun.udpSocket, which delivers datagrams through a callback
+  // into a queue), so `await Bun.sleep(1)` at the top of every iteration is
+  // the equivalent yield, exactly as src/qw/main_sv.ts's own loop made it.
+  if (qwDedicated()) {
+    // Bun's bind is asynchronous where the C's is not, so the socket
+    // SV_InitNet opened is not usable until this resolves.
+    await qwNetReady();
+
+    let svOldtime = Sys_FloatTime() - 0.1;
+    for (;;) {
+      await Bun.sleep(1);
+
+      QWSV_Sys_NostdoutFromCvar();
+
+      const newtime = Sys_FloatTime();
+      const time = newtime - svOldtime;
+      svOldtime = newtime;
+
+      QWSV_SV_Frame(time);
+
+      // extrasleep is just a way to generate a fucked up connection on purpose
+      if (qwsv_extrasleep.value) await Bun.sleep(qwsv_extrasleep.value / 1000);
+    }
+  }
+
   // QW/client/sys_linux.c's own loop: no sys_ticrate branch (Host_Frame's
   // cl_maxfps/rate check throttles it) and no dedicated arm. Bun's UDP bind
   // is asynchronous where the C's is not, so the socket Host_Init's NET_Init
@@ -350,7 +523,13 @@ try/catch's role.
 export async function main(argv: string[]): Promise<void> {
   // Not in sys_linux.c -- see platform/sys.ts's installTerminationSignals
   // header for why this port installs SIGINT/SIGTERM handling anyway.
-  installTerminationSignals(Sys_Quit);
+  // U38: QW/server/sys_unix.c has no setHostShutdown hook of its own, so the
+  // QuakeWorld dedicated server's "quit" body is SV_Quit_f (SV_FinalMessage,
+  // "Shutting down.", SV_Shutdown, Sys_Quit) -- the same body sv_ccmds.ts
+  // wires to the typed `quit` command -- rather than bare Sys_Quit, which
+  // alone would exit with no cleanup at all. Decided from argv directly:
+  // this runs before COM_InitArgv, and only one handler may be installed.
+  installTerminationSignals(wantsQwServerBoot(argv) ? QWSV_SV_Quit_f : Sys_Quit);
 
   try {
     Sys_Main_Init(argv);

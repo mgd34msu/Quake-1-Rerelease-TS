@@ -134,7 +134,9 @@ import {
   CmdSourceT,
   cmdState,
 } from "./cmd";
-import { Cvar_Set, Cvar_SetValue, Cvar_VariableString } from "./cvar";
+import { Cvar_Set, Cvar_SetObject, Cvar_SetValue, Cvar_VariableString, type CvarT } from "./cvar";
+import type * as QwClMainModule from "../qw/client/cl_main";
+import type * as QwSvMainModule from "../qw/server/sv_main";
 import {
   COM_DefaultExtension,
   COM_GetGameNames,
@@ -204,7 +206,7 @@ import {
   svState,
   svs,
 } from "../server/server";
-import { SV_SaveSpawnparms, SV_SpawnServer, SV_WriteClientdataToMessage } from "../server/sv_main";
+import { SV_SaveSpawnparms, SV_SpawnServer, SV_WantedProfile, SV_WriteClientdataToMessage } from "../server/sv_main";
 import { SV_LinkEdict } from "../server/world";
 import { Mod_ForName, Mod_Print, type ModelT } from "./model";
 import { my_tcpip_address, net_activeconnections, net_time, tcpipAvailable, hostname } from "./net_main";
@@ -474,6 +476,14 @@ command from the console.  Active clients are kicked off.
 export function Host_Map_f(): void {
   if (cmdState.source !== CmdSourceT.src_command) return;
 
+  // U38 (ARCHITECTURE.md "Unified client and server"): `sv_profile qw` says
+  // the next `map` spawns the QuakeWorld server instead of this one. See
+  // Host_Map_QW_f.
+  if (SV_WantedProfile() === "qw") {
+    Host_Map_QW_f();
+    return;
+  }
+
   hostClientHooks.setClsDemonum?.(-1); // stop demo loop in case this fails
 
   hostClientHooks.clDisconnect?.(); // CL_Disconnect
@@ -507,6 +517,56 @@ export function Host_Map_f(): void {
 
     Cmd_ExecuteString("connect local", CmdSourceT.src_command);
   }
+}
+
+/*
+==================
+Host_Map_QW_f
+
+Not in either C tree: `map` when `sv_profile` names QuakeWorld (U38,
+ARCHITECTURE.md "Unified client and server"). WinQuake's host_cmd.c and
+QW/server/sv_ccmds.c each have their own `map` command, and one process now
+has both -- WinQuake's registered unscoped, QuakeWorld's scoped to the `qw`
+profile (src/qw/server/sv_ccmds.ts). Until the QuakeWorld server has been
+brought up in this process, the `qw`-scoped registration does not exist yet
+and this unscoped one is what a `map` reaches, so it is the bootstrap: bring
+the QuakeWorld server profile up (SV_InitProfile, the server-side twin of
+src/client/cl_main.ts's CL_InitQwProfile), then re-issue the same command
+line against the QuakeWorld profile, where sv_ccmds.ts's SV_Map_f now answers
+it. Every later `map` typed under this profile resolves straight to SV_Map_f
+and never reaches here.
+
+QuakeWorld's SV_SpawnServer calls claimServerProfile("qw"), which takes any
+NetQuake server this process is running down first -- the two never run at
+once -- so this function does no shutdown of its own.
+
+A local client is NOT connected here, unlike the NetQuake listen server's
+`connect local` below. QuakeWorld has no loopback driver at all: QW/client
+and QW/server each open their own UDP socket and even a local player connects
+over 127.0.0.1. This port has ONE `net_socket` for the whole QuakeWorld tree
+(src/qw/net_udp.ts's file-scope `let net_socket = -1`, opened by NET_Init and
+read by every NET_GetPacket/NET_SendPacket), because the C's two binaries
+never shared a process; a client and a server in one process would have to
+hold one socket each. Giving src/qw/net_udp.ts a per-profile socket pair is
+outside this unit's files, so `sv_profile qw` + `map` stands the QuakeWorld
+server up and a client joins it over UDP the same way any other client does
+-- which is exactly what QuakeWorld does for a local player anyway.
+==================
+*/
+export function Host_Map_QW_f(): void {
+  if (Cmd_Argc() < 2) {
+    Con_Printf("map <levelname> : continue game on a new level\n");
+    return;
+  }
+
+  qwSvMainMod().SV_InitProfile();
+
+  let line = "";
+  for (let i = 0; i < Cmd_Argc(); i++) {
+    line += Cmd_Argv(i);
+    line += " ";
+  }
+  Cmd_ExecuteString(line, CmdSourceT.src_command, "qw");
 }
 
 /*
@@ -1044,6 +1104,62 @@ export function Host_Name_f(): void {
   MSG_WriteByte(sv.reliable_datagram, SvcOpsT.svc_updatename);
   MSG_WriteByte(sv.reliable_datagram, svs.clients.indexOf(host_client)); // host_client - svs.clients
   MSG_WriteString(sv.reliable_datagram, host_client.name);
+}
+
+/*
+======================
+Host_Name_QW_f
+
+Not in either C tree: QuakeWorld has no `name` command at all -- `name` there
+is a cvar (QW/client/cl_main.c's `cvar_t name = {"name", "unnamed", true}`)
+that Cvar_Set propagates into userinfo and, when connected, forwards as
+`setinfo "name" "..."`. WinQuake has no `name` cvar; it has this file's
+Host_Name_f command.
+
+One binary has both (ARCHITECTURE.md "Unified client and server", U38), and
+`cmd_functions` and `cvar_vars` are one table each, so Cvar_RegisterVariable's
+"%s is a command" guard leaves QuakeWorld's `name` cvar object unlinked and
+the QuakeWorld userinfo stuck at "unnamed". The ruling: keep the command,
+because `name` is what players type on both sides, and keep the cvar as
+QuakeWorld's storage. This body is the QuakeWorld-profile registration of that
+command -- it reads and writes the cvar object directly (Cvar_SetObject,
+src/common/cvar.ts, since the object is not reachable by name), which runs
+exactly the info propagation QW's own `Cvar_Set("name", ...)` would.
+
+The 15-character truncation is Host_Name_f's, not QuakeWorld's -- QW's own
+console `name` set has no length limit of its own, the server's
+SV_ExtractFromUserinfo does the clamping. Kept out of this path for that
+reason.
+======================
+*/
+// Lazy `require`, the same cycle-breaking idiom src/common/host.ts's own
+// `qwClMainMod` uses for QW's host_basepal/host_colormap: the QuakeWorld
+// client tree imports this module, so it cannot be imported back at the top
+// level. Reached only from inside Host_Name_QW_f, which only the QuakeWorld
+// profile's `name` registration can reach.
+function qwClMainMod(): typeof QwClMainModule {
+  return require("../qw/client/cl_main");
+}
+
+// The QuakeWorld server, likewise reached lazily: it imports this module's
+// `hostCmdState` through src/server/sv_main.ts's own graph, and a process
+// that never spawns a QuakeWorld map never loads it at all.
+function qwSvMainMod(): typeof QwSvMainModule {
+  return require("../qw/server/sv_main");
+}
+
+function qwNameCvar(): CvarT {
+  return qwClMainMod().name;
+}
+
+export function Host_Name_QW_f(): void {
+  if (Cmd_Argc() === 1) {
+    Con_Printf('"name" is "%s"\n', qwNameCvar().string);
+    return;
+  }
+
+  const newName = Cmd_Argc() === 2 ? Cmd_Argv(1) : (Cmd_Args() ?? "");
+  Cvar_SetObject(qwNameCvar(), newName);
 }
 
 export function Host_Version_f(): void {
@@ -1802,6 +1918,9 @@ export function Host_InitCommands(): void {
   Cmd_AddCommand("connect", Host_Connect_f);
   Cmd_AddCommand("reconnect", Host_Reconnect_f);
   Cmd_AddCommand("name", Host_Name_f);
+  // U38: `name` under the QuakeWorld profile sets QW's own `name` cvar and
+  // the userinfo -- see Host_Name_QW_f.
+  Cmd_AddCommand("name", Host_Name_QW_f, "qw");
   Cmd_AddCommand("noclip", Host_Noclip_f);
   Cmd_AddCommand("version", Host_Version_f);
   Cmd_AddCommand("say", Host_Say_f);
