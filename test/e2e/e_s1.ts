@@ -1,7 +1,7 @@
 // Scenario 1: qwsv console commands typed on the server's stdin, observed on
 // both sides with one qwcl connected. One line per server frame -- two lines
 // in a single read get glued together (see E.md, SV_GetConsoleCommands).
-import { BASEDIR, CA_ACTIVE, REPO, bootClient, check, cl, cls, conMark, conSince, conTail, engineErrors, execPump, pump, pumpUntil, serverReady, startServer, summary } from "./e_lib";
+import { Cvar_VariableString, BASEDIR, CA_ACTIVE, REPO, bootClient, check, cl, cls, conMark, conSince, conTail, engineErrors, execPump, pump, pumpUntil, serverReady, startServer, summary } from "./e_lib";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 
 const PORT = 27606;
@@ -28,7 +28,15 @@ async function svc(line: string, ms = 700): Promise<void> {
   const m = sv.mark();
   await svc("status", 1200);
   const t = sv.since(m);
-  check("1.1 status lists the connected client", /unnamed/.test(t) && /net address/.test(t) && /qport/.test(t), t.split("\n").filter((l) => l.trim()).slice(-1)[0] ?? "");
+  // The client's name comes from the family's shared qw/config.cfg, which an
+  // earlier scenario may have renamed (e_s46 connects as Alice/Bob/Carol), so
+  // the name to look for is whatever _cl_name currently holds, not "unnamed".
+  const clientName = Cvar_VariableString("_cl_name");
+  check(
+    "1.1 status lists the connected client",
+    t.includes(clientName) && /net address/.test(t) && /qport/.test(t),
+    `_cl_name=${JSON.stringify(clientName)} :: ${t.split("\n").filter((l) => l.trim()).slice(-1)[0] ?? ""}`,
+  );
 }
 
 // ---- serverinfo -----------------------------------------------------------

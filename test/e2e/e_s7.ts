@@ -39,7 +39,13 @@ for (const map of MAPS) {
   const clOut = conSince(cm).join(" | ");
   check(`7.${map}-clean no error text on either side for ${map}`, !/Host_Error|SV_Error|Sys_Error|not found|Bad |ERROR/i.test(svOut), `server="${svOut.replace(/\n/g, " | ").slice(0, 220)}"`);
   if (map === "e1m1") {
-    check("7.e1m1-progs e1m1 runs under qwprogs (no monsters, no progs errors)", cls.state === CA_ACTIVE && !/progs|PR_/i.test(svOut), `server="${svOut.replace(/\n/g, " | ").slice(0, 260)}" client="${clOut.slice(-200)}"`);
+    // "progs" appears in every run as the FindFile line for qwprogs.dat, so
+    // what is asserted is the absence of a progs FAILURE, not of the word.
+    check(
+      "7.e1m1-progs e1m1 runs under qwprogs (no progs errors)",
+      cls.state === CA_ACTIVE && !/PR_RunError|Bad builtin|unbound builtin|No spawn function|is not a field/i.test(svOut),
+      `server="${svOut.replace(/\n/g, " | ").slice(0, 260)}" client="${clOut.slice(-200)}"`,
+    );
   }
 }
 console.log("[levelnames]", JSON.stringify(levels));

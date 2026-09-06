@@ -1,0 +1,92 @@
+{
+  "family": "g",
+  "drivers": [
+    {
+      "name": "g_s1_keyboard",
+      "cmd": [
+        "bun",
+        "test/e2e/g_s1_keyboard.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "g_s2_mouse",
+      "cmd": [
+        "bun",
+        "test/e2e/g_s2_mouse.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "g_s2b_nomouse",
+      "cmd": [
+        "bun",
+        "test/e2e/g_s2b_nomouse.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 180,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "g_s3_modal",
+      "cmd": [
+        "bun",
+        "test/e2e/g_s3_modal.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 180,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "g_s4_window",
+      "cmd": [
+        "bun",
+        "test/e2e/g_s4_window.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "g_s5_qw",
+      "cmd": [
+        "bun",
+        "test/e2e/g_s5_qw.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "qw",
+        "binary"
+      ],
+      "lock": "qwclient"
+    }
+  ]
+}

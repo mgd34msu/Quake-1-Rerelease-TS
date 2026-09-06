@@ -32,12 +32,30 @@ import { GL_MipMap, gl_max_size, gl_picmip, glDrawState } from "../../src/ref_gl
 import { glRsurfState } from "../../src/ref_gl/gl_rsurf";
 import { gl_texsort, r_fullbright } from "../../src/ref_gl/gl_rmain";
 import { readdirSync, copyFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
-import { Q1TS_DATA } from "./q1data";
+import { Q1TS_DATA, classicArgv, homedirArgs } from "./q1data";
+import { com_gamedir } from "../../src/common/common";
 
 const BASEDIR = Q1TS_DATA;
-const GAMENAME = process.env.M_GAME ?? "e2e_k";
-const GAMEDIR = `${BASEDIR}/${GAMENAME}`;
-const SHOTDIR = process.env.M_SHOTDIR ?? "/tmp/m_shots";
+const GAMENAME = process.env.M_GAME ?? "e2e_m";
+const SHOTDIR = process.env.M_SHOTDIR ?? `${process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests"}/m_shots`;
+
+/** The engine's live writable game directory (com_gamedir under -homedir). */
+function gamedir(): string {
+  return com_gamedir;
+}
+
+const results: Array<{ name: string; pass: boolean; note: string }> = [];
+function check(name: string, pass: boolean, note = ""): void {
+  results.push({ name, pass, note });
+  console.log(`[${pass ? "PASS" : "FAIL"}] ${name}${note ? " :: " + note : ""}`);
+}
+function summary(label: string): never {
+  const bad = results.filter((r) => !r.pass);
+  console.log(`\n===SUMMARY ${label}=== ${results.length - bad.length}/${results.length} passed`);
+  for (const r of bad) console.log(`  FAIL: ${r.name} :: ${r.note}`);
+  console.log(`RESULT ${results.length - bad.length} ${bad.length}`);
+  process.exit(bad.length > 0 ? 1 : 0);
+}
 
 const argv = process.argv.slice(2);
 const shotName = argv[0] ?? "m_gl";
@@ -52,10 +70,10 @@ function exec(text: string, n = 2): void {
 }
 
 function shotFiles(): Set<string> {
-  if (!existsSync(GAMEDIR)) return new Set<string>();
-  return new Set(readdirSync(GAMEDIR).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
+  if (!existsSync(gamedir())) return new Set<string>();
+  return new Set(readdirSync(gamedir()).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
 }
-function shot(name: string): void {
+function shot(name: string): string | null {
   if (!existsSync(SHOTDIR)) mkdirSync(SHOTDIR, { recursive: true });
   const before = shotFiles();
   exec("screenshot", 2);
@@ -63,15 +81,16 @@ function shot(name: string): void {
   for (const f of shotFiles()) {
     if (before.has(f)) continue;
     const ext = f.slice(f.lastIndexOf("."));
-    copyFileSync(`${GAMEDIR}/${f}`, `${SHOTDIR}/${name}${ext}`);
-    unlinkSync(`${GAMEDIR}/${f}`);
+    copyFileSync(`${gamedir()}/${f}`, `${SHOTDIR}/${name}${ext}`);
+    unlinkSync(`${gamedir()}/${f}`);
     console.log(`  [shot] ${SHOTDIR}/${name}${ext}`);
-    return;
+    return `${SHOTDIR}/${name}${ext}`;
   }
   console.log(`  [shot] ${name}: NO FILE PRODUCED`);
+  return null;
 }
 
-Sys_Main_Init(["quake", "-basedir", BASEDIR, "-game", GAMENAME, ...engineArgs]);
+Sys_Main_Init(classicArgv(["quake", "-basedir", BASEDIR, ...homedirArgs(GAMENAME), "-game", GAMENAME, ...engineArgs]));
 frames(5);
 exec("disconnect", 3);
 exec(`map ${process.env.M_MAP ?? "e1m1"}`, 30);
@@ -633,5 +652,17 @@ for (const name of wanted) {
 }
 
 frames(2);
-shot(shotName);
-process.exit(0);
+const shotPath = shot(shotName);
+
+check("the map loaded under the requested refresh", String(cl.levelname).length > 0 && vid.width > 0, `levelname=${JSON.stringify(cl.levelname)} ${vid.width}x${vid.height} refresh=${isGL ? "gl" : "soft"}`);
+check("world surfaces are in the frame to light", ranked.length > 0, `${ranked.length} visible surfaces measured`);
+if (peak === null) {
+  check("the framebuffer is readable", false, "neither the GL read-back nor vid.buffer was available");
+} else {
+  // A lit frame, not a black one: the whole point of the world-lighting path
+  // is that a wall pixel gets somewhere near full brightness.
+  check("the rendered frame is lit, not black", peak.v > 32, `framebuffer peak=${peak.v} rgb=${peak.r},${peak.g},${peak.b} at ${peak.x},${peak.y}`);
+  check("the framebuffer peak is a real 8-bit level", peak.v <= 255, `peak=${peak.v}`);
+}
+check("the driver wrote its screenshot", shotPath !== null, String(shotPath));
+summary(`M ${shotName} ${isGL ? "gl" : "soft"}`);

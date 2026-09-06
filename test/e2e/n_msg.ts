@@ -145,8 +145,11 @@ frames(30);
     }
     frames(20);
     // client.qc's ClientObituary bprints one of these for an environment death
+    // client.qc's ClientObituary environment deaths: lava is "visits the
+    // Volcano God", slime "gets slimed", water "sleeps with the fishes",
+    // plus the squish/burn/fall lines.
     const obit = conLines().filter((l) =>
-      /turned into hot slag|burst into flames|sleeps with the fishes|was squished|turned into slime|fell to his death|died/i.test(l));
+      /visits the Volcano God|gets slimed|turned into hot slag|burst into flames|sleeps with the fishes|was squished|turned into slime|fell to his death|died/i.test(l));
     info("7e", `player died=${died} health=${cl.stats[STAT_HEALTH]}; obituary matches=${JSON.stringify(obit.slice(-2))}`);
     info("7e", `console tail: ${conTail(6)}`);
     check("7e-obituary", died && obit.length > 0,

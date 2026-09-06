@@ -48,6 +48,20 @@ const proc = Bun.spawn(
   },
 );
 
+/*
+The instrumented qwsv must not outlive this driver. It binds a real UDP port,
+and a run that is interrupted (or a driver that exits down an early path)
+otherwise leaves it holding that port -- the next run then fails to bind for
+a reason that has nothing to do with the engine.
+*/
+process.on("exit", () => {
+  try {
+    proc.kill(9);
+  } catch {
+    /* already gone */
+  }
+});
+
 let svOut = "";
 const drain = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
   const dec = new TextDecoder();
@@ -165,4 +179,23 @@ console.log(peaks.map((s) => s.toFixed(1)).join(" "));
 const maxSpeed = rows.reduce((a, r) => Math.max(a, r.speed), 0);
 console.log(`max horizontal speed over the run: ${maxSpeed.toFixed(2)} (sv_maxspeed is 320)`);
 console.log(`log: ${LOG}`);
-process.exit(0);
+
+const results: Array<{ name: string; pass: boolean; note: string }> = [];
+function check(name: string, pass: boolean, note = ""): void {
+  results.push({ name, pass, note });
+  console.log(`[${pass ? "PASS" : "FAIL"}] ${name}${note ? " :: " + note : ""}`);
+}
+check("the instrumented qwsv recorded the client's commands", rows.length > 0, `${rows.length} commands over ${HOPS} scripted hops`);
+check("the scripted strafe-jump left the ground", peaks.length > 0, `${peaks.length} airborne apexes`);
+check("the player moved at all", maxSpeed > 50, `max horizontal speed ${maxSpeed.toFixed(2)}`);
+// QW's air control lets a strafe-jump exceed sv_maxspeed, but not without
+// bound: a run that reaches several times the ground speed means PM_AirMove
+// stopped clamping wishspeed at all.
+check("horizontal speed stays inside a physical bunny-hop range", maxSpeed < 320 * 3, `max ${maxSpeed.toFixed(2)} vs sv_maxspeed 320`);
+{
+  const bad = results.filter((r) => !r.pass);
+  console.log(`\n===SUMMARY P bhop ${MAP}=== ${results.length - bad.length}/${results.length} passed`);
+  for (const r of bad) console.log(`  FAIL: ${r.name} :: ${r.note}`);
+  console.log(`RESULT ${results.length - bad.length} ${bad.length}`);
+  process.exit(bad.length > 0 ? 1 : 0);
+}

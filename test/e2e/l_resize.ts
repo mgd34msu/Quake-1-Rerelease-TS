@@ -34,11 +34,16 @@ import { Sys_SendKeyEvents } from "../../src/platform/sys";
 import { SDL_SetWindowSizeForTests, SDLGL_GetWindowSize } from "../../src/platform/sdl";
 import { keyState, KeydestT } from "../../src/client/keys";
 import { vid } from "../../src/client/vid";
-import { Q1TS_DATA } from "./q1data";
+import { Q1TS_DATA, classicArgv, homedirArgs } from "./q1data";
+import { com_gamedir } from "../../src/common/common";
 
 const BASEDIR = Q1TS_DATA;
 const GAME = process.env.L_GAME ?? "e2e_l";
-const GAMEDIR = `${BASEDIR}/${GAME}`;
+
+/** The engine's live writable game directory (com_gamedir under -homedir). */
+function gamedir(): string {
+  return com_gamedir;
+}
 const SHOTDIR = process.env.L_SHOTDIR ?? `${process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests"}/resize`;
 
 const REF = process.argv[2] === "gl" ? "gl" : "soft";
@@ -61,8 +66,8 @@ function exec(text: string, n = 2): void {
 }
 
 function shotFiles(): Set<string> {
-  if (!existsSync(GAMEDIR)) return new Set();
-  return new Set(readdirSync(GAMEDIR).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
+  if (!existsSync(gamedir())) return new Set();
+  return new Set(readdirSync(gamedir()).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
 }
 
 function shot(name: string): string | null {
@@ -74,8 +79,8 @@ function shot(name: string): string | null {
     if (before.has(f)) continue;
     const ext = f.slice(f.lastIndexOf("."));
     const dest = `${SHOTDIR}/${REF}_${name}${ext}`;
-    copyFileSync(`${GAMEDIR}/${f}`, dest);
-    unlinkSync(`${GAMEDIR}/${f}`);
+    copyFileSync(`${gamedir()}/${f}`, dest);
+    unlinkSync(`${gamedir()}/${f}`);
     console.log(`  [shot] ${dest}`);
     return dest;
   }
@@ -219,9 +224,8 @@ function resizeWindow(width: number, height: number): void {
 
 // ---- run -----------------------------------------------------------------
 
-if (!existsSync(GAMEDIR)) mkdirSync(GAMEDIR, { recursive: true });
 
-Sys_Main_Init(["quake", "-basedir", BASEDIR, "-game", GAME, "-vid_ref", REF, "-nosound", "-width", "640", "-height", "480"]);
+Sys_Main_Init(classicArgv(["quake", "-basedir", BASEDIR, ...homedirArgs(GAME), "-game", GAME, "-vid_ref", REF, "-nosound", "-width", "640", "-height", "480"]));
 frames(5);
 // quake.rc's `exec config.cfg` runs long after VID_Init has chosen the
 // refresh, and the shared basedir's Id1/config.cfg carries `vid_ref "gl"` /
@@ -230,9 +234,10 @@ frames(5);
 const activeIsGL = re.current?.isGL === true;
 console.log(`  BOOT ${vid.width}x${vid.height} active=${activeIsGL ? "gl" : "soft"} vid_ref cvar=${Cvar_VariableString("vid_ref")} vid_mode=${Cvar_VariableValue("vid_mode")}`);
 check("boot: -width/-height parms sized the mode", vid.width === 640 && vid.height === 480, `${vid.width}x${vid.height}`);
+check(`the ${REF} refresh is the one that came up`, activeIsGL === (REF === "gl"), `asked for ${REF}, got ${activeIsGL ? "gl" : "soft"} -- no such refresh on this video driver`);
 if (activeIsGL !== (REF === "gl")) {
-  console.log(`  ABORT: asked for ${REF}, got ${activeIsGL ? "gl" : "soft"} -- no such refresh on this video driver`);
-  process.exit(2);
+  console.log(`RESULT ${results.filter((r) => r.pass).length} ${results.filter((r) => !r.pass).length}`);
+  process.exit(1);
 }
 const bootVidMode = Cvar_VariableValue("vid_mode");
 
@@ -280,4 +285,5 @@ check("vid_restart returns to the -width/-height mode", vid.width === 640 && vid
 const failed = results.filter((r) => !r.pass);
 console.log(`\n--- ${REF}: ${results.length - failed.length}/${results.length} passed ---`);
 for (const f of failed) console.log(`  FAIL ${f.name} :: ${f.note}`);
+console.log(`RESULT ${results.length - failed.length} ${failed.length}`);
 process.exit(failed.length === 0 ? 0 : 1);

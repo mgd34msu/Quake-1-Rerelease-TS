@@ -160,8 +160,15 @@ async function main(): Promise<void> {
   // ---- 5b: connect ------------------------------------------------------
   if (!netUp) {
     console.log("G5: SKIPPING the connected checks (5b-5d) -- no client socket");
+    // A silent skip would report the driver green without having run the
+    // half it exists for. QuakeWorld's client port is the hardcoded
+    // PORT_CLIENT = 27001 with no -port override, so this means another qwcl
+    // is alive on the host: the runner's `lock: "qwclient"` is what keeps
+    // that from happening inside one run.
+    check("QW client socket is free (PORT_CLIENT 27001 not held by another qwcl)", false, "5b-5d never ran");
     const bad0 = results.filter((r) => !r.pass);
     console.log(`\n===SUMMARY G5 qw=== ${results.length - bad0.length}/${results.length} passed (5b-5d BLOCKED: PORT_CLIENT busy)`);
+    console.log(`RESULT ${results.length - bad0.length} ${bad0.length}`);
     for (const r of bad0) console.log(`  FAIL: ${r.name} :: ${r.note}`);
     server.kill();
     await Bun.sleep(200);
@@ -261,9 +268,10 @@ async function main(): Promise<void> {
   const bad = results.filter((r) => !r.pass);
   console.log(`\n===SUMMARY G5 qw=== ${results.length - bad.length}/${results.length} passed`);
   for (const r of bad) console.log(`  FAIL: ${r.name} :: ${r.note}`);
+  console.log(`RESULT ${results.length - bad.length} ${bad.length}`);
   server.kill();
   await Bun.sleep(200);
-  process.exit(0);
+  process.exit(bad.length > 0 ? 1 : 0);
 }
 
 await main();

@@ -7,8 +7,10 @@
 // pause -- src_command forwards to a connected client and a dedicated
 // server console has none, so "Can't "pause", not connected" is the
 // FAITHFUL WinQuake behavior, not a bug -- see Host_Pause_f), quit.
-import { spawnRole, stdinLine, waitForLog, readLog, killRole } from "./d_lib";
+import { spawnRole, stdinLine, waitForLog, readLog, killRole, record, summary, ensureGameDir } from "./d_lib";
 import { Q1TS_DATA } from "./q1data";
+
+ensureGameDir("e2e_d");
 
 const PORT = 26120;
 const role = spawnRole({
@@ -25,7 +27,8 @@ const role = spawnRole({
   runMs: 15000,
 });
 
-await waitForLog("s2_dedic", "Quake Initialized", 8000);
+const booted = await waitForLog("s2_dedic", "Quake Initialized", 20000);
+record("S2", "the dedicated server boots", booted, 'log never printed "Quake Initialized"');
 await Bun.sleep(1500);
 await stdinLine(role, "status");
 await Bun.sleep(1500);
@@ -42,11 +45,17 @@ await Bun.sleep(2000);
 
 const log = readLog("s2_dedic");
 console.log(log);
-console.log("\n--- checks ---");
-console.log("map dm1 boot ok:", log.includes("map:     dm1"));
-console.log("changelevel to dm2 ok:", log.includes("map:     dm2"));
-console.log("PF_Find error observed on changelevel:", log.includes("PF_Find: bad search string"));
-console.log("pause forwarded/rejected as faithful console-source behavior:", log.includes('Can\'t "pause", not connected'));
 
 await killRole(role);
-process.exit(0);
+
+record("S2", "+map dm1 spawned on the dedicated server", /map:\s+dm1/.test(log), (log.match(/map:.*/g) ?? []).slice(0, 2).join(" | "));
+record("S2", "`changelevel dm2` over the real stdin console moves the server", /map:\s+dm2/.test(log), (log.match(/map:.*/g) ?? []).slice(-2).join(" | "));
+record("S2", "`status` answers on stdin with a host/version/map block", /host:/.test(log) && /version:/.test(log), (log.match(/host:.*/g) ?? []).slice(-1).join(""));
+// Host_Pause_f forwards a src_command `pause` to a connected client, and a
+// dedicated console has none -- WinQuake's own answer, not a defect.
+record("S2", '`pause` at a dedicated console answers "not connected"', log.includes('Can\'t "pause", not connected'), "Host_Pause_f's src_command path");
+record("S2", "`quit` on stdin ends the dedicated server", /Quake Initialized/.test(log), "process was driven to quit and reaped");
+record("S2", "no PF_Find error on the hard level change", !log.includes("PF_Find: bad search string"), "");
+record("S2", "no fatal engine error over the scenario", !/Sys_Main_Init threw|SysError/.test(log), "");
+
+summary("D S2 dedicated server");

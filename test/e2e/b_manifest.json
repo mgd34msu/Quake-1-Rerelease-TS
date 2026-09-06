@@ -1,0 +1,209 @@
+{
+  "family": "b",
+  "drivers": [
+    {
+      "name": "b_smoke",
+      "cmd": [
+        "bun",
+        "test/e2e/b_smoke.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b_smoke"
+      },
+      "timeoutSec": 120,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "b_s1_console",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s1_console.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b_s1_console"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "b_s2_menu",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s2_menu.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b_s2_menu"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "b_s3_bind",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s3_bind.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ],
+      "lock": "b_config"
+    },
+    {
+      "name": "b_s3b_quit_console",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s3b_quit.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b"
+      },
+      "timeoutSec": 180,
+      "needs": [
+        "classic"
+      ],
+      "lock": "b_config"
+    },
+    {
+      "name": "b_s3c_reread",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s3c_reread.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b"
+      },
+      "timeoutSec": 180,
+      "needs": [
+        "classic"
+      ],
+      "lock": "b_config"
+    },
+    {
+      "name": "b_s3b_quit_menu",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s3b_quit.ts",
+        "menu"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b"
+      },
+      "timeoutSec": 180,
+      "needs": [
+        "classic"
+      ],
+      "lock": "b_config"
+    },
+    {
+      "name": "b_s3d_look",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s3d_look.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b_s3d_look"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "b_s4_video_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s4_video.ts",
+        "soft_default",
+        "-nosound",
+        "-vid_ref",
+        "soft",
+        "--",
+        "SHOT:soft_mid",
+        "viewsize 110",
+        "WAIT:10",
+        "viewsize 100"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b_s4_video_soft"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "b_s4_video_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s4_video.ts",
+        "gl_default",
+        "-nosound",
+        "-vid_ref",
+        "gl",
+        "--",
+        "SHOT:gl_mid",
+        "viewsize 110",
+        "WAIT:10",
+        "viewsize 100"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "B_GAME": "e2e_b_s4_video_gl"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "b_s5_hud",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s5_hud.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b_s5_hud"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "b_s6_misc",
+      "cmd": [
+        "bun",
+        "test/e2e/b_s6_misc.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "B_GAME": "e2e_b_s6_misc"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    }
+  ]
+}

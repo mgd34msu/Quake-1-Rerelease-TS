@@ -10,7 +10,8 @@ import { Cbuf_AddText, Cbuf_Execute } from "../../src/common/cmd";
 import { Key_Event } from "../../src/client/keys";
 import { conState } from "../../src/client/console";
 import * as consoleMod from "../../src/client/console";
-import { Q1TS_DATA } from "./q1data";
+import { Q1TS_DATA, classicArgv, homedirArgs } from "./q1data";
+import { com_gamedir } from "../../src/common/common";
 
 export const results: Array<{ name: string; pass: boolean; note: string }> = [];
 
@@ -20,14 +21,27 @@ export function check(name: string, pass: boolean, note = ""): boolean {
   return pass;
 }
 
+/*
+Ends the driver. Every test/e2e driver reports through the same two lines the
+runner (test/e2e/run_all.ts) reads -- the per-assertion `[PASS]`/`[FAIL]`
+lines check() already prints, and one final `RESULT <pass> <fail>` -- and
+exits non-zero when anything failed, per .orch/briefs/E2E-COMMON.md's driver
+contract. The exit happens here rather than at each call site so a driver
+that bails out early cannot report green by falling through to its own
+trailing `process.exit(0)`.
+*/
 export function summary(label: string): void {
   const bad = results.filter((r) => !r.pass);
   console.log(`\n===SUMMARY ${label}=== ${results.length - bad.length}/${results.length} passed`);
   for (const r of bad) console.log(`  FAIL: ${r.name} :: ${r.note}`);
+  console.log(`RESULT ${results.length - bad.length} ${bad.length}`);
+  process.exit(bad.length > 0 ? 1 : 0);
 }
 
+export const GAMEDIR_NAME = "e2e_j";
+
 export function boot(args: string[]): void {
-  Sys_Main_Init(["q1ts", ...args]);
+  Sys_Main_Init(classicArgv(["q1ts", ...homedirArgs(GAMEDIR_NAME), ...args]));
 }
 
 export function frames(n = 1, dt = 0.05): void {
@@ -158,5 +172,7 @@ export function shot(gamedir: string, name: string): string | null {
 }
 
 export const BASEDIR = Q1TS_DATA;
-export const GAMEDIR_NAME = "e2e_j";
-export const GAMEDIR = `${BASEDIR}/${GAMEDIR_NAME}`;
+/** The engine's live writable game directory (com_gamedir under -homedir), not a guess at it. */
+export function gamedir(): string {
+  return com_gamedir;
+}

@@ -37,7 +37,7 @@ import { EDICT_NUM, PR_GetString } from "../../src/progs/progs";
 import type { EdictT } from "../../src/progs/progs";
 import { cl } from "../../src/client/client";
 import { SysError } from "../../src/platform/sys";
-import { boot, pump, exec, check, summary, shot, GAMEDIR, BASEDIR, GAMEDIR_NAME } from "./j_lib";
+import { boot, pump, exec, check, summary, shot, gamedir, BASEDIR, GAMEDIR_NAME } from "./j_lib";
 
 function findTriggerChangelevel(): EdictT | null {
   for (let i = 0; i < sv.num_edicts; i++) {
@@ -109,7 +109,7 @@ async function runOnMap(mapName: string, shotPrefix: string): Promise<void> {
   check(`${mapName}: cl.intermission became 1 (svc_intermission parsed)`, cl.intermission === 1, `cl.intermission=${cl.intermission} cl.completed_time=${cl.completed_time}`);
 
   if (cl.intermission === 1) {
-    shot(GAMEDIR, `${shotPrefix}_intermission`);
+    shot(gamedir(), `${shotPrefix}_intermission`);
   }
 
   const beforeName = sv.name;
@@ -133,7 +133,7 @@ async function runOnMap(mapName: string, shotPrefix: string): Promise<void> {
 
   const advanced = sv.name !== beforeName || cl.levelname !== beforeLevelname;
   check(`${mapName}: level actually advanced after holding +attack`, advanced, `sv.name ${beforeName} -> ${sv.name}, cl.levelname "${beforeLevelname}" -> "${cl.levelname}"`);
-  if (advanced) shot(GAMEDIR, `${shotPrefix}_after_advance`);
+  if (advanced) shot(gamedir(), `${shotPrefix}_after_advance`);
 
   summary(`j_intermission (${mapName})`);
 }

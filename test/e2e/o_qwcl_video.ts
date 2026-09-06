@@ -56,15 +56,19 @@ Id1 and qwprogs.dat are symlinked (read-only use), config.cfg is COPIED, and
 screenshots land in the scratch qw/ directory.
 */
 const QDATA = Q1TS_DATA;
-const BASEDIR = process.env.O_BASEDIR ?? `${tmpdir()}/o_qwcl_video_base`;
+const BASEDIR = process.env.O_BASEDIR ?? `${process.env.Q1TS_SCRATCH ?? tmpdir()}/o_qwcl_video_base`;
 const GAMEDIR = `${BASEDIR}/qw`; // qwcl's Host_Init forces `-game qw`
-const SHOTDIR = process.env.O_SHOTDIR ?? `${tmpdir()}/o_qwcl_video_shots`;
+const SHOTDIR = process.env.O_SHOTDIR ?? `${process.env.Q1TS_SCRATCH ?? tmpdir()}/o_qwcl_video_shots`;
 
 function buildScratchBasedir(): void {
   if (process.env.O_BASEDIR) return; // caller supplied one; leave it alone
   mkdirSync(GAMEDIR, { recursive: true });
+  // id ships `Id1`; a symlink tree over a Linux install usually spells it
+  // `id1`, and Sys_ResolveCase only resolves case INSIDE the mounted tree --
+  // the link this makes has to name a directory that is really there.
+  const id1Src = existsSync(`${QDATA}/id1`) ? `${QDATA}/id1` : `${QDATA}/Id1`;
   for (const [src, dst] of [
-    [`${QDATA}/Id1`, `${BASEDIR}/Id1`],
+    [id1Src, `${BASEDIR}/Id1`],
     [`${QDATA}/qw/qwprogs.dat`, `${GAMEDIR}/qwprogs.dat`],
   ]) {
     if (!existsSync(src) || existsSync(dst)) continue;
@@ -453,4 +457,5 @@ DOES re-run Draw_Init -- must produce the same console-only frame.
 const failed = results.filter((r) => !r.pass);
 console.log(`\n=== o_qwcl_video ${REF}: ${results.length - failed.length}/${results.length} passed ===`);
 for (const f of failed) console.log(`  FAIL ${f.name} :: ${f.note}`);
+console.log(`RESULT ${results.length - failed.length} ${failed.length}`);
 process.exit(failed.length === 0 ? 0 : 1);

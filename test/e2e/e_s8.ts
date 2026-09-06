@@ -1,6 +1,6 @@
 // Scenario 8: robustness -- a client vanishing, a server vanishing, a dead
 // port, connect-while-connected, and a malformed out-of-band packet.
-import { BASEDIR, CA_ACTIVE, REPO, bootClient, check, cls, conMark, conSince, engineErrors, execPump, pump, pumpUntil, serverReady, startServer, summary } from "./e_lib";
+import { conLines, BASEDIR, CA_ACTIVE, REPO, bootClient, check, cls, conMark, conSince, engineErrors, execPump, pump, pumpUntil, serverReady, startServer, summary } from "./e_lib";
 
 const PORT = 27616;
 const DEAD = 27699;
@@ -56,10 +56,13 @@ function spawnClient2(args: string[]): { proc: import("bun").Subprocess<"pipe", 
   check("8.2a client reaches ca_active", await pumpUntil(() => cls.state === CA_ACTIVE, 25000), `cls.state=${cls.state}`);
   await pump(1500);
 
+  // cl_timeout defaults to 60 seconds; the scenario asserts that the client
+  // DOES notice, not how long QW's default takes to say so.
+  await execPump("cl_timeout 8", 600);
   const before = engineErrors.length;
   const cm = conMark();
   sv.kill(9);
-  const noticed = await pumpUntil(() => cls.state !== CA_ACTIVE, 30000);
+  const noticed = await pumpUntil(() => cls.state !== CA_ACTIVE, 40000);
   const seen = conSince(cm).join(" | ");
   check("8.2b the client notices the server went away", noticed, `cls.state=${cls.state} client="${seen.slice(0, 260)}"`);
   check("8.2c the client survives the server going away (no uncaught throw)", engineErrors.length === before, engineErrors.length > before ? engineErrors[before].split("\n").slice(0, 4).join(" / ") : "");
@@ -77,12 +80,22 @@ function spawnClient2(args: string[]): { proc: import("bun").Subprocess<"pipe", 
   check("8.3a connecting to a dead port retries instead of wedging", retrying && cls.state !== CA_ACTIVE, `cls.state=${cls.state} client="${seen.slice(0, 240)}"`);
   check("8.3b no uncaught throw while retrying a dead port", engineErrors.length === before, engineErrors.length > before ? engineErrors[before].split("\n").slice(0, 4).join(" / ") : "");
 
-  const cm2 = conMark();
+  // CL_CheckForResend prints one "Connecting to ..." per retry, every 5s.
+  // conMark()/conSince() are inclusive of the marked row, so an unchanged
+  // console still reports the last line written before the mark -- counting
+  // the retries over the whole scrollback is what actually distinguishes
+  // "stopped" from "still going".
+  const retriesBefore = conLines().filter((l) => l.includes("Connecting to")).length;
   await execPump("disconnect", 1500);
-  await pump(5000);
-  const after = conSince(cm2).join(" | ");
-  const stopped = !/Connecting to/.test(after);
-  check("8.3c `disconnect` stops the retry loop", stopped, `after-disconnect console="${after.slice(0, 200)}"`);
+  await pump(2000);
+  const settled = conLines().filter((l) => l.includes("Connecting to")).length;
+  await pump(12000);
+  const retriesAfter = conLines().filter((l) => l.includes("Connecting to")).length;
+  check(
+    "8.3c `disconnect` stops the retry loop",
+    retriesAfter === settled,
+    `"Connecting to" lines: ${retriesBefore} before disconnect, ${settled} once settled, ${retriesAfter} after 12 more seconds`,
+  );
 }
 
 // ---- 8.4 connect while connected ------------------------------------------

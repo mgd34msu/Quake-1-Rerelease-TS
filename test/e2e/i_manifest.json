@@ -1,0 +1,139 @@
+{
+  "family": "i",
+  "drivers": [
+    {
+      "name": "i_gl_fresh",
+      "cmd": [
+        "bun",
+        "test/e2e/i_gl_restart.ts",
+        "fresh",
+        "i_fresh"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "I_GAME": "e2e_i_fresh",
+        "I_SHOTDIR": "${Q1TS_SCRATCH}/e2e/i/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "i_gl_restart1",
+      "cmd": [
+        "bun",
+        "test/e2e/i_gl_restart.ts",
+        "restart1",
+        "i_restart1"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "I_GAME": "e2e_i_restart1",
+        "I_SHOTDIR": "${Q1TS_SCRATCH}/e2e/i/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "i_gl_restart3",
+      "cmd": [
+        "bun",
+        "test/e2e/i_gl_restart.ts",
+        "restart3",
+        "i_restart3"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "I_GAME": "e2e_i_restart3",
+        "I_SHOTDIR": "${Q1TS_SCRATCH}/e2e/i/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "i_gl_softtrip",
+      "cmd": [
+        "bun",
+        "test/e2e/i_gl_restart.ts",
+        "softtrip",
+        "i_softtrip"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "I_GAME": "e2e_i_softtrip",
+        "I_SHOTDIR": "${Q1TS_SCRATCH}/e2e/i/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "i_gl_mode3",
+      "cmd": [
+        "bun",
+        "test/e2e/i_gl_restart.ts",
+        "mode3",
+        "i_mode3"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "I_GAME": "e2e_i_mode3",
+        "I_SHOTDIR": "${Q1TS_SCRATCH}/e2e/i/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "i_gl_menu",
+      "cmd": [
+        "bun",
+        "test/e2e/i_gl_restart.ts",
+        "menu",
+        "i_menu"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "I_GAME": "e2e_i_menu",
+        "I_SHOTDIR": "${Q1TS_SCRATCH}/e2e/i/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "i_gl_restart1_premap",
+      "cmd": [
+        "bun",
+        "test/e2e/i_gl_restart.ts",
+        "restart1",
+        "i_restart1_premap"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "I_GAME": "e2e_i_premap",
+        "I_PRERESTART": "1",
+        "I_SHOTDIR": "${Q1TS_SCRATCH}/e2e/i/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    }
+  ]
+}

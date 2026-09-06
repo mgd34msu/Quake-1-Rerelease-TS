@@ -1,0 +1,69 @@
+{
+  "family": "c",
+  "drivers": [
+    {
+      "name": "c_init",
+      "cmd": ["bun", "test/e2e/c_run.ts", "--scenario", "init"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "audio"]
+    },
+    {
+      "name": "c_commands",
+      "cmd": ["bun", "test/e2e/c_run.ts", "--scenario", "commands"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "audio"]
+    },
+    {
+      "name": "c_play",
+      "cmd": ["bun", "test/e2e/c_run.ts", "--scenario", "play"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "audio"]
+    },
+    {
+      "name": "c_playvol",
+      "cmd": ["bun", "test/e2e/c_run.ts", "--scenario", "playvol"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "audio"]
+    },
+    {
+      "name": "c_ingame",
+      "cmd": ["bun", "test/e2e/c_run.ts", "--scenario", "ingame"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "audio"]
+    },
+    {
+      "name": "c_demo",
+      "cmd": ["bun", "test/e2e/c_run.ts", "--scenario", "demo"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "audio"]
+    },
+    {
+      "name": "c_cd",
+      "cmd": ["bun", "test/e2e/c_run.ts", "--scenario", "cd"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "audio"]
+    },
+    {
+      "name": "c_qw",
+      "cmd": ["bun", "test/e2e/c_run.ts", "--scenario", "qw"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "audio", "qw"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "c_soak",
+      "cmd": ["bun", "test/e2e/c_run.ts", "--scenario", "soak"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["classic", "audio", "long"]
+    }
+  ]
+}

@@ -1,0 +1,354 @@
+{
+  "family": "a",
+  "drivers": [
+    {
+      "name": "a_maps_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/a_maps.ts",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/shots_soft",
+        "--settle",
+        "30"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_maps_soft"
+      },
+      "timeoutSec": 900,
+      "needs": [
+        "classic",
+        "long"
+      ]
+    },
+    {
+      "name": "a_maps_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/a_maps.ts",
+        "--vid",
+        "gl",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/shots_gl",
+        "--settle",
+        "30"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "A_GAME": "e2e_a_maps_gl"
+      },
+      "timeoutSec": 900,
+      "needs": [
+        "classic",
+        "gl",
+        "long"
+      ]
+    },
+    {
+      "name": "a_maps_hipnotic",
+      "cmd": [
+        "bun",
+        "test/e2e/a_maps.ts",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/shots_hip",
+        "--settle",
+        "30",
+        "--extra",
+        "-hipnotic",
+        "--maps",
+        "hip1m1,hip1m2,hip2m1,hip3m1,hipdm1,start"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_maps_hip"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "a_maps_rogue",
+      "cmd": [
+        "bun",
+        "test/e2e/a_maps.ts",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/shots_rogue",
+        "--settle",
+        "30",
+        "--extra",
+        "-rogue",
+        "--maps",
+        "r1m1,r1m2,r2m1,r2m2,ctf1,start"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_maps_rogue"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "a_gameplay_dm1",
+      "cmd": [
+        "bun",
+        "test/e2e/a_gameplay.ts",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/gp_dm1",
+        "--map",
+        "dm1"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_gp_dm1"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "a_gameplay_e1m1",
+      "cmd": [
+        "bun",
+        "test/e2e/a_gameplay.ts",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/gp_e1m1",
+        "--map",
+        "e1m1",
+        "--nokill"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_gp_e1m1"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "a_saveload_write",
+      "cmd": [
+        "bun",
+        "test/e2e/a_saveload.ts",
+        "--mode",
+        "write",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/sl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_sl"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ],
+      "lock": "a_save"
+    },
+    {
+      "name": "a_saveload_fresh",
+      "cmd": [
+        "bun",
+        "test/e2e/a_saveload.ts",
+        "--mode",
+        "fresh",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/sl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_sl"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ],
+      "lock": "a_save"
+    },
+    {
+      "name": "a_demos_play",
+      "cmd": [
+        "bun",
+        "test/e2e/a_demos.ts",
+        "--mode",
+        "play",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/demo"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_demo_play"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "a_demos_timedemo",
+      "cmd": [
+        "bun",
+        "test/e2e/a_demos.ts",
+        "--mode",
+        "timedemo",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/demo"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_demo_td"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "a_demos_record",
+      "cmd": [
+        "bun",
+        "test/e2e/a_demos.ts",
+        "--mode",
+        "record",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/demo"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_demo_rec"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ],
+      "lock": "a_demofile"
+    },
+    {
+      "name": "a_demos_playrec",
+      "cmd": [
+        "bun",
+        "test/e2e/a_demos.ts",
+        "--mode",
+        "playrec",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/demo"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_demo_rec"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ],
+      "lock": "a_demofile"
+    },
+    {
+      "name": "a_demos_loop",
+      "cmd": [
+        "bun",
+        "test/e2e/a_demos.ts",
+        "--mode",
+        "loop",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/demo"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_demo_loop"
+      },
+      "timeoutSec": 900,
+      "needs": [
+        "classic",
+        "long"
+      ]
+    },
+    {
+      "name": "a_mpfeat_hipnotic",
+      "cmd": [
+        "bun",
+        "test/e2e/a_mpfeat.ts",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/mpfeat",
+        "--map",
+        "hip1m1",
+        "--tag",
+        "hip",
+        "--extra",
+        "-hipnotic"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_mp_hip"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "a_mpfeat_rogue",
+      "cmd": [
+        "bun",
+        "test/e2e/a_mpfeat.ts",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/mpfeat",
+        "--map",
+        "r1m1",
+        "--tag",
+        "rogue",
+        "--extra",
+        "-rogue"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_mp_rogue"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "a_dedicated",
+      "cmd": [
+        "bun",
+        "test/e2e/a_dedicated.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "binary"
+      ]
+    },
+    {
+      "name": "a_stability",
+      "cmd": [
+        "bun",
+        "test/e2e/a_stability.ts",
+        "--map",
+        "e1m1",
+        "--seconds",
+        "180",
+        "--out",
+        "${Q1TS_SCRATCH}/e2e/a/stab"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "A_GAME": "e2e_a_stab"
+      },
+      "timeoutSec": 420,
+      "needs": [
+        "classic",
+        "long"
+      ]
+    }
+  ]
+}

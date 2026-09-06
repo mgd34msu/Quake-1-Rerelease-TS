@@ -5,7 +5,7 @@ import { Cbuf_AddText } from "../../src/common/cmd";
 import { cl, cls, cl_entities, SIGNONS, CactiveT } from "../../src/client/client";
 import { sv } from "../../src/server/server";
 import * as common from "../../src/common/common";
-import { Q1TS_DATA } from "./q1data";
+import { Q1TS_DATA, classicArgv, homedirArgs } from "./q1data";
 
 export const BASEDIR = Q1TS_DATA;
 
@@ -13,20 +13,34 @@ export function gamedir(): string {
   return common.com_gamedir;
 }
 
+/*
+Which `-game` directory this driver writes into. Screenshots, demos and save
+games all land there, and shot() below deletes every `quake*.pcx` it finds
+while looking for the one it just took -- so two family-A drivers sharing one
+directory steal each other's screenshots. The manifest gives every driver
+that runs concurrently its own A_GAME.
+*/
+export const GAME = process.env.A_GAME ?? "e2e_a";
+
 export function boot(extra: string[]): void {
-  const argv = ["quake", "-basedir", BASEDIR, "-game", "e2e_a", "-nosound", ...extra];
-  Sys_Main_Init(argv);
+  const argv = ["quake", "-basedir", BASEDIR, ...homedirArgs(GAME), "-game", GAME, "-nosound", ...extra];
+  Sys_Main_Init(classicArgv(argv));
 }
 
 export function cmd(text: string): void {
   Cbuf_AddText(text.endsWith("\n") ? text : text + "\n");
 }
 
+/** Exceptions that escaped Host_Frame. An engine defect, never expected. */
+export const engineErrors: string[] = [];
+
 export async function pump(frames: number, dt = 0.05, sleepMs = 2): Promise<void> {
   for (let i = 0; i < frames; i++) {
     try {
       runFrames(1, dt);
     } catch (e) {
+      const msg = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      engineErrors.push(msg);
       console.log(`[A] EXCEPTION in Host_Frame: ${e instanceof Error ? e.stack : String(e)}`);
     }
     if (sleepMs > 0) await Bun.sleep(sleepMs);
@@ -109,6 +123,29 @@ export function state(): string {
 
 export function jlog(tag: string, obj: Record<string, unknown>): void {
   console.log(`##A ${tag} ${JSON.stringify(obj)}`);
+}
+
+export const results: Array<{ name: string; pass: boolean; note: string }> = [];
+
+export function check(name: string, pass: boolean, note = ""): boolean {
+  results.push({ name, pass, note });
+  console.log(`[${pass ? "PASS" : "FAIL"}] ${name}${note ? " :: " + note : ""}`);
+  return pass;
+}
+
+/*
+Ends the driver on the contract in .orch/briefs/E2E-COMMON.md: the
+`[PASS]`/`[FAIL]` lines check() prints, one final `RESULT <pass> <fail>`, and
+a non-zero exit when anything failed. Same shape as b_lib.ts's summary(); the
+exit lives here so an early bail cannot fall through to a trailing
+`process.exit(0)` and report green.
+*/
+export function summary(label: string): void {
+  const bad = results.filter((r) => !r.pass);
+  console.log(`\n===SUMMARY ${label}=== ${results.length - bad.length}/${results.length} passed`);
+  for (const r of bad) console.log(`  FAIL: ${r.name} :: ${r.note}`);
+  console.log(`RESULT ${results.length - bad.length} ${bad.length}`);
+  process.exit(bad.length > 0 ? 1 : 0);
 }
 
 export const BASE_MAPS = [

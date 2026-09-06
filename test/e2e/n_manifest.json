@@ -1,0 +1,110 @@
+{
+  "family": "n",
+  "drivers": [
+    {
+      "name": "n_items",
+      "cmd": [
+        "bun",
+        "test/e2e/n_items.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic",
+        "long"
+      ]
+    },
+    {
+      "name": "n_mon",
+      "cmd": [
+        "bun",
+        "test/e2e/n_mon.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic",
+        "long"
+      ]
+    },
+    {
+      "name": "n_msg",
+      "cmd": [
+        "bun",
+        "test/e2e/n_msg.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic",
+        "long"
+      ]
+    },
+    {
+      "name": "n_phys",
+      "cmd": [
+        "bun",
+        "test/e2e/n_phys.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic",
+        "long"
+      ]
+    },
+    {
+      "name": "n_secret",
+      "cmd": [
+        "bun",
+        "test/e2e/n_secret.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic",
+        "long"
+      ]
+    },
+    {
+      "name": "n_shoot",
+      "cmd": [
+        "bun",
+        "test/e2e/n_shoot.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic",
+        "long"
+      ]
+    },
+    {
+      "name": "n_touch",
+      "cmd": [
+        "bun",
+        "test/e2e/n_touch.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "classic",
+        "long"
+      ]
+    }
+  ]
+}

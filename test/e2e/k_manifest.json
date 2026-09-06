@@ -1,0 +1,51 @@
+{
+  "family": "k",
+  "drivers": [
+    {
+      "name": "k_gl_alias_light_e1m1",
+      "cmd": [
+        "bun",
+        "test/e2e/k_gl_alias_light.ts",
+        "k_e1m1",
+        "-vid_ref",
+        "gl",
+        "-nosound"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "K_GAME": "e2e_k",
+        "K_MAP": "e1m1",
+        "K_CMDS": "impulse 9;noclip;+forward;FRAMES:40;-forward;FRAMES:5",
+        "K_SHOTDIR": "${Q1TS_SCRATCH}/e2e/k/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "k_gl_alias_light_e1m2",
+      "cmd": [
+        "bun",
+        "test/e2e/k_gl_alias_light.ts",
+        "k_e1m2",
+        "-vid_ref",
+        "gl",
+        "-nosound"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "K_GAME": "e2e_k3",
+        "K_MAP": "e1m2",
+        "K_CMDS": "impulse 9;noclip;+forward;FRAMES:40;-forward;FRAMES:5",
+        "K_SHOTDIR": "${Q1TS_SCRATCH}/e2e/k/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "family": "o",
+  "drivers": [
+    {
+      "name": "o_qwcl_video_gl",
+      "cmd": [
+        "xvfb-run",
+        "-a",
+        "-s",
+        "-screen 0 1920x1080x24",
+        "env",
+        "SDL_VIDEODRIVER=x11",
+        "SDL_AUDIODRIVER=dummy",
+        "Q1TS_DATA=${Q1TS_DATA}",
+        "Q1TS_SCRATCH=${Q1TS_SCRATCH}",
+        "bash",
+        "-c",
+        "openbox --sm-disable & sleep 2; exec bun test/e2e/o_qwcl_video.ts gl"
+      ],
+      "env": {
+        "O_SHOTDIR": "${Q1TS_SCRATCH}/e2e/o/gl"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic",
+        "qw",
+        "gl"
+      ],
+      "lock": "qwclient"
+    },
+    {
+      "name": "o_qwcl_video_soft",
+      "cmd": [
+        "xvfb-run",
+        "-a",
+        "-s",
+        "-screen 0 1920x1080x24",
+        "env",
+        "SDL_VIDEODRIVER=x11",
+        "SDL_AUDIODRIVER=dummy",
+        "Q1TS_DATA=${Q1TS_DATA}",
+        "Q1TS_SCRATCH=${Q1TS_SCRATCH}",
+        "bash",
+        "-c",
+        "openbox --sm-disable & sleep 2; exec bun test/e2e/o_qwcl_video.ts soft"
+      ],
+      "env": {
+        "O_SHOTDIR": "${Q1TS_SCRATCH}/e2e/o/soft"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic",
+        "qw"
+      ],
+      "lock": "qwclient"
+    }
+  ]
+}

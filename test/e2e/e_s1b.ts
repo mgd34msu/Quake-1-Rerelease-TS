@@ -75,9 +75,18 @@ await pump(1200);
   check("1b.12 client reconnects after a kick", back, `cls.state=${cls.state}`);
   if (back) {
     const m = sv.mark();
+    // QW's SV_Kick_f takes a USERID, not a name: it runs its argument through
+    // atoi and reports the number it got. "unnamed" is 0, no client has
+    // userid 0, and the client stays in the game -- WinQuake QW's own
+    // behaviour, not a defect.
     sv.send("kick unnamed");
-    const dropped = await pumpUntil(() => cls.state !== CA_ACTIVE, 10000);
-    check("1b.13 kick <name> drops the client", dropped, `cls.state=${cls.state} server="${sv.since(m).replace(/\n/g, " | ").slice(0, 200)}"`);
+    await pump(2000);
+    const t13 = sv.since(m);
+    check(
+      "1b.13 kick by NAME is not a QW command form: the userid parse reports 0 and the client stays",
+      /Couldn't find user number 0/.test(t13) && cls.state === CA_ACTIVE,
+      `cls.state=${cls.state} server="${t13.replace(/\n/g, " | ").slice(0, 200)}"`,
+    );
   }
 }
 
@@ -89,7 +98,9 @@ await pump(1200);
   sv.send("listip");
   await pump(1200);
   const t = sv.since(m);
-  check("1b.14 listip shows the added address", /127\.0\.0\.1/.test(t), t.replace(/\n/g, " | ").slice(0, 250));
+  // SV_ListIP_f prints the octets right-aligned in three columns each
+  // ("%3i.%3i.%3i.%3i"), so the dotted-quad has padding inside it.
+  check("1b.14 listip shows the added address", /127\.\s*0\.\s*0\.\s*1/.test(t), t.replace(/\n/g, " | ").slice(0, 250));
 
   const cm = conMark();
   await execPump(`connect 127.0.0.1:${PORT}`, 600);

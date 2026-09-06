@@ -1,0 +1,48 @@
+{
+  "family": "m",
+  "drivers": [
+    {
+      "name": "m_world_light_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/m_gl_world_light.ts",
+        "m_gl",
+        "-vid_ref",
+        "gl",
+        "-nosound"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen",
+        "M_GAME": "e2e_m_gl",
+        "M_MAP": "e1m1",
+        "M_SHOTDIR": "${Q1TS_SCRATCH}/e2e/m/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "m_world_light_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/m_gl_world_light.ts",
+        "m_soft",
+        "-vid_ref",
+        "soft",
+        "-nosound"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "M_GAME": "e2e_m_soft",
+        "M_MAP": "e1m1",
+        "M_SHOTDIR": "${Q1TS_SCRATCH}/e2e/m/shots"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    }
+  ]
+}

@@ -9,11 +9,16 @@
 // NET_StringToAdr default when the address string carries no ":port"), so
 // role B's `-port` parm must be set to role A's listen port instead of its
 // own.
-import { spawnRole, waitForLog, readLog, killRole, record, results } from "./d_lib";
+import { spawnRole, waitForLog, readLog, killRole, record, summary, ensureGameDir } from "./d_lib";
 import { Q1TS_DATA } from "./q1data";
 
 const PORT = 26101;
 const RUN_MS = 20000;
+
+// The engine does not create a `-game` directory that is not already there,
+// and its writers (config.cfg, screenshots) then silently write nothing.
+ensureGameDir("e2e_d");
+ensureGameDir("e2e_d2");
 
 const roleA = spawnRole({
   label: "s1_A",
@@ -33,7 +38,8 @@ const roleA = spawnRole({
   runMs: RUN_MS,
 });
 
-await waitForLog("s1_A", "Quake Initialized", 10000);
+const aBooted = await waitForLog("s1_A", "Quake Initialized", 20000);
+record("S1", "the listen server boots", aBooted, "log s1_A never printed \"Quake Initialized\"");
 await Bun.sleep(1500);
 
 const roleB = spawnRole({
@@ -61,18 +67,28 @@ await Bun.sleep(RUN_MS + 3000);
 const logA = readLog("s1_A");
 const logB = readLog("s1_B");
 
-record("S1", "A boots and maps dm3", logA.includes("Quake Initialized") && logA.includes("map:     dm3"), "");
-record("S1", "B reaches signon / entered the game (either side's log)", logA.includes("entered the game") || logB.toLowerCase().includes("connected"), "");
-record("S1", "A status shows 2 players at some point", /players:\s*2 active/.test(logA), "");
-record("S1", "B's say reaches A's console (\"hello\")", logA.includes("hello"), "");
-record("S1", "B took a screenshot (quake00.pcx on disk)", await Bun.file(`${Q1TS_DATA}/e2e_d2/quake00.pcx`).exists(), "");
-record("S1", "reconnect succeeded (no fatal error after)", !logB.includes("Sys_Main_Init threw"), "");
-
 console.log("\n=== s1_A tail ===\n" + logA.slice(-4000));
 console.log("\n=== s1_B tail ===\n" + logB.slice(-4000));
 
 await killRole(roleA);
 await killRole(roleB);
 
-console.log("\nS1 RESULTS:", JSON.stringify(results.filter((r) => r.scenario === "S1"), null, 2));
-process.exit(0);
+record("S1", "A boots and maps dm3", logA.includes("Quake Initialized") && /map:\s+dm3/.test(logA), `dm3 in status: ${/map:\s+dm3/.test(logA)}`);
+record("S1", "B connects and enters A's game", logA.includes("entered the game"), 'A\'s console never printed "entered the game"');
+record("S1", "A's status shows two connected players", /players:\s*2 active/.test(logA), (logA.match(/players:.*/g) ?? []).slice(-3).join(" | "));
+record("S1", 'B\'s "say hello" reaches A\'s console', /hello/.test(logA), (logA.match(/.*hello.*/g) ?? []).slice(-2).join(" | "));
+// SCR_ScreenShot_f picks the first free quake00..quake99 name, and the
+// engine's -homedir default redirects writes out of a read-only retail
+// install, so neither the file name nor the directory is known in advance --
+// COM_WriteFile's own line names the exact path it took.
+const shotLine = /COM_WriteFile: (\S+quake\d\d\.pcx)/.exec(logB);
+record(
+  "S1",
+  "B wrote a screenshot of the connected game",
+  shotLine !== null && (await Bun.file(shotLine[1]).exists()),
+  shotLine !== null ? shotLine[1] : 'no "COM_WriteFile: ...quakeNN.pcx" line in B\'s log',
+);
+record("S1", "B's disconnect + reconnect leaves it in the game again", /Reconnecting|reconnect/i.test(logB) && !/Sys_Main_Init threw/.test(logB), (logB.match(/.*econnect.*/g) ?? []).slice(-2).join(" | "));
+record("S1", "neither role hit a fatal engine error", !/Sys_Main_Init threw|SysError/.test(logA + logB), "");
+
+summary("D S1 listen server");

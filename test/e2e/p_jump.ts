@@ -77,6 +77,20 @@ const proc = Bun.spawn(
   },
 );
 
+/*
+The instrumented qwsv must not outlive this driver. It binds a real UDP port,
+and a run that is interrupted (or a driver that exits down an early path)
+otherwise leaves it holding that port -- the next run then fails to bind for
+a reason that has nothing to do with the engine.
+*/
+process.on("exit", () => {
+  try {
+    proc.kill(9);
+  } catch {
+    /* already gone */
+  }
+});
+
 let svOut = "";
 const drain = async (stream: ReadableStream<Uint8Array>): Promise<void> => {
   const dec = new TextDecoder();
@@ -281,4 +295,31 @@ if (gaps.length) {
 }
 
 console.log(`log: ${LOG}`);
-process.exit(bad.length === 0 ? 0 : 2);
+
+/*
+The report this driver exists for: "I press jump, hear the jump sound, but do
+not jump". QuakeC's PlayerJump plays player/plyrjmp8.wav and pmove.c's
+JumpButton adds the +270 to velocity[2]; the two must agree on every command,
+or the player hears a jump that never happened.
+*/
+const results: Array<{ name: string; pass: boolean; note: string }> = [];
+function check(name: string, pass: boolean, note = ""): void {
+  results.push({ name, pass, note });
+  console.log(`[${pass ? "PASS" : "FAIL"}] ${name}${note ? " :: " + note : ""}`);
+}
+check("the instrumented qwsv recorded the client's commands", recs.length > 0, `${recs.length} commands over ${JUMPS} scripted jumps`);
+check("jumps actually happened", jumpCount > 0, `${jumpCount} JumpButton +270s, ${soundCount} jump sounds`);
+check(
+  "no jump sound played without JumpButton adding its +270",
+  bad.length === 0,
+  bad.length === 0 ? `${soundCount} sounds, ${jumpCount} jumps` : `${bad.length} events, branches: ${[...byBranch.entries()].map(([b, n]) => `${n}x ${b}`).join(", ")}`,
+);
+check("no JumpButton fired without its jump sound", jumpNoSound.length === 0, `${jumpNoSound.length} events`);
+check("every JumpButton that fired raised velocity[2] by 200 or more", velMismatch === 0, `${velMismatch} mismatches of ${jumpCount} jumps`);
+{
+  const bad2 = results.filter((r) => !r.pass);
+  console.log(`\n===SUMMARY P jump ${MAP} ${MODE}=== ${results.length - bad2.length}/${results.length} passed`);
+  for (const r of bad2) console.log(`  FAIL: ${r.name} :: ${r.note}`);
+  console.log(`RESULT ${results.length - bad2.length} ${bad2.length}`);
+  process.exit(bad2.length > 0 ? 1 : 0);
+}

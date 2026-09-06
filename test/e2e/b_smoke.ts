@@ -1,4 +1,4 @@
-import { boot, frames, exec, conTail, check, summary } from "./b_lib";
+import { boot, frames, exec, conHas, conTail, check, summary } from "./b_lib";
 import { keyState } from "../../src/client/keys";
 import { Q1TS_DATA } from "./q1data";
 boot(["-basedir", Q1TS_DATA, "-game", "e2e_b", "-nosound"]);
@@ -7,6 +7,7 @@ console.log("key_dest", keyState.key_dest);
 exec("echo hello_from_b");
 console.log("--- console tail ---");
 console.log(conTail(20));
-check("boot", true, "");
+check("engine brought up the network layer", conHas("UDP Initialized"), conTail(3));
+check("quake.rc started id1's demo loop", conHas("Playing demo from demo1.dem"), conTail(3));
+check("`echo` reaches the console scrollback", conHas("hello_from_b"), conTail(3));
 summary("smoke");
-process.exit(0);

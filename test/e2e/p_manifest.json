@@ -1,0 +1,91 @@
+{
+  "family": "p",
+  "drivers": [
+    {
+      "name": "p_jump_settle",
+      "cmd": [
+        "bun",
+        "test/e2e/p_jump.ts",
+        "dm3",
+        "120",
+        "settle"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "P_PORT": "27761",
+        "P_SLEEP": "5",
+        "P_OUT": "${Q1TS_SCRATCH}/e2e/p/settle"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic",
+        "qw"
+      ],
+      "lock": "qwclient"
+    },
+    {
+      "name": "p_jump_spam",
+      "cmd": [
+        "bun",
+        "test/e2e/p_jump.ts",
+        "dm3",
+        "120",
+        "spam"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "P_PORT": "27763",
+        "P_SLEEP": "5",
+        "P_OUT": "${Q1TS_SCRATCH}/e2e/p/spam"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic",
+        "qw"
+      ],
+      "lock": "qwclient"
+    },
+    {
+      "name": "p_jump_hold",
+      "cmd": [
+        "bun",
+        "test/e2e/p_jump.ts",
+        "dm3",
+        "120",
+        "hold"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "P_PORT": "27765",
+        "P_SLEEP": "5",
+        "P_OUT": "${Q1TS_SCRATCH}/e2e/p/hold"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic",
+        "qw"
+      ],
+      "lock": "qwclient"
+    },
+    {
+      "name": "p_bhop",
+      "cmd": [
+        "bun",
+        "test/e2e/p_bhop.ts",
+        "dm6",
+        "40"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "P_PORT": "27741",
+        "P_OUT": "${Q1TS_SCRATCH}/e2e/p/bhop"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic",
+        "qw"
+      ],
+      "lock": "qwclient"
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "family": "q",
+  "drivers": [
+    { "name": "q_modes_soft", "cmd": ["bun", "test/e2e/q_modes.ts", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 300, "needs": ["classic"] },
+    { "name": "q_modes_gl", "cmd": ["bun", "test/e2e/q_modes.ts", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 300, "needs": ["classic", "gl"] },
+    { "name": "q_switch", "cmd": ["bun", "test/e2e/q_switch.ts"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 180, "needs": ["classic", "gl"] },
+    { "name": "q_window", "cmd": ["bun", "test/e2e/q_window.ts"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["classic"] },
+    { "name": "q_screenshot_soft", "cmd": ["bun", "test/e2e/q_screenshot.ts", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["classic"] },
+    { "name": "q_screenshot_gl", "cmd": ["bun", "test/e2e/q_screenshot.ts", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 120, "needs": ["classic", "gl"] },
+    { "name": "q_truecolor", "cmd": ["bun", "test/e2e/q_truecolor.ts"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["classic"] }
+  ]
+}

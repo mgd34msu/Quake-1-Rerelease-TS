@@ -16,12 +16,12 @@ import { CONTENTS_EMPTY } from "../../src/common/bspfile";
 import { GetEdictFieldValue } from "../../src/progs/pr_edict";
 import * as consoleMod from "../../src/client/console";
 import { conState } from "../../src/client/console";
-import { Q1TS_DATA } from "./q1data";
+import { Q1TS_DATA, classicArgv, homedirArgs } from "./q1data";
 
 export const BASEDIR = Q1TS_DATA;
 
 export function boot(extra: string[]): void {
-  Sys_Main_Init(["quake", "-basedir", BASEDIR, "-game", "e2e_n", "-nosound", ...extra]);
+  Sys_Main_Init(classicArgv(["quake", "-basedir", BASEDIR, ...homedirArgs("e2e_n"), "-game", "e2e_n", "-nosound", ...extra]));
 }
 
 export function cmd(text: string): void {
@@ -181,7 +181,7 @@ const results: { id: string; pass: boolean; note: string }[] = [];
 
 export function check(id: string, pass: boolean, note: string): boolean {
   results.push({ id, pass, note });
-  console.log(`##N ${pass ? "PASS" : "FAIL"} ${id} :: ${note}`);
+  console.log(`[${pass ? "PASS" : "FAIL"}] ${id} :: ${note}`);
   return pass;
 }
 
@@ -189,10 +189,20 @@ export function info(id: string, note: string): void {
   console.log(`##N INFO ${id} :: ${note}`);
 }
 
+/*
+Ends the driver, on the same contract as b_lib.ts's summary(): the
+`[PASS]`/`[FAIL]` lines check() prints plus one final `RESULT <pass> <fail>`,
+and a non-zero exit when anything failed (.orch/briefs/E2E-COMMON.md). The
+exit lives here so an early bail cannot fall through to a trailing
+`process.exit(0)` and report green.
+*/
 export function summary(tag: string): void {
   const pass = results.filter((r) => r.pass).length;
+  const fail = results.length - pass;
   console.log(`##N SUMMARY ${tag} ${pass}/${results.length} passed`);
   for (const r of results) if (!r.pass) console.log(`##N   FAILED: ${r.id} :: ${r.note}`);
+  console.log(`RESULT ${pass} ${fail}`);
+  process.exit(fail > 0 ? 1 : 0);
 }
 
 /* ------------------------------------------------------------------ */

@@ -43,12 +43,30 @@ import { cl } from "../../src/client/client";
 import { glState } from "../../src/ref_gl/glquake";
 import { glWarpState } from "../../src/ref_gl/gl_warp";
 import { VID_MenuCursor } from "../../src/platform/vid_menu";
-import { Q1TS_DATA } from "./q1data";
+import { Q1TS_DATA, classicArgv, homedirArgs } from "./q1data";
+import { com_gamedir } from "../../src/common/common";
 
 const BASEDIR = Q1TS_DATA;
-const GAME = process.env.I_GAME ?? "e2e_b";
-const GAMEDIR = `${BASEDIR}/${GAME}`;
+const GAME = process.env.I_GAME ?? "e2e_i";
 const SHOTDIR = process.env.I_SHOTDIR ?? `${process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests"}/glrestart`;
+
+const results: Array<{ name: string; pass: boolean; note: string }> = [];
+function check(name: string, pass: boolean, note = ""): void {
+  results.push({ name, pass, note });
+  console.log(`[${pass ? "PASS" : "FAIL"}] ${name}${note ? " :: " + note : ""}`);
+}
+function summary(label: string): never {
+  const bad = results.filter((r) => !r.pass);
+  console.log(`\n===SUMMARY ${label}=== ${results.length - bad.length}/${results.length} passed`);
+  for (const r of bad) console.log(`  FAIL: ${r.name} :: ${r.note}`);
+  console.log(`RESULT ${results.length - bad.length} ${bad.length}`);
+  process.exit(bad.length > 0 ? 1 : 0);
+}
+
+/** The engine's live writable game directory (com_gamedir under -homedir). */
+function gamedir(): string {
+  return com_gamedir;
+}
 
 function frames(n = 1, dt = 0.05): void {
   runFrames(n, dt);
@@ -65,8 +83,9 @@ function tap(k: number): void {
 }
 
 function shotFiles(): Set<string> {
-  if (!existsSync(GAMEDIR)) return new Set();
-  return new Set(readdirSync(GAMEDIR).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
+  const dir = gamedir();
+  if (!existsSync(dir)) return new Set();
+  return new Set(readdirSync(dir).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
 }
 
 function shot(name: string): string | null {
@@ -78,8 +97,8 @@ function shot(name: string): string | null {
     if (before.has(f)) continue;
     const ext = f.slice(f.lastIndexOf("."));
     const dest = `${SHOTDIR}/${name}${ext}`;
-    copyFileSync(`${GAMEDIR}/${f}`, dest);
-    unlinkSync(`${GAMEDIR}/${f}`);
+    copyFileSync(`${gamedir()}/${f}`, dest);
+    unlinkSync(`${gamedir()}/${f}`);
     console.log(`  [shot] ${dest}`);
     return dest;
   }
@@ -100,13 +119,11 @@ const scenario = argv[0] ?? "fresh";
 const name = argv[1] ?? scenario;
 const engineArgs = argv.slice(2);
 
-Sys_Main_Init(["quake", "-basedir", BASEDIR, "-game", GAME, "-vid_ref", "gl", ...engineArgs]);
+Sys_Main_Init(classicArgv(["quake", "-basedir", BASEDIR, ...homedirArgs(GAME), "-game", GAME, "-vid_ref", "gl", ...engineArgs]));
 frames(5);
 console.log(`  BOOT ${vid.width}x${vid.height} vid_ref=${Cvar_VariableString("vid_ref")} vid_mode=${Cvar_VariableValue("vid_mode")}`);
-if (Cvar_VariableString("vid_ref") !== "gl") {
-  console.log("  ABORT: vid_ref fell back off gl -- no GL context on this video driver");
-  process.exit(2);
-}
+check("a GL context came up", Cvar_VariableString("vid_ref") === "gl", `vid_ref=${Cvar_VariableString("vid_ref")} -- fell back off gl means no GL context on this video driver`);
+if (Cvar_VariableString("vid_ref") !== "gl") summary(`I ${scenario}`);
 
 exec("disconnect", 3);
 // The video menu is most often opened from the main menu, i.e. with no level
@@ -185,8 +202,8 @@ switch (scenario) {
   default: {
     const m = /^mode(\d+)$/.exec(scenario);
     if (!m) {
-      console.log(`  ABORT: unknown scenario ${scenario}`);
-      process.exit(3);
+      check(`scenario "${scenario}" is one this driver knows`, false, "known: fresh restart1 restart3 softtrip modeN menu");
+      summary(`I ${scenario}`);
     }
     exec(`vid_mode ${m[1]}`, 2);
     exec("vid_restart", 20);
@@ -203,5 +220,44 @@ exec("clear", 1);
 frames(Number(process.env.I_SETTLE_FRAMES ?? 40));
 ids(`after ${scenario}`);
 console.log(`  FINAL ${vid.width}x${vid.height} vid_ref=${Cvar_VariableString("vid_ref")} levelname=${JSON.stringify(cl.levelname)}`);
-shot(name);
-process.exit(0);
+const shotPath = shot(name);
+
+/*
+The defect this driver exists for: gl_rsurf.c's `lightmap_textures` and
+gl_warp.c's `solidskytexture`/`alphaskytexture` survive a `vid_restart`
+behind their `if (!x)` guards while GL_ClearTextureState rewinds the caches
+and the name counter under them -- so a restarted context ends up with two
+different things holding the same GL texture name (walls sampling the
+lightmap atlas, the sky sampling a fragment of something else). The
+observable is the id table itself: every named texture must be distinct and
+must sit below the counter that hands the next one out.
+*/
+check("the level is still up after the scenario", String(cl.levelname).length > 0 && vid.width > 0, `levelname=${JSON.stringify(cl.levelname)} ${vid.width}x${vid.height}`);
+check("the scenario produced a screenshot", shotPath !== null, String(shotPath));
+{
+  const named: ReadonlyArray<readonly [string, number]> = [
+    ["lightmap_textures", glState.lightmap_textures],
+    ["solidskytexture", glWarpState.solidskytexture],
+    ["alphaskytexture", glWarpState.alphaskytexture],
+    ["particletexture", glState.particletexture],
+    ["playertextures", glState.playertextures],
+  ];
+  const live = named.filter(([, id]) => id !== 0);
+  const seenIds = new Map<number, string>();
+  const collisions: string[] = [];
+  for (const [label, id] of live) {
+    const prev = seenIds.get(id);
+    if (prev !== undefined) collisions.push(`${prev} and ${label} both hold ${id}`);
+    else seenIds.set(id, label);
+  }
+  check("no two GL texture names collide after the scenario", collisions.length === 0, collisions.join("; ") || live.map(([l, i]) => `${l}=${i}`).join(" "));
+  const above = live.filter(([, id]) => id >= glState.texture_extension_number);
+  check(
+    "every live texture name is below the next-name counter",
+    above.length === 0,
+    above.length === 0
+      ? `texture_extension_number=${glState.texture_extension_number}`
+      : `${above.map(([l, i]) => `${l}=${i}`).join(" ")} >= texture_extension_number=${glState.texture_extension_number}`,
+  );
+}
+summary(`I ${scenario}`);

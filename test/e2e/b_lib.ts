@@ -5,8 +5,10 @@ import { Cbuf_AddText, Cbuf_Execute, Cmd_Exists } from "../../src/common/cmd";
 import { Cvar_FindVar, Cvar_VariableString, Cvar_VariableValue } from "../../src/common/cvar";
 import { Key_Event, keyState, keybindings, Key_KeynumToString, KeydestT } from "../../src/client/keys";
 import { conState, con_text } from "../../src/client/console";
+import * as common from "../../src/common/common";
 import * as consoleMod from "../../src/client/console";
 import { MStateT } from "../../src/client/menu";
+import { classicArgv, homedirArgs } from "./q1data";
 
 export const results: Array<{ name: string; pass: boolean; note: string }> = [];
 
@@ -16,8 +18,29 @@ export function check(name: string, pass: boolean, note = ""): boolean {
   return pass;
 }
 
+/*
+Which `-game` directory this driver writes into. Every b_s*.ts scenario spells
+`-game e2e_b` in its own argv, and B_GAME overrides that value: shot() below
+deletes every `quake*.pcx`/`.tga` it does not recognise while looking for the
+one it just took, so two family-B drivers sharing one directory delete each
+other's screenshots out from under them. The manifest gives every driver that
+runs concurrently its own B_GAME; the ones that deliberately hand config.cfg
+from one to the next (b_s3_bind -> b_s3b_quit -> b_s3c_reread) share one and
+are serialised by the runner's `lock` instead.
+
+The `-homedir` boot() adds is what keeps that directory in the scratch tree
+rather than the retail install (see q1data.ts's homedirArgs), and gamedir()
+below reads the live com_gamedir rather than rebuilding the path, so a
+screenshot is looked for wherever the engine actually put it.
+*/
+export const GAME = process.env.B_GAME ?? "e2e_b";
+
 export function boot(args: string[]): void {
-  Sys_Main_Init(["quake", ...args]);
+  const argv = [...args];
+  const i = argv.indexOf("-game");
+  if (i >= 0 && i + 1 < argv.length) argv[i + 1] = GAME;
+  else argv.push("-game", GAME);
+  Sys_Main_Init(classicArgv(["quake", ...homedirArgs(GAME), ...argv]));
 }
 
 export function frames(n = 1, dt = 0.05): void {
@@ -91,22 +114,36 @@ export function asMState(v: MStateT): MStateT {
   return v;
 }
 
+/*
+Ends the driver. Every test/e2e driver reports through the same two lines the
+runner (test/e2e/run_all.ts) reads -- the per-assertion `[PASS]`/`[FAIL]`
+lines check() already prints, and one final `RESULT <pass> <fail>` -- and
+exits non-zero when anything failed, per .orch/briefs/E2E-COMMON.md's driver
+contract. The exit happens here rather than at each call site so a driver
+that bails out early cannot report green by falling through to its own
+trailing `process.exit(0)`.
+*/
 export function summary(label: string): void {
   const bad = results.filter((r) => !r.pass);
   console.log(`\n===SUMMARY ${label}=== ${results.length - bad.length}/${results.length} passed`);
   for (const r of bad) console.log(`  FAIL: ${r.name} :: ${r.note}`);
+  console.log(`RESULT ${results.length - bad.length} ${bad.length}`);
+  process.exit(bad.length > 0 ? 1 : 0);
 }
 
 // ---- screenshots ---------------------------------------------------------
 import { readdirSync, copyFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
-import { Q1TS_DATA } from "./q1data";
 
-export const GAMEDIR = `${Q1TS_DATA}/e2e_b`;
+/** The engine's live writable game directory (com_gamedir), not a guess at it. */
+export function gamedir(): string {
+  return common.com_gamedir;
+}
 export const SHOTDIR = `${process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests"}/bshots`;
 
 function shotFiles(): Set<string> {
-  if (!existsSync(GAMEDIR)) return new Set();
-  return new Set(readdirSync(GAMEDIR).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
+  const dir = gamedir();
+  if (!existsSync(dir)) return new Set();
+  return new Set(readdirSync(dir).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
 }
 
 /** Runs `screenshot` and renames the new file to <SHOTDIR>/<name>.<ext>. */
@@ -120,8 +157,8 @@ export function shot(name: string): string | null {
     if (!before.has(f)) {
       const ext = f.slice(f.lastIndexOf("."));
       const dest = `${SHOTDIR}/${name}${ext}`;
-      copyFileSync(`${GAMEDIR}/${f}`, dest);
-      unlinkSync(`${GAMEDIR}/${f}`);
+      copyFileSync(`${gamedir()}/${f}`, dest);
+      unlinkSync(`${gamedir()}/${f}`);
       console.log(`  [shot] ${name}${ext}`);
       return dest;
     }

@@ -1,6 +1,6 @@
 // Scenario 1/2/3 driver: load a list of maps, screenshot each.
 // Usage: bun test/e2e/a_maps.ts --out <dir> --maps a,b,c [--vid gl] [--extra "-hipnotic"]
-import { boot, cmd, pump, waitInGame, shot, state, jlog, playerOrigin, BASE_MAPS } from "./a_lib";
+import { boot, cmd, pump, waitInGame, shot, state, jlog, playerOrigin, check, summary, BASE_MAPS } from "./a_lib";
 
 function arg(name: string, def = ""): string {
   const i = process.argv.indexOf(`--${name}`);
@@ -27,13 +27,21 @@ for (const m of maps) {
   const frames = await waitInGame(500);
   if (frames < 0) {
     jlog("map", { map: m, ok: false, reason: "never reached in-game", state: state(), ms: Date.now() - t0 });
+    check(`${m} (${vid}): client reaches the level`, false, `never reached in-game after 500 frames -- ${state()}`);
     cmd("disconnect");
     await pump(10);
     continue;
   }
+  check(`${m} (${vid}): client reaches the level`, true, `${frames} frames`);
   await pump(settle);
   const org = playerOrigin();
+  check(
+    `${m} (${vid}): the view entity has a real position`,
+    Number.isFinite(org[0]) && Number.isFinite(org[1]) && Number.isFinite(org[2]),
+    `origin=[${org.map((n) => Math.round(n)).join(",")}]`,
+  );
   const p = await shot(`${m}`, out, ext);
+  check(`${m} (${vid}): screenshot written`, p !== null, String(p));
   jlog("map", {
     map: m,
     ok: p !== null,
@@ -48,4 +56,4 @@ for (const m of maps) {
 }
 
 console.log("[A] DONE");
-process.exit(0);
+summary(`A maps ${vid}`);

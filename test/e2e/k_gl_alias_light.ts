@@ -22,11 +22,30 @@ import { R_LightPoint } from "../../src/ref_gl/gl_rlight";
 import { SHADEDOT_QUANT } from "../../src/ref_soft/anorm_dots";
 import { qglHolder, type QGL } from "../../src/ref_gl/qgl";
 import { readdirSync, copyFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
-import { Q1TS_DATA } from "./q1data";
+import { Q1TS_DATA, classicArgv, homedirArgs } from "./q1data";
+import { com_gamedir } from "../../src/common/common";
 
 const BASEDIR = Q1TS_DATA;
-const GAMEDIR = `${BASEDIR}/${process.env.K_GAME ?? "e2e_k"}`;
-const SHOTDIR = process.env.K_SHOTDIR ?? "/tmp/k_shots";
+const GAME = process.env.K_GAME ?? "e2e_k";
+const SHOTDIR = process.env.K_SHOTDIR ?? `${process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests"}/k_shots`;
+
+/** The engine's live writable game directory (com_gamedir under -homedir). */
+function gamedir(): string {
+  return com_gamedir;
+}
+
+const results: Array<{ name: string; pass: boolean; note: string }> = [];
+function check(name: string, pass: boolean, note = ""): void {
+  results.push({ name, pass, note });
+  console.log(`[${pass ? "PASS" : "FAIL"}] ${name}${note ? " :: " + note : ""}`);
+}
+function summary(label: string): never {
+  const bad = results.filter((r) => !r.pass);
+  console.log(`\n===SUMMARY ${label}=== ${results.length - bad.length}/${results.length} passed`);
+  for (const r of bad) console.log(`  FAIL: ${r.name} :: ${r.note}`);
+  console.log(`RESULT ${results.length - bad.length} ${bad.length}`);
+  process.exit(bad.length > 0 ? 1 : 0);
+}
 
 const argv = process.argv.slice(2);
 const shotName = argv[0] ?? "k_gl";
@@ -41,10 +60,11 @@ function exec(text: string, n = 2): void {
 }
 
 function shotFiles(): Set<string> {
-  if (!existsSync(GAMEDIR)) return new Set<string>();
-  return new Set(readdirSync(GAMEDIR).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
+  const dir = gamedir();
+  if (!existsSync(dir)) return new Set<string>();
+  return new Set(readdirSync(dir).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
 }
-function shot(name: string): void {
+function shot(name: string): string | null {
   if (!existsSync(SHOTDIR)) mkdirSync(SHOTDIR, { recursive: true });
   const before = shotFiles();
   exec("screenshot", 2);
@@ -52,15 +72,16 @@ function shot(name: string): void {
   for (const f of shotFiles()) {
     if (before.has(f)) continue;
     const ext = f.slice(f.lastIndexOf("."));
-    copyFileSync(`${GAMEDIR}/${f}`, `${SHOTDIR}/${name}${ext}`);
-    unlinkSync(`${GAMEDIR}/${f}`);
+    copyFileSync(`${gamedir()}/${f}`, `${SHOTDIR}/${name}${ext}`);
+    unlinkSync(`${gamedir()}/${f}`);
     console.log(`  [shot] ${SHOTDIR}/${name}${ext}`);
-    return;
+    return `${SHOTDIR}/${name}${ext}`;
   }
   console.log(`  [shot] ${name}: NO FILE PRODUCED`);
+  return null;
 }
 
-Sys_Main_Init(["quake", "-basedir", BASEDIR, "-game", process.env.K_GAME ?? "e2e_k", ...engineArgs]);
+Sys_Main_Init(classicArgv(["quake", "-basedir", BASEDIR, ...homedirArgs(GAME), "-game", GAME, ...engineArgs]));
 frames(5);
 exec("disconnect", 3);
 exec(`map ${process.env.K_MAP ?? "e1m1"}`, 30);
@@ -189,5 +210,29 @@ if (real !== null) {
 
 console.log(`\nSHADEDOT_QUANT=${SHADEDOT_QUANT}`);
 frames(5);
-shot(shotName);
-process.exit(0);
+const shotPath = shot(shotName);
+
+check("the map loaded and the client is rendering", clState.cl_numvisedicts > 0, `cl_numvisedicts=${clState.cl_numvisedicts} levelname=${JSON.stringify(cl.levelname)}`);
+check("alias models are in view to light", rows.length > 0, `${rows.length} distinct .mdl entities`);
+{
+  // gl_rmain.c's clamps: ambientlight caps at 128, ambient+shade caps at 192,
+  // a player entity floors at 8, and the two flame models are pinned to 256.
+  const bad = rows.filter(
+    (r) =>
+      !Number.isFinite(r.ambient) ||
+      !Number.isFinite(r.shade) ||
+      (r.name !== "progs/flame.mdl" && r.name !== "progs/flame2.mdl" && (r.ambient > 128 || r.ambient + r.shade > 192)),
+  );
+  check(
+    "every alias entity's ambient/shadelight respects R_DrawAliasModel's clamps",
+    bad.length === 0,
+    bad.length === 0 ? `${rows.length} entities within ambient<=128, ambient+shade<=192` : bad.map((r) => `${r.name} ambient=${r.ambient} shade=${r.shade}`).join("; "),
+  );
+}
+if (real !== null) {
+  check("GL_DrawAliasFrame reached glColor3f over the measured frame", colors.length > 0, `n=${colors.length}`);
+  const outOfRange = colors.filter((c) => !Number.isFinite(c) || c < 0 || c > 1);
+  check("every shade value handed to glColor3f is a real 0..1 intensity", outOfRange.length === 0, outOfRange.length === 0 ? `n=${colors.length}` : `${outOfRange.length} of ${colors.length} outside 0..1, e.g. ${outOfRange[0]}`);
+}
+check("the driver wrote its screenshot", shotPath !== null, String(shotPath));
+summary(`K ${shotName}`);

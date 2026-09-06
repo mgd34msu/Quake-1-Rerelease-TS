@@ -153,7 +153,11 @@ for (let i = 0; i < N; i++) {
 const names = new Set(infos.map((i) => i.name));
 check("every seat signed on with a distinct name", names.size === N, `names=${JSON.stringify(infos.map((i) => i.name))}`);
 const colors = new Set(infos.map((i) => i.colors));
-check("every seat signed on with a distinct colour", colors.size === N, `colors=${JSON.stringify(infos.map((i) => i.colors))}`);
+// Under the re-release CTF progs a player's colour IS their team and there
+// are two teams, so at most two distinct colours exist; the progs balance any
+// third seat onto one of them (F10). Classic deathmatch keeps one per seat.
+const distinctColours = tree === "rerelease" ? Math.min(N, 2) : N;
+check(`every seat signed on with a distinct colour (${distinctColours} expected)`, colors.size === distinctColours, `colors=${JSON.stringify(infos.map((i) => i.colors))}`);
 
 // ---- viewports: non-blank, and distinct from each other --------------------
 //
@@ -272,16 +276,15 @@ if (engineAlive) {
   if (engineAlive) {
     const healthAfter = Array.from({ length: N }, (_, i) => seatHealth(i));
     const victimAfter = seatServerInfo(victim);
-    // DEFECT (observed on a classic dm4, 2-seat GL run): `kill` issued
-    // against seat 1 did not reduce that seat's health at all -- the
-    // console instead printed "player 2 suicides" TWICE, then "Client
-    // player 2 removed" / "player 2 left the game with -2 frags": the
-    // command dropped that seat's whole connection instead of just killing
-    // its character. `victimAfter.active` below distinguishes the two
-    // outcomes in the failure note.
+    // QuakeC's ClientKill respawns the player in the same frame
+    // (respawn() -> PutClientInServer), so health reads full again by the
+    // time the next frame is observed, in a one-seat game too; the "player
+    // N suicides" line appears once per seat because every seat's console
+    // shares one buffer (F10). What must hold: the seat stays connected and
+    // came back at full health, and no other seat was touched.
     check(
-      `seat ${victim}: HUD health dropped after 'kill' on that seat alone (DEFECT if red and victimActive=false: kill disconnected the seat instead of killing it)`,
-      healthAfter[victim] <= 0,
+      `seat ${victim}: 'kill' on that seat alone keeps its connection and respawns it at full health`,
+      victimAfter.active && healthAfter[victim] === 100,
       `before=${healthBefore[victim]} after=${healthAfter[victim]} victimActive=${victimAfter.active} victimInfo=${JSON.stringify(victimAfter)}`,
     );
     for (let i = 0; i < N; i++) {

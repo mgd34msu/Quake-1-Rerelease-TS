@@ -19,13 +19,36 @@ interface Scenario {
   dt?: number;
 }
 
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Narrows the scenario JSON at the boundary instead of asserting its shape. */
+function parseScenario(raw: unknown, path: string): Scenario {
+  if (!isRecord(raw)) throw new Error(`${path}: top level is not an object`);
+  const argv = raw.argv;
+  if (!Array.isArray(argv) || !argv.every((x) => typeof x === "string")) throw new Error(`${path}: "argv" must be an array of strings`);
+  const timelineRaw = raw.timeline;
+  if (!Array.isArray(timelineRaw)) throw new Error(`${path}: "timeline" must be an array`);
+  const timeline: TimelineEntry[] = [];
+  for (const e of timelineRaw) {
+    if (!isRecord(e) || typeof e.tSec !== "number" || typeof e.cmd !== "string") throw new Error(`${path}: bad timeline entry ${JSON.stringify(e)}`);
+    timeline.push({ tSec: e.tSec, cmd: e.cmd });
+  }
+  const durationSec = raw.durationSec;
+  if (typeof durationSec !== "number") throw new Error(`${path}: "durationSec" must be a number`);
+  const dtRaw = raw.dt;
+  const dt = dtRaw === undefined ? undefined : typeof dtRaw === "number" ? dtRaw : undefined;
+  return { argv: [...argv], timeline, durationSec, dt };
+}
+
 async function main(): Promise<void> {
   const scenarioPath = process.argv[2];
   if (!scenarioPath) {
     console.error("usage: bun c_harness_qw.ts <scenario.json>");
     process.exit(1);
   }
-  const scenario = JSON.parse(await Bun.file(scenarioPath).text()) as Scenario;
+  const scenario = parseScenario(JSON.parse(await Bun.file(scenarioPath).text()), scenarioPath);
   const dt = scenario.dt ?? 0.05;
 
   Sys_Main_Init(["qwcl", ...scenario.argv]);

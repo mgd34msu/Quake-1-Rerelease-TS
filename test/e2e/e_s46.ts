@@ -131,7 +131,8 @@ try {
   const m = sv.mark();
   sv.send("status");
   await pump(1800);
-  check("4.2 the server shows the connection as a spectator", /\(SPECTATOR\)|spectator|^\s*S\s/im.test(sv.since(m)), sv.since(m).replace(/\n/g, " | ").slice(-220));
+  // SV_Status_f marks a spectator by appending " (s)" to its status row.
+  check("4.2 the server shows the connection as a spectator", /\(s\)/.test(sv.since(m)), sv.since(m).replace(/\n/g, " | ").slice(-220));
 }
 {
   // a real player to track

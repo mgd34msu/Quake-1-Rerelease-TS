@@ -21,6 +21,18 @@ function svStatus(): Promise<string> {
   return pump(1500).then(() => sv.since(m));
 }
 
+/*
+SV_SetPlayer (sv_ccmds.c) looks a client up by USERID, and svs.lastuserid
+counts up across every connection -- this scenario disconnects and reconnects
+before it ever asks, so the id is never 1. `status`'s own table is where the
+current one is written: "%5i %6i " frags then userid, ahead of the address.
+*/
+async function svUserid(): Promise<string> {
+  const t = await svStatus();
+  const m = /^\s*-?\d+\s+(\d+)\s+\d+\.\d+\.\d+\.\d+/m.exec(t);
+  return m !== null ? m[1] : "1";
+}
+
 // ---- connect / disconnect / reconnect -------------------------------------
 await bootClient([]);
 await pump(600);
@@ -49,7 +61,7 @@ await pump(1200);
 {
   await execPump("team red", 1200);
   const m = sv.mark();
-  await svc("user 1", 1200);
+  await svc(`user ${await svUserid()}`, 1200);
   const t = sv.since(m);
   check("2.5 `team red` reaches the server userinfo", /team\s+red/.test(t), t.replace(/\n/g, " | ").slice(0, 220));
 }
@@ -57,14 +69,14 @@ await pump(1200);
   await execPump("topcolor 4", 800);
   await execPump("bottomcolor 12", 1200);
   const m = sv.mark();
-  await svc("user 1", 1200);
+  await svc(`user ${await svUserid()}`, 1200);
   const t = sv.since(m);
   check("2.6 topcolor/bottomcolor reach the server userinfo", /topcolor\s+4/.test(t) && /bottomcolor\s+12/.test(t), t.replace(/\n/g, " | ").slice(0, 240));
 }
 {
   await execPump("color 2 3", 1200);
   const m = sv.mark();
-  await svc("user 1", 1200);
+  await svc(`user ${await svUserid()}`, 1200);
   const t = sv.since(m);
   check("2.7 `color 2 3` sets both colors", /topcolor\s+2/.test(t) && /bottomcolor\s+3/.test(t), t.replace(/\n/g, " | ").slice(0, 240));
 }
@@ -77,13 +89,14 @@ await pump(1200);
 {
   await execPump("setinfo foo bar", 1200);
   const m = sv.mark();
-  await svc("user 1", 1200);
+  await svc(`user ${await svUserid()}`, 1200);
   const t = sv.since(m);
   check("2.9 `setinfo foo bar` reaches the server userinfo", /foo\s+bar/.test(t), t.replace(/\n/g, " | ").slice(0, 240));
 
   const cm = conMark();
   await execPump("fullinfo", 900);
-  check("2.10 `fullinfo` with no args prints a usage line", conSince(cm).some((l) => /usage/i.test(l)), conSince(cm).join(" | ").slice(0, 160));
+  // QW's CL_FullInfo_f prints its own one-line form, not the word "usage".
+  check("2.10 `fullinfo` with no args prints its usage line", conSince(cm).some((l) => /fullinfo <complete info string>/.test(l)), conSince(cm).join(" | ").slice(0, 160));
 }
 
 // ---- users / user / version ----------------------------------------------
@@ -221,13 +234,13 @@ await pump(1200);
 {
   await execPump("msg 3", 1200);
   const m = sv.mark();
-  await svc("user 1", 1200);
+  await svc(`user ${await svUserid()}`, 1200);
   check("2.29 `msg 3` reaches the server userinfo", /msg\s+3/.test(sv.since(m)), sv.since(m).replace(/\n/g, " | ").slice(0, 200));
 }
 {
   await execPump("noaim 1", 1200);
   const m = sv.mark();
-  await svc("user 1", 1200);
+  await svc(`user ${await svUserid()}`, 1200);
   check("2.30 `noaim 1` reaches the server userinfo", /noaim\s+1/.test(sv.since(m)), sv.since(m).replace(/\n/g, " | ").slice(0, 200));
 }
 

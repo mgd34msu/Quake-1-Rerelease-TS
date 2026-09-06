@@ -1,0 +1,29 @@
+{
+  "family": "d",
+  "drivers": [
+    {
+      "name": "d_s1_listen",
+      "cmd": ["bun", "test/e2e/d_s1.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "binary"],
+      "lock": "d_ports"
+    },
+    {
+      "name": "d_s2_dedicated",
+      "cmd": ["bun", "test/e2e/d_s2.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "binary"],
+      "lock": "d_ports"
+    },
+    {
+      "name": "d_s5_loopback",
+      "cmd": ["bun", "test/e2e/d_s5.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 120,
+      "needs": ["classic", "binary"],
+      "lock": "d_ports"
+    }
+  ]
+}

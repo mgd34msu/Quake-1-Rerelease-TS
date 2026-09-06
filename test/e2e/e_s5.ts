@@ -35,14 +35,30 @@ await pump(2000);
 
 // ---- rerecord -------------------------------------------------------------
 {
+  /*
+  QW/client/cl_demo.c's CL_ReRecord_f opens the file, prints "recording to
+  <name>.qwd.", sets cls.demorecording = true and only THEN calls
+  CL_Disconnect() -- whose `if (cls.demorecording) CL_Stop_f();` closes the
+  demo again before a single frame of the reconnected session is written.
+  The file is therefore a header and nothing else, and recording is off by
+  the time the client is back in the game. That is the stock QuakeWorld
+  behaviour of this command, reproduced here exactly, so it is what this
+  check asserts.
+  */
   const cm = conMark();
   await execPump("rerecord e2e2", 3000);
   const back = await pumpUntil(() => cls.state === CA_ACTIVE, 25000);
   await pump(4000);
-  await execPump("stop", 1500);
+  const seen = conSince(cm).join(" | ");
   const path = `${BASEDIR}/qw/e2e2.qwd`;
   const size = existsSync(path) ? statSync(path).size : -1;
-  check("5.4 `rerecord` reconnects and records a second demo", back && size > 500, `reconnected=${back} size=${size} client="${conSince(cm).join(" | ").slice(0, 200)}"`);
+  check("5.4 `rerecord` reconnects to the same server", back, `reconnected=${back} cls.state=${cls.state} client="${seen.slice(0, 200)}"`);
+  check("5.4b `rerecord` opens the named demo file", size >= 0 && /recording to .*e2e2\.qwd/.test(seen), `size=${size} client="${seen.slice(0, 220)}"`);
+  check(
+    "5.4c CL_Disconnect closes it again immediately (stock QW: recording is off after the reconnect)",
+    !cls.demorecording && /Completed demo/.test(seen),
+    `demorecording=${cls.demorecording} client="${seen.slice(0, 220)}"`,
+  );
 }
 
 sv.kill(9);

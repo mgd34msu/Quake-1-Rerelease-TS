@@ -1,0 +1,58 @@
+{
+  "family": "l",
+  "drivers": [
+    {
+      "name": "l_resize_soft",
+      "cmd": [
+        "xvfb-run",
+        "-a",
+        "-s",
+        "-screen 0 1280x720x24",
+        "env",
+        "SDL_VIDEODRIVER=x11",
+        "SDL_AUDIODRIVER=dummy",
+        "Q1TS_DATA=${Q1TS_DATA}",
+        "Q1TS_SCRATCH=${Q1TS_SCRATCH}",
+        "Q1TS_HOMEDIR=${Q1TS_HOMEDIR}",
+        "bun",
+        "test/e2e/l_resize.ts",
+        "soft"
+      ],
+      "env": {
+        "L_GAME": "e2e_l_soft",
+        "L_SHOTDIR": "${Q1TS_SCRATCH}/e2e/l/soft"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "l_resize_gl",
+      "cmd": [
+        "xvfb-run",
+        "-a",
+        "-s",
+        "-screen 0 1280x720x24",
+        "env",
+        "SDL_VIDEODRIVER=x11",
+        "SDL_AUDIODRIVER=dummy",
+        "Q1TS_DATA=${Q1TS_DATA}",
+        "Q1TS_SCRATCH=${Q1TS_SCRATCH}",
+        "Q1TS_HOMEDIR=${Q1TS_HOMEDIR}",
+        "bun",
+        "test/e2e/l_resize.ts",
+        "gl"
+      ],
+      "env": {
+        "L_GAME": "e2e_l_gl",
+        "L_SHOTDIR": "${Q1TS_SCRATCH}/e2e/l/gl"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    }
+  ]
+}

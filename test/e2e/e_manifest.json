@@ -1,0 +1,101 @@
+{
+  "family": "e",
+  "drivers": [
+    {
+      "name": "e_s0_smoke",
+      "cmd": ["bun", "test/e2e/e_s0.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "qw", "binary"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s1_svconsole",
+      "cmd": ["bun", "test/e2e/e_s1.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["classic", "qw", "binary"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s1b_svconsole_diag",
+      "cmd": ["bun", "test/e2e/e_s1b.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["classic", "qw", "binary"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s1c_localinfo",
+      "cmd": ["bun", "test/e2e/e_s1c.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 180,
+      "needs": ["classic", "qw", "binary"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s2_clcommands",
+      "cmd": ["bun", "test/e2e/e_s2.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 400,
+      "needs": ["classic", "qw", "binary", "long"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s2b_clcvars",
+      "cmd": ["bun", "test/e2e/e_s2b.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["classic", "qw", "binary"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s3_movement",
+      "cmd": ["bun", "test/e2e/e_s3.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["classic", "qw", "binary"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s46_spectator_twoclients",
+      "cmd": ["bun", "test/e2e/e_s46.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 400,
+      "needs": ["classic", "qw", "binary"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s5_demos",
+      "cmd": ["bun", "test/e2e/e_s5.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["classic", "qw", "binary"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s7_allmaps",
+      "cmd": ["bun", "test/e2e/e_s7.ts"],
+      "env": { "SDL_VIDEODRIVER": "offscreen" },
+      "timeoutSec": 600,
+      "needs": ["classic", "qw", "gl", "binary", "long"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s8_robustness",
+      "cmd": ["bun", "test/e2e/e_s8.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 400,
+      "needs": ["classic", "qw", "binary", "long"],
+      "lock": "qwclient"
+    },
+    {
+      "name": "e_s9_soak",
+      "cmd": ["bun", "test/e2e/e_s9.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy" },
+      "timeoutSec": 400,
+      "needs": ["classic", "qw", "binary", "long"],
+      "lock": "qwclient"
+    }
+  ]
+}

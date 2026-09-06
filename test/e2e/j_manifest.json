@@ -1,0 +1,34 @@
+{
+  "family": "j",
+  "drivers": [
+    {
+      "name": "j_ambient",
+      "cmd": [
+        "bun",
+        "test/e2e/j_ambient.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "audio"
+      ]
+    },
+    {
+      "name": "j_intermission",
+      "cmd": [
+        "bun",
+        "test/e2e/j_intermission.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    }
+  ]
+}

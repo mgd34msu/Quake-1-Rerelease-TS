@@ -1,0 +1,19 @@
+{
+  "family": "h",
+  "drivers": [
+    {
+      "name": "h_mouse_capture",
+      "cmd": [
+        "bun",
+        "test/e2e/h_mouse_capture.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 180,
+      "needs": [
+        "classic"
+      ]
+    }
+  ]
+}

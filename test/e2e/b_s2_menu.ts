@@ -115,7 +115,13 @@ shot("m_setup");
   for (const ch of "bee") tap(ch.charCodeAt(0));
   frames(1);
   console.log("  setup_myname now:", JSON.stringify(menuState.setup_myname));
-  // colours: cursor 2 = top colour, 3 = bottom colour
+  // colours: cursor 2 = top colour, 3 = bottom colour. M_Menu_Setup_f seeds
+  // setup_top/setup_bottom from the CURRENT _cl_color, which this family's
+  // own e2e_b/config.cfg carries over from the previous run -- so the
+  // expected value is three arrow presses on from whatever was loaded, not
+  // an absolute 0x21.
+  const topBefore = menuState.setup_top;
+  const bottomBefore = menuState.setup_bottom;
   menuState.setup_cursor = 2;
   tap(K_RIGHTARROW);
   tap(K_RIGHTARROW);
@@ -123,12 +129,16 @@ shot("m_setup");
   tap(K_RIGHTARROW);
   frames(1);
   console.log(`  setup_top=${menuState.setup_top} setup_bottom=${menuState.setup_bottom}`);
+  const wantTop = (topBefore + 2) % 14;
+  const wantBottom = (bottomBefore + 1) % 14;
+  check("Setup right-arrow advances the top colour", menuState.setup_top === wantTop, `setup_top ${topBefore} -> ${menuState.setup_top}, want ${wantTop}`);
+  check("Setup right-arrow advances the bottom colour", menuState.setup_bottom === wantBottom, `setup_bottom ${bottomBefore} -> ${menuState.setup_bottom}, want ${wantBottom}`);
   // accept (cursor 4 = "Accept Changes")
   menuState.setup_cursor = 4;
   enter();
   frames(4);
   check("Setup name edit reaches _cl_name", Cvar_VariableString("_cl_name") === "bee", `before=${before} now=${Cvar_VariableString("_cl_name")}`);
-  check("Setup colours reach _cl_color", Cvar_VariableValue("_cl_color") === 2 * 16 + 1, `_cl_color=${Cvar_VariableValue("_cl_color")}`);
+  check("Setup colours reach _cl_color", Cvar_VariableValue("_cl_color") === wantTop * 16 + wantBottom, `_cl_color=${Cvar_VariableValue("_cl_color")} want=${wantTop * 16 + wantBottom}`);
 }
 shot("m_setup_after");
 
