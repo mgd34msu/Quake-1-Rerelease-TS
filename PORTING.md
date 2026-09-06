@@ -205,6 +205,11 @@ add beyond the header.
 
 ## QuakeC virtual machine
 
+Since U1 (2026-09-06) there is one VM core under `src/progs/*_core.ts` with
+host profiles in `src/progs/profiles/`; `src/progs/{progs,pr_edict,pr_exec,progdefs}.ts`
+and `src/qw/server/pr_*.ts` are bindings. The conventions below still
+describe the data shapes the core keeps.
+
 This port runs `progs.dat` bytecode exactly as WinQuake does. No QuakeC is
 transliterated. `../qsrc/quake/progs106/progs.dat` (version 6, CRC 5927, the retail
 build) is the test fixture; `progs106/*.qc` is reference for builtin semantics.

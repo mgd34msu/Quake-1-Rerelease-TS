@@ -118,9 +118,11 @@ needed peer game-API bindings, this engine needs:
 
 - **One QuakeC VM** (`src/progs`) with a **host profile** selecting the
   builtin table and system-defs CRC: `nq` (79 numbered builtins, CRC 5927)
-  or `qw` (QW's table, CRC 54730). The seed's two hand-ported VM copies
-  (`src/progs` and `src/qw/server/pr_*`) are unified first, so every
-  extension is written once. The QW-only builtins (`logfrag`, `infokey`,
+  or `qw` (QW's table, CRC 54730). Landed 2026-09-06 (U1): the core is
+  `src/progs/{progs_core,pr_edict_core,pr_exec_core}.ts` plus
+  `progdefs_layout.ts` (one union field table, accessors generated onto
+  prototypes); `src/progs/profiles/{profile,nq,qw}.ts` are the profiles;
+  the old module paths are thin bindings that keep every export. The QW-only builtins (`logfrag`, `infokey`,
   `stof`, `multicast`) and NQ-only `particle` live in the profile tables.
 - **Name-bound builtins**: after load, every function with
   `first_statement == 0 && parm_start == 0 && locals == 0` is looked up by
