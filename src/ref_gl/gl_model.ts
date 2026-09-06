@@ -248,9 +248,10 @@ import { d_8to24table } from "../client/vid";
 import { ALIAS_BASE_SIZE_RATIO, GL_MAX_SURFACE_EXTENTS, MAX_LBM_HEIGHT, glState } from "./glquake";
 import { GL_LINEAR, GL_LINEAR_MIPMAP_NEAREST } from "./qgl";
 import {
+  ALIAS_TRIS_CEILING,
+  ALIAS_VERTS_CEILING,
   AliashdrT,
   MAX_SKINS,
-  MAXALIASVERTS,
   MaliasframedescT,
   MspriteT,
   MspriteframeT,
@@ -262,7 +263,7 @@ import {
 // unit: see this file's header note above.
 import { GL_LoadTexture } from "./gl_draw";
 import { GL_SubdivideSurface, R_InitSky } from "./gl_warp";
-import { GL_MakeAliasModelDisplayLists } from "./gl_mesh";
+import { GL_MakeAliasModelDisplayLists, used } from "./gl_mesh";
 // U29 (concurrent with U071-U075): the re-release MD5 replacement-model
 // attach hook -- see gl_md5.ts's own header.
 import { attachMd5GlReplacementIfAny } from "./gl_md5";
@@ -803,11 +804,21 @@ export function Mod_LoadAliasModel(mod: ModelT, buffer: Uint8Array): void {
 
   if (hdr.numverts <= 0) Sys_Error("model %s has no vertices", mod.name);
 
-  if (hdr.numverts > MAXALIASVERTS) Sys_Error("model %s has too many vertices", mod.name);
+  if (hdr.numverts > ALIAS_VERTS_CEILING) Sys_Error("model %s has too many vertices (%d, limit %d)", mod.name, hdr.numverts, ALIAS_VERTS_CEILING);
 
   hdr.numtris = pinmodel.numtris;
 
   if (hdr.numtris <= 0) Sys_Error("model %s has no triangles", mod.name);
+
+  if (hdr.numtris > ALIAS_TRIS_CEILING) Sys_Error("model %s has too many triangles (%d, limit %d)", mod.name, hdr.numtris, ALIAS_TRIS_CEILING);
+
+  // gl_mesh.ts's `used` is indexed straight by triangle number, and a typed
+  // array drops an out-of-range store silently instead of trapping, so a
+  // model past its length would build a corrupt display list rather than
+  // fail. Both ceilings above are far higher than that array, so say so here
+  // instead.
+  if (hdr.numtris > used.length)
+    Sys_Error("model %s has %d triangles, more than the display list builder's %d", mod.name, hdr.numtris, used.length);
 
   hdr.numframes = pinmodel.numframes;
   const numframes = hdr.numframes;

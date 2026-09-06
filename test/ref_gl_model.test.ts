@@ -71,7 +71,7 @@ import {
 import { MplaneT } from "../src/common/mathlib";
 import { COM_CheckRegistered, COM_InitArgv, COM_InitFilesystem, pop } from "../src/common/common";
 import { d_8to24table } from "../src/client/vid";
-import { AliashdrT, MaliasframedescT, MspriteT, MspriteframeT, MspritegroupT } from "../src/ref_gl/gl_model_types";
+import { ALIAS_TRIS_CEILING, ALIAS_VERTS_CEILING, AliashdrT, MaliasframedescT, MspriteT, MspriteframeT, MspritegroupT } from "../src/ref_gl/gl_model_types";
 import {
   Mod_FloodFillSkin,
   Mod_LoadAliasFrame,
@@ -88,7 +88,9 @@ import {
   notexture,
   pheader,
   poseverts,
+  stverts,
   textureLoaded,
+  triangles,
 } from "../src/ref_gl/gl_model";
 import * as glDraw from "../src/ref_gl/gl_draw";
 import * as glWarp from "../src/ref_gl/gl_warp";
@@ -209,6 +211,77 @@ function buildFaceLump(planenum: number, side: number, firstedge: number, numedg
   w.u8(255);
   w.u8(255);
   w.i32(-1);
+  return w.bytes;
+}
+
+// An .mdl of an arbitrary size: bsp_builder.ts's buildMdl is fixed at 3
+// vertices and 1 triangle. `numvertsHeader`/`numtrisHeader` write a count into
+// the header that the body does not back, for the rejection cases -- the
+// loader refuses those before it reads a single stvert or triangle.
+function buildSizedMdl(
+  numverts: number,
+  numtris: number,
+  options: { numvertsHeader?: number; numtrisHeader?: number } = {},
+): Uint8Array {
+  const skinwidth = 4;
+  const skinheight = 4;
+  const numframes = 1;
+  const headerSize = 84;
+  const skinSize = 4 + skinwidth * skinheight;
+  const frameSize = 4 + 24 + numverts * 4;
+
+  const w = new Writer(headerSize + skinSize + numverts * 12 + numtris * 16 + numframes * frameSize);
+
+  w.i32(0x4f504449); // "IDPO"
+  w.i32(6); // ALIAS_VERSION
+  w.f32(1);
+  w.f32(1);
+  w.f32(1); // scale
+  w.f32(0);
+  w.f32(0);
+  w.f32(0); // scale_origin
+  w.f32(10); // boundingradius
+  w.f32(0);
+  w.f32(0);
+  w.f32(0); // eyeposition
+  w.i32(1); // numskins
+  w.i32(skinwidth);
+  w.i32(skinheight);
+  w.i32(options.numvertsHeader ?? numverts);
+  w.i32(options.numtrisHeader ?? numtris);
+  w.i32(numframes);
+  w.i32(0); // ST_SYNC
+  w.i32(0); // flags
+  w.f32(1); // size
+
+  w.i32(0); // ALIAS_SKIN_SINGLE
+  for (let i = 0; i < skinwidth * skinheight; i++) w.u8(i & 0xff);
+
+  for (let i = 0; i < numverts; i++) {
+    w.i32(0); // onseam
+    w.i32(i); // s
+    w.i32(i); // t
+  }
+
+  for (let i = 0; i < numtris; i++) {
+    w.i32(1); // facesfront
+    w.i32(i % numverts);
+    w.i32((i + 1) % numverts);
+    w.i32((i + 2) % numverts);
+  }
+
+  for (let f = 0; f < numframes; f++) {
+    w.i32(0); // ALIAS_SINGLE
+    for (let i = 0; i < 8; i++) w.u8(0); // bboxmin/bboxmax trivertx_t
+    w.chars(`frame${f}`, 16);
+    for (let i = 0; i < numverts; i++) {
+      w.u8(i & 0xff);
+      w.u8(i & 0xff);
+      w.u8(i & 0xff);
+      w.u8(0); // lightnormalindex
+    }
+  }
+
   return w.bytes;
 }
 
@@ -662,6 +735,69 @@ describe("Mod_LoadAliasModel (direct)", () => {
     const mod = new ModelT();
     loadState.loadname = "test";
     expect(() => Mod_LoadAliasModel(mod, buffer)).toThrow(SysError);
+  });
+});
+
+// gl_model.h's MAXALIASVERTS/MAXALIASTRIS were the fixed C arrays' bounds as
+// well as the loader's reject thresholds. stverts/triangles are built to the
+// model's own counts here, so what is left is a sanity ceiling -- and
+// GLQuake's 1024 was below the software renderer's own 2000 and below the
+// re-release's data (mg3's progs/player_hanging.mdl has 1912 vertices, and
+// progs/angel_statue_big.mdl 1323 vertices / 1923 triangles, neither of which
+// the GL renderer could load).
+describe("Mod_LoadAliasModel vertex and triangle ceilings", () => {
+  test("a 1912-vertex model past GLQuake's 1024 loads, with every stvert and triangle read", () => {
+    const mod = new ModelT();
+    mod.name = "progs/player_hanging.mdl";
+    loadState.loadname = "player_hanging";
+
+    Mod_LoadAliasModel(mod, buildSizedMdl(1912, 996));
+
+    const hdr = mod.cache.data;
+    if (!(hdr instanceof AliashdrT)) throw new Error("expected an AliashdrT in mod.cache.data");
+    expect(hdr.numverts).toBe(1912);
+    expect(hdr.numtris).toBe(996);
+    expect(stverts).toHaveLength(1912);
+    expect(triangles).toHaveLength(996);
+    // the s/t and vertindex writers below number each entry, so the last one
+    // proves the whole run was walked at the right stride
+    expect(stverts[1911].s).toBe(1911);
+    expect(triangles[995].vertindex[0]).toBe(995 % 1912);
+    expect(hdr.frames).toHaveLength(1);
+    expect(poseverts[0]).toHaveLength(1912);
+  });
+
+  test("a model past the vertex ceiling is still a Sys_Error naming the limit", () => {
+    const mod = new ModelT();
+    mod.name = "progs/huge.mdl";
+    loadState.loadname = "huge";
+    // built with a header count only -- the loader rejects before it reads
+    // any of the (absent) stvert bytes
+    const buffer = buildSizedMdl(1, 1, { numvertsHeader: ALIAS_VERTS_CEILING + 1 });
+    expect(() => Mod_LoadAliasModel(mod, buffer)).toThrow(SysError);
+    expect(() => Mod_LoadAliasModel(mod, buffer)).toThrow(/has too many vertices \(65537, limit 65536\)/);
+  });
+
+  test("a model past the triangle ceiling is a Sys_Error of its own", () => {
+    const mod = new ModelT();
+    mod.name = "progs/huge.mdl";
+    loadState.loadname = "huge";
+    const buffer = buildSizedMdl(1, 1, { numtrisHeader: ALIAS_TRIS_CEILING + 1 });
+    expect(() => Mod_LoadAliasModel(mod, buffer)).toThrow(/has too many triangles \(65537, limit 65536\)/);
+  });
+
+  test("a model past gl_mesh.ts's `used` array is rejected rather than silently mis-meshed", () => {
+    // a typed array drops an out-of-range store instead of trapping, so
+    // without this check BuildTris would build a corrupt display list
+    const mod = new ModelT();
+    mod.name = "progs/manytris.mdl";
+    loadState.loadname = "manytris";
+    const overMesh = glMesh.used.length + 1;
+    expect(overMesh).toBeLessThan(ALIAS_TRIS_CEILING);
+    const buffer = buildSizedMdl(1, 1, { numtrisHeader: overMesh });
+    expect(() => Mod_LoadAliasModel(mod, buffer)).toThrow(
+      new RegExp(`has ${overMesh} triangles, more than the display list builder's ${glMesh.used.length}`),
+    );
   });
 });
 

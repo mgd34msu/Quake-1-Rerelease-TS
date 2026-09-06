@@ -132,6 +132,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- GL renderer: alias models are no longer capped at 1024 vertices (half of
+  GLQuake's own limit; mg3's statues and hanging players have up to 1912)
+  and the triangle count is checked too, both against a 65536 ceiling with
+  the count in the message; the texture upload scratch is sized from
+  `gl_max_size` instead of a fixed 1024x512, so the re-release's 1024x1024
+  skybox faces (mg1) upload. One shared `sky <name>` console command serves
+  both renderers (the software renderer had none). The mesh cache writer
+  creates the cache file's own directory, so a model under a `progs/`
+  subdirectory (mg3's `rogue/`) no longer aborts the GL boot.
 - Bots survive a `map` change: the roster (names, colours, skill) is kept
   across Host_ShutdownServer and re-seated on the next level; `bot_count`
   applies live and never removes a bot added with `addbot`; the connection

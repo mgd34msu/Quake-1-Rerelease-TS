@@ -48,6 +48,12 @@ fidelity requirement, since the classic engine has no skybox at all):
   src/lib/png.ts decoders and GL_Upload32, per the unit brief, rather than
   gl_sky.c's Image_LoadImage/TexMgr_LoadImage (a texture-manager this port
   does not have).
+- The `sky` console command gl_sky.c registers from Sky_Init is registered
+  once, for BOTH renderers, by src/client/sky_cmd.ts instead -- the same
+  shared-command shape src/client/fog_cmd.ts already uses for `fog`, and for
+  the same reason (this port links both renderers into one binary). See that
+  file's header for the one behavioural difference, in the argument-less
+  form's report.
 - `r_skyfog`'s effect (gl_sky.c: tint the flat-fill/box pass toward the fog
   color, and hide the slow sky entirely once `Fog_GetDensity()>0 &&
   skyfog>=1`) is ported as SkyTintColor's linear blend applied by
@@ -56,9 +62,7 @@ fidelity requirement, since the classic engine has no skybox at all):
   SkyTintColor's own comment.
 */
 
-import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv } from "../common/cmd";
 import { COM_LoadTempFile, COM_Parse, type ParseState } from "../common/common";
-import { Con_Printf } from "../client/console";
 import { decodeTGA } from "../lib/tga";
 import { decodePNG } from "../lib/png";
 import { r_refdef } from "../client/render";
@@ -287,22 +291,14 @@ export function Sky_NewMap(entities: string): void {
 
 /*
 =================
-Sky_SkyCommand_f
+Sky_Init
 
-the "sky" console command -- loads (or, with no argument, reports) the
-current skybox name, mirroring gl_sky.c's Sky_SkyCommand_f.
+Does NOT register a 'sky' console command: that is src/client/sky_cmd.ts's
+job, one shared command dispatching through the Renderer seam for both
+renderers (see that file's header). r_fastsky/r_skyalpha/r_skyfog are
+registered once, at module load, by src/common/render_cvars.ts -- see this
+file's import block above. Nothing is left for this to do, but gl_rmisc.ts's
+R_Init still calls it alongside Fog_Init, exactly as gl_rmisc.c does.
 =================
 */
-export function Sky_SkyCommand_f(): void {
-  if (Cmd_Argc() === 1) {
-    Con_Printf('"sky" is "%s"\n', skyState.name);
-    return;
-  }
-  Sky_LoadSkyBox(Cmd_Argv(1));
-}
-
-export function Sky_Init(): void {
-  Cmd_AddCommand("sky", Sky_SkyCommand_f);
-  // U44: r_fastsky/r_skyalpha/r_skyfog are registered once, at module load,
-  // by src/common/render_cvars.ts -- see this file's import block above.
-}
+export function Sky_Init(): void {}

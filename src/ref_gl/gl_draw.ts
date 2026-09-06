@@ -1357,10 +1357,18 @@ export function GL_MipMap8Bit(data: Uint8Array, width: number, height: number): 
   }
 }
 
-// gl_draw.c's `static unsigned scaled[1024*512]` -- sizeof(scaled)/4 elements.
-const UPLOAD32_SCRATCH_LIMIT = 1024 * 512;
-// gl_draw.c's `static unsigned char scaled[1024*512]` -- sizeof(scaled) bytes.
-const UPLOAD8_EXT_SCRATCH_LIMIT = 1024 * 512;
+// gl_draw.c uploaded through one fixed scratch buffer per path (`static
+// unsigned scaled[1024*512]`, `static unsigned char scaled[1024*512]`), so
+// half a megatexel was a hard refusal. Both `scaled` locals below are
+// allocated to the texture instead -- Ironwail's gl_texmgr.c sizes its own
+// upload buffer the same way -- which leaves gl_max_size, the clamp both
+// dimensions already pass through, as the only ceiling. The re-release needs
+// that: mg1's gfx/env/sky_horde2 faces are 1024x1024, twice the old buffer,
+// and horde2 could not load at all until the buffer followed the texture.
+function uploadTexelLimit(): number {
+  const max = gl_max_size.value | 0;
+  return max * max;
+}
 
 // U21 addition, no WinQuake counterpart: GL_EXT_texture_filter_anisotropic.
 // Only meaningful on a mipmapped texture (anisotropic filtering improves
@@ -1413,7 +1421,8 @@ export function GL_Upload32(data: Uint32Array, width: number, height: number, mi
   if (scaled_width > gl_max_size.value) scaled_width = gl_max_size.value | 0;
   if (scaled_height > gl_max_size.value) scaled_height = gl_max_size.value | 0;
 
-  if (scaled_width * scaled_height > UPLOAD32_SCRATCH_LIMIT) return Sys_Error("GL_LoadTexture: too big");
+  if (scaled_width * scaled_height > uploadTexelLimit())
+    return Sys_Error("GL_LoadTexture: too big (%dx%d past gl_max_size %d)", scaled_width, scaled_height, gl_max_size.value | 0);
 
   const samples = alpha ? gl_alpha_format : gl_solid_format;
 
@@ -1469,7 +1478,8 @@ export function GL_Upload8_EXT(data: Uint8Array, width: number, height: number, 
   if (scaled_width > gl_max_size.value) scaled_width = gl_max_size.value | 0;
   if (scaled_height > gl_max_size.value) scaled_height = gl_max_size.value | 0;
 
-  if (scaled_width * scaled_height > UPLOAD8_EXT_SCRATCH_LIMIT) return Sys_Error("GL_LoadTexture: too big");
+  if (scaled_width * scaled_height > uploadTexelLimit())
+    return Sys_Error("GL_LoadTexture: too big (%dx%d past gl_max_size %d)", scaled_width, scaled_height, gl_max_size.value | 0);
 
   texels += scaled_width * scaled_height;
 

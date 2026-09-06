@@ -34,7 +34,8 @@ import { glState } from "../src/ref_gl/glquake";
 import { GL_BLEND, GL_QUADS, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
 import { gl_max_size, gl_picmip } from "../src/ref_gl/gl_draw";
 import { Fog_ParseWorldspawn, Fog_Update } from "../src/ref_gl/gl_fog";
-import { Sky_DrawSkyBox, Sky_LoadSkyBox, Sky_NewMap, SkyActive, SkyTintColor, r_fastsky, r_skyalpha, r_skyfog } from "../src/ref_gl/gl_sky";
+import { Sky_DrawSkyBox, Sky_Init, Sky_LoadSkyBox, Sky_NewMap, SkyActive, SkyTintColor, r_fastsky, r_skyalpha, r_skyfog } from "../src/ref_gl/gl_sky";
+import { Cmd_Exists } from "../src/common/cmd";
 import { cl } from "../src/client/client";
 
 const rec = new QGLRecording();
@@ -319,6 +320,21 @@ describe("SkyTintColor", () => {
 });
 
 //============================================================================
+// Sky_Init no longer owns the `sky` console command
+//============================================================================
+
+describe("Sky_Init", () => {
+  test("registers no console command of its own -- src/client/sky_cmd.ts owns `sky` for both renderers", () => {
+    // Asserted as "does not change", not "is false": another suite in the
+    // same process may legitimately have imported src/client/sky_cmd.ts and
+    // registered the shared command already.
+    const before = Cmd_Exists("sky");
+    Sky_Init();
+    expect(Cmd_Exists("sky")).toBe(before);
+  });
+});
+
+//============================================================================
 // Guarded real-data test: mg1's real "sky_city" skybox from the re-release.
 //============================================================================
 
@@ -343,18 +359,24 @@ describe.skipIf(!HAVE_MG1)("mg1's real sky_city skybox (skipped when absent, e.g
     // appends the face suffix directly onto whatever name it's given, so the
     // worldspawn value already carries the trailing underscore and path.
     //
-    // The real faces are higher resolution than GL_Upload32's
-    // UPLOAD32_SCRATCH_LIMIT (1024*512 texels) allows through unclamped
-    // (gl_draw.ts, shared by every truecolor uploader, not sky-specific);
-    // gl_max_size downscales the request before that limit is checked, the
-    // same knob a real client's video options expose, so this clamps to a
-    // size the shared scratch buffer accepts while still exercising the
-    // real decode + upload pipeline end to end.
-    gl_max_size.value = 512;
+    // The real faces are 1024x1024, four times what gl_draw.c's fixed
+    // `static unsigned scaled[1024*512]` upload scratch would take. That
+    // buffer follows the texture now (see gl_draw.ts's uploadTexelLimit), so
+    // this loads at gl_max_size's own default and every face reaches
+    // qglTexImage2D at its full on-disk size.
+    gl_max_size.value = 1024;
+    rec.clear();
     Sky_LoadSkyBox("sky_city/sky_city_");
 
     expect(SkyActive()).toBe(true);
     expect(glState.texture_extension_number).toBe(906);
+
+    const uploads = rec.calls.filter((c) => c.name === "qglTexImage2D");
+    expect(uploads).toHaveLength(6);
+    for (const u of uploads) {
+      expect(u.args[3]).toBe(1024);
+      expect(u.args[4]).toBe(1024);
+    }
 
     Sky_LoadSkyBox("");
     setComSearchpaths(null);

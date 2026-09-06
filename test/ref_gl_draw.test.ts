@@ -59,7 +59,7 @@ entry to index `numgltextures` WITHOUT growing the count. That means:
     asserting the (incorrect) dedup premise.
 */
 
-import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { SysError } from "../src/platform/sys";
@@ -114,6 +114,8 @@ import {
   GL_Set2D,
   GL_Upload32,
   GL_Upload8,
+  gl_max_size,
+  gl_picmip,
 } from "../src/ref_gl/gl_draw";
 import { Test_Draw, Test_Init, Test_Spawn } from "../src/ref_gl/gl_test";
 
@@ -674,5 +676,73 @@ describe("gl_test.ts (WinQuake gl_test.c, wholly #ifdef GLTEST)", () => {
     expect(() => Test_Init()).not.toThrow();
     expect(() => Test_Spawn(zero)).not.toThrow();
     expect(() => Test_Draw()).not.toThrow();
+  });
+});
+
+// ===========================================================================
+// The 32-bit upload scratch follows the texture (F6/D5)
+// ===========================================================================
+
+// gl_draw.c uploaded through a fixed `static unsigned scaled[1024*512]` and
+// refused anything past it outright, which is what stopped mg1's 1024x1024
+// gfx/env/sky_horde2 faces from loading at all ("GL_LoadTexture: too big").
+// The buffer is now allocated to the texture, leaving gl_max_size -- which
+// both dimensions are already clamped to -- as the only ceiling.
+describe("GL_Upload32 texture size ceiling", () => {
+  const savedMaxSize = { string: gl_max_size.string, value: gl_max_size.value };
+  const savedPicmip = { string: gl_picmip.string, value: gl_picmip.value };
+
+  beforeEach(() => {
+    rec.clear();
+    gl_max_size.value = 1024;
+    gl_picmip.value = 0;
+  });
+
+  afterAll(() => {
+    gl_max_size.string = savedMaxSize.string;
+    gl_max_size.value = savedMaxSize.value;
+    gl_picmip.string = savedPicmip.string;
+    gl_picmip.value = savedPicmip.value;
+  });
+
+  test("a 1024x1024 texture uploads at full size -- twice the old fixed scratch", () => {
+    const data = new Uint32Array(1024 * 1024).fill(0x11223344);
+    expect(() => GL_Upload32(data, 1024, 1024, false, false)).not.toThrow();
+
+    const uploads = rec.calls.filter((c) => c.name === "qglTexImage2D");
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].args[3]).toBe(1024);
+    expect(uploads[0].args[4]).toBe(1024);
+  });
+
+  test("raising gl_max_size raises the ceiling with it: 2048x2048 uploads at 2048", () => {
+    gl_max_size.value = 2048;
+    const data = new Uint32Array(2048 * 2048);
+    expect(() => GL_Upload32(data, 2048, 2048, false, false)).not.toThrow();
+
+    const uploads = rec.calls.filter((c) => c.name === "qglTexImage2D");
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].args[3]).toBe(2048);
+    expect(uploads[0].args[4]).toBe(2048);
+  });
+
+  test("gl_max_size still bounds it: a 2048x2048 texture resamples down to 1024x1024", () => {
+    const data = new Uint32Array(2048 * 2048);
+    GL_Upload32(data, 2048, 2048, false, false);
+
+    const uploads = rec.calls.filter((c) => c.name === "qglTexImage2D");
+    expect(uploads).toHaveLength(1);
+    expect(uploads[0].args[3]).toBe(1024);
+    expect(uploads[0].args[4]).toBe(1024);
+  });
+
+  test("a mipmapped 1024x1024 upload emits every level down to 1x1", () => {
+    const data = new Uint32Array(1024 * 1024).fill(0x40404040);
+    GL_Upload32(data, 1024, 1024, true, false);
+
+    const shapes = rec.calls.filter((c) => c.name === "qglTexImage2D").map((c) => [c.args[1], c.args[3], c.args[4]]);
+    expect(shapes[0]).toEqual([0, 1024, 1024]);
+    expect(shapes[shapes.length - 1]).toEqual([10, 1, 1]);
+    expect(shapes).toHaveLength(11);
   });
 });

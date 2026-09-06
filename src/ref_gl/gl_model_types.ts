@@ -186,3 +186,14 @@ export class AliashdrT {
 export const MAXALIASVERTS = 1024;
 export const MAXALIASFRAMES = 256;
 export const MAXALIASTRIS = 2048;
+
+// gl_model.h sized `stverts`/`triangles` as fixed C arrays, so the two counts
+// above were the array bounds AND Mod_LoadAliasModel's reject thresholds.
+// gl_model.ts builds both lists to the model's own counts, leaving these as a
+// sanity ceiling on a corrupt header rather than a capacity. GLQuake's 1024
+// rejects re-release data the software renderer (r_local.ts's MAXALIASVERTS
+// 2000) already loads: mg3 ships eight .mdl files past it, the largest
+// progs/player_hanging.mdl at 1912 vertices. Ironwail's gl_model.h raises its
+// own ceiling to 0x7fff for the same reason.
+export const ALIAS_VERTS_CEILING = 65536;
+export const ALIAS_TRIS_CEILING = 65536;
