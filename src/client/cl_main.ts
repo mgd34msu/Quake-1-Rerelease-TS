@@ -150,10 +150,6 @@ import {
   cl_yawspeed,
 } from "./cl_input";
 import { S_StopAllSounds } from "./snd_dma";
-// The one shared `sky` console command -- imported purely for its module-load
-// side effect (Cmd_AddCommand), the way src/client/render.ts imports
-// ./fog_cmd. See src/client/sky_cmd.ts's own header.
-import "./sky_cmd";
 // U22: the `vibrate` client command handler itself lives in
 // src/platform/haptics.ts (this unit's SCOPE keeps this file's own edit to
 // the single Cmd_AddCommand registration below, next to the other client

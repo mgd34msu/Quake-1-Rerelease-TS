@@ -207,6 +207,12 @@ export { r_lerpmodels, r_lerpmove };
 // Imported here purely for its module-load side effect (Cmd_AddCommand),
 // so the command exists the moment anything imports this seam module.
 import "./fog_cmd";
+// The shared `sky` command registers the same way and from the same place:
+// render.ts loads in every boot before Host_Init, while cl_main.ts is loaded
+// lazily by a server-only boot (loc_host's SDL locale probe pulls it in at
+// the first map spawn), and Cmd_AddCommand after host_initialized is a
+// Sys_Error.
+import "./sky_cmd";
 
 export const TOP_RANGE = 16; // soldier uniform colors
 export const BOTTOM_RANGE = 96;
