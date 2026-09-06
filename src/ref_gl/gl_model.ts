@@ -177,8 +177,8 @@ Deviations from PORTING.md / the C source:
 
 import {
   CONTENTS_EMPTY,
-  DFACE_T_SIZE,
   MAXLIGHTMAPS,
+  dfaceSize,
   readDface,
   type LumpT,
 } from "../common/bspfile";
@@ -317,16 +317,21 @@ Mod_LoadFaces
 export function Mod_LoadFaces(mod: ModelT, buffer: Uint8Array, l: LumpT): void {
   const loadmodel = mod;
   const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  // U4: BSP2/2PSB width (see src/common/model.ts's own Mod_LoadFaces and
+  // bspfile.ts's header) -- loadState.bspWidth is set by Mod_LoadBrushModel
+  // before this hook runs, exactly as loadState.mod_base/loadname already are.
+  const width = loadState.bspWidth;
+  const stride = dfaceSize(width);
 
-  if (l.filelen % DFACE_T_SIZE) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
-  const count = l.filelen / DFACE_T_SIZE;
+  if (l.filelen % stride) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
+  const count = l.filelen / stride;
   const outs: MsurfaceT[] = [];
 
   loadmodel.surfaces = outs;
   loadmodel.numsurfaces = count;
 
   for (let surfnum = 0; surfnum < count; surfnum++) {
-    const inf = readDface(view, l.fileofs + surfnum * DFACE_T_SIZE);
+    const inf = readDface(view, l.fileofs + surfnum * stride, width);
     const out = new MsurfaceT();
     outs.push(out);
 

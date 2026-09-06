@@ -32,6 +32,37 @@ Deviations from the C source:
   `[nummiptex]` and the loaders index it that way, so `readDmiptexlump` reads
   the real `nummiptex` entries. `DMIPTEXLUMP_T_SIZE` is the declared C sizeof
   (20) and is not the size the reader consumes.
+
+BSP2 / 2PSB (U4, re-release map support, Ironwail bspfile.h): the re-release
+ships maps in three on-disk widths, selected by the header's `version` field
+(`readDheader`'s first four bytes) --
+  BSPVERSION (29)        -- narrow: `short` node/clipnode children, `short`
+                            node/leaf bounds, `unsigned short` edge vertices/
+                            face indices/marksurface entries.
+  BSP2VERSION_2PSB       -- "2PSB": wide (`int`/`unsigned int`) everywhere
+                            EXCEPT node/leaf bounding boxes, which stay `short`.
+  BSP2VERSION_BSP2       -- "BSP2": wide everywhere, including bounding boxes
+                            (`float`, not `short`).
+The two magic numbers below are the exact int32 values Ironwail's bspfile.h
+gets from `(('B'<<24)|('S'<<16)|('P'<<8)|'2')` and `(('B'<<0)|('S'<<8)|('P'<<16)|('2'<<24))`
+respectively; read little-endian off disk they correspond to the literal
+4-byte tags "2PSB" and "BSP2".
+
+`BspWidthT` (0/1/2, matching Ironwail's `bsp2` local: `false`/`1`/`2`) is
+threaded through the five widened lumps' reader functions below (nodes,
+clipnodes, edges, faces, leafs -- marksurfaces has no struct, just a
+narrow-or-wide integer, so model.ts reads it directly). Per this unit's
+brief, widening happens at PARSE time only: every wide reader below fills
+the SAME in-memory field types the narrow readers already used (`DnodeT`,
+`DclipnodeT`, `DedgeT`, `DleafT` all keep their original class shapes but
+have their typed-array field types widened -- Int16Array -> Int32Array for
+signed indices, Int16Array -> Float32Array for bounds, which holds every
+`short` bound value exactly since it is a tiny integer -- see each class's
+own comment below), so nothing downstream of the reader (model.ts's
+Mod_LoadNodes/Leafs/Clipnodes/Edges, Mod_MakeHull0) needs to know which disk
+width produced the values it is holding. `DfaceT`'s fields were already
+plain `number`s (not typed arrays), so only its reader gains a width branch;
+its class is untouched.
 */
 
 import { PLANE_X, PLANE_Y, PLANE_Z, PLANE_ANYX, PLANE_ANYY, PLANE_ANYZ, type Vec3 } from "./mathlib";
@@ -73,6 +104,19 @@ export const MAX_VALUE = 1024;
 
 export const BSPVERSION = 29;
 export const TOOLVERSION = 2;
+
+// RMQ support (2PSB): 32 bits instead of shorts for all but bbox sizes
+// (which still use shorts). BSP2 support: 32 bits instead of shorts for
+// everything (bboxes use floats). See this file's header note.
+export const BSP2VERSION_2PSB = (("B".charCodeAt(0) << 24) | ("S".charCodeAt(0) << 16) | ("P".charCodeAt(0) << 8) | "2".charCodeAt(0)) >>> 0;
+export const BSP2VERSION_BSP2 = ("B".charCodeAt(0) | ("S".charCodeAt(0) << 8) | ("P".charCodeAt(0) << 16) | ("2".charCodeAt(0) << 24)) >>> 0;
+
+// 0 = BSPVERSION (narrow), 1 = BSP2VERSION_2PSB, 2 = BSP2VERSION_BSP2,
+// matching Ironwail gl_model.c's `bsp2` local (`false`/`1`/`2`).
+export const BSP_WIDTH_29 = 0;
+export const BSP_WIDTH_2PSB = 1;
+export const BSP_WIDTH_BSP2 = 2;
+export type BspWidthT = 0 | 1 | 2;
 
 // reads up to maxLen bytes starting at offset, stopping at the first NUL --
 // mirrors treating a fixed C char[] field as a NUL-terminated string.
@@ -229,38 +273,79 @@ export const CONTENTS_CURRENT_UP = -13;
 export const CONTENTS_CURRENT_DOWN = -14;
 
 // !!! if this is changed, it must be changed in asm_i386.h too !!!
+// children/mins/maxs are widened to Int32Array/Float32Array (see this file's
+// header): a BSPVERSION (narrow) read still only ever writes short-range
+// values into them, so this is not observable from readDnode's own output;
+// a BSP2/2PSB read needs the room.
 export class DnodeT {
   planenum = 0;
-  children: Int16Array = new Int16Array(2); // negative numbers are -(leafs+1), not nodes
-  mins: Int16Array = new Int16Array(3); // for sphere culling
-  maxs: Int16Array = new Int16Array(3);
+  children: Int32Array = new Int32Array(2); // negative numbers are -(leafs+1), not nodes
+  mins: Float32Array = new Float32Array(3); // for sphere culling
+  maxs: Float32Array = new Float32Array(3);
   firstface = 0;
   numfaces = 0; // counting both sides
 }
-export const DNODE_T_SIZE = 24;
+export const DNODE_T_SIZE = 24; // dsnode_t (BSPVERSION)
+export const DNODE_L1_T_SIZE = 32; // dl1node_t (2PSB): wide indices, short bounds
+export const DNODE_L2_T_SIZE = 44; // dl2node_t (BSP2): wide indices, float bounds
 
-export function readDnode(view: DataView, offset: number): DnodeT {
+export function readDnode(view: DataView, offset: number, width: BspWidthT = BSP_WIDTH_29): DnodeT {
   const n = new DnodeT();
+
+  if (width === BSP_WIDTH_29) {
+    n.planenum = view.getInt32(offset, true);
+    for (let i = 0; i < 2; i++) n.children[i] = view.getInt16(offset + 4 + i * 2, true);
+    for (let i = 0; i < 3; i++) n.mins[i] = view.getInt16(offset + 8 + i * 2, true);
+    for (let i = 0; i < 3; i++) n.maxs[i] = view.getInt16(offset + 14 + i * 2, true);
+    n.firstface = view.getUint16(offset + 20, true);
+    n.numfaces = view.getUint16(offset + 22, true);
+    return n;
+  }
+
   n.planenum = view.getInt32(offset, true);
-  for (let i = 0; i < 2; i++) n.children[i] = view.getInt16(offset + 4 + i * 2, true);
-  for (let i = 0; i < 3; i++) n.mins[i] = view.getInt16(offset + 8 + i * 2, true);
-  for (let i = 0; i < 3; i++) n.maxs[i] = view.getInt16(offset + 14 + i * 2, true);
-  n.firstface = view.getUint16(offset + 20, true);
-  n.numfaces = view.getUint16(offset + 22, true);
+  for (let i = 0; i < 2; i++) n.children[i] = view.getInt32(offset + 4 + i * 4, true);
+  if (width === BSP_WIDTH_2PSB) {
+    for (let i = 0; i < 3; i++) n.mins[i] = view.getInt16(offset + 12 + i * 2, true);
+    for (let i = 0; i < 3; i++) n.maxs[i] = view.getInt16(offset + 18 + i * 2, true);
+    n.firstface = view.getUint32(offset + 24, true);
+    n.numfaces = view.getUint32(offset + 28, true);
+  } else {
+    for (let i = 0; i < 3; i++) n.mins[i] = view.getFloat32(offset + 12 + i * 4, true);
+    for (let i = 0; i < 3; i++) n.maxs[i] = view.getFloat32(offset + 24 + i * 4, true);
+    n.firstface = view.getUint32(offset + 36, true);
+    n.numfaces = view.getUint32(offset + 40, true);
+  }
   return n;
 }
 
+export function dnodeSize(width: BspWidthT): number {
+  return width === BSP_WIDTH_29 ? DNODE_T_SIZE : width === BSP_WIDTH_2PSB ? DNODE_L1_T_SIZE : DNODE_L2_T_SIZE;
+}
+
+// children widened to Int32Array (ARCHITECTURE.md's "32-bit in-memory
+// clipnodes"): this class doubles as model.ts's in-memory MclipnodeT, not
+// just an on-disk struct, so it stays wide for every BSP width, not only
+// BSP2/2PSB.
 export class DclipnodeT {
   planenum = 0;
-  children: Int16Array = new Int16Array(2); // negative numbers are contents
+  children: Int32Array = new Int32Array(2); // negative numbers are contents
 }
-export const DCLIPNODE_T_SIZE = 8;
+export const DCLIPNODE_T_SIZE = 8; // dsclipnode_t (BSPVERSION)
+export const DCLIPNODE_WIDE_T_SIZE = 12; // dlclipnode_t (2PSB and BSP2 share this layout)
 
-export function readDclipnode(view: DataView, offset: number): DclipnodeT {
+export function readDclipnode(view: DataView, offset: number, width: BspWidthT = BSP_WIDTH_29): DclipnodeT {
   const n = new DclipnodeT();
   n.planenum = view.getInt32(offset, true);
-  for (let i = 0; i < 2; i++) n.children[i] = view.getInt16(offset + 4 + i * 2, true);
+  if (width === BSP_WIDTH_29) {
+    for (let i = 0; i < 2; i++) n.children[i] = view.getInt16(offset + 4 + i * 2, true);
+  } else {
+    for (let i = 0; i < 2; i++) n.children[i] = view.getInt32(offset + 4 + i * 4, true);
+  }
   return n;
+}
+
+export function dclipnodeSize(width: BspWidthT): number {
+  return width === BSP_WIDTH_29 ? DCLIPNODE_T_SIZE : DCLIPNODE_WIDE_T_SIZE;
 }
 
 export class TexinfoT {
@@ -282,15 +367,26 @@ export const TEX_SPECIAL = 1; // sky or slime, no lightmap or 256 subdivision
 
 // note that edge 0 is never used, because negative edge nums are used for
 // counterclockwise use of the edge in a face
+// v widened to Uint32Array (see this file's header) so a BSP2/2PSB edge can
+// reference a vertex beyond 65535.
 export class DedgeT {
-  v: Uint16Array = new Uint16Array(2); // vertex numbers
+  v: Uint32Array = new Uint32Array(2); // vertex numbers
 }
-export const DEDGE_T_SIZE = 4;
+export const DEDGE_T_SIZE = 4; // dsedge_t (BSPVERSION)
+export const DEDGE_WIDE_T_SIZE = 8; // dledge_t (2PSB and BSP2 share this layout)
 
-export function readDedge(view: DataView, offset: number): DedgeT {
+export function readDedge(view: DataView, offset: number, width: BspWidthT = BSP_WIDTH_29): DedgeT {
   const e = new DedgeT();
-  for (let i = 0; i < 2; i++) e.v[i] = view.getUint16(offset + i * 2, true);
+  if (width === BSP_WIDTH_29) {
+    for (let i = 0; i < 2; i++) e.v[i] = view.getUint16(offset + i * 2, true);
+  } else {
+    for (let i = 0; i < 2; i++) e.v[i] = view.getUint32(offset + i * 4, true);
+  }
   return e;
+}
+
+export function dedgeSize(width: BspWidthT): number {
+  return width === BSP_WIDTH_29 ? DEDGE_T_SIZE : DEDGE_WIDE_T_SIZE;
 }
 
 export const MAXLIGHTMAPS = 4;
@@ -307,18 +403,35 @@ export class DfaceT {
   styles: Uint8Array = new Uint8Array(MAXLIGHTMAPS);
   lightofs = 0; // start of [numstyles*surfsize] samples
 }
-export const DFACE_T_SIZE = 20;
+export const DFACE_T_SIZE = 20; // dsface_t (BSPVERSION)
+export const DFACE_WIDE_T_SIZE = 28; // dlface_t (2PSB and BSP2 share this layout)
 
-export function readDface(view: DataView, offset: number): DfaceT {
+export function readDface(view: DataView, offset: number, width: BspWidthT = BSP_WIDTH_29): DfaceT {
   const f = new DfaceT();
-  f.planenum = view.getInt16(offset, true);
-  f.side = view.getInt16(offset + 2, true);
-  f.firstedge = view.getInt32(offset + 4, true);
-  f.numedges = view.getInt16(offset + 8, true);
-  f.texinfo = view.getInt16(offset + 10, true);
-  for (let i = 0; i < MAXLIGHTMAPS; i++) f.styles[i] = view.getUint8(offset + 12 + i);
-  f.lightofs = view.getInt32(offset + 16, true);
+
+  if (width === BSP_WIDTH_29) {
+    f.planenum = view.getInt16(offset, true);
+    f.side = view.getInt16(offset + 2, true);
+    f.firstedge = view.getInt32(offset + 4, true);
+    f.numedges = view.getInt16(offset + 8, true);
+    f.texinfo = view.getInt16(offset + 10, true);
+    for (let i = 0; i < MAXLIGHTMAPS; i++) f.styles[i] = view.getUint8(offset + 12 + i);
+    f.lightofs = view.getInt32(offset + 16, true);
+    return f;
+  }
+
+  f.planenum = view.getInt32(offset, true);
+  f.side = view.getInt32(offset + 4, true);
+  f.firstedge = view.getInt32(offset + 8, true);
+  f.numedges = view.getInt32(offset + 12, true);
+  f.texinfo = view.getInt32(offset + 16, true);
+  for (let i = 0; i < MAXLIGHTMAPS; i++) f.styles[i] = view.getUint8(offset + 20 + i);
+  f.lightofs = view.getInt32(offset + 24, true);
   return f;
+}
+
+export function dfaceSize(width: BspWidthT): number {
+  return width === BSP_WIDTH_29 ? DFACE_T_SIZE : DFACE_WIDE_T_SIZE;
 }
 
 export const AMBIENT_WATER = 0;
@@ -330,28 +443,63 @@ export const NUM_AMBIENTS = 4; // automatic ambient sounds
 
 // leaf 0 is the generic CONTENTS_SOLID leaf, used for all solid areas
 // all other leafs need visibility info
+// mins/maxs widened to Float32Array (see this file's header): holds a
+// BSPVERSION/2PSB `short` bound exactly, and a BSP2 `float` bound natively.
 export class DleafT {
   contents = 0;
   visofs = 0; // -1 = no visibility info
 
-  mins: Int16Array = new Int16Array(3); // for frustum culling
-  maxs: Int16Array = new Int16Array(3);
+  mins: Float32Array = new Float32Array(3); // for frustum culling
+  maxs: Float32Array = new Float32Array(3);
 
   firstmarksurface = 0;
   nummarksurfaces = 0;
 
   ambient_level: Uint8Array = new Uint8Array(NUM_AMBIENTS);
 }
-export const DLEAF_T_SIZE = 28;
+export const DLEAF_T_SIZE = 28; // dsleaf_t (BSPVERSION)
+export const DLEAF_L1_T_SIZE = 32; // dl1leaf_t (2PSB): wide indices, short bounds
+export const DLEAF_L2_T_SIZE = 44; // dl2leaf_t (BSP2): wide indices, float bounds
 
-export function readDleaf(view: DataView, offset: number): DleafT {
+export function readDleaf(view: DataView, offset: number, width: BspWidthT = BSP_WIDTH_29): DleafT {
   const l = new DleafT();
+
+  if (width === BSP_WIDTH_29) {
+    l.contents = view.getInt32(offset, true);
+    l.visofs = view.getInt32(offset + 4, true);
+    for (let i = 0; i < 3; i++) l.mins[i] = view.getInt16(offset + 8 + i * 2, true);
+    for (let i = 0; i < 3; i++) l.maxs[i] = view.getInt16(offset + 14 + i * 2, true);
+    l.firstmarksurface = view.getUint16(offset + 20, true);
+    l.nummarksurfaces = view.getUint16(offset + 22, true);
+    for (let i = 0; i < NUM_AMBIENTS; i++) l.ambient_level[i] = view.getUint8(offset + 24 + i);
+    return l;
+  }
+
   l.contents = view.getInt32(offset, true);
   l.visofs = view.getInt32(offset + 4, true);
-  for (let i = 0; i < 3; i++) l.mins[i] = view.getInt16(offset + 8 + i * 2, true);
-  for (let i = 0; i < 3; i++) l.maxs[i] = view.getInt16(offset + 14 + i * 2, true);
-  l.firstmarksurface = view.getUint16(offset + 20, true);
-  l.nummarksurfaces = view.getUint16(offset + 22, true);
-  for (let i = 0; i < NUM_AMBIENTS; i++) l.ambient_level[i] = view.getUint8(offset + 24 + i);
+  if (width === BSP_WIDTH_2PSB) {
+    for (let i = 0; i < 3; i++) l.mins[i] = view.getInt16(offset + 8 + i * 2, true);
+    for (let i = 0; i < 3; i++) l.maxs[i] = view.getInt16(offset + 14 + i * 2, true);
+    l.firstmarksurface = view.getUint32(offset + 20, true);
+    l.nummarksurfaces = view.getUint32(offset + 24, true);
+    for (let i = 0; i < NUM_AMBIENTS; i++) l.ambient_level[i] = view.getUint8(offset + 28 + i);
+  } else {
+    for (let i = 0; i < 3; i++) l.mins[i] = view.getFloat32(offset + 8 + i * 4, true);
+    for (let i = 0; i < 3; i++) l.maxs[i] = view.getFloat32(offset + 20 + i * 4, true);
+    l.firstmarksurface = view.getUint32(offset + 32, true);
+    l.nummarksurfaces = view.getUint32(offset + 36, true);
+    for (let i = 0; i < NUM_AMBIENTS; i++) l.ambient_level[i] = view.getUint8(offset + 40 + i);
+  }
   return l;
+}
+
+export function dleafSize(width: BspWidthT): number {
+  return width === BSP_WIDTH_29 ? DLEAF_T_SIZE : width === BSP_WIDTH_2PSB ? DLEAF_L1_T_SIZE : DLEAF_L2_T_SIZE;
+}
+
+// LUMP_MARKSURFACES has no struct of its own -- a narrow entry is a plain
+// `short`, a wide (2PSB/BSP2) entry a plain `int`. model.ts reads it
+// directly with this size.
+export function dmarksurfaceSize(width: BspWidthT): number {
+  return width === BSP_WIDTH_29 ? 2 : 4;
 }

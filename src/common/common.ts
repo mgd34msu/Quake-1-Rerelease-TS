@@ -923,6 +923,48 @@ export function COM_FindFile(
 
 //===========================================================
 //
+// COM_FindFileTier (U4 addition, re-release map support)
+//
+// Ironwail's COM_LoadHunkFile/COM_FOpenFile return a `path_id` alongside
+// the file, and gl_model.c's Mod_LoadLighting/Mod_LoadEntities compare an
+// external .lit/.ent file's path_id against the bsp's own to decide whether
+// to trust it ("use the file only from the same gamedir as the map itself
+// or from a searchpath with higher priority"). Nothing in this port's
+// COM_FindFile/COM_LoadFile family exposes which search-path node a lookup
+// resolved in, so src/common/model.ts's own port of that rule needs the
+// smallest addition that does: which node of com_searchpaths (0 = the
+// highest-priority node, i.e. the head of the list) a filename would
+// resolve against, without opening it or touching com_filesize the way an
+// actual COM_FindFile call does. Returns -1 if the file is not found in any
+// search path (mirrors COM_FindFile's own walk, including the proghack
+// skip and the not-statically-registered loose-path restriction).
+//===========================================================
+
+export function COM_FindFileTier(filename: string): number {
+  let search = com_searchpaths;
+  let tier = 0;
+
+  if (proghack && filename === "progs.dat" && search) search = search.next;
+
+  for (; search; search = search.next, tier++) {
+    if (search.kind === "pack") {
+      const pak = search.pack;
+      for (let i = 0; i < pak.numfiles; i++) {
+        if (pak.files[i].name === filename) return tier;
+      }
+    } else {
+      if (!static_registered && (filename.includes("/") || filename.includes("\\"))) continue;
+
+      const netpath = `${search.filename}/${filename}`;
+      if (sysFileTime(netpath) !== -1) return tier;
+    }
+  }
+
+  return -1;
+}
+
+//===========================================================
+//
 // COM_OpenFile
 //
 // filename never has a leading slash, but may contain directory walks

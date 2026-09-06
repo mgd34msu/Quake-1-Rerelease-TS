@@ -135,12 +135,12 @@ Deviations from PORTING.md / the C source:
 
 import {
   BSPVERSION,
-  DCLIPNODE_T_SIZE,
-  DEDGE_T_SIZE,
-  DFACE_T_SIZE,
-  DLEAF_T_SIZE,
+  BSP2VERSION_2PSB,
+  BSP2VERSION_BSP2,
+  BSP_WIDTH_29,
+  BSP_WIDTH_2PSB,
+  BSP_WIDTH_BSP2,
   DMODEL_T_SIZE,
-  DNODE_T_SIZE,
   DPLANE_T_SIZE,
   DVERTEX_T_SIZE,
   DclipnodeT,
@@ -169,6 +169,12 @@ import {
   NUM_AMBIENTS,
   TEXINFO_T_SIZE,
   TEX_SPECIAL,
+  dclipnodeSize,
+  dedgeSize,
+  dfaceSize,
+  dleafSize,
+  dmarksurfaceSize,
+  dnodeSize,
   readDclipnode,
   readDedge,
   readDface,
@@ -181,18 +187,23 @@ import {
   readDvertex,
   readMiptex,
   readTexinfo,
+  type BspWidthT,
   type LumpT,
+  type MiptexT,
 } from "./bspfile";
 import { ALIAS_VERSION, IDPOLYHEADER, SynctypeT, readMdl } from "./modelgen";
 import { IDSPRITEHEADER, SPRITE_VERSION, readDsprite } from "./spritegn";
-import { COM_FileBase, COM_LoadStackFile } from "./common";
+import { COM_FileBase, COM_FindFileTier, COM_LoadStackFile, COM_StripExtension } from "./common";
 import { Com_BlockChecksum } from "../qw/md4";
+import { CRC_Block } from "./crc";
 import { DotProduct, Length, MplaneT, VectorCopy, vec3, type Vec3 } from "./mathlib";
 import { Cache_Check, Cache_Free, CacheUser, Hunk_AllocName } from "./zone";
 import { Sys_Error } from "../platform/sys";
-import { Con_Printf } from "../client/console";
+import { Con_Printf, Con_DPrintf } from "../client/console";
 import type { EfragT } from "../client/render";
 import { qw } from "./quakedef";
+import { parseBspxDirectory } from "../lib/bspx";
+import { W_FindLump, W_ParseWad2, type Wad2FileT } from "./wad";
 
 /*
 
@@ -225,8 +236,10 @@ export const SURF_DRAWBACKGROUND = 0x40;
 export const SURF_UNDERWATER = 0x80; // gl_model.h only
 export const SURF_DONTWARP = 0x100; // QW/client/gl_model.h only
 
+// v widened to Uint32Array (U4: a BSP2/2PSB edge can reference a vertex
+// beyond 65535 -- see bspfile.ts's DedgeT of the same name).
 export class MedgeT {
-  v: Uint16Array = new Uint16Array(2);
+  v: Uint32Array = new Uint32Array(2);
   cachededgeoffset = 0;
 }
 
@@ -446,6 +459,29 @@ export class ModelT {
   lightdata: Uint8Array | null = null;
   entities: string | null = null;
 
+  // U4 additions (re-release map support: BSP2/2PSB, .lit, BSPX, external
+  // .ent/wad -- see this file's own U4 section below and bspfile.ts's header):
+  //
+  // pathId: which node of common.ts's com_searchpaths this model's own file
+  // resolved in (COM_FindFileTier(mod.name), 0 = highest priority), kept so
+  // Mod_LoadLighting/Mod_LoadEntities can apply Ironwail's path_id rule to a
+  // candidate external .lit/.ent file (accept only from the same tier or a
+  // higher-priority one).
+  //
+  // lightdata_rgb: the colored lightmap samples from a `.lit` file (3 bytes
+  // per sample, RGB), kept ALONGSIDE the classic 8-bit `lightdata` (not
+  // instead of it) per this unit's brief: renderers keep drawing from
+  // `lightdata` this phase, colored drawing is a later unit. Null when no
+  // (valid, same-tier-or-better) .lit file was found.
+  //
+  // bspx: the BSPX lump directory (name -> a view over `buffer`, never a
+  // copy), always present (empty when the bsp carries no BSPX directory at
+  // all). This unit parses and records lump names only; a specific lump's
+  // payload (FACENORMALS, RGBLIGHTING, BRUSHLIST, ...) is later units' work.
+  pathId = 0;
+  lightdata_rgb: Uint8Array | null = null;
+  bspx: Map<string, Uint8Array> = new Map();
+
   // QW/server/model.c's Mod_LoadBrushModel-only fields (`mod->checksum`/
   // `mod->checksum2`, see that function's file header note): WinQuake's
   // model.h/gl_model.h never declare them, but Mod_LoadBrushModel is shared
@@ -509,9 +545,25 @@ export interface LoadStateT {
   loadmodel: ModelT | null;
   loadname: string; // for hunk tags
   mod_base: Uint8Array | null;
+  // U4 addition: which on-disk width the current Mod_LoadBrushModel call is
+  // reading (BSPVERSION/2PSB/BSP2 -- see bspfile.ts's header). Ironwail
+  // threads a `bsp2` parameter through each widened lump loader; this port's
+  // loaders already read everything else off `loadState` instead of
+  // parameters (mod_base, loadname), so this follows the same pattern.
+  bspWidth: BspWidthT;
+  // U4 addition: the entities lump, so Mod_LoadTextures can read
+  // worldspawn's "wad" key for external-texture resolution without a new
+  // parameter (Mod_LoadTextures is also called directly, with a positional
+  // 4-argument signature, by test/ref_gl_model.test.ts and
+  // test/ref_soft_model.test.ts, which this port's SCOPE for this unit does
+  // not extend to rewriting beyond their imports). Null when unset (a
+  // direct call to Mod_LoadTextures that never went through
+  // Mod_LoadBrushModel) -- readWorldspawnWadKey treats that the same as an
+  // empty lump.
+  entLump: LumpT | null;
 }
 
-export const loadState: LoadStateT = { loadmodel: null, loadname: "", mod_base: null };
+export const loadState: LoadStateT = { loadmodel: null, loadname: "", mod_base: null, bspWidth: BSP_WIDTH_29, entLump: null };
 
 function currentModel(): ModelT {
   const m = loadState.loadmodel;
@@ -525,7 +577,13 @@ function baseView(): DataView {
   return new DataView(b.buffer, b.byteOffset, b.byteLength);
 }
 
-export const mod_novis = new Uint8Array(MAX_MAP_LEAFS / 8);
+// mod_novis starts sized for the classic MAX_MAP_LEAFS cap and grows (see
+// ensureNovisCapacity below) for a BSP2 map whose leaf count exceeds it --
+// BSP2 removes the leaf cap (bspfile.ts's header), so this can no longer be
+// a fixed-size array the way WinQuake's `static byte mod_novis[...]` was.
+// `let`, not `const`: Mod_LeafPVS reassigns it in place when it must grow,
+// the same live-binding pattern common.ts's own reassigned globals use.
+export let mod_novis = new Uint8Array(MAX_MAP_LEAFS / 8);
 
 export const MAX_MOD_KNOWN = 256;
 const mod_known: ModelT[] = [];
@@ -549,6 +607,35 @@ Mod_Init
 ===============
 */
 export function Mod_Init(): void {
+  // reset to the classic baseline size on every (re-)init, undoing any
+  // growth a previous BSP2 load caused (see mod_novis's own comment above).
+  mod_novis = new Uint8Array(MAX_MAP_LEAFS / 8);
+  mod_novis.fill(0xff);
+
+  // Pre-existing test-isolation gap this unit's own "run together" gate
+  // exposed (not introduced by U4): mod_known/mod_numknown are module-level
+  // state with no reset anywhere, so two `bun test` files that both load a
+  // model named e.g. "maps/test.bsp" -- and every one of model.test.ts,
+  // ref_soft_model.test.ts, ref_gl_model.test.ts happens to -- share one
+  // cached ModelT across files when run in the same process. Mod_FindName's
+  // name match returns the FIRST file's already-`needload === NL_PRESENT`
+  // object, so a later file's Mod_ForName never reloads it at all (confirmed
+  // by "FindFile" never being logged for that name in the later file). The
+  // real engine calls Mod_Init exactly once per process (host.c, cl_main.c,
+  // sv_main.c all call it during startup only), so clearing the known-model
+  // table here has no effect on any real call site -- only test files that
+  // call Mod_Init more than once across a shared process, which is exactly
+  // the situation that needs it cleared.
+  mod_known.length = 0;
+  mod_numknown = 0;
+}
+
+// grows mod_novis to hold at least `bytes` bytes, refilling with 0xff --
+// this port's equivalent of Ironwail's realloc-on-demand mod_novis (see
+// mod_novis's own comment above).
+function ensureNovisCapacity(bytes: number): void {
+  if (bytes <= mod_novis.length) return;
+  mod_novis = new Uint8Array(bytes);
   mod_novis.fill(0xff);
 }
 
@@ -594,10 +681,13 @@ export function Mod_PointInLeaf(p: Vec3, model: ModelT | null): MleafT {
 Mod_DecompressVis
 ===================
 */
-const decompressed = new Uint8Array(MAX_MAP_LEAFS / 8);
+let decompressed = new Uint8Array(MAX_MAP_LEAFS / 8);
 
 export function Mod_DecompressVis(inBuf: Uint8Array | null, model: ModelT): Uint8Array {
   let row = (model.numleafs + 7) >> 3;
+  // BSP2 removes the leaf cap (bspfile.ts's header); grow the scratch buffer
+  // to match, mirroring mod_novis's own growth above.
+  if (row > decompressed.length) decompressed = new Uint8Array(row);
   const out = decompressed;
   let o = 0;
 
@@ -629,7 +719,10 @@ export function Mod_DecompressVis(inBuf: Uint8Array | null, model: ModelT): Uint
 }
 
 export function Mod_LeafPVS(leaf: MleafT, model: ModelT): Uint8Array {
-  if (leaf === model.leafs[0]) return mod_novis;
+  if (leaf === model.leafs[0]) {
+    ensureNovisCapacity((model.numleafs + 7) >> 3);
+    return mod_novis;
+  }
   return Mod_DecompressVis(leaf.compressed_vis, model);
 }
 
@@ -845,6 +938,13 @@ export function Mod_LoadTextures(mod: ModelT, buffer: Uint8Array, l: LumpT, text
   const textures: Array<TextureT | null> = new Array<TextureT | null>(m.nummiptex).fill(null);
   mod.textures = textures;
 
+  // U4 addition: the re-release id1 pak ships maps whose miptex lump has
+  // zero-size entries (a placeholder header with no mip pixel data, all
+  // four mip offsets 0) -- the real pixels live in one of the wads named in
+  // worldspawn's "wad" key. Read lazily and cached per call: most maps have
+  // no such texture and never need this at all.
+  let worldspawnWad: string | null = null;
+
   for (let i = 0; i < m.nummiptex; i++) {
     const dataofs = m.dataofs[i];
     if (dataofs === -1) continue;
@@ -867,7 +967,17 @@ export function Mod_LoadTextures(mod: ModelT, buffer: Uint8Array, l: LumpT, text
     for (let j = 0; j < MIPLEVELS; j++) tx.offsets[j] = mt.offsets[j] - MIPTEX_T_SIZE;
 
     const data = Hunk_AllocName(pixels, loadState.loadname);
-    data.set(buffer.subarray(mtOffset + MIPTEX_T_SIZE, mtOffset + MIPTEX_T_SIZE + pixels));
+    const isExternal = mt.offsets[0] === 0 && mt.offsets[1] === 0 && mt.offsets[2] === 0 && mt.offsets[3] === 0;
+    if (!isExternal) {
+      data.set(buffer.subarray(mtOffset + MIPTEX_T_SIZE, mtOffset + MIPTEX_T_SIZE + pixels));
+    } else {
+      if (worldspawnWad === null) worldspawnWad = readWorldspawnWadKey(buffer, loadState.entLump);
+      const resolved = resolveExternalMiptex(mt, worldspawnWad);
+      if (resolved !== null) data.set(resolved);
+      // else: leave `data` zero-filled (Hunk_AllocName's fresh Uint8Array),
+      // matching the checkerboard-free "just draw nothing useful" outcome
+      // of a texture this engine could not find anywhere.
+    }
     tx.data = data;
 
     if (textureLoaded !== null) textureLoaded(tx);
@@ -947,7 +1057,137 @@ export function Mod_LoadTextures(mod: ModelT, buffer: Uint8Array, l: LumpT, text
 
 /*
 =================
+readWorldspawnWadKey / resolveExternalMiptex
+
+U4 additions (re-release external texture wads -- see this unit's brief;
+no open GPLv2 engine implements this, it is specified from the re-release
+data alone). worldspawn's "wad" key is read directly out of the raw
+entities lump bytes here, NOT from `mod.entities`: Mod_LoadTextures runs
+well before Mod_LoadEntities in Mod_LoadBrushModel below, and there is no
+reason to reorder the two just to share one parsed copy of the same bytes.
+This is a minimal `"wad" "value"` scan, not a general entity-lump parser --
+worldspawn is always the map's first entity, and no other entity uses a
+"wad" key, so the first match is always the right one.
+=================
+*/
+function readWorldspawnWadKey(buffer: Uint8Array, l: LumpT | null): string {
+  if (l === null || !l.filelen) return "";
+
+  let s = "";
+  for (let i = 0; i < l.filelen; i++) {
+    const c = buffer[l.fileofs + i];
+    if (c === 0) break;
+    s += String.fromCharCode(c);
+  }
+
+  const m = /"wad"\s*"([^"]*)"/.exec(s);
+  return m !== null ? m[1] : "";
+}
+
+function resolveExternalMiptex(mt: MiptexT, worldspawnWad: string): Uint8Array | null {
+  if (worldspawnWad === "") return null;
+
+  const pixels = Math.floor((mt.width * mt.height) / 64) * 85;
+  const names = worldspawnWad
+    .split(";")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  for (const raw of names) {
+    const forward = raw.replace(/\\/g, "/");
+    const base = forward.slice(forward.lastIndexOf("/") + 1);
+    const dot = base.lastIndexOf(".");
+    const stem = dot === -1 ? base : base.slice(0, dot);
+    if (stem.length === 0) continue;
+
+    for (const candidate of [`gfx/${stem}.wad`, `${stem}.wad`]) {
+      const data = COM_LoadStackFile(candidate);
+      if (data === null) continue;
+
+      let wad: Wad2FileT;
+      try {
+        wad = W_ParseWad2(candidate, data);
+      } catch {
+        continue;
+      }
+
+      const lump = W_FindLump(wad, mt.name);
+      if (lump === null) continue;
+
+      const wview = new DataView(wad.base.buffer, wad.base.byteOffset, wad.base.byteLength);
+      const innerMt = readMiptex(wview, lump.filepos);
+      if (innerMt.width !== mt.width || innerMt.height !== mt.height) continue;
+
+      const start = lump.filepos + MIPTEX_T_SIZE;
+      if (start + pixels > wad.base.length) continue;
+      return wad.base.subarray(start, start + pixels);
+    }
+  }
+
+  return null;
+}
+
+/*
+=================
+loadLitFile
+
+U4 addition: LordHavoc's ".lit" side file (`<map>.lit` beside the bsp,
+magic "QLIT", version 1, 3 bytes per lightmap sample), ported from Ironwail
+Mod_LoadLighting's own .lit half. Returns the parsed RGB sample block (a
+view straight into the loaded .lit bytes, not a copy) or null if there is
+no .lit, it fails a check, or Ironwail's path_id rule rejects it (a .lit
+from a lower-priority search-path tier than the bsp itself is ignored).
+=================
+*/
+function loadLitFile(loadmodel: ModelT, l: LumpT): Uint8Array | null {
+  const litName = `${COM_StripExtension(loadmodel.name)}.lit`;
+
+  const tier = COM_FindFileTier(litName);
+  if (tier === -1) return null;
+  if (tier > loadmodel.pathId) {
+    Con_DPrintf("ignored %s from a gamedir with lower priority\n", litName);
+    return null;
+  }
+
+  const data = COM_LoadStackFile(litName);
+  if (data === null) return null;
+  // COM_LoadFile always appends one extra 0 byte past the real file
+  // contents; `com_filesize` in the C is the size WITHOUT that byte.
+  const filesize = data.length - 1;
+
+  if (data.length < 8 || data[0] !== 0x51 || data[1] !== 0x4c || data[2] !== 0x49 || data[3] !== 0x54) {
+    // "QLIT"
+    Con_Printf("Corrupt .lit file (old version?), ignoring\n");
+    return null;
+  }
+
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const version = view.getInt32(4, true);
+  if (version !== 1) {
+    Con_Printf("Unknown .lit file version (%i)\n", version);
+    return null;
+  }
+
+  if (8 + l.filelen * 3 !== filesize) {
+    Con_Printf("Outdated .lit file (%s should be %i bytes, not %i)\n", litName, 8 + l.filelen * 3, filesize);
+    return null;
+  }
+
+  return data.subarray(8, 8 + l.filelen * 3);
+}
+
+/*
+=================
 Mod_LoadLighting
+
+U4: teaches the shared loader .lit files (see loadLitFile above), stored
+as `lightdata_rgb` alongside the classic 8-bit `lightdata` (per this unit's
+brief, renderers keep drawing from `lightdata` this phase). When the bsp's
+own LUMP_LIGHTING is non-empty it stays the classic 8-bit `lightdata`
+unchanged, whether or not a .lit was also found; when the bsp's lump is
+EMPTY but a .lit was found, `lightdata` is derived from the RGB samples as
+the max of the three channels (luminance), so classic 8-bit rendering still
+lights a re-release map that ships no embedded lighting of its own.
 =================
 */
 export function Mod_LoadLighting(l: LumpT): void {
@@ -955,10 +1195,26 @@ export function Mod_LoadLighting(l: LumpT): void {
   const base = loadState.mod_base;
   if (base === null) Sys_Error("MOD_LoadBmodel: no mod_base");
 
+  loadmodel.lightdata_rgb = loadLitFile(loadmodel, l);
+
   if (!l.filelen) {
-    loadmodel.lightdata = null;
+    if (loadmodel.lightdata_rgb === null) {
+      loadmodel.lightdata = null;
+      return;
+    }
+    const rgb = loadmodel.lightdata_rgb;
+    const n = rgb.length / 3;
+    const derived = Hunk_AllocName(n, loadState.loadname);
+    for (let i = 0; i < n; i++) {
+      const r = rgb[i * 3];
+      const g = rgb[i * 3 + 1];
+      const b = rgb[i * 3 + 2];
+      derived[i] = Math.max(r, g, b);
+    }
+    loadmodel.lightdata = derived;
     return;
   }
+
   loadmodel.lightdata = Hunk_AllocName(l.filelen, loadState.loadname);
   loadmodel.lightdata.set(base.subarray(l.fileofs, l.fileofs + l.filelen));
 }
@@ -984,12 +1240,47 @@ export function Mod_LoadVisibility(l: LumpT): void {
 /*
 =================
 Mod_LoadEntities
+
+U4: before falling back to the embedded LUMP_ENTITIES text, tries an
+external entity file beside the bsp -- `maps/<name>@<crc4hex>.ent` first
+(`<crc4hex>` a lowercase 4-hex-digit CRC16 of the embedded entity lump,
+common.ts's CRC_Block, the engine's own CRC_Block per this unit's brief),
+then plain `maps/<name>.ent`. Either candidate is subject to Ironwail's
+path_id rule (ignored if it resolves to a lower-priority search-path tier
+than the bsp itself), same as loadLitFile above.
 =================
 */
 export function Mod_LoadEntities(l: LumpT): void {
   const loadmodel = currentModel();
   const base = loadState.mod_base;
   if (base === null) Sys_Error("MOD_LoadBmodel: no mod_base");
+
+  const basemapname = COM_StripExtension(loadmodel.name);
+
+  let crc = 0;
+  if (l.filelen > 0) crc = CRC_Block(base.subarray(l.fileofs, l.fileofs + l.filelen - 1));
+  const hex = crc.toString(16).padStart(4, "0");
+
+  for (const entfilename of [`${basemapname}@${hex}.ent`, `${basemapname}.ent`]) {
+    const tier = COM_FindFileTier(entfilename);
+    if (tier === -1) continue;
+    if (tier > loadmodel.pathId) {
+      Con_DPrintf("ignored %s from a gamedir with lower priority\n", entfilename);
+      continue;
+    }
+
+    const data = COM_LoadStackFile(entfilename);
+    if (data === null) continue;
+
+    let s = "";
+    for (let i = 0; i < data.length; i++) {
+      const c = data[i];
+      if (c === 0) break;
+      s += String.fromCharCode(c);
+    }
+    loadmodel.entities = s;
+    return;
+  }
 
   if (!l.filelen) {
     loadmodel.entities = null;
@@ -1071,9 +1362,11 @@ Mod_LoadEdges
 export function Mod_LoadEdges(l: LumpT): void {
   const loadmodel = currentModel();
   const view = baseView();
+  const width = loadState.bspWidth;
+  const stride = dedgeSize(width);
 
-  if (l.filelen % DEDGE_T_SIZE) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
-  const count = l.filelen / DEDGE_T_SIZE;
+  if (l.filelen % stride) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
+  const count = l.filelen / stride;
   const out: MedgeT[] = [];
   // the C allocates (count + 1) edges and only fills count
   for (let i = 0; i < count + 1; i++) out.push(new MedgeT());
@@ -1082,7 +1375,7 @@ export function Mod_LoadEdges(l: LumpT): void {
   loadmodel.numedges = count;
 
   for (let i = 0; i < count; i++) {
-    const ine = readDedge(view, l.fileofs + i * DEDGE_T_SIZE);
+    const ine = readDedge(view, l.fileofs + i * stride, width);
     out[i].v[0] = ine.v[0];
     out[i].v[1] = ine.v[1];
   }
@@ -1187,16 +1480,18 @@ Mod_LoadFaces
 export function Mod_LoadFaces(l: LumpT): void {
   const loadmodel = currentModel();
   const view = baseView();
+  const width = loadState.bspWidth;
+  const stride = dfaceSize(width);
 
-  if (l.filelen % DFACE_T_SIZE) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
-  const count = l.filelen / DFACE_T_SIZE;
+  if (l.filelen % stride) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
+  const count = l.filelen / stride;
   const outs: MsurfaceT[] = [];
 
   loadmodel.surfaces = outs;
   loadmodel.numsurfaces = count;
 
   for (let surfnum = 0; surfnum < count; surfnum++) {
-    const inf = readDface(view, l.fileofs + surfnum * DFACE_T_SIZE);
+    const inf = readDface(view, l.fileofs + surfnum * stride, width);
     const out = new MsurfaceT();
     outs.push(out);
 
@@ -1267,9 +1562,11 @@ Mod_LoadNodes
 export function Mod_LoadNodes(l: LumpT): void {
   const loadmodel = currentModel();
   const view = baseView();
+  const width = loadState.bspWidth;
+  const stride = dnodeSize(width);
 
-  if (l.filelen % DNODE_T_SIZE) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
-  const count = l.filelen / DNODE_T_SIZE;
+  if (l.filelen % stride) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
+  const count = l.filelen / stride;
   const out: MnodeT[] = [];
   // the C's nodes are one contiguous block, so children can point at a node
   // this loop has not reached yet; the objects exist before the fill loop.
@@ -1279,7 +1576,7 @@ export function Mod_LoadNodes(l: LumpT): void {
   loadmodel.numnodes = count;
 
   for (let i = 0; i < count; i++) {
-    const inn = readDnode(view, l.fileofs + i * DNODE_T_SIZE);
+    const inn = readDnode(view, l.fileofs + i * stride, width);
     for (let j = 0; j < 3; j++) {
       out[i].minmaxs[j] = inn.mins[j];
       out[i].minmaxs[3 + j] = inn.maxs[j];
@@ -1308,16 +1605,18 @@ Mod_LoadLeafs
 export function Mod_LoadLeafs(l: LumpT): void {
   const loadmodel = currentModel();
   const view = baseView();
+  const width = loadState.bspWidth;
+  const stride = dleafSize(width);
 
-  if (l.filelen % DLEAF_T_SIZE) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
-  const count = l.filelen / DLEAF_T_SIZE;
+  if (l.filelen % stride) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
+  const count = l.filelen / stride;
   const outs: MleafT[] = [];
 
   loadmodel.leafs = outs;
   loadmodel.numleafs = count;
 
   for (let i = 0; i < count; i++) {
-    const inl = readDleaf(view, l.fileofs + i * DLEAF_T_SIZE);
+    const inl = readDleaf(view, l.fileofs + i * stride, width);
     const out = new MleafT();
     outs.push(out);
 
@@ -1350,9 +1649,11 @@ Mod_LoadClipnodes
 export function Mod_LoadClipnodes(l: LumpT): void {
   const loadmodel = currentModel();
   const view = baseView();
+  const width = loadState.bspWidth;
+  const stride = dclipnodeSize(width);
 
-  if (l.filelen % DCLIPNODE_T_SIZE) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
-  const count = l.filelen / DCLIPNODE_T_SIZE;
+  if (l.filelen % stride) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
+  const count = l.filelen / stride;
   const out: MclipnodeT[] = [];
 
   loadmodel.clipnodes = out;
@@ -1383,7 +1684,7 @@ export function Mod_LoadClipnodes(l: LumpT): void {
   hull.clip_maxs[2] = 64;
 
   for (let i = 0; i < count; i++) {
-    const inc = readDclipnode(view, l.fileofs + i * DCLIPNODE_T_SIZE);
+    const inc = readDclipnode(view, l.fileofs + i * stride, width);
     const c = new DclipnodeT();
     c.planenum = inc.planenum;
     c.children[0] = inc.children[0];
@@ -1446,16 +1747,21 @@ Mod_LoadMarksurfaces
 export function Mod_LoadMarksurfaces(l: LumpT): void {
   const loadmodel = currentModel();
   const view = baseView();
+  const width = loadState.bspWidth;
+  const stride = dmarksurfaceSize(width);
 
-  if (l.filelen % 2) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
-  const count = l.filelen / 2;
+  if (l.filelen % stride) Sys_Error("MOD_LoadBmodel: funny lump size in %s", loadmodel.name);
+  const count = l.filelen / stride;
   const out: MsurfaceT[] = [];
 
   loadmodel.marksurfaces = out;
   loadmodel.nummarksurfaces = count;
 
   for (let i = 0; i < count; i++) {
-    const j = view.getInt16(l.fileofs + i * 2, true);
+    // width 0 (BSPVERSION) keeps the original signed 16-bit read; a wide
+    // (2PSB/BSP2) entry is a plain unsigned 32-bit index (bspfile.h's
+    // `unsigned int`), read accordingly.
+    const j = width === BSP_WIDTH_29 ? view.getInt16(l.fileofs + i * stride, true) : view.getUint32(l.fileofs + i * stride, true);
     if (j >= loadmodel.numsurfaces) Sys_Error("Mod_ParseMarksurfaces: bad surface number");
     out.push(loadmodel.surfaces[j]);
   }
@@ -1586,6 +1892,9 @@ function copyModel(dst: ModelT, src: ModelT): void {
   dst.entities = src.entities;
   dst.checksum = src.checksum;
   dst.checksum2 = src.checksum2;
+  dst.pathId = src.pathId;
+  dst.lightdata_rgb = src.lightdata_rgb;
+  dst.bspx = src.bspx;
   dst.cache.data = src.cache.data;
 }
 
@@ -1603,12 +1912,48 @@ export function Mod_LoadBrushModel(mod: ModelT, buffer: Uint8Array): void {
   const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
   const header = readDheader(view, 0);
 
+  // U4: BSP2/2PSB version dispatch (Ironwail gl_model.c's `bsp2` local --
+  // see bspfile.ts's header for the three widths' exact on-disk layouts).
   const version = header.version;
-  if (version !== BSPVERSION)
-    Sys_Error("Mod_LoadBrushModel: %s has wrong version number (%i should be %i)", mod.name, version, BSPVERSION);
+  let width: BspWidthT;
+  switch (version) {
+    case BSPVERSION:
+      width = BSP_WIDTH_29;
+      break;
+    case BSP2VERSION_2PSB:
+      width = BSP_WIDTH_2PSB;
+      break;
+    case BSP2VERSION_BSP2:
+      width = BSP_WIDTH_BSP2;
+      break;
+    default:
+      Sys_Error("Mod_LoadBrushModel: %s has unsupported version number (%i)", mod.name, version);
+  }
+  loadState.bspWidth = width;
 
   // swap all the lumps
   loadState.mod_base = buffer;
+
+  // U4: which search-path tier this model's own file resolved in, so
+  // Mod_LoadLighting/Mod_LoadEntities can apply Ironwail's path_id rule to
+  // a candidate external .lit/.ent file (see ModelT.pathId's own comment).
+  model.pathId = COM_FindFileTier(mod.name);
+
+  // U4: BSPX lump directory, appended after the last standard lump's data,
+  // 4-byte aligned (src/lib/bspx.ts; no open GPLv2 reference implements
+  // this -- see that file's header). Parsed here unconditionally, since it
+  // costs nothing on the overwhelming majority of maps that carry none.
+  let bspxSearchPos = 0;
+  for (let i = 0; i < HEADER_LUMPS; i++) {
+    const lp = header.lumps[i];
+    bspxSearchPos = Math.max(bspxSearchPos, lp.fileofs + lp.filelen);
+  }
+  const bspxDir = parseBspxDirectory(buffer, bspxSearchPos, buffer.length);
+  const bspx = new Map<string, Uint8Array>();
+  if (bspxDir !== null) {
+    for (const [name, lump] of bspxDir.lumps) bspx.set(name, buffer.subarray(lump.fileofs, lump.fileofs + lump.filelen));
+  }
+  model.bspx = bspx;
 
   // load into heap
 
@@ -1633,6 +1978,10 @@ export function Mod_LoadBrushModel(mod: ModelT, buffer: Uint8Array): void {
   Mod_LoadVertexes(header.lumps[LUMP_VERTEXES]);
   Mod_LoadEdges(header.lumps[LUMP_EDGES]);
   Mod_LoadSurfedges(header.lumps[LUMP_SURFEDGES]);
+  // U4: see loadState.entLump's own comment -- Mod_LoadTextures reads this
+  // for external-texture-wad resolution instead of taking a new parameter.
+  loadState.entLump = header.lumps[LUMP_ENTITIES];
+
   // shared and unconditional, per this file's header: texinfo and faces
   // need real texture names/flags on every path, dedicated server included.
   Mod_LoadTextures(mod, buffer, header.lumps[LUMP_TEXTURES], hooks !== null ? hooks.textureLoaded : null);

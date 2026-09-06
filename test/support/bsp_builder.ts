@@ -41,6 +41,18 @@ export const MIPLEVELS = 4;
 export const MAXLIGHTMAPS = 4;
 export const NUM_AMBIENTS = 4;
 
+// U4 addition (BSP2/2PSB support): the same magic numbers src/common/bspfile.ts
+// computes, duplicated here per this file's own convention (every other
+// on-disk constant in this builder is a hand-copied duplicate of the src/
+// side, not an import, so a bug in one side is never masked by the other).
+export const BSP2VERSION_2PSB = (("B".charCodeAt(0) << 24) | ("S".charCodeAt(0) << 16) | ("P".charCodeAt(0) << 8) | "2".charCodeAt(0)) >>> 0;
+export const BSP2VERSION_BSP2 = ("B".charCodeAt(0) | ("S".charCodeAt(0) << 8) | ("P".charCodeAt(0) << 16) | ("2".charCodeAt(0) << 24)) >>> 0;
+
+export const BSP_WIDTH_29 = 0;
+export const BSP_WIDTH_2PSB = 1;
+export const BSP_WIDTH_BSP2 = 2;
+export type BspWidth = 0 | 1 | 2;
+
 export const CONTENTS_EMPTY = -1;
 export const CONTENTS_SOLID = -2;
 
@@ -91,6 +103,34 @@ export interface BspBuildOptions {
   // non-sky face's lightofs at its own BSP_FACE_LIGHTMAP_SAMPLES-byte block
   // under style 0, so a face lights the way a qbsp/light-built map's does
   lightLevel?: number;
+
+  // U4 additions (BSP2/2PSB, BSPX, external wads -- see this file's own
+  // header for the classic-only fields above):
+
+  // on-disk width for the widened lumps (nodes/clipnodes/edges/faces/leafs/
+  // marksurfaces); BSP_WIDTH_29 (default) emits the classic narrow layout
+  // byte-for-byte unchanged from before this option existed.
+  width?: BspWidth;
+  // appends this many extra, unreferenced dvertex_t entries after the real
+  // 8 -- lets a test push numvertexes past 65535 without hand-building a
+  // real level that big. Requires width !== BSP_WIDTH_29 once the total
+  // exceeds 65535 (a real BSP29 edge could not reference them anyway).
+  extraVertexes?: number;
+  // appends this many extra, unreferenced clipnode entries (planenum 0,
+  // both children CONTENTS_EMPTY) after the real 3 -- same idea as
+  // extraVertexes, for numclipnodes past 32767.
+  extraClipnodes?: number;
+  // a BSPX lump directory to append after the last standard lump's data,
+  // 4-byte aligned, each entry's bytes placed right after the directory.
+  bspxLumps?: Array<{ name: string; data: Uint8Array }>;
+  // overrides the worldspawn "wad" key's value (default "gfx/base.wad",
+  // baked into BSP_ENTITIES above).
+  wadKey?: string;
+  // makes the primary miptex an external placeholder: a real miptex_t
+  // header (name/width/height) but all four mip offsets zero and no pixel
+  // bytes stored in the bsp at all -- src/common/model.ts's Mod_LoadTextures
+  // must resolve its pixels from one of worldspawn's "wad" key's wads.
+  externalMiptex?: boolean;
 }
 
 class Writer {
@@ -170,7 +210,7 @@ function planesLump(): Uint8Array {
   return w.bytes;
 }
 
-function vertexesLump(): Uint8Array {
+function vertexesLump(extra: number): Uint8Array {
   // face A: a 64x64 square in the z=0 plane; face B: the same, 128 units +x
   const pts: number[][] = [
     [0, 0, 0],
@@ -182,18 +222,27 @@ function vertexesLump(): Uint8Array {
     [192, 64, 0],
     [128, 64, 0],
   ];
-  const w = new Writer(pts.length * 12);
+  const w = new Writer((pts.length + extra) * 12);
   for (const p of pts) {
     w.f32(p[0]);
     w.f32(p[1]);
     w.f32(p[2]);
   }
+  // extra, unreferenced vertexes (U4: pushes numvertexes past 65535 for the
+  // "BSP2 only" test without a real level that big); placed far from the
+  // real geometry so a bug that DID reference one would be obvious.
+  for (let i = 0; i < extra; i++) {
+    w.f32(1000 + i);
+    w.f32(1000);
+    w.f32(1000);
+  }
   return w.bytes;
 }
 
-function edgesLump(): Uint8Array {
-  // dedge_t: unsigned short v[2]. edge 0 is never used, because negative edge
-  // nums are used for counterclockwise use of the edge in a face.
+function edgesLump(width: BspWidth): Uint8Array {
+  // dedge_t (BSPVERSION): unsigned short v[2]; dledge_t (2PSB/BSP2): unsigned
+  // int v[2]. edge 0 is never used, because negative edge nums are used for
+  // counterclockwise use of the edge in a face.
   const e: number[][] = [
     [0, 0],
     [0, 1],
@@ -205,10 +254,18 @@ function edgesLump(): Uint8Array {
     [6, 7],
     [7, 4],
   ];
-  const w = new Writer(e.length * 4);
+  if (width === BSP_WIDTH_29) {
+    const w = new Writer(e.length * 4);
+    for (const p of e) {
+      w.u16(p[0]);
+      w.u16(p[1]);
+    }
+    return w.bytes;
+  }
+  const w = new Writer(e.length * 8);
   for (const p of e) {
-    w.u16(p[0]);
-    w.u16(p[1]);
+    w.u32(p[0]);
+    w.u32(p[1]);
   }
   return w.bytes;
 }
@@ -261,105 +318,262 @@ function texinfoLump(skyFace: boolean): Uint8Array {
   return w.bytes;
 }
 
-function facesLump(skyFace: boolean, lit: boolean): Uint8Array {
-  // dface_t: planenum short, side short, firstedge int, numedges short,
-  // texinfo short, styles[4] byte, lightofs int  (20 bytes)
-  const w = new Writer(BSP_NUMFACES * 20);
+function facesLump(width: BspWidth, skyFace: boolean, lit: boolean): Uint8Array {
+  // dsface_t (BSPVERSION, 20 bytes): planenum short, side short, firstedge
+  // int, numedges short, texinfo short, styles[4] byte, lightofs int.
+  // dlface_t (2PSB/BSP2, 28 bytes): the same fields, all as int.
+  const size = width === BSP_WIDTH_29 ? 20 : 28;
+  const w = new Writer(BSP_NUMFACES * size);
   for (let f = 0; f < BSP_NUMFACES; f++) {
-    w.i16(0); // planenum
-    w.i16(0); // side
-    w.i32(f * 4); // firstedge
-    w.i16(4); // numedges
     const isSky = skyFace && f === 1;
-    w.i16(isSky ? 1 : 0); // texinfo -- face 1 uses the sky texinfo
+    const lightofs = lit && !isSky ? f * BSP_FACE_LIGHTMAP_SAMPLES : -1; // a sky face never reaches R_BuildLightMap
+    if (width === BSP_WIDTH_29) {
+      w.i16(0); // planenum
+      w.i16(0); // side
+      w.i32(f * 4); // firstedge
+      w.i16(4); // numedges
+      w.i16(isSky ? 1 : 0); // texinfo -- face 1 uses the sky texinfo
+    } else {
+      w.i32(0); // planenum
+      w.i32(0); // side
+      w.i32(f * 4); // firstedge
+      w.i32(4); // numedges
+      w.i32(isSky ? 1 : 0); // texinfo
+    }
     w.u8(0);
     w.u8(255);
     w.u8(255);
     w.u8(255); // styles
-    // a sky face never reaches R_BuildLightMap, and its oversized extents
-    // would size a lightmap the lump does not hold, so it stays unlit
-    w.i32(lit && !isSky ? f * BSP_FACE_LIGHTMAP_SAMPLES : -1); // lightofs
+    w.i32(lightofs);
   }
   return w.bytes;
 }
 
-function texturesLump(name: string, skyName: string | null): Uint8Array {
+function texturesLump(name: string, skyName: string | null, external: boolean): Uint8Array {
   // dmiptexlump_t { int nummiptex; int dataofs[nummiptex]; } then one (or
   // two, with skyName) miptex_t { char name[16]; unsigned width, height;
-  // unsigned offsets[4]; } each followed by its width*height/64*85 mip pixels.
+  // unsigned offsets[4]; } each followed by its width*height/64*85 mip pixels
+  // -- EXCEPT the primary miptex when `external` is set (U4: the re-release
+  // "external texture wad" case), which stores just the 40-byte header with
+  // all four mip offsets zero and no pixel bytes at all; src/common/model.ts's
+  // Mod_LoadTextures must then resolve its pixels from a wad named in
+  // worldspawn's "wad" key.
   const nummiptex = skyName === null ? 1 : 2;
   const headerSize = 4 + nummiptex * 4;
   const pixels = ((BSP_MIPTEX_WIDTH * BSP_MIPTEX_HEIGHT) / 64) * 85;
-  const miptexSize = 40 + pixels;
-  const w = new Writer(headerSize + nummiptex * miptexSize);
+  const names = skyName === null ? [name] : [name, skyName];
+  const sizeOf = (i: number): number => (i === 0 && external ? 40 : 40 + pixels);
+
+  let total = headerSize;
+  for (let i = 0; i < nummiptex; i++) total += sizeOf(i);
+  const w = new Writer(total);
+
   w.i32(nummiptex);
-  for (let i = 0; i < nummiptex; i++) w.i32(headerSize + i * miptexSize); // dataofs[i], relative to the lump start
-  for (const n of skyName === null ? [name] : [name, skyName]) {
-    w.chars(n, 16);
+  let ofs = headerSize;
+  for (let i = 0; i < nummiptex; i++) {
+    w.i32(ofs); // dataofs[i], relative to the lump start
+    ofs += sizeOf(i);
+  }
+
+  for (let i = 0; i < names.length; i++) {
+    const isExternal = i === 0 && external;
+    w.chars(names[i], 16);
     w.u32(BSP_MIPTEX_WIDTH);
     w.u32(BSP_MIPTEX_HEIGHT);
-    // the four mip offsets are relative to the miptex_t
-    let ofs = 40;
-    for (let m = 0; m < MIPLEVELS; m++) {
-      w.u32(ofs);
-      ofs += (BSP_MIPTEX_WIDTH >> m) * (BSP_MIPTEX_HEIGHT >> m);
+    if (isExternal) {
+      for (let m = 0; m < MIPLEVELS; m++) w.u32(0);
+      continue; // no pixel bytes follow
     }
-    for (let i = 0; i < pixels; i++) w.u8(i & 0xff);
+    // the four mip offsets are relative to the miptex_t
+    let mipofs = 40;
+    for (let m = 0; m < MIPLEVELS; m++) {
+      w.u32(mipofs);
+      mipofs += (BSP_MIPTEX_WIDTH >> m) * (BSP_MIPTEX_HEIGHT >> m);
+    }
+    for (let j = 0; j < pixels; j++) w.u8(j & 0xff);
   }
   return w.bytes;
 }
 
-function nodesLump(): Uint8Array {
-  // dnode_t: planenum int, children[2] short, mins[3] short, maxs[3] short,
-  // firstface ushort, numfaces ushort  (24 bytes)
-  const w = new Writer(BSP_NUMNODES * 24);
-  w.i32(0); // planenum 0 (z = 0)
-  w.i16(-2); // front child: -1 - 1 => leaf 1 (empty)
-  w.i16(-1); // back child:  -1 - 0 => leaf 0 (solid)
-  w.i16(-256);
-  w.i16(-256);
-  w.i16(-256);
-  w.i16(256);
-  w.i16(256);
-  w.i16(256);
-  w.u16(0); // firstface
-  w.u16(BSP_NUMFACES); // numfaces
+// U4 addition: a synthetic WAD2 file (wad.ts's WADinfoT/LumpinfoT layout)
+// holding a single TYP_MIPTEX lump, for the external-texture-wad test: a
+// map's texturesLump(..., external: true) miptex has no pixel data, and
+// this is what src/common/model.ts's Mod_LoadTextures should resolve it
+// from (via a candidate "gfx/<name>.wad" or "<name>.wad").
+export function buildTextureWad(entries: Array<{ name: string; width: number; height: number; fill: number }>): Uint8Array {
+  const TYP_MIPTEX = 68;
+  const pixelsOf = (width: number, height: number): number => ((width * height) / 64) * 85;
+  const lumpSize = (e: { width: number; height: number }): number => 40 + pixelsOf(e.width, e.height);
+
+  const headerSize = 12;
+  const lumpinfoSize = 32;
+  let dataOfs = headerSize;
+  const lumpOffsets: number[] = [];
+  for (const e of entries) {
+    lumpOffsets.push(dataOfs);
+    dataOfs += lumpSize(e);
+  }
+  const infotableofs = dataOfs;
+  const total = infotableofs + entries.length * lumpinfoSize;
+
+  const w = new Writer(total);
+  w.chars("WAD2", 4);
+  w.i32(entries.length);
+  w.i32(infotableofs);
+
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    w.chars(e.name, 16);
+    w.u32(e.width);
+    w.u32(e.height);
+    let mipofs = 40;
+    for (let m = 0; m < MIPLEVELS; m++) {
+      w.u32(mipofs);
+      mipofs += (e.width >> m) * (e.height >> m);
+    }
+    const pixels = pixelsOf(e.width, e.height);
+    for (let j = 0; j < pixels; j++) w.u8(e.fill & 0xff);
+  }
+
+  w.pos = infotableofs;
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    w.i32(lumpOffsets[i]); // filepos
+    w.i32(lumpSize(e)); // disksize
+    w.i32(lumpSize(e)); // size
+    w.u8(TYP_MIPTEX); // type
+    w.u8(0); // compression
+    w.u8(0);
+    w.u8(0); // pad1/pad2
+    w.chars(e.name, 16);
+  }
+
   return w.bytes;
 }
 
-function leafsLump(hasVis: boolean): Uint8Array {
-  // dleaf_t: contents int, visofs int, mins[3] short, maxs[3] short,
-  // firstmarksurface ushort, nummarksurfaces ushort, ambient_level[4] byte
-  // (28 bytes)
-  const w = new Writer(BSP_NUMLEAFS * 28);
+function nodesLump(width: BspWidth): Uint8Array {
+  // dsnode_t (BSPVERSION, 24 bytes): planenum int, children[2] short,
+  // mins[3]/maxs[3] short, firstface/numfaces ushort.
+  // dl1node_t (2PSB, 32 bytes): children[2] int, mins/maxs stay short.
+  // dl2node_t (BSP2, 44 bytes): children[2] int, mins/maxs float.
+  if (width === BSP_WIDTH_29) {
+    const w = new Writer(BSP_NUMNODES * 24);
+    w.i32(0); // planenum 0 (z = 0)
+    w.i16(-2); // front child: -1 - 1 => leaf 1 (empty)
+    w.i16(-1); // back child:  -1 - 0 => leaf 0 (solid)
+    w.i16(-256);
+    w.i16(-256);
+    w.i16(-256);
+    w.i16(256);
+    w.i16(256);
+    w.i16(256);
+    w.u16(0); // firstface
+    w.u16(BSP_NUMFACES); // numfaces
+    return w.bytes;
+  }
 
-  // leaf 0: the generic CONTENTS_SOLID leaf, no visibility info
+  const size = width === BSP_WIDTH_2PSB ? 32 : 44;
+  const w = new Writer(BSP_NUMNODES * size);
+  w.i32(0); // planenum 0 (z = 0)
+  w.i32(-2); // front child: -1 - 1 => leaf 1 (empty)
+  w.i32(-1); // back child:  -1 - 0 => leaf 0 (solid)
+  if (width === BSP_WIDTH_2PSB) {
+    w.i16(-256);
+    w.i16(-256);
+    w.i16(-256);
+    w.i16(256);
+    w.i16(256);
+    w.i16(256);
+  } else {
+    w.f32(-256);
+    w.f32(-256);
+    w.f32(-256);
+    w.f32(256);
+    w.f32(256);
+    w.f32(256);
+  }
+  w.u32(0); // firstface
+  w.u32(BSP_NUMFACES); // numfaces
+  return w.bytes;
+}
+
+function leafsLump(width: BspWidth, hasVis: boolean): Uint8Array {
+  // dsleaf_t (BSPVERSION, 28 bytes): contents int, visofs int, mins[3]/
+  // maxs[3] short, firstmarksurface/nummarksurfaces ushort, ambient_level[4].
+  // dl1leaf_t (2PSB, 32 bytes): mins/maxs stay short, indices widen to uint.
+  // dl2leaf_t (BSP2, 44 bytes): mins/maxs widen to float too.
+  if (width === BSP_WIDTH_29) {
+    const w = new Writer(BSP_NUMLEAFS * 28);
+
+    // leaf 0: the generic CONTENTS_SOLID leaf, no visibility info
+    w.i32(CONTENTS_SOLID);
+    w.i32(-1);
+    w.i16(-256);
+    w.i16(-256);
+    w.i16(-256);
+    w.i16(0);
+    w.i16(256);
+    w.i16(256);
+    w.u16(0);
+    w.u16(0);
+    w.u8(0);
+    w.u8(0);
+    w.u8(0);
+    w.u8(0);
+
+    // leaf 1: empty, owning both marksurfaces
+    w.i32(CONTENTS_EMPTY);
+    w.i32(hasVis ? 0 : -1);
+    w.i16(-256);
+    w.i16(-256);
+    w.i16(0);
+    w.i16(256);
+    w.i16(256);
+    w.i16(256);
+    w.u16(0);
+    w.u16(BSP_NUMMARKSURFACES);
+    w.u8(1);
+    w.u8(2);
+    w.u8(3);
+    w.u8(4);
+
+    return w.bytes;
+  }
+
+  const size = width === BSP_WIDTH_2PSB ? 32 : 44;
+  const w = new Writer(BSP_NUMLEAFS * size);
+  const bound = (v: number): void => {
+    if (width === BSP_WIDTH_2PSB) w.i16(v);
+    else w.f32(v);
+  };
+
+  // leaf 0
   w.i32(CONTENTS_SOLID);
   w.i32(-1);
-  w.i16(-256);
-  w.i16(-256);
-  w.i16(-256);
-  w.i16(0);
-  w.i16(256);
-  w.i16(256);
-  w.u16(0);
-  w.u16(0);
+  bound(-256);
+  bound(-256);
+  bound(-256);
+  bound(0);
+  bound(256);
+  bound(256);
+  w.u32(0);
+  w.u32(0);
   w.u8(0);
   w.u8(0);
   w.u8(0);
   w.u8(0);
 
-  // leaf 1: empty, owning both marksurfaces
+  // leaf 1
   w.i32(CONTENTS_EMPTY);
   w.i32(hasVis ? 0 : -1);
-  w.i16(-256);
-  w.i16(-256);
-  w.i16(0);
-  w.i16(256);
-  w.i16(256);
-  w.i16(256);
-  w.u16(0);
-  w.u16(BSP_NUMMARKSURFACES);
+  bound(-256);
+  bound(-256);
+  bound(0);
+  bound(256);
+  bound(256);
+  bound(256);
+  w.u32(0);
+  w.u32(BSP_NUMMARKSURFACES);
   w.u8(1);
   w.u8(2);
   w.u8(3);
@@ -368,28 +582,62 @@ function leafsLump(hasVis: boolean): Uint8Array {
   return w.bytes;
 }
 
-function clipnodesLump(): Uint8Array {
-  // dclipnode_t: planenum int, children[2] short  (8 bytes)
-  const w = new Writer(BSP_NUMCLIPNODES * 8);
-  // 0: split on plane 0 (z=0): above => clipnode 1, below => solid
+function clipnodesLump(width: BspWidth, extra: number): Uint8Array {
+  // dsclipnode_t (BSPVERSION, 8 bytes): planenum int, children[2] short.
+  // dlclipnode_t (2PSB/BSP2, 12 bytes): children[2] int -- one shared wide
+  // layout for both.
+  if (width === BSP_WIDTH_29) {
+    const w = new Writer((BSP_NUMCLIPNODES + extra) * 8);
+    // 0: split on plane 0 (z=0): above => clipnode 1, below => solid
+    w.i32(0);
+    w.i16(1);
+    w.i16(CONTENTS_SOLID);
+    // 1: split on plane 1 (x=0): +x => empty, -x => clipnode 2
+    w.i32(1);
+    w.i16(CONTENTS_EMPTY);
+    w.i16(2);
+    // 2: split on plane 0 again: both sides empty
+    w.i32(0);
+    w.i16(CONTENTS_EMPTY);
+    w.i16(CONTENTS_EMPTY);
+    // extra, unreferenced clipnodes (U4: pushes numclipnodes past 32767 for
+    // the "BSP2 only" test): plane 0, both children empty.
+    for (let i = 0; i < extra; i++) {
+      w.i32(0);
+      w.i16(CONTENTS_EMPTY);
+      w.i16(CONTENTS_EMPTY);
+    }
+    return w.bytes;
+  }
+
+  const w = new Writer((BSP_NUMCLIPNODES + extra) * 12);
   w.i32(0);
-  w.i16(1);
-  w.i16(CONTENTS_SOLID);
-  // 1: split on plane 1 (x=0): +x => empty, -x => clipnode 2
   w.i32(1);
-  w.i16(CONTENTS_EMPTY);
-  w.i16(2);
-  // 2: split on plane 0 again: both sides empty
+  w.i32(CONTENTS_SOLID);
+  w.i32(1);
+  w.i32(CONTENTS_EMPTY);
+  w.i32(2);
   w.i32(0);
-  w.i16(CONTENTS_EMPTY);
-  w.i16(CONTENTS_EMPTY);
+  w.i32(CONTENTS_EMPTY);
+  w.i32(CONTENTS_EMPTY);
+  for (let i = 0; i < extra; i++) {
+    w.i32(0);
+    w.i32(CONTENTS_EMPTY);
+    w.i32(CONTENTS_EMPTY);
+  }
   return w.bytes;
 }
 
-function marksurfacesLump(): Uint8Array {
-  const w = new Writer(BSP_NUMMARKSURFACES * 2);
-  w.u16(0);
-  w.u16(1);
+function marksurfacesLump(width: BspWidth): Uint8Array {
+  if (width === BSP_WIDTH_29) {
+    const w = new Writer(BSP_NUMMARKSURFACES * 2);
+    w.u16(0);
+    w.u16(1);
+    return w.bytes;
+  }
+  const w = new Writer(BSP_NUMMARKSURFACES * 4);
+  w.u32(0);
+  w.u32(1);
   return w.bytes;
 }
 
@@ -428,21 +676,29 @@ function lightingLump(lightLevel: number | undefined): Uint8Array {
 export function buildBsp(options: BspBuildOptions = {}): Uint8Array {
   const vis = options.visdata ?? new Uint8Array(0);
   const skyFace = options.skyFace ?? false;
+  const width = options.width ?? BSP_WIDTH_29;
+  const extraVertexes = options.extraVertexes ?? 0;
+  const extraClipnodes = options.extraClipnodes ?? 0;
+  const bspxLumps = options.bspxLumps ?? [];
+  const wadKey = options.wadKey ?? "gfx/base.wad";
+  const externalMiptex = options.externalMiptex ?? false;
+
+  const entities = BSP_ENTITIES.replace('"gfx/base.wad"', `"${wadKey}"`);
 
   const lumps: Uint8Array[] = new Array(HEADER_LUMPS);
-  lumps[LUMP_ENTITIES] = latin1(BSP_ENTITIES + "\0");
+  lumps[LUMP_ENTITIES] = latin1(entities + "\0");
   lumps[LUMP_PLANES] = planesLump();
-  lumps[LUMP_TEXTURES] = texturesLump(options.miptexName ?? BSP_MIPTEX_NAME, skyFace ? BSP_SKY_MIPTEX_NAME : null);
-  lumps[LUMP_VERTEXES] = vertexesLump();
+  lumps[LUMP_TEXTURES] = texturesLump(options.miptexName ?? BSP_MIPTEX_NAME, skyFace ? BSP_SKY_MIPTEX_NAME : null, externalMiptex);
+  lumps[LUMP_VERTEXES] = vertexesLump(extraVertexes);
   lumps[LUMP_VISIBILITY] = vis;
-  lumps[LUMP_NODES] = nodesLump();
+  lumps[LUMP_NODES] = nodesLump(width);
   lumps[LUMP_TEXINFO] = texinfoLump(skyFace);
-  lumps[LUMP_FACES] = facesLump(skyFace, options.lightLevel !== undefined);
+  lumps[LUMP_FACES] = facesLump(width, skyFace, options.lightLevel !== undefined);
   lumps[LUMP_LIGHTING] = lightingLump(options.lightLevel);
-  lumps[LUMP_CLIPNODES] = clipnodesLump();
-  lumps[LUMP_LEAFS] = leafsLump(vis.length > 0);
-  lumps[LUMP_MARKSURFACES] = marksurfacesLump();
-  lumps[LUMP_EDGES] = edgesLump();
+  lumps[LUMP_CLIPNODES] = clipnodesLump(width, extraClipnodes);
+  lumps[LUMP_LEAFS] = leafsLump(width, vis.length > 0);
+  lumps[LUMP_MARKSURFACES] = marksurfacesLump(width);
+  lumps[LUMP_EDGES] = edgesLump(width);
   lumps[LUMP_SURFEDGES] = surfedgesLump();
   lumps[LUMP_MODELS] = modelsLump();
 
@@ -456,8 +712,28 @@ export function buildBsp(options: BspBuildOptions = {}): Uint8Array {
     total += lumps[i].length;
   }
 
+  // U4: BSPX lump directory, appended after the last standard lump's data,
+  // 4-byte aligned -- "BSPX" magic, uint32 count, then that many 24-byte-
+  // name + uint32 offset + uint32 length entries (32 bytes each), with each
+  // entry's bytes placed right after the directory itself.
+  const XLUMP_T_SIZE = 24 + 4 + 4;
+  let bspxHeaderOfs = 0;
+  let bspxEntriesOfs = 0;
+  const bspxDataOfs: number[] = [];
+  if (bspxLumps.length > 0) {
+    total = (total + 3) & ~3;
+    bspxHeaderOfs = total;
+    total += 8; // "BSPX" + count
+    bspxEntriesOfs = total;
+    total += bspxLumps.length * XLUMP_T_SIZE;
+    for (const lump of bspxLumps) {
+      bspxDataOfs.push(total);
+      total += lump.data.length;
+    }
+  }
+
   const w = new Writer(total);
-  w.i32(BSPVERSION);
+  w.i32(bspVersionForWidth(width));
   for (let i = 0; i < HEADER_LUMPS; i++) {
     w.i32(offsets[i]);
     w.i32(lumps[i].length);
@@ -466,7 +742,31 @@ export function buildBsp(options: BspBuildOptions = {}): Uint8Array {
     w.pos = offsets[i];
     w.raw(lumps[i]);
   }
+
+  if (bspxLumps.length > 0) {
+    w.pos = bspxHeaderOfs;
+    w.chars("BSPX", 4);
+    w.u32(bspxLumps.length);
+    w.pos = bspxEntriesOfs;
+    for (let i = 0; i < bspxLumps.length; i++) {
+      const lump = bspxLumps[i];
+      w.chars(lump.name, 24);
+      w.u32(bspxDataOfs[i]);
+      w.u32(lump.data.length);
+    }
+    for (let i = 0; i < bspxLumps.length; i++) {
+      w.pos = bspxDataOfs[i];
+      w.raw(bspxLumps[i].data);
+    }
+  }
+
   return w.bytes;
+}
+
+function bspVersionForWidth(width: BspWidth): number {
+  if (width === BSP_WIDTH_2PSB) return BSP2VERSION_2PSB;
+  if (width === BSP_WIDTH_BSP2) return BSP2VERSION_BSP2;
+  return BSPVERSION;
 }
 
 // the byte offset and length of one lump inside a built BSP, so a test can

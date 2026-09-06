@@ -48,6 +48,22 @@ Deviations from the C:
 - Names are decoded/encoded Latin-1 (`charCodeAt(i) & 0xff` /
   `String.fromCharCode`), never UTF-8, matching every other on-disk-string
   reader in this port.
+
+U4 addition (re-release external texture wads): wad.c/wad.h declare exactly
+one WAD2 reader, and it is wired to this module's own singleton (the "active"
+gfx.wad every draw.ts/gl_draw.ts call reads through W_GetLumpName/W_GetQpic).
+src/common/model.ts's Mod_LoadTextures needs to open OTHER WAD2 files at
+runtime -- the re-release id1 pak's gfx/*.wad texture wads, resolved from a
+map's worldspawn "wad" key -- without disturbing that singleton (loading one
+would otherwise clobber whatever HUD/menu wad is currently active). `W_ParseWad2`
+is the stateless half of `W_LoadWadFromBytes` (header + lump-table parse, same
+`W_CleanupName`/`SwapPic` treatment) returning a `Wad2FileT` instead of writing
+to `wad_numlumps`/`wad_lumps`/`wad_base`; `W_LoadWadFromBytes` itself now
+calls it and assigns the singleton from the result, so there is exactly one
+WAD2 parse loop. `W_FindLump`/`W_GetLumpBytes` are `Wad2FileT`-scoped restatements
+of `W_GetLumpinfo`/`W_GetLumpName` that return `null` instead of throwing
+(a missing miptex in a candidate wad is an ordinary "try the next wad" case
+for the caller, not a fatal error).
 */
 
 import { Sys_Error } from "../platform/sys";
@@ -133,6 +149,14 @@ let wad_numlumps = 0;
 let wad_lumps: LumpinfoT[] = [];
 let wad_base: Uint8Array = new Uint8Array(0);
 
+// U4 addition: a WAD2 file parsed independently of this module's own
+// singleton (see this file's header). `base` is the same bytes passed in
+// (lumps are subarray views over it, never copies).
+export interface Wad2FileT {
+  base: Uint8Array;
+  lumps: LumpinfoT[];
+}
+
 /*
 ==================
 W_CleanupName
@@ -174,6 +198,15 @@ export function W_LoadWadFile(filename: string): void {
 // (this unit's RULING) so tests can exercise the WAD2 parser without a real
 // COM_LoadHunkFile / search-path setup.
 export function W_LoadWadFromBytes(filename: string, bytes: Uint8Array): void {
+  const parsed = W_ParseWad2(filename, bytes);
+
+  wad_base = parsed.base;
+  wad_numlumps = parsed.lumps.length;
+  wad_lumps = parsed.lumps;
+}
+
+// U4 addition: the stateless half of the above -- see this file's header.
+export function W_ParseWad2(filename: string, bytes: Uint8Array): Wad2FileT {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
   if (
@@ -182,23 +215,43 @@ export function W_LoadWadFromBytes(filename: string, bytes: Uint8Array): void {
     view.getUint8(2) !== "D".charCodeAt(0) ||
     view.getUint8(3) !== "2".charCodeAt(0)
   ) {
-    return Sys_Error("Wad file %s doesn't have WAD2 id\n", filename);
+    Sys_Error("Wad file %s doesn't have WAD2 id\n", filename);
   }
 
   const header = readWadinfo(view, 0);
 
-  wad_base = bytes;
-  wad_numlumps = header.numlumps; // LittleLong(header->numlumps) -- identity on little-endian
+  const numlumps = header.numlumps; // LittleLong(header->numlumps) -- identity on little-endian
   const infotableofs = header.infotableofs; // LittleLong(header->infotableofs) -- identity on little-endian
 
-  wad_lumps = [];
-  for (let i = 0; i < wad_numlumps; i++) {
+  const lumps: LumpinfoT[] = [];
+  for (let i = 0; i < numlumps; i++) {
     const lump_p = readLumpinfo(view, infotableofs + i * LUMPINFO_T_SIZE);
     // lump_p->filepos/size are LittleLong'd in the C; identity on little-endian, already read that way above.
     lump_p.name = W_CleanupName(lump_p.name);
-    if (lump_p.type === TYP_QPIC) SwapPic(wad_base.subarray(lump_p.filepos));
-    wad_lumps.push(lump_p);
+    if (lump_p.type === TYP_QPIC) SwapPic(bytes.subarray(lump_p.filepos));
+    lumps.push(lump_p);
   }
+
+  return { base: bytes, lumps };
+}
+
+// U4 addition: Wad2FileT-scoped lookups for an externally parsed wad (see
+// this file's header). Return null instead of throwing -- a lump missing
+// from one candidate wad is an ordinary "try the next one" case for the
+// caller, not the fatal error W_GetLumpinfo/W_GetLumpName make it for the
+// singleton gfx.wad.
+export function W_FindLump(wad: Wad2FileT, name: string): LumpinfoT | null {
+  const clean = W_CleanupName(name);
+  for (const lump of wad.lumps) {
+    if (lump.name === clean) return lump;
+  }
+  return null;
+}
+
+export function W_GetLumpBytes(wad: Wad2FileT, name: string): Uint8Array | null {
+  const lump = W_FindLump(wad, name);
+  if (lump === null) return null;
+  return wad.base.subarray(lump.filepos, lump.filepos + lump.disksize);
 }
 
 /*
