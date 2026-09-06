@@ -1,0 +1,532 @@
+{
+  "family": "r",
+  "drivers": [
+    {
+      "name": "r_trees_id1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "id1"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_trees_hipnotic_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "hipnotic"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_trees_rogue_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "rogue"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_trees_ctf_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "ctf"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_trees_dopa_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "dopa"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_trees_mg1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "mg1"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 900,
+      "needs": [
+        "rerelease",
+        "long"
+      ]
+    },
+    {
+      "name": "r_trees_mg3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "mg3"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 900,
+      "needs": [
+        "rerelease",
+        "long"
+      ]
+    },
+    {
+      "name": "r_trees_id1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "id1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_trees_hipnotic_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "hipnotic",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_trees_rogue_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "rogue",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_trees_ctf_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "ctf",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_trees_dopa_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "dopa",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_trees_mg1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "mg1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 900,
+      "needs": [
+        "rerelease",
+        "gl",
+        "long"
+      ]
+    },
+    {
+      "name": "r_trees_mg3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_trees.ts",
+        "--tree",
+        "mg3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 900,
+      "needs": [
+        "rerelease",
+        "gl",
+        "long"
+      ]
+    },
+    {
+      "name": "r_progs_rerelease_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_progs_features.ts",
+        "--phase",
+        "rerelease"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_progs_ctf_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_progs_features.ts",
+        "--phase",
+        "ctf"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_progs_classic_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_progs_features.ts",
+        "--phase",
+        "classic"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "r_progs_rerelease_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_progs_features.ts",
+        "--phase",
+        "rerelease",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_progs_ctf_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_progs_features.ts",
+        "--phase",
+        "ctf",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_progs_classic_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_progs_features.ts",
+        "--phase",
+        "classic",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_formats_id1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_formats.ts",
+        "--phase",
+        "id1"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_formats_sky_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_formats.ts",
+        "--phase",
+        "sky"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_formats_mg3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_formats.ts",
+        "--phase",
+        "mg3"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease",
+        "long"
+      ]
+    },
+    {
+      "name": "r_formats_vault_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_formats.ts",
+        "--phase",
+        "vault"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_formats_id1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_formats.ts",
+        "--phase",
+        "id1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_formats_sky_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_formats.ts",
+        "--phase",
+        "sky",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_formats_mg3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_formats.ts",
+        "--phase",
+        "mg3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease",
+        "gl",
+        "long"
+      ]
+    },
+    {
+      "name": "r_formats_vault_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_formats.ts",
+        "--phase",
+        "vault",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 600,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "r_text_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/r_text.ts"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "r_text_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/r_text.ts",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    }
+  ]
+}
