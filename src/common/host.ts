@@ -100,7 +100,10 @@ Deviations from PORTING.md / the C source:
   `./host_cmd` -- are resolved lazily with Bun's synchronous `require()`
   (`svMainMod()`/`svPhysMod()`/`svUserMod()`/`prEdictMod()`/`prExecMod()`/
   `hostCmdMod()` below), the same mechanism net_main.ts uses for net_loop.ts
-  and net_dgrm.ts. Type-only imports stay static.
+  and net_dgrm.ts. Type-only imports stay static. `../progs/ext/ruleset.ts`
+  (U33's `SV_RulesetIsRerelease` check in Host_ServerFrame/Host_FilterTime)
+  statically imports `../progs/pr_edict`, so it joins the lazy list too
+  (`rulesetMod()`).
 - `Host_Shutdown`'s bare `printf ("recursive shutdown\n")` becomes
   `Sys_Printf`: PORTING.md allows no print outside `src/platform/sys.ts`'s
   boundary, and `Sys_Printf` is that boundary.
@@ -138,6 +141,7 @@ import type * as SvUserModule from "../server/sv_user";
 import type * as PrEdictModule from "../progs/pr_edict";
 import type * as PrExecModule from "../progs/pr_exec";
 import type * as HostCmdModule from "./host_cmd";
+import type * as RulesetModule from "../progs/ext/ruleset";
 import { EDICT_TO_PROG, pr } from "../progs/progs";
 import type { GlobalVars } from "../progs/progdefs";
 import { Cbuf_Execute, Cbuf_AddText, Cbuf_InsertText, Cbuf_Init, Cmd_Init, cmdHost } from "./cmd";
@@ -191,6 +195,9 @@ function prExecMod(): typeof PrExecModule {
 }
 function hostCmdMod(): typeof HostCmdModule {
   return require("./host_cmd");
+}
+function rulesetMod(): typeof RulesetModule {
+  return require("../progs/ext/ruleset");
 }
 
 export { host_parms };
@@ -383,6 +390,10 @@ export const host = {
   framecount: 0,
   hunklevel: 0,
   minimum_memory: 0,
+  // U33: Host_ServerFrame's fixed-step accumulator for the rerelease ruleset's
+  // sv_tickrate clock (see Host_ServerFrame). Unused (stays 0) on the classic
+  // frame-coupled path.
+  svTickAccumulator: 0,
 };
 
 // byte *host_basepal; byte *host_colormap;
@@ -439,6 +450,15 @@ export const host_speeds = new CvarT("host_speeds", "0"); // set for running tim
 
 export const sys_ticrate = new CvarT("sys_ticrate", "0.05");
 export const serverprofile = new CvarT("serverprofile", "0");
+
+// U33 (re-release addition, ARCHITECTURE.md "Engine core commitments" ->
+// Physics tick): the fixed-step server clock the `rerelease` ruleset uses.
+// 72 matches WinQuake's frame-coupled cap so a re-release server defaults to
+// the same simulation rate; 0 falls back to the classic frame-coupled path
+// (Host_ServerFrame's `rerelease` branch below never triggers). No reference
+// engine has this cvar -- see Host_ServerFrame's own comment for why it
+// exists here.
+export const sv_tickrate = new CvarT("sv_tickrate", "72", false, true);
 
 export const fraglimit = new CvarT("fraglimit", "0", false, true);
 export const timelimit = new CvarT("timelimit", "0", false, true);
@@ -606,6 +626,7 @@ export function Host_InitLocal(): void {
 
   Cvar_RegisterVariable(sys_ticrate);
   Cvar_RegisterVariable(serverprofile);
+  Cvar_RegisterVariable(sv_tickrate);
 
   Cvar_RegisterVariable(fraglimit);
   Cvar_RegisterVariable(timelimit);
@@ -867,7 +888,14 @@ Returns false if the time is too short to run a frame
 export function Host_FilterTime(time: number): boolean {
   host.realtime += time;
 
-  if (!(hostClientHooks.clsTimedemo?.() ?? false) && host.realtime - host.oldrealtime < 1.0 / 72.0) return false; // framerate is too high
+  // U33 (ARCHITECTURE.md "Engine core commitments" -> Physics tick): under
+  // the rerelease ruleset with a fixed server tickrate, the renderer runs
+  // free -- Host_ServerFrame steps the simulation on its own clock, so the
+  // classic 72Hz frame-rate floor below (WinQuake's cap, kept byte-for-byte
+  // for the classic ruleset) does not apply here.
+  const decoupled = rulesetMod().SV_RulesetIsRerelease() && sv_tickrate.value > 0;
+
+  if (!decoupled && !(hostClientHooks.clsTimedemo?.() ?? false) && host.realtime - host.oldrealtime < 1.0 / 72.0) return false; // framerate is too high
 
   host.frametime = host.realtime - host.oldrealtime;
   host.oldrealtime = host.realtime;
@@ -897,6 +925,26 @@ export function Host_GetConsoleCommands(): void {
   }
 }
 
+// U33 (ARCHITECTURE.md "Engine core commitments" -> Physics tick): the
+// rerelease ruleset's fixed-step accumulator clamp. Ironwail/QuakeSpasm have
+// no such decoupling to match -- this bound is this engine's own "fix your
+// timestep"-style spiral-of-death guard, not a value read from any reference
+// source. host.svTickAccumulator deliberately keeps any leftover time past
+// this many steps rather than resetting to 0: sv.time falls behind real time
+// under sustained overload (the sim runs in slow motion) instead of either
+// spiralling (uncapped catch-up work every frame drives fps to zero) or
+// silently discarding elapsed time every frame it clamps.
+const SV_TICK_MAX_STEPS = 4;
+
+// Host_FilterTime's `host.realtime - host.oldrealtime` subtraction (both
+// accumulated sums of many real frame deltas) lands a bit below the exact
+// decimal value on some frames -- e.g. 0.049999999999999996 instead of 0.05
+// -- purely from IEEE754 rounding, not from any real shortfall of elapsed
+// time. Comparing the accumulator against `dt` with this tolerance absorbs
+// that noise; a real shortfall of a whole step is always many orders of
+// magnitude larger than it.
+const SV_TICK_EPSILON = 1e-9;
+
 /*
 ==================
 Host_ServerFrame
@@ -913,12 +961,44 @@ export function Host_ServerFrame(): void {
   // check for new clients
   svMainMod().SV_CheckForNewClients();
 
-  // read client messages
-  svUserMod().SV_RunClients();
+  if (rulesetMod().SV_RulesetIsRerelease() && sv_tickrate.value > 0) {
+    // U33: fixed-step server clock. host.frametime is the real, uncapped
+    // render frame's elapsed time here (Host_FilterTime's decoupled branch
+    // skips the classic 72Hz floor for this ruleset), and is spent in
+    // 1/sv_tickrate chunks: each chunk pins host.frametime to that chunk
+    // so every one of sv_phys.ts's own `host.frametime` reads (SV_AddGravity,
+    // SV_FlyMove, and SV_Physics's own `sv.time += host.frametime`) advance
+    // sv.time by exactly 1/sv_tickrate per step, decoupled from the render
+    // rate except in aggregate.
+    const dt = 1 / sv_tickrate.value;
+    const realFrametime = host.frametime;
+    host.svTickAccumulator += realFrametime;
 
-  // move things around and think
-  // always pause in single player if in console or menus
-  if (!sv.paused && (svs.maxclients > 1 || (hostClientHooks.keyDestIsGame?.() ?? true))) svPhysMod().SV_Physics();
+    let steps = 0;
+    while (host.svTickAccumulator + SV_TICK_EPSILON >= dt && steps < SV_TICK_MAX_STEPS) {
+      host.frametime = dt;
+      globalStruct().frametime = dt;
+
+      // read client messages
+      svUserMod().SV_RunClients();
+
+      // move things around and think
+      // always pause in single player if in console or menus
+      if (!sv.paused && (svs.maxclients > 1 || (hostClientHooks.keyDestIsGame?.() ?? true))) svPhysMod().SV_Physics();
+
+      host.svTickAccumulator -= dt;
+      steps++;
+    }
+
+    host.frametime = realFrametime; // restore the render frame's own elapsed time
+  } else {
+    // read client messages
+    svUserMod().SV_RunClients();
+
+    // move things around and think
+    // always pause in single player if in console or menus
+    if (!sv.paused && (svs.maxclients > 1 || (hostClientHooks.keyDestIsGame?.() ?? true))) svPhysMod().SV_Physics();
+  }
 
   // send all messages to the clients
   svMainMod().SV_SendClientMessages();

@@ -120,6 +120,7 @@ import {
 import { SV_Move, SV_LinkEdict, SV_PointContents, SV_TestEntityPosition, TraceT, MOVE_NORMAL, MOVE_NOMONSTERS, MOVE_MISSILE } from "./world";
 import { SV_StartSound } from "./sv_main";
 import { MOVETYPE_GIB, SV_RulesetIsRerelease } from "../progs/ext/ruleset";
+import { Q_rint } from "../common/protocol";
 import { CvarT } from "../common/cvar";
 import { host } from "../common/host";
 import {
@@ -228,6 +229,9 @@ export function SV_RunThink(ent: EdictT): boolean {
   if (thinktime < sv.time) thinktime = sv.time; // don't let things stay in the past.
   // it is possible to start that way
   // by a trigger with a local time.
+  ent.oldthinktime = thinktime;
+  ent.oldframe = ent.v.frame; // johnfitz
+
   ent.v.nextthink = 0;
   const globals = requireGlobalStruct();
   globals.time = thinktime;
@@ -1177,6 +1181,20 @@ export function SV_Physics(): void {
     )
       SV_Physics_Toss(ent);
     else Sys_Error("SV_Physics: bad movetype %i", ent.v.movetype | 0);
+
+    // johnfitz -- PROTOCOL_FITZQUAKE
+    // capture interval to nextthink here and send it to client for better
+    // lerp timing, but only if interval is not 0.1 (which client assumes)
+    ent.sendinterval = false;
+    if (
+      !ent.free &&
+      ent.v.nextthink > sv.time &&
+      (ent.v.movetype === MOVETYPE_STEP || ent.v.movetype === MOVETYPE_WALK || ent.v.frame !== ent.oldframe)
+    ) {
+      const j = Q_rint((ent.v.nextthink - ent.oldthinktime) * 255);
+      if (j >= 0 && j < 256 && j !== 25 && j !== 26) ent.sendinterval = true; // 25 and 26 are close enough to 0.1 to not send
+    }
+    // johnfitz
   }
 
   if (globals.force_retouch) globals.force_retouch--;

@@ -115,7 +115,6 @@ import {
   PROTOCOL_FITZQUAKE,
   PROTOCOL_NETQUAKE,
   PROTOCOL_RMQ,
-  Q_rint,
   SvcOpsT,
 } from "../common/protocol";
 import { getCodec } from "../common/protocol/registry";
@@ -129,7 +128,6 @@ import {
   FL_ONGROUND,
   MOVETYPE_PUSH,
   MOVETYPE_STEP,
-  MOVETYPE_WALK,
   NUM_PING_TIMES,
   NUM_SPAWN_PARMS,
   ServerStateT,
@@ -731,28 +729,13 @@ export function SV_WriteEntitiesToClient(clent: EdictT, msg: SizeBuf): void {
 
       // johnfitz -- capture the interval to nextthink and send it to the
       // client for better lerp timing, but only if the interval is not 0.1
-      // (which the client assumes). Ironwail measures the interval as
-      // `nextthink - oldthinktime` and captures it in SV_Physics
-      // (sv_phys.c:1283-1289); edict_t's `oldthinktime`/`oldframe`/
-      // `sendinterval` fields live in src/progs/progs.ts and src/server/
-      // sv_phys.ts, both outside this unit's SCOPE, so the gate here uses the
-      // same quantity the wire byte carries, `nextthink - sv.time`. That is
-      // the think interval for an entity whose think ran this frame, which is
-      // every entity SV_Physics just stepped -- SV_Physics runs immediately
-      // before SV_SendClientMessages. The `frame != oldframe` half of
-      // Ironwail's condition needs `oldframe` and is dropped; see this unit's
-      // report.
-      u.sendinterval = false;
-      u.lerpfinish = 0;
-      if (ent.v.nextthink > sv.time && (ent.v.movetype === MOVETYPE_STEP || ent.v.movetype === MOVETYPE_WALK)) {
-        const interval = ent.v.nextthink - sv.time;
-        const j = Q_rint(interval * 255);
-        if (j >= 0 && j < 256 && j !== 25 && j !== 26) {
-          // 25 and 26 are close enough to 0.1 to not send
-          u.sendinterval = true;
-          u.lerpfinish = interval;
-        }
-      }
+      // (which the client assumes). The gate itself (`ent.sendinterval`) is
+      // SV_Physics's, computed once per entity per frame from
+      // `oldthinktime`/`oldframe` (sv_phys.ts, sv_phys.c:1283-1289); this
+      // site only recomputes the wire quantity Ironwail's sv_main.c does at
+      // write time, `nextthink - sv.time` (sv_main.c:952).
+      u.sendinterval = ent.sendinterval;
+      u.lerpfinish = ent.sendinterval ? ent.v.nextthink - sv.time : 0;
     } else {
       u.alpha = ENTALPHA_DEFAULT;
       u.scale = ENTSCALE_DEFAULT;

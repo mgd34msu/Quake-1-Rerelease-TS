@@ -123,6 +123,15 @@ export class EdictBaseT {
 
   freetime = 0; // sv.time when the object was freed
 
+  // johnfitz -- sv_phys.c's SV_RunThink/SV_Physics lerp-timing capture:
+  // oldthinktime/oldframe are the thinktime/v.frame at the entity's last
+  // think, and sendinterval is SV_Physics's per-frame gate for whether the
+  // wire's U_LERPFINISH byte (nextthink - sv.time, scaled to 0-255) is worth
+  // sending. All three are progs.h's edict_t fields, not QuakeC-visible.
+  oldthinktime = 0;
+  oldframe = 0;
+  sendinterval = false;
+
   // entvars_t (C-exported fields from progs) is the head of `fields`;
   // fields beyond it (QuakeC-declared) follow immediately, exactly as the
   // C's `// other fields from progs come immediately after` comment says --
