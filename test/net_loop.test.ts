@@ -28,7 +28,7 @@ import { describe, test, expect } from "bun:test";
 import { netLoopDriver } from "../src/common/net_loop";
 import { QsocketT } from "../src/common/net";
 import { SizeBuf, SZ_Alloc, SZ_Write, net_message } from "../src/common/sizebuf";
-import { NET_Init, setNetHostHooks, type NetHostHooks } from "../src/common/net_main";
+import { NET_Init, net_maxlocalclients, net_numsockets, setNetHostHooks, setNetMaxLocalClients, type NetHostHooks } from "../src/common/net_main";
 
 const fakeHooks: NetHostHooks = {
   svActive: () => false,
@@ -150,5 +150,65 @@ describe("Loop driver end-to-end: connect, message exchange, close", () => {
     expect(server.receiveMessageLength).toBe(0);
     expect(server.sendMessageLength).toBe(0);
     expect(server.canSend).toBe(true);
+  });
+});
+
+/*
+U43 (local splitscreen): a local player is a loopback CONNECTION, and a
+loopback connection is a PAIR of qsockets. Four players on one screen are four
+pairs open at once on one server, each carrying only its own traffic.
+*/
+describe("one connection pair per local seat", () => {
+  test("NET_Init's pool carries a client-side socket for every local player, not just one", () => {
+    const saved = net_maxlocalclients;
+    try {
+      setNetMaxLocalClients(4);
+      NET_Init();
+      // svsMaxclientslimit() (the server-side socket per player slot) plus one
+      // client-side socket per local player.
+      expect(net_numsockets).toBe(fakeHooks.svsMaxclientslimit() + 4);
+    } finally {
+      setNetMaxLocalClients(saved);
+    }
+  });
+
+  test("four pairs are open at once and each message reaches only its own peer", () => {
+    const pairs: Array<{ client: QsocketT; server: QsocketT }> = [];
+    try {
+      for (let i = 0; i < 4; i++) {
+        const client = netLoopDriver.Connect("local");
+        expect(client).not.toBeNull();
+        if (!client) throw new Error("unreachable");
+        const server = netLoopDriver.CheckNewConnections();
+        expect(server).not.toBeNull();
+        if (!server) throw new Error("unreachable");
+        expect(client.driverdata).toBe(server);
+        expect(server.driverdata).toBe(client);
+        pairs.push({ client, server });
+      }
+
+      // every socket is its own, in both directions
+      const all = pairs.flatMap((p) => [p.client, p.server]);
+      expect(new Set(all).size).toBe(8);
+
+      for (let i = 0; i < pairs.length; i++) {
+        const msg = makeSizeBuf([i, i + 100]);
+        expect(netLoopDriver.QSendMessage(pairs[i].client, msg)).toBe(1);
+      }
+      for (let i = 0; i < pairs.length; i++) {
+        expect(netLoopDriver.QGetMessage(pairs[i].server)).toBe(1);
+        expect(Array.from(net_message.data.subarray(0, net_message.cursize))).toEqual([i, i + 100]);
+        // nothing landed on anyone else
+        for (let j = 0; j < pairs.length; j++) {
+          if (j <= i) continue;
+          expect(pairs[j].client.receiveMessageLength).toBe(0);
+        }
+      }
+    } finally {
+      for (const p of pairs) {
+        netLoopDriver.Close(p.client);
+        netLoopDriver.Close(p.server);
+      }
+    }
   });
 });

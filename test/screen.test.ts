@@ -40,6 +40,8 @@ import * as consoleMod from "../src/client/console";
 import * as menuMod from "../src/client/menu";
 import * as sbarMod from "../src/client/sbar";
 import * as sndDmaMod from "../src/client/snd_dma";
+import * as ssMod from "../src/client/splitscreen";
+import * as serverMod from "../src/server/server";
 
 const { ModelT, TextureT: TextureTClass } = modelMod;
 const { Cmd_Exists } = cmdMod;
@@ -777,5 +779,75 @@ describe("SCR_ScreenShot_f", () => {
   test("forwards to the renderer", () => {
     screen.SCR_ScreenShot_f();
     expect(calls).toEqual(["SCR_ScreenShot_f"]);
+  });
+});
+
+/*
+U43 (local splitscreen): SCR_UpdateScreen renders one view per seat, and a
+seat past 0 reaches SIGNONS on its own schedule -- it opens its loopback
+connection one frame and finishes its signon over the next few. Until then its
+ClientStateT is the fresh one splitscreen.ts's makeSeat built, with no
+worldmodel for R_RenderView to walk.
+*/
+describe("SCR_UpdateScreen with a seat that has not signed on yet", () => {
+  const { SS_SetSeats, SS_Shutdown, SS_SeatCount } = ssMod;
+  const { sv, svs } = serverMod;
+
+  const savedSvActive = sv.active;
+  const savedMaxclients = svs.maxclients;
+  const savedMaxclientslimit = svs.maxclientslimit;
+  const savedCoop = Cvar_FindVar("coop")?.string ?? null;
+
+  afterAll(() => {
+    SS_SetSeats(1);
+    SS_Shutdown();
+    sv.active = savedSvActive;
+    svs.maxclients = savedMaxclients;
+    svs.maxclientslimit = savedMaxclientslimit;
+    if (savedCoop !== null) cvarMod.Cvar_Set("coop", savedCoop);
+  });
+
+  test("the unconnected seat's pane is cleared and given the plaque; only the seat with a view is rendered", () => {
+    sv.active = false;
+    svs.maxclients = 2;
+    svs.maxclientslimit = 2;
+    SS_SetSeats(2);
+    expect(SS_SeatCount()).toBe(2);
+
+    renderMod.r_refdef.fov_x = 90; // what a real SCR_CalcRefdef leaves for CalcFov
+    calls.length = 0;
+    SCR_UpdateScreen();
+
+    // seat 0 (connected, worldmodel set by resetScreenState) renders; seat 1
+    // -- never connected -- does not, and nothing throws on its behalf
+    expect(calls.filter((c) => c === "R_RenderView").length).toBe(1);
+    // the empty pane is cleared rather than left holding another seat's
+    // pixels; the plaque pic itself is drawn only when the game data has one
+    // (this suite mounts no filesystem, so it does not)
+    expect(calls).toContain("Draw_Fill");
+
+    SS_SetSeats(1);
+    SS_Shutdown();
+  });
+
+  test("with every seat signed on, one view per seat is rendered", () => {
+    sv.active = false;
+    svs.maxclients = 2;
+    svs.maxclientslimit = 2;
+    SS_SetSeats(2);
+
+    const seat1 = ssMod.SS_Seat(1);
+    seat1.binding.cls.state = CactiveT.ca_connected;
+    seat1.binding.cls.signon = SIGNONS;
+    seat1.binding.cl.worldmodel = new ModelT();
+    seat1.binding.cl.paused = true;
+
+    renderMod.r_refdef.fov_x = 90; // what a real SCR_CalcRefdef leaves for CalcFov
+    calls.length = 0;
+    SCR_UpdateScreen();
+    expect(calls.filter((c) => c === "R_RenderView").length).toBe(2);
+
+    SS_SetSeats(1);
+    SS_Shutdown();
   });
 });

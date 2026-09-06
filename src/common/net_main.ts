@@ -203,6 +203,23 @@ export let net_activeSockets: QsocketT | null = null;
 export let net_freeSockets: QsocketT | null = null;
 export let net_numsockets = 0;
 
+/*
+U43 (local splitscreen): how many local clients this process can run at once.
+The C's pool is `svs.maxclientslimit` sockets plus ONE more for the client a
+listen server's own machine is playing on -- one server-side socket per player
+slot, and a single client-side socket, because a WinQuake process has exactly
+one client. A splitscreen seat is a full loopback CONNECTION of its own
+(src/client/splitscreen.ts), and the loopback driver's connection is a PAIR of
+qsockets, so N local players need N client-side sockets rather than one.
+src/client/splitscreen.ts sets this to MAX_SEATS at load; left at 1 -- what a
+dedicated server or a client with no splitscreen module needs -- the pool is
+sized exactly as the C's was.
+*/
+export let net_maxlocalclients = 1;
+export function setNetMaxLocalClients(n: number): void {
+  net_maxlocalclients = Math.max(1, n | 0);
+}
+
 export let tcpipAvailable = false;
 export let my_tcpip_address = "";
 export function setTcpipAvailable(v: boolean): void {
@@ -896,7 +913,7 @@ export function NET_Init(): void {
 
   if (COM_CheckParm("-listen") || (hostHooks?.clsStateDedicated() ?? false)) listening = true;
   net_numsockets = hostHooks?.svsMaxclientslimit() ?? 0;
-  if (!(hostHooks?.clsStateDedicated() ?? false)) net_numsockets++;
+  if (!(hostHooks?.clsStateDedicated() ?? false)) net_numsockets += net_maxlocalclients;
 
   SetNetTime();
 

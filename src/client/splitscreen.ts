@@ -93,14 +93,20 @@ import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv } from "../common/cmd";
 import { Con_Printf } from "./console";
 import { clientProfile } from "../common/profile";
 import { Q_atoi } from "../common/common";
+import { SZ_Alloc } from "../common/sizebuf";
+import { setNetMaxLocalClients } from "../common/net_main";
 import { sv, svs } from "../server/server";
 import { svMainHooks } from "../server/sv_main";
 import { vid } from "./vid";
 import { EntityT, r_refdef } from "./render";
 import { scr_vrect } from "./screen_types";
-import { CactiveT, CL_ENTITIES_INITIAL, ClientStateT, ClientStaticT, MAX_VISEDICTS, CL_BindSeat, CL_SeatBinding0, cls, clState, type SeatBindingT } from "./client";
+import { CactiveT, CL_ENTITIES_INITIAL, ClientStateT, ClientStaticT, MAX_VISEDICTS, CL_BindSeat, CL_SeatBinding0, cl, cls, clState, type SeatBindingT } from "./client";
 
 export const MAX_SEATS = 4;
+
+/** The size CL_Init gives seat 0's `cls.message` (cl_main.ts's
+ *  `SZ_Alloc(cls.message, 1024)`); every seat's is allocated the same. */
+const CLIENT_MESSAGE_SIZE = 1024;
 
 /*
 `cl_splitscreen` is a COMMAND, not a cvar, for two reasons. It is not a
@@ -161,6 +167,11 @@ function makeSeat(index: number): SeatT {
   // simply not connected yet, and CL_EstablishConnection refuses to open a
   // connection from `ca_dedicated`.
   stat.state = CactiveT.ca_disconnected;
+  // Every reliable command a client sends -- the signon replies, `name`,
+  // `color`, anything Cmd_ForwardToServer hands over -- is written into this
+  // buffer, and a `new SizeBuf()` has no room at all. CL_Init allocates seat
+  // 0's; a seat past 0 is constructed here and gets the same allocation.
+  SZ_Alloc(stat.message, CLIENT_MESSAGE_SIZE);
   return new SeatT(index, {
     cl: new ClientStateT(),
     cls: stat,
@@ -324,11 +335,27 @@ glViewport from r_refdef.vrect, and the software rasterizer's R_ViewChanged
 derives every clamp edge from it.
 ==================
 */
+/** `viewsize` as a 0..1 fraction, on R_SetVrect's own rules (clamped to 100,
+ *  and a full screen at intermission). Read through Cvar_FindVar rather than
+ *  imported from screen.ts, which imports this module. */
+function seatViewsize(): number {
+  if (cl.intermission) return 1;
+  const viewsize = Cvar_FindVar("viewsize");
+  if (viewsize === null) return 1;
+  const value = viewsize.value;
+  return (value > 100 ? 100 : value) / 100;
+}
+
 export function SS_ApplySeatRect(sbLines: number): void {
   if (seatCount <= 1) return;
   const pane = SS_SeatRect(activeSeat);
 
-  let size = r_refdef.vrect.width / vid.width;
+  // How much of a pane the view fills, read where both renderers' R_SetVrect
+  // reads it -- from `viewsize`. Measuring it off r_refdef.vrect instead makes
+  // this function's own output its next input: by the time the second seat is
+  // cut, r_refdef.vrect is the FIRST seat's pane, so the fraction compounds
+  // seat by seat and frame by frame until every view is a sliver.
+  let size = seatViewsize();
   if (!(size > 0)) size = 1;
   if (size > 1) size = 1;
 
@@ -378,14 +405,64 @@ export function SS_SeatNameCvar(index: number): CvarT | null {
   return getOrCreateCvar(`cl_name_${index + 1}`, `player ${index + 1}`, true);
 }
 
+/*
+Distinct colours out of the box, so four players are told apart on the
+scoreboard without anyone opening a menu. The byte is (shirt << 4) | pants, on
+Quake's own 0..13 colour table, the same encoding `_cl_color` carries: 4/4
+red, 13/13 pink, 11/11 light green, 2/2 blue.
+
+The PANTS nibble is the one that has to differ, not the byte: Host_Color_f
+sets `edict->v.team` to `bottom + 1`, and the re-release's CTF progs read that
+team, so two seats sharing a pants colour join the same CTF team however
+different the rest of the byte looks. A fixed table cannot promise that on its
+own -- seat 0's `_cl_color` is the player's own archived choice and can be any
+of them -- so the default handed to a seat is the first entry of this table
+whose pants nibble no seat already has.
+*/
+const SEAT_COLORS = [68, 221, 187, 34];
+
+function pants(color: number): number {
+  return color & 15;
+}
+
+/*
+What the primary player is actually wearing. Under the re-release's CTF progs
+a player's colours are their TEAM's, chosen by the progs when that player
+joined, so `_cl_color` -- the archived preference the client asked with -- is
+not necessarily what the seats behind it have to differ from. The server's own
+copy is, and a splitscreen session always has one in this process. Seat 0 is
+long signed on by the time any other seat asks.
+*/
+function primaryColor(): number | null {
+  if (sv.active && svs.clients.length > 0 && svs.clients[0].active) return svs.clients[0].colors | 0;
+  const cvar = Cvar_FindVar("_cl_color");
+  return cvar !== null ? cvar.value | 0 : null;
+}
+
+function seatDefaultColor(index: number): number {
+  const taken: number[] = [];
+  const primary = primaryColor();
+  if (primary !== null) taken.push(pants(primary));
+  // Every OTHER seat, not just the ones below this one: seats sign on in
+  // whatever order their connections complete, and a seat's own cvar carries
+  // the colour it signed on with well before the server has processed it.
+  for (let i = 1; i < MAX_SEATS; i++) {
+    if (i === index) continue;
+    const other = Cvar_FindVar(`cl_color_${i + 1}`);
+    if (other !== null) taken.push(pants(other.value | 0));
+  }
+  for (const color of SEAT_COLORS) {
+    if (!taken.includes(pants(color))) return color;
+  }
+  return SEAT_COLORS[index] ?? SEAT_COLORS[0];
+}
+
 export function SS_SeatColorCvar(index: number): CvarT | null {
   if (index <= 0) return null;
-  // Distinct colours out of the box, so four players are told apart on the
-  // scoreboard without anyone opening a menu. The byte is (shirt << 4) |
-  // pants, on Quake's own 0..13 colour table, the same encoding `_cl_color`
-  // carries: 4/4 red, 11/11 light green, 13/13 pink.
-  const defaults = ["0", "68", "187", "221"];
-  return getOrCreateCvar(`cl_color_${index + 1}`, defaults[index] ?? "0", true);
+  const name = `cl_color_${index + 1}`;
+  const existing = Cvar_FindVar(name);
+  if (existing !== null) return existing;
+  return getOrCreateCvar(name, String(seatDefaultColor(index)), true);
 }
 
 //=============================================================================
@@ -452,6 +529,11 @@ export function SS_SetSeats(count: number): void {
     return;
   }
 
+  // An explicit count replaces whatever a level change was holding: a player
+  // who types `cl_splitscreen 1` has left splitscreen, and the next map must
+  // not bring the other seats back.
+  resumeSeats = 0;
+
   if (want < seatCount) {
     for (let i = want; i < seatCount; i++) SS_DropSeat(i);
     seatCount = want;
@@ -468,6 +550,7 @@ export function SS_SetSeats(count: number): void {
   } else if (svs.maxclients < want) {
     Con_Printf("cl_splitscreen: this server has %i player slots; %i takes effect on the next map\n", svs.maxclients, want);
     SS_WidenServer(want);
+    resumeSeats = want;
     return;
   }
 
@@ -475,13 +558,53 @@ export function SS_SetSeats(count: number): void {
   seatCount = want;
 }
 
+/*
+A slot count asked for while a server was already running. `svs.clients` and
+the player edicts behind it are sized against `svs.maxclients` when
+SV_SpawnServer runs, so raising `svs.maxclients` under a live server leaves
+SV_UpdateToReliableMessages walking client slots whose edict was never
+allocated. The request is held here instead and applied by the next
+SV_SpawnServer, which is what the console line already promises the player.
+*/
+let pendingMaxclients = 0;
+
+/*
+The seat count a level change is expected to bring back. CL_Disconnect tears
+every seat down before a new map spawns (their connections are to the server
+that is going away), and a `map` in the middle of a splitscreen game is still
+the same session with the same players in it, so the count is remembered here
+and re-applied once the new server exists.
+*/
+let resumeSeats = 0;
+
+/*
+==================
+SS_ServerSpawned
+
+Called by SV_SpawnServer at the point it sizes `svs.clients` and hands each
+slot its player edict: the one moment a held slot count can be applied. The
+return value is the number of player slots the server is being asked to come
+up with (0 = no request).
+==================
+*/
+export function SS_ServerSpawned(): number {
+  const want = pendingMaxclients;
+  pendingMaxclients = 0;
+  return want;
+}
+
 /** Raise the server's player-slot count (and turn co-op on) for `want` local
- *  players. Only meaningful before the next SV_SpawnServer. */
+ *  players. A slot count only takes effect when a server is created, so under
+ *  a server that is already running the count is held for the next one. */
 export function SS_WidenServer(want: number): void {
   if (want <= 1) return;
   const deathmatch = Cvar_FindVar("deathmatch");
   const coop = Cvar_FindVar("coop");
   if (deathmatch !== null && deathmatch.value === 0 && coop !== null && coop.value === 0) Cvar_SetValue("coop", 1);
+  if (sv.active) {
+    if (pendingMaxclients < want) pendingMaxclients = want;
+    return;
+  }
   if (svs.maxclients < want) {
     svs.maxclients = want;
     if (svs.maxclientslimit < want) svs.maxclientslimit = want;
@@ -541,8 +664,19 @@ SV_CheckForNewClients -> SV_ConnectClient sees nothing unusual.
 ==================
 */
 export function SS_Reconcile(): void {
-  if (seatCount <= 1) return;
   if (!sv.active) return;
+  // A level change disconnects every seat before the new server exists (see
+  // SS_Shutdown), and the primary client's own reconnect to the new level runs
+  // through CL_Disconnect a second time, so the seats can only come back once
+  // that reconnect has settled -- which is here, the first frame the primary
+  // client is reading from the new server.
+  if (resumeSeats > 1 && seatCount === 1 && seatAt(0).binding.cls.state === CactiveT.ca_connected) {
+    const back = Math.max(1, Math.min(MAX_SEATS, Math.min(resumeSeats, svs.maxclients)));
+    resumeSeats = 0;
+    seatCount = back;
+    for (let i = 1; i < back; i++) seatAt(i).wanted = true;
+  }
+  if (seatCount <= 1) return;
   for (let i = 1; i < seatCount; i++) {
     const seat = seatAt(i);
     if (!seat.wanted) continue;
@@ -592,8 +726,11 @@ export function SS_SendCmd(): void {
 }
 
 /** Every seat is torn down when the session ends (CL_Disconnect on seat 0,
- *  Host_ShutdownServer, a new map). */
+ *  Host_ShutdownServer, a new map). The count is remembered so a level change
+ *  -- which disconnects every seat before the new server exists -- brings the
+ *  same players back on the other side of it; see SS_ServerSpawned. */
 export function SS_Shutdown(): void {
+  if (seatCount > 1) resumeSeats = seatCount;
   for (let i = 1; i < seats.length; i++) SS_DropSeat(i);
   SS_ActivateSeat(0);
   seatCount = 1;
@@ -622,6 +759,13 @@ export function SS_Init(): void {
 // SV_SendServerinfo asks how many local seats this machine is running, for
 // the svc_setviews byte it sends a loopback client; see this file's header.
 svMainHooks.localSeatCount = SS_SeatCount;
+// SV_SpawnServer asks, at the point it sizes svs.clients, for a slot count a
+// `cl_splitscreen` could not apply to the server that was already running.
+svMainHooks.serverSpawned = SS_ServerSpawned;
+// Every seat is a full loopback CONNECTION, and a loopback connection costs
+// two qsockets. NET_Init sizes its pool before any seat exists, so it is told
+// here how many local clients this process can ever run at once.
+setNetMaxLocalClients(MAX_SEATS);
 
 /** Seat 0's own `cl`, whatever seat is active -- the sound listener and the
  *  menu read the session's primary client, never "whichever seat is being

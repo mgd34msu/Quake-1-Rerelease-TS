@@ -52,6 +52,7 @@ import { EntityT, ParticleT, r_refdef, re } from "../src/client/render";
 import type { Renderer } from "../src/client/render";
 import { vid, VrectT } from "../src/client/vid";
 import { scrState, scr_vrect } from "../src/client/screen_types";
+import { scr_viewsize } from "../src/client/screen";
 import type { ModelLoaderHooks } from "../src/common/model";
 import { TextureT } from "../src/common/model";
 import { QpicT } from "../src/common/wad";
@@ -74,11 +75,14 @@ import {
   SS_Layout,
   SS_Seat,
   SS_SeatButtons,
+  SS_SeatColorCvar,
   SS_SeatCount,
   SS_SeatRect,
   SS_Reconcile,
+  SS_ServerSpawned,
   SS_SetSeats,
   SS_Shutdown,
+  SS_WidenServer,
   SS_WithSeat,
   cl_splitscreen_layout,
   seatDisconnectHooks,
@@ -468,18 +472,58 @@ describe("SS_ApplySeatRect -- r_refdef.vrect per seat", () => {
   });
 
   test("a reduced viewsize keeps its proportion inside the pane", () => {
-    seats(2);
-    SS_WithSeat(1, () => {
-      r_refdef.vrect.x = 64;
-      r_refdef.vrect.y = 48;
-      r_refdef.vrect.width = 512; // viewsize 80 on a 640-wide screen
-      r_refdef.vrect.height = 384;
-      SS_ApplySeatRect(0);
-      const pane = SS_SeatRect(1);
-      expect(r_refdef.vrect.width).toBeLessThan(pane.width);
-      expect(r_refdef.vrect.x).toBeGreaterThan(pane.x);
-      expect(r_refdef.vrect.y + r_refdef.vrect.height).toBeLessThanOrEqual(pane.y + pane.height);
-    });
+    // The fraction comes from `viewsize` -- where both renderers' R_SetVrect
+    // reads it -- not from whatever r_refdef.vrect happens to hold, which by
+    // the second seat is the FIRST seat's pane.
+    if (Cvar_FindVar("viewsize") === null) Cvar_RegisterVariable(scr_viewsize);
+    const savedViewsize = Cvar_FindVar("viewsize")?.string ?? "100";
+    try {
+      Cvar_Set("viewsize", "80");
+      seats(2);
+      SS_WithSeat(1, () => {
+        r_refdef.vrect.x = 64;
+        r_refdef.vrect.y = 48;
+        r_refdef.vrect.width = 512;
+        r_refdef.vrect.height = 384;
+        SS_ApplySeatRect(0);
+        const pane = SS_SeatRect(1);
+        expect(r_refdef.vrect.width).toBeLessThan(pane.width);
+        expect(r_refdef.vrect.x).toBeGreaterThan(pane.x);
+        expect(r_refdef.vrect.y + r_refdef.vrect.height).toBeLessThanOrEqual(pane.y + pane.height);
+      });
+    } finally {
+      Cvar_Set("viewsize", savedViewsize);
+    }
+  });
+
+  test("the pane a seat gets does not shrink when the rect is cut again", () => {
+    // A REGRESSION GUARD: measuring the view fraction off r_refdef.vrect made
+    // this function's output its own next input, so every seat after the
+    // first -- and every frame after the first -- got a smaller view than the
+    // one before it.
+    if (Cvar_FindVar("viewsize") === null) Cvar_RegisterVariable(scr_viewsize);
+    const savedViewsize = Cvar_FindVar("viewsize")?.string ?? "100";
+    try {
+      Cvar_Set("viewsize", "90");
+      seats(2);
+      const cut = (seat: number): Rect =>
+        SS_WithSeat(seat, () => {
+          SS_ApplySeatRect(0);
+          return { x: r_refdef.vrect.x, y: r_refdef.vrect.y, width: r_refdef.vrect.width, height: r_refdef.vrect.height };
+        });
+
+      const seat0First = cut(0);
+      const seat1First = cut(1);
+      // a second pass over both seats, the way the next frame's render loop
+      // runs, lands on exactly the same two rects
+      expect(cut(0)).toEqual(seat0First);
+      expect(cut(1)).toEqual(seat1First);
+      // and neither seat's view collapsed towards the 96-pixel floor
+      expect(seat0First.width).toBeGreaterThan(SS_SeatRect(0).width / 2);
+      expect(seat1First.width).toBeGreaterThan(SS_SeatRect(1).width / 2);
+    } finally {
+      Cvar_Set("viewsize", savedViewsize);
+    }
   });
 
   test("four seats give four disjoint view rects", () => {
@@ -1148,6 +1192,174 @@ describe("cl_splitscreen tears seats up and down", () => {
     cl_splitscreen_layout.value = SPLIT_LAYOUT_SIDE_BY_SIDE;
     expect(SS_SeatRect(1)).toEqual({ x: 320, y: 0, width: 320, height: 480 });
     cl_splitscreen_layout.value = 0;
+  });
+});
+
+describe("a seat is a client with everything a client needs", () => {
+  afterAll(resetSuiteState);
+
+  test("a seat past 0 gets its own reliable message buffer, sized as CL_Init sizes seat 0's", () => {
+    // Without it the seat's very first reliable command -- CL_SignonReply's
+    // own `name`/`color`/`spawn` -- writes into a SizeBuf with maxsize 0 and
+    // SZ_GetSpace throws before that seat has ever reached the game.
+    oneSeat();
+    for (let i = 1; i < MAX_SEATS; i++) expect(SS_Seat(i).binding.cls.message.maxsize).toBe(1024);
+  });
+
+  test("every seat's default colour puts it on a team of its own", () => {
+    // Host_Color_f sets `edict->v.team` from the PANTS nibble, and the
+    // re-release's CTF progs read that team: two seats sharing a pants
+    // colour are two seats on one team.
+    const primary = Cvar_FindVar("_cl_color");
+    const pants = (n: number): number => n & 15;
+    const seen: number[] = [];
+    if (primary !== null) seen.push(pants(primary.value | 0));
+    for (let i = 1; i < MAX_SEATS; i++) {
+      const cvar = SS_SeatColorCvar(i);
+      expect(cvar).not.toBeNull();
+      if (cvar === null) continue;
+      expect(cvar.archive).toBe(true);
+      expect(seen).not.toContain(pants(cvar.value | 0));
+      seen.push(pants(cvar.value | 0));
+    }
+  });
+
+  test("SS_SeatColorCvar/SS_SeatNameCvar have nothing to hand seat 0", () => {
+    expect(SS_SeatColorCvar(0)).toBeNull();
+  });
+});
+
+describe("a slot count asked for under a live server waits for the next map", () => {
+  afterAll(() => {
+    SS_SetSeats(1); // drops the held count as well as the seats
+    resetSuiteState();
+  });
+
+  test("SS_WidenServer does not touch a running server's slot count", () => {
+    oneSeat();
+    sv.active = true;
+    svs.maxclients = 2;
+    svs.maxclientslimit = 4;
+
+    SS_WidenServer(4);
+
+    // Raising it here would leave SV_UpdateToReliableMessages walking client
+    // slots whose edict SV_SpawnServer never allocated.
+    expect(svs.maxclients).toBe(2);
+    expect(SS_ServerSpawned()).toBe(4);
+    // taken once, not handed out again
+    expect(SS_ServerSpawned()).toBe(0);
+
+    sv.active = false;
+    SS_SetSeats(1);
+  });
+
+  test("with no server running the slot count is applied straight away", () => {
+    oneSeat();
+    sv.active = false;
+    svs.maxclients = 1;
+    svs.maxclientslimit = 1;
+
+    SS_WidenServer(3);
+
+    expect(svs.maxclients).toBe(3);
+    expect(svs.maxclientslimit).toBeGreaterThanOrEqual(3);
+    expect(SS_ServerSpawned()).toBe(0);
+    SS_SetSeats(1);
+  });
+
+  test("`cl_splitscreen 3` at a 2-slot server leaves the seat count alone and says so", () => {
+    oneSeat();
+    sv.active = true;
+    svs.maxclients = 2;
+    svs.maxclientslimit = 4;
+
+    SS_SetSeats(3);
+
+    expect(SS_SeatCount()).toBe(1);
+    expect(svs.maxclients).toBe(2);
+    expect(SS_ServerSpawned()).toBe(3);
+
+    sv.active = false;
+    SS_SetSeats(1);
+  });
+});
+
+describe("a level change keeps the players it had", () => {
+  const savedEstablish = seatDisconnectHooks.establishConnection;
+
+  afterAll(() => {
+    seatDisconnectHooks.establishConnection = savedEstablish;
+    SS_SetSeats(1);
+    resetSuiteState();
+  });
+
+  test("the seats a map change dropped come back once the primary client is on the new level", () => {
+    seatDisconnectHooks.establishConnection = () => {};
+    oneSeat();
+    sv.active = false;
+    svs.maxclients = 4;
+    svs.maxclientslimit = 4;
+    SS_SetSeats(3);
+    expect(SS_SeatCount()).toBe(3);
+
+    // what CL_Disconnect does on the way into a new level
+    SS_Shutdown();
+    expect(SS_SeatCount()).toBe(1);
+
+    // and what the first frame on the new level finds
+    sv.active = true;
+    SS_Seat(0).binding.cls.state = CactiveT.ca_connected;
+    SS_Reconcile();
+
+    expect(SS_SeatCount()).toBe(3);
+    expect(SS_Seat(1).wanted).toBe(true);
+    expect(SS_Seat(2).wanted).toBe(true);
+
+    SS_Seat(0).binding.cls.state = CactiveT.ca_disconnected;
+    sv.active = false;
+    SS_SetSeats(1);
+  });
+
+  test("`cl_splitscreen 1` is a player leaving splitscreen -- the next map does not bring the seats back", () => {
+    seatDisconnectHooks.establishConnection = () => {};
+    oneSeat();
+    sv.active = false;
+    svs.maxclients = 4;
+    svs.maxclientslimit = 4;
+    SS_SetSeats(3);
+    SS_Shutdown();
+    SS_SetSeats(1);
+
+    sv.active = true;
+    SS_Seat(0).binding.cls.state = CactiveT.ca_connected;
+    SS_Reconcile();
+
+    expect(SS_SeatCount()).toBe(1);
+
+    SS_Seat(0).binding.cls.state = CactiveT.ca_disconnected;
+    sv.active = false;
+  });
+
+  test("the seats that come back are clamped to the new server's slot count", () => {
+    seatDisconnectHooks.establishConnection = () => {};
+    oneSeat();
+    sv.active = false;
+    svs.maxclients = 4;
+    svs.maxclientslimit = 4;
+    SS_SetSeats(4);
+    SS_Shutdown();
+
+    svs.maxclients = 2;
+    sv.active = true;
+    SS_Seat(0).binding.cls.state = CactiveT.ca_connected;
+    SS_Reconcile();
+
+    expect(SS_SeatCount()).toBe(2);
+
+    SS_Seat(0).binding.cls.state = CactiveT.ca_disconnected;
+    sv.active = false;
+    SS_SetSeats(1);
   });
 });
 

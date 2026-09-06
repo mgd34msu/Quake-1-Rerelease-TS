@@ -138,6 +138,7 @@ Deviations from PORTING.md / the C source:
 */
 
 import { Cmd_AddCommand } from "../common/cmd";
+import { COM_FindFilePath } from "../common/common";
 import { CvarT, Cvar_RegisterVariable, Cvar_SetValue } from "../common/cvar";
 import { M_PI } from "../common/mathlib";
 import { host, hostBasepal, hostClientHooks } from "../common/host";
@@ -157,7 +158,7 @@ import { VrectT, vid, vidBackend } from "./vid";
 // U19: a plain static import is safe here -- kfont_text.ts never statically
 // imports this file back (see that file's header).
 import { CL_LocalizeKey, KfontText_RegisterCvars, Text_Draw, Text_Width } from "./kfont_text";
-import { MAX_SEATS, SS_ActiveSeat, SS_ApplySeatRect, SS_Canvas, SS_SeatCount, SS_WithSeat } from "./splitscreen";
+import { MAX_SEATS, SS_ActiveSeat, SS_ApplySeatRect, SS_Canvas, SS_SeatCount, SS_SeatRect, SS_WithSeat, type SeatRectT } from "./splitscreen";
 
 let oldscreensize = 0;
 let oldfov = 0;
@@ -507,6 +508,49 @@ export function SCR_DrawPause(): void {
 
 /*
 ==============
+SCR_SeatHasAView
+
+U43: whether the seat that is bound right now has anything to render. A seat
+past 0 is a client of its own and reaches SIGNONS on its own schedule -- it
+opens its connection one frame and receives its signon messages over the next
+few -- and until it does, its ClientStateT is the fresh one splitscreen.ts's
+makeSeat built: no worldmodel, no entities, nothing for R_RenderView to walk.
+
+The primary client never needs this test, because SCR_BeginLoadingPlaque's
+`scr_disabled_for_loading` already stops the whole screen update while IT
+connects; that flag is the session's, and a seat connecting into a session
+that is already playing cannot use it without freezing the seats that are.
+==============
+*/
+function SCR_SeatHasAView(): boolean {
+  return cls.state === CactiveT.ca_connected && cls.signon === SIGNONS && cl.worldmodel !== null;
+}
+
+/*
+==============
+SCR_DrawSeatPlaque
+
+The pane of a seat that has no view yet: the loading plaque on a cleared
+background, which is what the primary client's own pane shows for the same
+reason.
+
+The plaque itself is optional. Draw_CachePic dies on a lump it cannot load
+(the C's own behaviour, and right for the pics the game cannot run without),
+and an empty pane waiting for a seat to connect is not worth taking the engine
+down over, so the file is looked for before it is asked for.
+==============
+*/
+function SCR_DrawSeatPlaque(pane: SeatRectT): void {
+  const re = getRenderer();
+  re.Draw_Fill(pane.x, pane.y, pane.width, pane.height, 0);
+  if (COM_FindFilePath("gfx/loading.lmp") === null) return;
+  const pic = re.Draw_CachePic("gfx/loading.lmp");
+  if (!pic) return;
+  re.Draw_Pic(pane.x + (((pane.width - pic.width) / 2) | 0), pane.y + (((pane.height - pic.height) / 2) | 0), pic);
+}
+
+/*
+==============
 SCR_DrawLoading
 ==============
 */
@@ -821,6 +865,7 @@ export function SCR_UpdateScreen(): void {
     // limits -- so the primary player's view is the one left behind.
     for (let seat = seats - 1; seat >= 0; seat--) {
       SS_WithSeat(seat, () => {
+        if (!SCR_SeatHasAView()) return;
         SS_ApplySeatRect(scrState.sb_lines);
         r_refdef.fov_y = CalcFov(r_refdef.fov_x, r_refdef.vrect.width, r_refdef.vrect.height);
         V_RenderView();
@@ -864,6 +909,12 @@ export function SCR_UpdateScreen(): void {
     for (let seat = 0; seat < seats; seat++) {
       SS_WithSeat(seat, () => {
         SS_ApplySeatRect(scrState.sb_lines);
+        // With one seat this is the C's own straight-line order, which draws
+        // the status bar and the crosshair whatever state the client is in.
+        if (seats > 1 && !SCR_SeatHasAView()) {
+          SCR_DrawSeatPlaque(SS_SeatRect(seat));
+          return;
+        }
         re.SCR_DrawCrosshair();
         SCR_CheckDrawCenterString();
         SCR_DrawPrompt();

@@ -175,18 +175,33 @@ export const svMainHooks: {
   isBot: ((client: ClientT) => boolean) | null;
   botThink: ((client: ClientT) => void) | null;
   spawnServer: ((mapname: string) => void) | null;
+  /**
+   * The mirror of `spawnServer`, called at the top of Host_ShutdownServer:
+   * the bot slots come out of svs.clients before that function drops every
+   * client and replaces the array, and the roster they were built from is
+   * kept so `spawnServer` can put the same bots into the next level.
+   */
+  shutdownServer: (() => void) | null;
   /** U43: how many LOCAL splitscreen seats the client on this machine is
    *  running (src/client/splitscreen.ts installs it; 1 on a dedicated
    *  server, which has no client at all). Read only by SV_SendServerinfo,
    *  for the svc_setviews byte a loopback client is told. */
   localSeatCount: (() => number) | null;
+  /** U43: called where SV_SpawnServer sizes svs.clients, and answers with a
+   *  player-slot count a `cl_splitscreen` asked for while the previous server
+   *  was still running (0 = nothing held). svs.clients and the player edicts
+   *  are sized here and nowhere else, so this is the only point that count can
+   *  be applied; see src/client/splitscreen.ts's SS_ServerSpawned. */
+  serverSpawned: (() => number) | null;
 } = {
   dropClient: null,
   scrCenterTimeOff: null,
   isBot: null,
   botThink: null,
   spawnServer: null,
+  shutdownServer: null,
   localSeatCount: null,
+  serverSpawned: null,
 };
 
 // U38: the NetQuake half of src/common/profile.ts's one-server-at-a-time
@@ -1301,6 +1316,16 @@ export function SV_SpawnServer(server: string): void {
   PR_AllocEdicts(Host_MaxEdicts());
 
   initServerBuffers(); // see file header's SV_Init deviation note (also done here, matching the real C's placement)
+
+  // U43: a `cl_splitscreen` that wanted more player slots than the server it
+  // was typed at had is held until here, because svs.clients and the player
+  // edicts below are what a slot count sizes.
+  const heldSlots = svMainHooks.serverSpawned?.() ?? 0;
+  if (heldSlots > svs.maxclients) {
+    svs.maxclients = heldSlots;
+    if (svs.maxclientslimit < heldSlots) svs.maxclientslimit = heldSlots;
+    while (svs.clients.length < svs.maxclientslimit) svs.clients.push(new ClientT());
+  }
 
   // leave slots at start for clients only
   sv.num_edicts = svs.maxclients + 1;
