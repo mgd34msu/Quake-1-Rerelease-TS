@@ -69,9 +69,12 @@ const quakeEnglish = Loc_Localize("$m_quake", false, null, 0);
 setLanguage("french");
 LoadMenuLocalization();
 const quakeFrench = Loc_Localize("$m_quake", false, null, 0);
+// The English table sees this driver's own mounted loc_english_mod.txt
+// override (F3's ordered loader merges it); French has no overlay and shows
+// the untranslated proper noun the retail data ships.
 check(
-  "DOCUMENTED (not a defect): mapdb episode names are untranslated proper nouns in retail data ($m_quake reads \"Quake\" in every language)",
-  quakeEnglish === quakeFrench,
+  "mapdb episode names are untranslated proper nouns in retail data ($m_quake reads \"Quake\" in French) and the mounted English overlay is merged",
+  quakeFrench === "Quake" && quakeEnglish === "E2E_MOD_OVERRIDE",
   `english="${quakeEnglish}" french="${quakeFrench}"`,
 );
 setLanguage("english");
@@ -81,12 +84,11 @@ setLanguage("english");
 // ============================================================================
 console.log("[W] === _mod overlay wins over the base string ===");
 
-// Base line, no overlay effect: LoadMenuLocalization (the New Game/Options
-// screens' own loader, src/client/menu_content.ts) never merges `_mod.txt`
-// overlays at all -- only Loc_ReloadFile(base), no Loc_LoadOrdered call.
+// Since F3 the menu's own loader (src/client/menu_content.ts) goes through
+// the same ordered loader as the server, so the mounted overlay wins here too.
 LoadMenuLocalization();
 const baseViaMenu = Loc_Localize("$m_quake", false, null, 0);
-check("LoadMenuLocalization reads the base loc_english.txt value", baseViaMenu === "Quake", `got="${baseViaMenu}"`);
+check("LoadMenuLocalization merges the mounted _mod.txt overlay (F3)", baseViaMenu === "E2E_MOD_OVERRIDE", `got="${baseViaMenu}"`);
 
 // The engine's own loader (src/progs/ext/ruleset.ts's QEX_LoadLocalization,
 // called from QEX_AfterLoadProgs on every rerelease-ruleset map spawn) DOES
