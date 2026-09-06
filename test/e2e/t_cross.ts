@@ -267,6 +267,7 @@ await sleep(2000);
 // stray qwsv on this host, for one), the scenario is skipped rather than
 // sending a challenge into a foreign server.
 const port27500Holder = Bun.spawnSync(["ss", "-lunp"]).stdout.toString().split("\n").find((l) => /:27500\b/.test(l));
+const seatsForFatalScan: SeatT[] = [sv1, sv2, sv3, sv4, cl1, cl2, cl4];
 if (port27500Holder !== undefined) {
   check("`cl_protocol qw` sends a bare address to the QuakeWorld handshake", true, `SKIPPED: UDP 27500 is held by another process (${port27500Holder.trim().slice(0, 100)})`);
 } else {
@@ -288,12 +289,13 @@ check(
   (log5.match(/.*(Connecting to|trying\.\.\.|challenge).*/g) ?? []).slice(-2).join(" | ") || "no connect attempt line at all",
 );
 killSeat(cl5);
+seatsForFatalScan.push(cl5);
 }
 
 check(
   "no seat hit a fatal engine error",
-  !/Sys_Error|SysError|Fatal:|Host_Error/.test([sv1, sv2, sv3, sv4, cl1, cl2, cl4, cl5].map(readLog).join("\n")),
-  [sv1, sv2, sv3, sv4, cl1, cl2, cl4, cl5].map(readLog).join("\n").match(/.*(Sys_Error|Fatal:|Host_Error).*/g)?.slice(0, 2).join(" | ") ?? "",
+  !/Sys_Error|SysError|Fatal:|Host_Error/.test(seatsForFatalScan.map(readLog).join("\n")),
+  seatsForFatalScan.map(readLog).join("\n").match(/.*(Sys_Error|Fatal:|Host_Error).*/g)?.slice(0, 2).join(" | ") ?? "",
 );
 
 summary("t_cross");
