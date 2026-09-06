@@ -269,9 +269,23 @@ unit brief's own fallback ("implement the seam member as 'load and keep,
 draw the classic sky'"), `SoftSky_LoadSkyBox` therefore decodes and KEEPS the
 six faces (so `skyLoadSkyBox`/the worldspawn "sky"/"skyname" key are real,
 observable seam members -- `softSkyBoxState.name`/`.faces` -- rather than a
-silent no-op) without drawing them: the classic warped sky is what actually
-appears, exactly as it did before this unit. Follow-up: a cube-mapped
-software sky span drawer in d_sky.ts.
+silent no-op).
+
+U34 UPDATE: the cube-mapped span drawer this section's header used to file
+as a follow-up now exists -- d_sky.ts's D_DrawSkyScans8 reads
+`softSkyBoxState` directly (see that file's own header for the face-mapping
+convention, the per-span incremental ray stepping, and the nearest-neighbour
+sampling) and, when a skybox is active AND the true-color buffer
+(`rState.d_viewbuffer32`) is the active target, samples the six faces kept
+here instead of the classic scrolling texture. The 8-bit paletted path is
+UNCHANGED by this: it always draws the classic scrolling sky regardless of
+`softSkyBoxState.active`, the same "byte-identical classic output on that
+path" ruling r_fog.ts's header already made for fog. `r_fastsky`/
+`r_skyalpha` below are this port's own copies of gl_sky.ts's same-named
+cvars (see r_fog.ts's header, "`r_skyfog` IS NOT gl_sky.ts's SHARED
+OBJECT", for why a duplicate object rather than an import of gl_sky.ts's is
+the established way to do this without pulling GL's dependency chain into
+every software-only build/test); d_sky.ts reads both.
 =============================================================================
 */
 
@@ -279,11 +293,16 @@ const SOFT_SKY_SUF = ["rt", "bk", "lf", "ft", "up", "dn"] as const;
 
 export type SoftSkyBoxFaceT = { width: number; height: number; pixels: Uint8Array };
 
-// kept, not drawn -- see this section's header.
+// kept, and (U34, true-color path only -- see this section's header) drawn.
 export const softSkyBoxState: { name: string; faces: (SoftSkyBoxFaceT | null)[] } = {
   name: "",
   faces: [null, null, null, null, null, null],
 };
+
+// U34 additions -- see this section's header's "U34 UPDATE" paragraph. Same
+// names/defaults as gl_sky.ts's r_fastsky/r_skyalpha.
+export const r_fastsky = new CvarT("r_fastsky", "0");
+export const r_skyalpha = new CvarT("r_skyalpha", "1");
 
 function loadSoftSkyFace(name: string, suf: string): SoftSkyBoxFaceT | null {
   const tga = COM_LoadTempFile(`gfx/env/${name}${suf}.tga`);
@@ -399,6 +418,10 @@ export function R_Init(): void {
   // call. Does not register a 'fog' console command -- see r_fog.ts's
   // header ("THE 'fog' CONSOLE COMMAND") for why.
   Fog_Init();
+  // U34: this port's own r_fastsky/r_skyalpha -- see the SOFTWARE SKYBOX
+  // LOADING section's header.
+  Cvar_RegisterVariable(r_fastsky);
+  Cvar_RegisterVariable(r_skyalpha);
 
   // QW r_main.c registers these two unconditionally; WinQuake's R_Init has no
   // such call, so the registration itself is gated to keep WinQuake behavior

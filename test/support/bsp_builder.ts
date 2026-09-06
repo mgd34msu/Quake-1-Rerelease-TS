@@ -99,6 +99,15 @@ export interface BspBuildOptions {
   // adds a second miptex (BSP_SKY_MIPTEX_NAME) and a second, TEX_SPECIAL
   // texinfo with oversized extents, and repoints face 1 at it
   skyFace?: boolean;
+  // U34 addition: when set, inserts a `"sky" "<skyName>"` key into
+  // worldspawn (src/ref_soft/r_main.ts's SoftSky_NewMap / src/ref_gl/
+  // gl_sky.ts's Sky_NewMap both key on "sky"/"skyname", stripping a
+  // leading "_" first). Independent of `skyFace` -- this only affects the
+  // ENTITIES lump text, not which miptex/texinfo a face points at -- so a
+  // test can combine the two to get both a real SURF_DRAWSKY face and a
+  // resolvable skybox name. Omitted (the default) leaves the entities text
+  // byte-for-byte what it always was, so no existing test is affected.
+  skyName?: string;
   // fills the LIGHTING lump with this 0..255 sample value and points every
   // non-sky face's lightofs at its own BSP_FACE_LIGHTMAP_SAMPLES-byte block
   // under style 0, so a face lights the way a qbsp/light-built map's does
@@ -712,7 +721,10 @@ export function buildBsp(options: BspBuildOptions = {}): Uint8Array {
   const wadKey = options.wadKey ?? "gfx/base.wad";
   const externalMiptex = options.externalMiptex ?? false;
 
-  const entities = BSP_ENTITIES.replace('"gfx/base.wad"', `"${wadKey}"`);
+  let entities = BSP_ENTITIES.replace('"gfx/base.wad"', `"${wadKey}"`);
+  if (options.skyName !== undefined) {
+    entities = entities.replace('"classname" "worldspawn"\n', `"classname" "worldspawn"\n"sky" "${options.skyName}"\n`);
+  }
 
   const lumps: Uint8Array[] = new Array(HEADER_LUMPS);
   lumps[LUMP_ENTITIES] = latin1(entities + "\0");

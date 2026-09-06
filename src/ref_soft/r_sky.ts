@@ -41,11 +41,32 @@ Deviations from PORTING.md / the C source:
 - `texture_t`'s mip pixel block lives on `TextureT.data` in this port
   (src/common/model.ts's header comment), so `mt->offsets[0]` becomes the
   index `mt.offsets[0]` into `mt.data`, not a pointer add.
+
+U34 addition, no WinQuake original: `R_SkyFlatColor`. r_fastsky (gl_sky.c's
+own "don't bother with the moving/textured sky" cvar -- WinQuake's software
+renderer never had one at all) is a U34 QoL extension into this renderer
+(see d_sky.ts's header). gl_sky.c's Sky_LoadTexture computes `skyflatcolor`
+as the average, through `d_8to24table`, of the sky texture's LEFT half's
+opaque (non-zero) texels -- its own comment calls the left half "a masked
+overlay", the moving-cloud layer, which is exactly this file's own
+`bottomsky`/`bottommask` source columns above (`src[base + i*256 + (j &
+0x7f)]`, j in [0,128) before the 131-wide wraparound), not the RIGHT half
+this function copies into `newsky`'s static half (whatever this file's own
+stale docstring above says -- the code, not the comment, is what R_MakeSky
+actually treats as the masked/movable layer, and R_SkyFlatColor follows the
+code). GL always uses this ONE average for r_fastsky's flat fill regardless
+of whether a skybox is active (Sky_LoadSkyBox never sets `skyflatcolor`
+itself -- see gl_sky.c's Sky_DrawSky), so d_sky.ts does the same: one flat
+color, computed here from the BSP's own sky texture, used by both the
+classic-scroll and cube-mapped-skybox truecolor paths and (this port's own
+extension, since GL has no paletted output to match) the 8-bit path via a
+nearest-palette search local to d_sky.ts.
 */
 
 import { GreatestCommonDivisor } from "../common/mathlib";
 import type { TextureT } from "../common/model";
 import { cl } from "../client/client";
+import { d_8to24table } from "../client/vid";
 import { SKYMASK, SKYSIZE } from "./d_iface";
 import { rState } from "./r_local";
 
@@ -61,6 +82,20 @@ const newsky: Uint8Array = new Uint8Array(128 * 256);
 
 let xlast = -1;
 let ylast = -1;
+
+// U34 addition -- see this file's header. 0-255 scale (byte-range, not
+// GL's 0-1 float range: this port's callers pack straight into RGB bytes
+// or search a byte palette). Defaults to a neutral mid-grey until the first
+// R_InitSky call, the same "no real data yet" placeholder gl_sky.c implies
+// by leaving `skyflatcolor` zero-initialized (black) before its own first
+// Sky_LoadTexture -- mid-grey rather than black so a map that (mis)uses
+// r_fastsky before any sky texture loads does not flash a jarring black
+// rectangle.
+let skyFlatColor: readonly [number, number, number] = [127, 127, 127];
+
+export function R_SkyFlatColor(): readonly [number, number, number] {
+  return skyFlatColor;
+}
 
 /*
 =============
@@ -93,6 +128,34 @@ export function R_InitSky(mt: TextureT): void {
   }
 
   rState.r_skysource = newsky;
+
+  // U34 addition -- see this file's header. Same source columns/rows as the
+  // bottomsky/bottommask loop just above (the masked-overlay/moving layer),
+  // same "0 means transparent, skip it" rule, same accumulate-then-divide
+  // as gl_sky.c's Sky_LoadTexture; bounds-checked against `src.length`
+  // (gl_sky.c's C array has no such check, but a texture smaller than the
+  // full 256x128 this loop assumes -- degenerate test data, not anything a
+  // real WAD/BSP produces -- would otherwise read garbage `undefined`
+  // "bytes" past the end of a real Uint8Array instead of the real WinQuake
+  // behavior of reading whatever adjacent hunk memory happened to hold).
+  let flatR = 0;
+  let flatG = 0;
+  let flatB = 0;
+  let flatCount = 0;
+  for (let i = 0; i < 128; i++) {
+    for (let j = 0; j < 128; j++) {
+      const ofs = base + i * 256 + j;
+      if (ofs >= src.length) continue;
+      const p = src[ofs];
+      if (!p) continue;
+      const c = d_8to24table[p];
+      flatR += c & 0xff;
+      flatG += (c >>> 8) & 0xff;
+      flatB += (c >>> 16) & 0xff;
+      flatCount++;
+    }
+  }
+  if (flatCount > 0) skyFlatColor = [flatR / flatCount, flatG / flatCount, flatB / flatCount];
 }
 
 /*
