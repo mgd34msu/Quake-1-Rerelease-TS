@@ -38,7 +38,7 @@ Two halves:
 import { describe, test, expect } from "bun:test";
 import { QsocketT, QsockaddrT, NetLandriverT, CCREQ_CONNECT, CCREP_ACCEPT, NET_PROTOCOL_VERSION, NETFLAG_CTL, NETFLAG_LENGTH_MASK, NETFLAG_DATA, NETFLAG_ACK, NETFLAG_EOM, NET_HEADERSIZE } from "../src/common/net";
 import { netDatagramDriver } from "../src/common/net_dgrm";
-import { NET_Init, registerLandriver, setNetHostHooks, NET_CheckNewConnections, type NetHostHooks } from "../src/common/net_main";
+import { NET_Init, registerLandriver, setNetHostHooks, NET_CheckNewConnections, NET_Close, type NetHostHooks } from "../src/common/net_main";
 import { Cmd_ExecuteString, CmdSourceT } from "../src/common/cmd";
 import { SizeBuf, SZ_Alloc, SZ_Write, SZ_Clear, net_message, MSG_WriteByte, MSG_WriteLong, MSG_WriteString, MSG_BeginReading, MSG_ReadByte, MSG_ReadLong } from "../src/common/sizebuf";
 
@@ -499,5 +499,99 @@ describe("reliable fragmentation, ack sequencing, duplicate rejection, unreliabl
     expect(header & NETFLAG_LENGTH_MASK).toBe(NET_HEADERSIZE + 2000);
     expect((header & NETFLAG_EOM) !== 0).toBe(true);
     sentLog.length = 0;
+  });
+});
+
+//============================================================================
+// F19: two clients from one address (loopback, different ephemeral ports)
+
+function connectFrom(clientSocket: number): QsocketT | null {
+  const acceptAddr = newFakeAddr();
+  fakeFillAddr(acceptAddr, fakeAcceptPort);
+  const request = buildCcreqConnect();
+  fakeLandriver.Write(clientSocket, request, request.length, acceptAddr);
+  sentLog.length = 0;
+  return NET_CheckNewConnections();
+}
+
+function acceptedPortOf(): number {
+  expect(sentLog.length).toBe(1);
+  loadIntoNetMessage(sentLog[0].bytes);
+  MSG_BeginReading();
+  MSG_ReadLong();
+  expect(MSG_ReadByte()).toBe(CCREP_ACCEPT);
+  return MSG_ReadLong();
+}
+
+describe("same-address clients on different ports", () => {
+  test("a second client from the same address on a different port gets its own qsocket", () => {
+    const clientA = fakeLandriver.OpenSocket(0);
+    const sockA = connectFrom(clientA);
+    expect(sockA).toBeInstanceOf(QsocketT);
+    if (!sockA) throw new Error("unreachable");
+    const portA = acceptedPortOf();
+    expect(sentLog[0].toPort).toBe(clientA);
+
+    const clientB = fakeLandriver.OpenSocket(0);
+    expect(clientB).not.toBe(clientA);
+    const sockB = connectFrom(clientB);
+    expect(sockB).toBeInstanceOf(QsocketT);
+    if (!sockB) throw new Error("unreachable");
+    const portB = acceptedPortOf();
+    expect(sentLog[0].toPort).toBe(clientB);
+
+    expect(sockB).not.toBe(sockA);
+    expect(portB).not.toBe(portA);
+    // the first client's connection survives the second client's connect
+    expect(sockA.disconnected).toBe(false);
+    expect(fakePortOf(sockA.addr)).toBe(clientA);
+    expect(fakePortOf(sockB.addr)).toBe(clientB);
+
+    NET_Close(sockA);
+    NET_Close(sockB);
+  });
+
+  test("a repeat request from the identical address:port inside 2 seconds gets the duplicate CCREP_ACCEPT, not a new slot", () => {
+    const client = fakeLandriver.OpenSocket(0);
+    const sock = connectFrom(client);
+    expect(sock).toBeInstanceOf(QsocketT);
+    if (!sock) throw new Error("unreachable");
+    const port = acceptedPortOf();
+
+    const again = connectFrom(client);
+    expect(again).toBeNull();
+    expect(acceptedPortOf()).toBe(port); // same server-side port, so the client's retry lands on the same connection
+    expect(sock.disconnected).toBe(false);
+
+    NET_Close(sock);
+  });
+
+  test("a request from the identical address:port after the duplicate window closes the stale qsocket", () => {
+    const client = fakeLandriver.OpenSocket(0);
+    const sock = connectFrom(client);
+    expect(sock).toBeInstanceOf(QsocketT);
+    if (!sock) throw new Error("unreachable");
+    acceptedPortOf();
+
+    sock.connecttime = -1000; // older than the 2.0-second duplicate window
+    sentLog.length = 0;
+    expect(connectFrom(client)).toBeNull();
+    expect(sentLog.length).toBe(0); // no reply: the C closes and waits for the retry
+    expect(sock.disconnected).toBe(true);
+  });
+
+  test("a request from the same address on a different port closes a timed-out qsocket", () => {
+    const clientA = fakeLandriver.OpenSocket(0);
+    const sockA = connectFrom(clientA);
+    expect(sockA).toBeInstanceOf(QsocketT);
+    if (!sockA) throw new Error("unreachable");
+    acceptedPortOf();
+
+    sockA.lastMessageTime = -1e6; // longer ago than net_messagetimeout
+    const clientB = fakeLandriver.OpenSocket(0);
+    sentLog.length = 0;
+    expect(connectFrom(clientB)).toBeNull();
+    expect(sentLog.length).toBe(0);
+    expect(sockA.disconnected).toBe(true);
   });
 });

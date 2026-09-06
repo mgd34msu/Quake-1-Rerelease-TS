@@ -43,6 +43,21 @@ Deviations from PORTING.md / the C source:
   exactly like the C: `packetBuffer.length = packetLen | flags;` stores the
   big-endian wire bytes) and a `data` getter returning the
   `NET_HEADERSIZE`-offset subarray view.
+- ADDITION (documented behaviour change): `_Datagram_CheckNewConnections`'s
+  "see if this guy is already connected" scan treats `AddrCompare` > 0 -- the
+  same IP address on a different port -- as a *new* client while the existing
+  qsocket is still live. The C closes that qsocket unconditionally on any
+  `ret >= 0`, on the assumption that one address means one player who must
+  have crashed and come back on a fresh ephemeral port; that assumption makes
+  it impossible for two clients on one machine, or two behind one NAT, to
+  hold slots on the same server at once (the second connect kills the
+  first's socket). Here a > 0 match only counts as that returning player when
+  the old qsocket is already disconnected or has gone longer than
+  `net_messagetimeout` without a message, in which case the C's exact
+  close-and-let-them-retry path runs. `AddrCompare === 0` -- identical
+  address *and* port -- keeps the C's behaviour unchanged in both branches:
+  the under-2-second duplicate CCREQ_CONNECT still gets the duplicate
+  CCREP_ACCEPT, and anything later still closes the stale qsocket.
 - `qsocket_t *driverdata`/`void *driverdata` is not used by this driver
   (only net_loop.c and net_vcr.c use it); nothing here reads or writes it.
 - `NET_Ban_f`'s `void (*print)(char *fmt, ...)` C-function-pointer-to-either-
@@ -107,6 +122,7 @@ import {
   hostcache,
   net_activeconnections,
   net_activeSockets,
+  net_messagetimeout,
   net_freeSockets,
   messagesSent,
   messagesReceived,
@@ -896,27 +912,34 @@ function _Datagram_CheckNewConnections(): QsocketT | null {
   for (let s = net_activeSockets; s; s = s.next) {
     if (s.driver !== net_driverlevel) continue;
     const ret = dfunc().AddrCompare(clientaddr, s.addr);
-    if (ret >= 0) {
-      // is this a duplicate connection reqeust?
-      if (ret === 0 && net_time - s.connecttime < 2.0) {
-        // yes, so send a duplicate reply
-        SZ_Clear(net_message);
-        // save space for the header, filled in later
-        MSG_WriteLong(net_message, 0);
-        MSG_WriteByte(net_message, CCREP_ACCEPT);
-        const newaddr = new QsockaddrT();
-        dfunc().GetSocketAddr(s.socket, newaddr);
-        MSG_WriteLong(net_message, dfunc().GetSocketPort(newaddr));
-        writeControlHeader(net_message, NETFLAG_CTL | (net_message.cursize & NETFLAG_LENGTH_MASK));
-        dfunc().Write(acceptsock, net_message.data, net_message.cursize, clientaddr);
-        SZ_Clear(net_message);
-        return null;
-      }
-      // it's somebody coming back in from a crash/disconnect
-      // so close the old qsocket and let their retry get them back in
-      NET_Close(s);
+    if (ret < 0) continue;
+
+    if (ret > 0 && !s.disconnected && net_time - s.lastMessageTime <= net_messagetimeout.value) {
+      // same address, different port, and that connection is still live: a
+      // second player on the same machine (or behind the same NAT), not the
+      // first one coming back -- see file header
+      continue;
+    }
+
+    // is this a duplicate connection reqeust?
+    if (ret === 0 && net_time - s.connecttime < 2.0) {
+      // yes, so send a duplicate reply
+      SZ_Clear(net_message);
+      // save space for the header, filled in later
+      MSG_WriteLong(net_message, 0);
+      MSG_WriteByte(net_message, CCREP_ACCEPT);
+      const newaddr = new QsockaddrT();
+      dfunc().GetSocketAddr(s.socket, newaddr);
+      MSG_WriteLong(net_message, dfunc().GetSocketPort(newaddr));
+      writeControlHeader(net_message, NETFLAG_CTL | (net_message.cursize & NETFLAG_LENGTH_MASK));
+      dfunc().Write(acceptsock, net_message.data, net_message.cursize, clientaddr);
+      SZ_Clear(net_message);
       return null;
     }
+    // it's somebody coming back in from a crash/disconnect
+    // so close the old qsocket and let their retry get them back in
+    NET_Close(s);
+    return null;
   }
 
   // allocate a QSocket

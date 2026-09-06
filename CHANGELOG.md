@@ -145,6 +145,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checked `fopen` for NULL (config.cfg, saves, demo record, the GL mesh
   cache, QuakeWorld downloads and config) fails with its original message
   instead of aborting the engine.
+- Two NetQuake clients from the same address (one machine, or a LAN behind
+  one NAT) can both hold slots: a connect request from a known address on a
+  different port is a new player, not the old one returning from a crash,
+  unless that player's socket is already disconnected or has timed out;
+  the identical address and port keeps WinQuake's reconnect handling.
 - Bots: the wedge timer no longer fires on a bot circling its target in
   combat (it rested the goal it was fighting toward for twenty seconds); the
   seeded bot generator discards eight warm-up draws so adjacent small seeds
