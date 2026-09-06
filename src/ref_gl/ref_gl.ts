@@ -182,6 +182,8 @@ import { D_FlushCaches, GL_ClearTextureState, R_Init as R_Init_rmisc, R_NewMap, 
 import { R_AddEfrags, R_RemoveEfrags } from "./gl_refrag";
 import { R_PushDlights } from "./gl_rlight";
 import { R_InitSky } from "./gl_warp";
+import { Fog_ParseServerMessage, Fog_ParseWorldspawn } from "./gl_fog";
+import { Sky_LoadSkyBox } from "./gl_sky";
 import {
   draw_disc,
   Draw_Alt_String,
@@ -593,6 +595,14 @@ export const glRenderer: Renderer = {
   isGL: true,
 
   R_NetGraph,
+
+  // U21 additions: render.ts's Renderer.fogParseServerMessage/
+  // fogParseWorldspawn/skyLoadSkyBox -- plain passthroughs to gl_fog.ts/
+  // gl_sky.ts, since ref_gl.ts is where every renderer-internal function is
+  // already assembled into the seam this port's client modules call through.
+  fogParseServerMessage: Fog_ParseServerMessage,
+  fogParseWorldspawn: Fog_ParseWorldspawn,
+  skyLoadSkyBox: Sky_LoadSkyBox,
 
   // render.ts's Renderer.Shutdown -- this port's own addition (Quake never
   // unloads a renderer). Releases what GL_VidInit/loadQGLFromSystem set up:

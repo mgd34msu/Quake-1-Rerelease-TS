@@ -33,6 +33,7 @@ import {
   GL_SubdivideSurface,
   R_DrawSkyChain,
   R_InitSky,
+  SubdividePolygon,
   TURBSCALE,
   glWarpState,
 } from "../src/ref_gl/gl_warp";
@@ -226,6 +227,36 @@ describe("GL_SubdivideSurface", () => {
     const poly = surfPolys(face);
     expect(poly).not.toBeNull();
     expect(poly?.numverts).toBe(4);
+  });
+
+  // U21 regression: gl_subdivide_size.value is 0 until Cvar_RegisterVariable
+  // runs (a guarded real-data test loading e1m1 through Mod_ForName directly,
+  // without R_Init, reproduced a `RangeError: Maximum call stack size
+  // exceeded` here -- .orch/followups.md's SubdividePolygon finding). With
+  // gl_subdivide_size at 0, every per-axis cut point divides by zero to NaN,
+  // every dist[] comparison against NaN is false, and BOTH the front and
+  // back splits come out with 0 vertices forever: SubdividePolygon(0, ...)
+  // recursed into SubdividePolygon(0, ...) with no base case, which is the
+  // stack overflow. The fix is the `numverts <= 0` guard at the top of
+  // SubdividePolygon (gl_warp.ts): this pins that it terminates instead.
+  test("gl_subdivide_size 0 does not recurse forever (numverts<=0 guard)", () => {
+    gl_subdivide_size.value = 0;
+    gl_subdivide_size.string = "0";
+
+    const { model, face } = makeQuadModel(256);
+    loadState.loadmodel = model;
+    setSurfPolys(face, null);
+
+    expect(() => GL_SubdivideSurface(face)).not.toThrow();
+    // every cut comes out NaN, so the face never reaches the poly-building
+    // base case and gets no polys at all -- a degenerate-but-safe result,
+    // not a crash.
+    expect(polyChainLength(face)).toBe(0);
+  });
+
+  test("SubdividePolygon(0, ...) returns immediately without recursing", () => {
+    const empty = new Float32Array(0);
+    expect(() => SubdividePolygon(0, empty)).not.toThrow();
   });
 });
 

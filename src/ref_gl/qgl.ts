@@ -108,9 +108,23 @@ export const GL_CULL_FACE = 0x0b44;
 export const GL_TEXTURE_2D = 0x0de1;
 
 // glFog pnames
+export const GL_FOG_DENSITY = 0x0b62;
 export const GL_FOG_END = 0x0b64;
 export const GL_FOG_MODE = 0x0b65;
 export const GL_FOG_COLOR = 0x0b66;
+
+// glFogi(GL_FOG_MODE, ...) modes -- U21's gl_fog.ts uses GL_EXP2, FitzQuake's
+// own choice (gl_fog.c's Fog_SetupState).
+export const GL_EXP2 = 0x0801;
+
+// EXT_texture_filter_anisotropic (U21). No new QGL function-pointer member is
+// needed for this one: the cap is queried with the existing qglGetFloatv
+// (GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT) and applied with the existing
+// qglTexParameterf (GL_TEXTURE_MAX_ANISOTROPY_EXT takes a float, same as
+// every other qglTexParameterf pname this table already carries), so the
+// extension is just two more enum values, not two more function pointers.
+export const GL_TEXTURE_MAX_ANISOTROPY_EXT = 0x84fe;
+export const GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT = 0x84ff;
 
 // glGetFloatv pnames
 export const GL_MODELVIEW_MATRIX = 0x0ba6;

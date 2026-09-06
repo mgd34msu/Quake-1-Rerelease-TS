@@ -71,6 +71,13 @@ import { gl_alpha_format, gl_solid_format, GL_Bind } from "./gl_draw";
 import { gl_subdivide_size } from "./gl_model";
 import { GL_DisableMultitexture } from "./gl_rsurf";
 import { turbsin } from "./gl_warp_sin";
+// U21 additions, no WinQuake counterpart: see gl_sky.ts's header for why
+// EmitBothSkyLayers/R_DrawSkyChain below skip the classic warp entirely once
+// a skybox is loaded (SkyActive), draw a flat r_fastsky fill instead of the
+// two-layer scroll when no skybox is loaded, and tint the classic warp
+// toward the current fog color (SkyTintColor -- Fog_GetColor's "make solid-
+// colored sky match the fog" tie-in, gl_fog.c's own comment).
+import { r_fastsky, SkyActive, SkyTintColor } from "./gl_sky";
 
 export type GlWarpStateT = {
   solidskytexture: number;
@@ -103,6 +110,20 @@ export function SubdividePolygon(numverts: number, verts: Float32Array): void {
   const front = new Float32Array(64 * 3);
   const back = new Float32Array(64 * 3);
   const dist = new Float32Array(64);
+
+  // Guard against a degenerate zero-vertex split. The C never needs this --
+  // it assumes numverts is always the vertex count of a real polygon (>=3)
+  // -- but if gl_subdivide_size is ever 0 or unregistered (its value is 0
+  // until Cvar_RegisterVariable runs, per CvarT's own convention), every
+  // per-axis cut point below becomes NaN, every dist[] comparison against it
+  // is false, and BOTH the front and back splits come out empty. Recursing
+  // on a numverts=0 split reproduces exactly that state one level deeper
+  // (BoundPoly's mins/maxs stay at their +-9999 sentinels, so the divide is
+  // NaN again), which is QuakeSpasm's own gl_subdivide_size=0 hazard too --
+  // it never manifests there only because R_Init always registers the cvar
+  // before any level loads. Bounding the recursion here converts what would
+  // otherwise be infinite regress into "this surface gets no polys."
+  if (numverts <= 0) return;
 
   if (numverts > 60) Sys_Error("numverts = %i", numverts);
 
@@ -287,6 +308,24 @@ export function EmitBothSkyLayers(fa: MsurfaceT): void {
 
   GL_DisableMultitexture();
 
+  // U21: a loaded skybox already painted these pixels before the world
+  // draws (see gl_sky.ts's Sky_DrawSkyBox / this file's header); drawing
+  // the classic warp on top would just cover it back up.
+  if (SkyActive()) return;
+
+  if (r_fastsky.value) {
+    const tint = SkyTintColor();
+    gl.qglDisable(GL_TEXTURE_2D);
+    gl.qglColor3f(tint[0], tint[1], tint[2]);
+    EmitSkyPolys(fa);
+    gl.qglColor3f(1, 1, 1);
+    gl.qglEnable(GL_TEXTURE_2D);
+    return;
+  }
+
+  const tint = SkyTintColor();
+  gl.qglColor3f(tint[0], tint[1], tint[2]);
+
   GL_Bind(glWarpState.solidskytexture);
   glWarpState.speedscale = host.realtime * 8;
   glWarpState.speedscale -= (glWarpState.speedscale | 0) & ~127;
@@ -301,6 +340,7 @@ export function EmitBothSkyLayers(fa: MsurfaceT): void {
   EmitSkyPolys(fa);
 
   gl.qglDisable(GL_BLEND);
+  gl.qglColor3f(1, 1, 1);
 }
 
 /*
@@ -312,6 +352,24 @@ export function R_DrawSkyChain(s: MsurfaceT): void {
   const gl = qgl();
 
   GL_DisableMultitexture();
+
+  // U21: same SkyActive/r_fastsky/fog-tint treatment as EmitBothSkyLayers
+  // above (this file's header) -- the gl_texsort path and the bmodel path
+  // must agree on what a loaded skybox or r_fastsky does to the classic warp.
+  if (SkyActive()) return;
+
+  if (r_fastsky.value) {
+    const tint = SkyTintColor();
+    gl.qglDisable(GL_TEXTURE_2D);
+    gl.qglColor3f(tint[0], tint[1], tint[2]);
+    for (let fa: MsurfaceT | null = s; fa; fa = fa.texturechain) EmitSkyPolys(fa);
+    gl.qglColor3f(1, 1, 1);
+    gl.qglEnable(GL_TEXTURE_2D);
+    return;
+  }
+
+  const tint = SkyTintColor();
+  gl.qglColor3f(tint[0], tint[1], tint[2]);
 
   // used when gl_texsort is on
   GL_Bind(glWarpState.solidskytexture);
@@ -328,6 +386,7 @@ export function R_DrawSkyChain(s: MsurfaceT): void {
   for (let fa: MsurfaceT | null = s; fa; fa = fa.texturechain) EmitSkyPolys(fa);
 
   gl.qglDisable(GL_BLEND);
+  gl.qglColor3f(1, 1, 1);
 }
 
 //===============================================================

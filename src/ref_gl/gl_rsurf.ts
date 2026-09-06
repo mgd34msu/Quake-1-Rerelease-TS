@@ -206,7 +206,24 @@ import {
   qgl,
 } from "./qgl";
 import { glDrawState, GL_Bind, GL_SelectTexture } from "./gl_draw";
-import { gl_flashblend, gl_keeptjunctions, gl_texsort, R_CullBox, R_RotateForEntity, r_dynamic, r_fullbright, r_lightmap, r_mirroralpha, r_novis, r_wateralpha } from "./gl_rmain";
+import {
+  gl_flashblend,
+  gl_keeptjunctions,
+  gl_texsort,
+  R_CullBox,
+  R_EntityAlpha,
+  R_RotateForEntity,
+  R_WaterAlphaForTextureName,
+  r_dynamic,
+  r_fullbright,
+  r_lightmap,
+  r_lavaalpha,
+  r_mirroralpha,
+  r_novis,
+  r_slimealpha,
+  r_telealpha,
+  r_wateralpha,
+} from "./gl_rmain";
 import { R_MarkLights } from "./gl_rlight";
 import { R_StoreEfrags } from "./gl_refrag";
 import { isPermedia } from "./gl_vid";
@@ -1012,7 +1029,13 @@ R_DrawWaterSurfaces
 export function R_DrawWaterSurfaces(): void {
   const gl = qgl();
 
-  if (r_wateralpha.value === 1.0 && gl_texsort.value) return;
+  // U21: the early-out now covers every per-content-type override, not just
+  // r_wateralpha -- r_lavaalpha/r_slimealpha/r_telealpha can each make a
+  // texture translucent on their own while r_wateralpha stays at 1. See
+  // R_WaterAlphaForTextureName's header note (gl_rmain.ts) for the fallback
+  // rule each per-surface alpha below applies.
+  const anyTranslucent = r_wateralpha.value !== 1.0 || r_lavaalpha.value > 0 || r_slimealpha.value > 0 || r_telealpha.value > 0;
+  if (!anyTranslucent && gl_texsort.value) return;
 
   //
   // go back to the world matrix
@@ -1020,11 +1043,7 @@ export function R_DrawWaterSurfaces(): void {
 
   gl.qglLoadMatrixf(r_world_matrix);
 
-  if (r_wateralpha.value < 1.0) {
-    gl.qglEnable(GL_BLEND);
-    gl.qglColor4f(1, 1, 1, r_wateralpha.value);
-    gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-  }
+  if (anyTranslucent) gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
 
   if (!gl_texsort.value) {
     if (!glRsurfState.waterchain) return;
@@ -1032,8 +1051,21 @@ export function R_DrawWaterSurfaces(): void {
     for (let s: MsurfaceT | null = glRsurfState.waterchain; s; s = s.texturechain) {
       const texinfo = s.texinfo;
       if (texinfo === null || texinfo.texture === null) return Sys_Error("R_DrawWaterSurfaces: surface has no texture");
+      const alpha = R_WaterAlphaForTextureName(texinfo.texture.name);
       GL_Bind(texinfo.texture.gl_texturenum);
+      // U21: depth writes off for a translucent surface, as QuakeSpasm's
+      // own R_DrawTextureChains_Water does, restored right after.
+      if (alpha < 1.0) {
+        gl.qglDepthMask(false);
+        gl.qglEnable(GL_BLEND);
+        gl.qglColor4f(1, 1, 1, alpha);
+      }
       EmitWaterPolys(s);
+      if (alpha < 1.0) {
+        gl.qglDisable(GL_BLEND);
+        gl.qglDepthMask(true);
+        gl.qglColor4f(1, 1, 1, 1);
+      }
     }
 
     glRsurfState.waterchain = null;
@@ -1048,22 +1080,29 @@ export function R_DrawWaterSurfaces(): void {
       if (!s) continue;
       if (!(s.flags & SURF_DRAWTURB)) continue;
 
-      // set modulate mode explicitly
+      const alpha = R_WaterAlphaForTextureName(t.name);
 
+      // set modulate mode explicitly
       GL_Bind(t.gl_texturenum);
+      if (alpha < 1.0) {
+        gl.qglDepthMask(false);
+        gl.qglEnable(GL_BLEND);
+        gl.qglColor4f(1, 1, 1, alpha);
+      }
 
       for (; s; s = s.texturechain) EmitWaterPolys(s);
+
+      if (alpha < 1.0) {
+        gl.qglDisable(GL_BLEND);
+        gl.qglDepthMask(true);
+        gl.qglColor4f(1, 1, 1, 1);
+      }
 
       t.texturechain = null;
     }
   }
 
-  if (r_wateralpha.value < 1.0) {
-    gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
-
-    gl.qglColor4f(1, 1, 1, 1);
-    gl.qglDisable(GL_BLEND);
-  }
+  if (anyTranslucent) gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 }
 
 /*
@@ -1096,7 +1135,10 @@ export function DrawTextureChains(): void {
       R_MirrorChain(s);
       continue;
     } else {
-      if (s.flags & SURF_DRAWTURB && r_wateralpha.value !== 1.0) continue; // draw translucent water later
+      // U21: per-content-type override (r_lavaalpha/r_slimealpha/
+      // r_telealpha), not just r_wateralpha -- see
+      // R_WaterAlphaForTextureName's header note.
+      if (s.flags & SURF_DRAWTURB && R_WaterAlphaForTextureName(t.name) !== 1.0) continue; // draw translucent water later
       for (; s; s = s.texturechain) R_RenderBrushPoly(s);
     }
 
@@ -1135,7 +1177,12 @@ export function R_DrawBrushModel(e: EntityT): void {
 
   if (R_CullBox(mins, maxs)) return;
 
-  gl.qglColor3f(1, 1, 1);
+  // U21 addition, no WinQuake counterpart: see R_EntityAlpha's header note
+  // (gl_rmain.ts). entAlpha === 1 keeps the original qglColor3f every
+  // existing test pins.
+  const entAlpha = R_EntityAlpha(e);
+  if (entAlpha === 1) gl.qglColor3f(1, 1, 1);
+  else gl.qglColor4f(1, 1, 1, entAlpha);
   lightmap_polys.fill(null);
 
   VectorSubtract(r_refdef.vieworg, e.origin, modelorg);
@@ -1172,6 +1219,11 @@ export function R_DrawBrushModel(e: EntityT): void {
   //
   // draw texture
   //
+  if (entAlpha < 1) {
+    gl.qglDepthMask(false);
+    gl.qglEnable(GL_BLEND);
+  }
+
   for (let i = 0; i < clmodel.nummodelsurfaces; i++, psurf++) {
     const surf = clmodel.surfaces[psurf];
     // find which side of the node we are on
@@ -1185,6 +1237,12 @@ export function R_DrawBrushModel(e: EntityT): void {
       if (gl_texsort.value) R_RenderBrushPoly(surf);
       else R_DrawSequentialPoly(surf);
     }
+  }
+
+  if (entAlpha < 1) {
+    gl.qglDisable(GL_BLEND);
+    gl.qglDepthMask(true);
+    gl.qglColor4f(1, 1, 1, 1);
   }
 
   R_BlendLightmaps();

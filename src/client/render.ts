@@ -518,6 +518,33 @@ export interface Renderer {
   // table, masked palette state, ...) before the next renderer installs
   // itself. Optional because ref_soft has nothing to release.
   Shutdown?(): void;
+
+  // U21 additions, not from render.h: gl_fog.c / gl_sky.c are QuakeSpasm
+  // features with no WinQuake counterpart, so there is no software-renderer
+  // half to make these required -- src/ref_soft leaves all three undefined,
+  // and cl_parse.ts (outside this unit's SCOPE; wired by the coordinator)
+  // calls them only when present, exactly like R_NetGraph above.
+  //
+  // svc_fog's wire payload (FitzQuake/QuakeSpasm/Ironwail's layout, verified
+  // against Ironwail's CL_ParseServerMessage): a byte `density` (0..255,
+  // divide by 255 for the GL fog density fraction), three bytes `r`/`g`/`b`
+  // (0..255, divide by 255 each), and a short `time` in centiseconds
+  // (divide by 100 for seconds). cl_parse.ts reads the five raw wire values
+  // and hands them here already split out; the renderer owns the /255 and
+  // /100 conversions (gl_fog.ts's Fog_ParseServerMessage) so this seam stays
+  // wire-format-only, matching every other cl_parse.c GLQUAKE branch above.
+  fogParseServerMessage?(density: number, r: number, g: number, b: number, time: number): void;
+
+  // worldspawn's "fog" key ("density red green blue", QuakeSpasm's
+  // Fog_ParseWorldspawn format -- see gl_fog.ts). `entities` is the raw
+  // entity-lump text (model_t.entities); the renderer does its own key scan
+  // so no client module needs a worldspawn key parser of its own.
+  fogParseWorldspawn?(entities: string): void;
+
+  // worldspawn's "sky"/"skyname" key (QuakeSpasm's Sky_NewMap) -- also the
+  // `loadsky`/`sky` console commands' target. Loading a skybox is a no-op
+  // renderer feature under ref_soft, hence optional.
+  skyLoadSkyBox?(name: string): void;
 }
 
 export const re: { current: Renderer | null } = { current: null };

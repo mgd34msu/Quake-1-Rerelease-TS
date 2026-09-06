@@ -209,7 +209,9 @@ import {
   GL_TEXTURE_ENV,
   GL_TEXTURE_ENV_MODE,
   GL_TEXTURE_MAG_FILTER,
+  GL_TEXTURE_MAX_ANISOTROPY_EXT,
   GL_TEXTURE_MIN_FILTER,
+  GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT,
   GL_UNSIGNED_BYTE,
   qgl,
 } from "./qgl";
@@ -218,6 +220,23 @@ import { d_15to8table, VID_Is8bit } from "./gl_vid";
 // cvar_t gl_nobind = {"gl_nobind", "0"}; etc.
 export const gl_nobind = new CvarT("gl_nobind", "0");
 export const gl_max_size = new CvarT("gl_max_size", "1024");
+
+// U21 additions, no WinQuake counterpart (QuakeSpasm/Ironwail cvars):
+// gl_texture_anisotropy applies EXT_texture_filter_anisotropic to every
+// mipmapped upload (see GL_ApplyAnisotropy/setUploadTexParams below) when
+// the driver's GL_EXTENSIONS string carries the extension -- queried
+// through glState.gl_extensions (gl_vid.ts's GL_Init already fills it via
+// qglGetString(GL_EXTENSIONS), the same string gl_mtexable's own SGIS check
+// reads), never a fixed default guess. gl_overbright_models and
+// gl_fullbrights are registered for config/autoexec compatibility with
+// QuakeSpasm cfgs; this renderer's fixed-function immediate-mode pipeline
+// (no lightmap-overbright or two-pass luma shader stage) has no rendering
+// path for either yet, so they are inert here -- documented deviation, not
+// a silent no-op.
+export const gl_texture_anisotropy = new CvarT("gl_texture_anisotropy", "1", true);
+export const gl_overbright_models = new CvarT("gl_overbright_models", "1", true);
+export const gl_fullbrights = new CvarT("gl_fullbrights", "1", true);
+
 export const gl_picmip = new CvarT("gl_picmip", "0");
 
 // QW/client/gl_ngraph.c (new file, not in this unit's SCOPE) declares
@@ -1203,6 +1222,28 @@ const UPLOAD32_SCRATCH_LIMIT = 1024 * 512;
 // gl_draw.c's `static unsigned char scaled[1024*512]` -- sizeof(scaled) bytes.
 const UPLOAD8_EXT_SCRATCH_LIMIT = 1024 * 512;
 
+// U21 addition, no WinQuake counterpart: GL_EXT_texture_filter_anisotropic.
+// Only meaningful on a mipmapped texture (anisotropic filtering improves
+// minification at grazing angles, which needs mip levels to sample between)
+// -- QuakeSpasm applies it in the same place, its own GL_Bind/texmgr upload
+// path. No new QGL function-pointer member is needed: the cap is queried
+// with qglGetFloatv and applied with qglTexParameterf, both already in the
+// table (see qgl.ts's header note by the two new enum values).
+function GL_ApplyAnisotropy(mipmap: boolean): void {
+  if (!mipmap) return;
+  if (!glState.gl_extensions.includes("GL_EXT_texture_filter_anisotropic")) return;
+
+  const q = qgl();
+  const maxAniso = new Float32Array(1);
+  q.qglGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, maxAniso);
+
+  let amount = gl_texture_anisotropy.value;
+  if (amount < 1) amount = 1;
+  if (maxAniso[0] > 0 && amount > maxAniso[0]) amount = maxAniso[0];
+
+  q.qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, amount);
+}
+
 function setUploadTexParams(mipmap: boolean): void {
   const q = qgl();
   if (mipmap) {
@@ -1212,6 +1253,7 @@ function setUploadTexParams(mipmap: boolean): void {
     q.qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, gl_filter_max);
     q.qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, gl_filter_max);
   }
+  GL_ApplyAnisotropy(mipmap);
 }
 
 /*

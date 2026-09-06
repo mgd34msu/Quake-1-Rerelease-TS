@@ -42,7 +42,6 @@ import { GL_LUMINANCE, GL_RGBA, QGLRecording, SetQGL, qglHolder } from "../src/r
 import { glDrawState } from "../src/ref_gl/gl_draw";
 import { gl_texsort } from "../src/ref_gl/gl_rmain";
 import * as glDraw from "../src/ref_gl/gl_draw";
-import * as glWarp from "../src/ref_gl/gl_warp";
 import { glModelHooks } from "../src/ref_gl/gl_model";
 import {
   AllocBlock,
@@ -440,16 +439,14 @@ describe.skipIf(!HAVE_RERELEASE)("colored lighting against real rerelease e1m1 d
     // texture, so a real (recording) QGL backend is needed too.
     const savedQgl = qglHolder.current;
     SetQGL(new QGLRecording());
-    // GL_SubdivideSurface (gl_warp.ts, afterBrushLoad's hook for
-    // water/sky faces) recurses without a base case that terminates on
-    // e1m1's real sky geometry -- a pre-existing defect in that module,
-    // confirmed unrelated to this unit's work by reproducing identically
-    // with GL_MAX_SURFACE_EXTENTS temporarily set back to gl_model.c's old
-    // 512 cap (same RangeError, same call site, gl_warp.ts:151). Not this
-    // unit's to fix (out of the colored-lighting/surface-size brief); the
-    // test only needs real lightofs/lightdata_rgb from the load, which
-    // does not depend on subdivision, so it is stubbed out here.
-    const subdivideSpy = spyOn(glWarp, "GL_SubdivideSurface").mockImplementation(() => {});
+    // U21 fixed the stack overflow GL_SubdivideSurface's SubdividePolygon
+    // used to hit on e1m1's real sky geometry here (this test used to stub
+    // GL_SubdivideSurface out to work around it) -- see gl_warp.ts's
+    // SubdividePolygon header note: gl_subdivide_size reads as 0 until
+    // Cvar_RegisterVariable runs (R_Init is never called in this test, only
+    // Mod_ForName), which turned every axial cut into a NaN comparison and
+    // recursed forever with a numverts=0 split at every level. The fix is a
+    // `numverts <= 0` early return; real subdivision now runs unstubbed.
     try {
       setModelLoaderHooks(glModelHooks);
       const mod = Mod_ForName("maps/e1m1.bsp", true);
@@ -485,7 +482,6 @@ describe.skipIf(!HAVE_RERELEASE)("colored lighting against real rerelease e1m1 d
       expect(foundColor).toBe(true);
     } finally {
       loadTextureSpy.mockRestore();
-      subdivideSpy.mockRestore();
       SetQGL(savedQgl);
     }
   });

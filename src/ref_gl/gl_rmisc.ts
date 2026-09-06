@@ -172,15 +172,21 @@ import {
   r_drawviewmodel,
   r_dynamic,
   r_fullbright,
+  r_lavaalpha,
   r_lightmap,
   r_mirroralpha,
   r_netgraph,
   r_norefresh,
   r_novis,
   r_shadows,
+  r_slimealpha,
   r_speeds,
+  r_telealpha,
   r_wateralpha,
 } from "./gl_rmain";
+import { gl_overbright_models, gl_fullbrights, gl_texture_anisotropy } from "./gl_draw";
+import { Fog_Init, Fog_ParseWorldspawn } from "./gl_fog";
+import { Sky_Init, Sky_NewMap } from "./gl_sky";
 
 // prettier-ignore
 export const dottexture: Uint8Array = new Uint8Array([
@@ -316,6 +322,10 @@ export function R_Init(): void {
   Cvar_RegisterVariable(r_shadows);
   Cvar_RegisterVariable(r_mirroralpha);
   Cvar_RegisterVariable(r_wateralpha);
+  // U21 additions: no WinQuake counterparts (see this unit's headers).
+  Cvar_RegisterVariable(r_lavaalpha);
+  Cvar_RegisterVariable(r_slimealpha);
+  Cvar_RegisterVariable(r_telealpha);
   Cvar_RegisterVariable(r_dynamic);
   Cvar_RegisterVariable(r_novis);
   Cvar_RegisterVariable(r_speeds);
@@ -347,6 +357,16 @@ export function R_Init(): void {
 
   // U15 addition: no C original (see glquake.ts's header note).
   Cvar_RegisterVariable(gl_coloredlight);
+
+  // U21 additions: no WinQuake counterparts (see gl_draw.ts's header note).
+  Cvar_RegisterVariable(gl_texture_anisotropy);
+  Cvar_RegisterVariable(gl_overbright_models);
+  Cvar_RegisterVariable(gl_fullbrights);
+
+  // Fog_Init/Sky_Init each register their own cvars and console command
+  // ('fog' / 'sky') -- see gl_fog.ts/gl_sky.ts.
+  Fog_Init();
+  Sky_Init();
 
   if (qw.active) qwRPartMod().R_InitParticles();
   else R_InitParticles();
@@ -629,6 +649,14 @@ export function R_NewMap(): void {
   glState.r_viewleaf = null;
   if (qw.active) qwRPartMod().R_ClearParticles();
   else R_ClearParticles();
+
+  // U21 additions: no WinQuake counterparts. Fog_ParseWorldspawn resets to
+  // the map's "fog" key (or the no-fog default when it has none) and
+  // Sky_NewMap resets/loads the map's "sky"/"skyname" key -- both read the
+  // raw entity-lump text directly, exactly as readWorldspawnWadKey
+  // (src/common/model.ts) already does for the "wad" key.
+  Fog_ParseWorldspawn(worldmodel.entities ?? "");
+  Sky_NewMap(worldmodel.entities ?? "");
 
   GL_BuildLightmaps();
 

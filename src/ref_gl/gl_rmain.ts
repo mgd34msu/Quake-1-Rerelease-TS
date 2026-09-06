@@ -206,8 +206,21 @@ function skinMod(): typeof SkinModule {
 function glRmiscMod(): typeof GlRmiscModule {
   return require("./gl_rmisc");
 }
-import { MAX_DLIGHTS, MAX_VISEDICTS, NUM_CSHIFTS, cl, cl_dlights, cl_entities, cl_visedicts, clState } from "../client/client";
+import {
+  MAX_DLIGHTS,
+  MAX_VISEDICTS,
+  NUM_CSHIFTS,
+  cl,
+  cl_dlights,
+  cl_entities,
+  cl_entity_ext,
+  cl_static_entities,
+  cl_static_entity_ext,
+  cl_visedicts,
+  clState,
+} from "../client/client";
 import type { EntityT, ParticleT } from "../client/render";
+import { ENTALPHA_DECODE, ENTALPHA_DEFAULT } from "../common/protocol";
 // r_drawentities/r_drawviewmodel/r_fullbright/r_speeds: r_main.c also
 // registers these under the same name (render.ts's shared block); imported,
 // not redefined, so a Cvar_Set reaches both renderers' objects because there
@@ -268,6 +281,8 @@ import {
 import { GL_Bind } from "./gl_draw";
 import { GL_DisableMultitexture, R_DrawBrushModel, R_DrawWaterSurfaces, R_DrawWorld, R_MarkLeaves, R_RenderBrushPoly } from "./gl_rsurf";
 import { R_AnimateLight, R_LightPoint, R_RenderDlights, lightcolor, lightspot } from "./gl_rlight";
+import { Fog_DisableGFog, Fog_EnableGFog, Fog_SetupFrame } from "./gl_fog";
+import { Sky_DrawSkyBox } from "./gl_sky";
 
 // gl_vidlinuxglx.c:75's `cvar_t gl_ztrick = {"gl_ztrick","1"};` (see the
 // header note on why the definition lives here and not in gl_vid.ts).
@@ -278,6 +293,13 @@ export const r_lightmap = new CvarT("r_lightmap", "0");
 export const r_shadows = new CvarT("r_shadows", "0");
 export const r_mirroralpha = new CvarT("r_mirroralpha", "1");
 export const r_wateralpha = new CvarT("r_wateralpha", "1");
+// U21 additions: QuakeSpasm's per-content-type overrides of r_wateralpha
+// (gl_rmain.c's r_lavaalpha/r_slimealpha/r_telealpha). 0 means "not
+// overridden, fall back to r_wateralpha" -- see R_WaterAlphaForTextureName
+// below, this file's own port of QuakeSpasm's GL_WaterAlphaForTextureType.
+export const r_lavaalpha = new CvarT("r_lavaalpha", "0");
+export const r_slimealpha = new CvarT("r_slimealpha", "0");
+export const r_telealpha = new CvarT("r_telealpha", "0");
 export const r_dynamic = new CvarT("r_dynamic", "1");
 export const r_novis = new CvarT("r_novis", "0");
 // QW/client/gl_rmain.c / QW/client/r_main.c -- registered by gl_rmisc.ts's
@@ -300,6 +322,42 @@ export const gl_doubleeyes = new CvarT("gl_doubleeys", "1");
 
 // view.c's `float v_blend[4]`, defined under #ifdef GLQUAKE
 export const v_blend: Float32Array = new Float32Array(4);
+
+// U21 addition, no WinQuake counterpart: QuakeSpasm/Ironwail's
+// GL_WaterAlphaForTextureType, ported against a texture NAME rather than a
+// dedicated SURF_DRAWLAVA/SURF_DRAWSLIME/SURF_DRAWTELE surface flag --
+// src/common/model.ts (out of this unit's SCOPE) only ever sets
+// SURF_DRAWTURB for a `*`-prefixed texture, so the lava/slime/teleport
+// split has to be read back off the texture's own name at draw time
+// instead, exactly the string this port's SURF_DRAWTURB classification
+// itself keys on. A cvar of 0 means "not overridden" (QuakeSpasm's own
+// convention), so every plain `*`-prefixed water texture and every
+// lava/slime/tele texture whose override cvar is 0 falls back to
+// r_wateralpha.
+export function R_WaterAlphaForTextureName(name: string): number {
+  if (name.length > 0 && name[0] === "*") {
+    const body = name.slice(1).toLowerCase();
+    if (body.includes("lava") && r_lavaalpha.value > 0) return r_lavaalpha.value;
+    if (body.includes("slime") && r_slimealpha.value > 0) return r_slimealpha.value;
+    if (body.includes("tele") && r_telealpha.value > 0) return r_telealpha.value;
+  }
+  return r_wateralpha.value;
+}
+
+// U21 addition, no WinQuake counterpart: the re-release entity-alpha
+// extension (src/common/protocol.ts's ENTALPHA_*, decoded off the
+// cl_entity_ext/cl_static_entity_ext side tables U3 added -- see
+// src/client/client.ts's header on why alpha lives beside EntityT rather
+// than on it). EntityT carries no index of its own, so this resolves one
+// the same way the player-skin recolor code elsewhere in this file already
+// does (`cl_entities.indexOf(currententity)`).
+export function R_EntityAlpha(e: EntityT): number {
+  let i = cl_entities.indexOf(e);
+  if (i >= 0) return ENTALPHA_DECODE(cl_entity_ext[i].alpha);
+  i = cl_static_entities.indexOf(e);
+  if (i >= 0) return ENTALPHA_DECODE(cl_static_entity_ext[i].alpha);
+  return ENTALPHA_DECODE(ENTALPHA_DEFAULT);
+}
 
 /*
 =================
@@ -409,13 +467,18 @@ export function R_DrawSpriteModel(e: EntityT): void {
     right = vright;
   }
 
-  qgl().qglColor3f(1, 1, 1);
+  // U21 addition, no WinQuake counterpart: see R_EntityAlpha's header note.
+  // entAlpha === 1 keeps the original qglColor3f every existing test pins.
+  const entAlpha = R_EntityAlpha(currententity);
+  if (entAlpha === 1) qgl().qglColor3f(1, 1, 1);
+  else qgl().qglColor4f(1, 1, 1, entAlpha);
 
   GL_DisableMultitexture();
 
   GL_Bind(frame.gl_texturenum);
 
   qgl().qglEnable(GL_ALPHA_TEST);
+  if (entAlpha < 1) qgl().qglEnable(GL_BLEND);
   qgl().qglBegin(GL_QUADS);
   if (qw.active) {
     // QW/client/gl_rmain.c has this pair twice in a row -- a shipped
@@ -446,6 +509,7 @@ export function R_DrawSpriteModel(e: EntityT): void {
 
   qgl().qglEnd();
 
+  if (entAlpha < 1) qgl().qglDisable(GL_BLEND);
   qgl().qglDisable(GL_ALPHA_TEST);
 }
 
@@ -469,12 +533,21 @@ export const rmainState: {
   // U15: per-channel shadelight (see this file's header note); what
   // GL_DrawAliasFrame actually reads.
   shadelightColor: Vec3;
+  // U21 addition, no WinQuake counterpart: the entity alpha R_DrawAliasModel
+  // resolved for `currententity` this call, read by GL_DrawAliasFrame so a
+  // translucent alias model's per-vertex qglColor4f carries the same alpha
+  // its qglEnable(GL_BLEND) bracket promised. 1 (opaque) reduces to the
+  // classic qglColor3f the existing tests already pin -- see this file's
+  // header on why GL_DrawAliasFrame branches on it instead of always
+  // emitting qglColor4f.
+  alpha: number;
 } = {
   shadelight: 0,
   ambientlight: 0,
   shadedots: r_avertexnormal_dots.subarray(0, ANORM_DOTS_ROW),
   lastposenum: 0,
   shadelightColor: vec3(),
+  alpha: 1,
 };
 
 /*
@@ -513,7 +586,8 @@ export function GL_DrawAliasFrame(paliashdr: AliashdrT, posenum: number): void {
       // U15: per-channel shadelight (see this file's header note); reduces
       // to the classic `qglColor3f(l, l, l)` whenever color is not active.
       const dot = rmainState.shadedots[verts.lightnormalindex];
-      qgl().qglColor3f(dot * rmainState.shadelightColor[0], dot * rmainState.shadelightColor[1], dot * rmainState.shadelightColor[2]);
+      if (rmainState.alpha === 1) qgl().qglColor3f(dot * rmainState.shadelightColor[0], dot * rmainState.shadelightColor[1], dot * rmainState.shadelightColor[2]);
+      else qgl().qglColor4f(dot * rmainState.shadelightColor[0], dot * rmainState.shadelightColor[1], dot * rmainState.shadelightColor[2], rmainState.alpha);
       qgl().qglVertex3f(verts.v[0], verts.v[1], verts.v[2]);
       vertnum++;
     } while (--count);
@@ -611,6 +685,10 @@ R_DrawAliasModel
 export function R_DrawAliasModel(e: EntityT): void {
   const currententity = glState.currententity;
   if (currententity === null) Sys_Error("R_DrawAliasModel: no current entity");
+
+  // U21 addition, no WinQuake counterpart: see this file's header note on
+  // R_EntityAlpha / rmainState.alpha.
+  const entAlpha = R_EntityAlpha(currententity);
 
   const clmodel = currententity.model;
   if (clmodel === null) Sys_Error("R_DrawAliasModel: NULL model");
@@ -779,7 +857,23 @@ export function R_DrawAliasModel(e: EntityT): void {
 
   if (gl_affinemodels.value) qgl().qglHint(GL_PERSPECTIVE_CORRECTION_HINT, GL_FASTEST);
 
+  // U21 addition, no WinQuake counterpart: entAlpha === 1 (the overwhelming
+  // common case) takes the untouched original path -- qglDepthMask/
+  // GL_BLEND never toggle, and GL_DrawAliasFrame's rmainState.alpha === 1
+  // branch keeps emitting the classic qglColor3f every existing test pins.
+  if (entAlpha < 1) {
+    qgl().qglDepthMask(false);
+    qgl().qglEnable(GL_BLEND);
+  }
+  rmainState.alpha = entAlpha;
+
   R_SetupAliasFrame(currententity.frame, paliashdr);
+
+  rmainState.alpha = 1;
+  if (entAlpha < 1) {
+    qgl().qglDisable(GL_BLEND);
+    qgl().qglDepthMask(true);
+  }
 
   qgl().qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_REPLACE);
 
@@ -820,6 +914,9 @@ export function R_DrawEntitiesOnList(): void {
     glState.currententity = currententity;
     if (!currententity) continue;
     if (!currententity.model) continue;
+    // U21 addition: deferred to the alphapass below (see this function's
+    // tail note).
+    if (R_EntityAlpha(currententity) !== 1) continue;
 
     switch (currententity.model.type) {
       case ModtypeT.mod_alias:
@@ -840,6 +937,7 @@ export function R_DrawEntitiesOnList(): void {
     glState.currententity = currententity;
     if (!currententity) continue;
     if (!currententity.model) continue;
+    if (R_EntityAlpha(currententity) !== 1) continue;
 
     switch (currententity.model.type) {
       case ModtypeT.mod_sprite:
@@ -847,6 +945,60 @@ export function R_DrawEntitiesOnList(): void {
         break;
     }
   }
+
+  // U21 addition, no WinQuake counterpart: QuakeSpasm's R_DrawEntitiesOnList
+  // alphapass -- every entity with a non-default alpha draws last, sorted
+  // back-to-front by distance from the viewer, so a translucent model
+  // correctly shows whatever opaque geometry sits behind it. Mixed model
+  // types (alias/brush/sprite) share one back-to-front order here, unlike
+  // the two opaque passes above which are split by type for the classic
+  // "sprites need their own alpha-blend pass" reason those passes'
+  // original comment gives -- translucent draws already carry their own
+  // GL_BLEND bracket per model type, so there is no equivalent reason to
+  // split this pass by type too.
+  const translucent: EntityT[] = [];
+  for (i = 0; i < clState.cl_numvisedicts; i++) {
+    const currententity = cl_visedicts[i];
+    if (!currententity) continue;
+    if (!currententity.model) continue;
+    if (R_EntityAlpha(currententity) === 1) continue;
+    translucent.push(currententity);
+  }
+
+  translucent.sort((a, b) => {
+    const da = VectorLengthSquared(a.origin, r_refdef.vieworg);
+    const db = VectorLengthSquared(b.origin, r_refdef.vieworg);
+    return db - da; // far to near
+  });
+
+  for (const currententity of translucent) {
+    glState.currententity = currententity;
+    if (!currententity.model) continue;
+
+    switch (currententity.model.type) {
+      case ModtypeT.mod_alias:
+        R_DrawAliasModel(currententity);
+        break;
+
+      case ModtypeT.mod_brush:
+        R_DrawBrushModel(currententity);
+        break;
+
+      case ModtypeT.mod_sprite:
+        R_DrawSpriteModel(currententity);
+        break;
+
+      default:
+        break;
+    }
+  }
+}
+
+const alphaSortDist: Vec3 = vec3();
+
+function VectorLengthSquared(a: Vec3, b: Vec3): number {
+  VectorSubtract(a, b, alphaSortDist);
+  return alphaSortDist[0] * alphaSortDist[0] + alphaSortDist[1] * alphaSortDist[1] + alphaSortDist[2] * alphaSortDist[2];
 }
 
 const viewmodelDist: Vec3 = vec3();
@@ -1127,6 +1279,11 @@ export function R_RenderScene(): void {
 
   R_SetupGL();
 
+  // U21: fog (Fog_SetupFrame/Fog_EnableGFog/Fog_DisableGFog) and the skybox
+  // draw (Sky_DrawSkyBox) bracket this call from R_RenderView instead of
+  // from here, so the fog bracket also covers R_DrawWaterSurfaces (called
+  // from R_RenderView right after this function returns) -- see
+  // R_RenderView's own comment for the exact QuakeSpasm call-site match.
   R_MarkLeaves(); // done here so we know if we're in water
 
   R_DrawWorld(); // adds static entities to the list
@@ -1273,20 +1430,28 @@ export function R_RenderView(): void {
 
   // render normal view
 
-  /***** Experimental silly looking fog ******
-  ****** Use r_fullbright if you enable ******
-	glFogi(GL_FOG_MODE, GL_LINEAR);
-	glFogfv(GL_FOG_COLOR, colors);
-	glFogf(GL_FOG_END, 512.0);
-	glEnable(GL_FOG);
-********************************************/
+  // U21: this is exactly the "Experimental silly looking fog" spot the
+  // original comment below marked -- QuakeSpasm's gl_fog.c fills it in for
+  // real. Bracketed here (not inside R_RenderScene) so the fog also covers
+  // R_DrawWaterSurfaces below, matching QuakeSpasm's R_RenderScene (its own
+  // Fog_EnableGFog/Fog_DisableGFog bracket spans R_DrawWorld through
+  // R_DrawWorld_Water); R_DrawViewModel is drawn fogged too here, a
+  // documented deviation from QuakeSpasm (whose R_DrawViewModel call sits
+  // OUTSIDE its own Fog_DisableGFog, i.e. never fogged) traded for not
+  // having to reorder this port's existing R_DrawViewModel/
+  // R_DrawWaterSurfaces call sequence. Sky_DrawSkyBox draws before the
+  // world, outside the fog bracket (it tints its own quads via
+  // Fog_GetColor/r_skyfog instead of GL_FOG, since GL_FOG is range-based
+  // and a skybox has no meaningful depth -- see gl_sky.ts).
+  Sky_DrawSkyBox();
+  Fog_SetupFrame();
+  Fog_EnableGFog();
 
   R_RenderScene();
   R_DrawViewModel();
   R_DrawWaterSurfaces();
 
-  //  More fog right here :)
-  //	glDisable(GL_FOG);
+  Fog_DisableGFog();
   //  End of all fog code...
 
   // render mirror view
