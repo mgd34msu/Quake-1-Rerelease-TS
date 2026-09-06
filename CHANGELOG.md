@@ -132,6 +132,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   origin for a frame.
 - The retail sweep's per-map timeout follows its SIGTERM with SIGKILL, so a
   driver spinning inside one frame cannot stall the sweep.
+- Localization files decode as UTF-8 (the re-release tables are UTF-8:
+  Russian, accented French/German/Italian/Spanish, the trademark sign in
+  English), and kfont text walks code points, so non-ASCII strings render
+  their glyphs instead of mojibake; an unmapped code point draws the font's
+  fallback glyph rather than nothing.
 - A dedicated server no longer prints one "Unknown command" line for every
   client-only setting in the game's config.cfg (WinQuake did); the settings
   are counted and reported in one summary line per command-buffer pass, a

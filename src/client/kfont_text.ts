@@ -393,8 +393,17 @@ export function Text_Width(s: string, scale = 1): number {
 
   let w = 0;
   const fb = fallbackGlyph(font);
-  for (let i = 0; i < s.length; i++) {
-    const cp = s.charCodeAt(i);
+  // DEFECT D6 FIX: iterate real Unicode code points (`for...of` over a JS
+  // string decodes surrogate pairs), not UTF-16 code units -- a codepoint
+  // past the Basic Multilingual Plane is two `charCodeAt` units, and
+  // measuring/drawing each half separately would look up two bogus
+  // half-codepoints instead of the one real glyph. None of this project's
+  // kfont/loc data currently ships a codepoint that high (the retail
+  // fonts/qfont.kfont's own highest entry is U+1E9E, still in the BMP -- see
+  // src/lib/kfont.ts's own U31 header note), so this has no observable
+  // effect on today's fixtures; it is still the correct general contract.
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
     const g = font.glyph(cp) ?? fb;
     w += (g ? g.w : CLASSIC_GLYPH_SIZE) * scale;
   }
@@ -451,8 +460,11 @@ export function Text_Draw(x: number, y: number, s: string, alt = false, scale = 
   const fb = fallbackGlyph(font);
 
   let cx = x;
-  for (let i = 0; i < s.length; i++) {
-    const cp = s.charCodeAt(i);
+  // DEFECT D6 FIX: code points, not UTF-16 units -- see Text_Width's own
+  // comment above for why (a decoded loc string can contain any Unicode
+  // text now that src/lib/loc.ts decodes as UTF-8).
+  for (const ch of s) {
+    const cp = ch.codePointAt(0)!;
     const g = font.glyph(cp) ?? (cp === 0x20 ? null : fb); // a real, resolvable space just advances; an unmapped glyph falls back to '?'
     if (g) {
       const dstW = g.w * scale;

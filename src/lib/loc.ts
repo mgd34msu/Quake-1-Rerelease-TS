@@ -79,10 +79,70 @@
 //
 // Everything else below (Loc_Parse's "{{"/"}}"-escape quirk, Loc_Localize's
 // argument substitution/fallback rules, the private BSD-string-style
-// strlcpy/strlcat helpers, the byte-indexed Latin-1 decode) is unchanged
-// from quake-2-re-ts, whose own header explains each of those choices; see
-// the inline comments below (kept from that file) for the loc.c line
-// references.
+// strlcpy/strlcat helpers) is unchanged from quake-2-re-ts, whose own header
+// explains each of those choices; see the inline comments below (kept from
+// that file) for the loc.c line references.
+//
+// DEFECT D6 FIX -- loc file bytes decode as UTF-8, not Latin-1 (a real
+// behavior change from quake-2-re-ts's own loc.ts, documented here because
+// it contradicts that file's own header comment, which this port otherwise
+// kept verbatim below at Loc_ParseInto). quake-2-re-ts decodes its loc file
+// as Latin-1 (one byte -> one JS UTF-16 code unit) with the reasoning that
+// its own retail Quake II loc data is effectively ASCII-only, so Latin-1's
+// 1:1 byte<->code-unit mapping was "free" and never observably wrong. Q1's
+// re-release loc files are NOT ASCII-only: verified against the real
+// localization/loc_russian.txt inside rerelease/id1/pak0.pak (Cyrillic text
+// like `m_single_player = "Один игрок"`, multi-byte UTF-8 in every string)
+// and loc_french.txt/loc_german.txt (accented Latin -- "Activé",
+// "Désactivé") and even loc_english.txt itself (U+2122 TRADEMARK SIGN,
+// 3-byte UTF-8, in several PlayStation-branding strings). Decoding these as
+// Latin-1 turns one real character into 2-3 wrong ones (e.g. "Один" bytes
+// 0xD0 0x9E 0xD0 0xB4... becoming the mojibake "ÐÐ´...") -- exactly
+// family r's defect D6 ("loc strings decode as garbage").
+//
+// This is still safe for comParseToken's byte-indexed-ASCII-range parser
+// (the same tokenizer quake-2-re-ts's own header describes): every
+// structural byte it branches on -- '{' '}' '"' '\' '/' '=' digits and
+// whitespace <= 0x20 -- is a 7-bit ASCII value, and UTF-8's own encoding
+// rule guarantees every byte of a multi-byte sequence (lead or
+// continuation) is >= 0x80. Once decoded, each such sequence becomes one JS
+// character with a codepoint >= 0x80 (or, past the Basic Multilingual
+// Plane, a surrogate pair whose two code units are both in 0xD800-0xDFFF) --
+// never a value the tokenizer treats as structural. Decoding the WHOLE
+// buffer as UTF-8 up front, then running the same byte-indexed-shaped
+// scanner over the decoded string, therefore produces identical tokenization
+// decisions to the Latin-1 version and correct Unicode text inside the
+// quoted values, which is exactly what Text_Draw's per-codepoint kfont
+// lookup (src/client/kfont_text.ts) needs to draw real glyphs instead of
+// mojibake or silently-missing text.
+//
+// BOM tolerance (the unit brief's own requirement, verified moot on the six
+// real language files -- none of them has one): `TextDecoder("utf-8")`
+// strips a leading byte-order-mark from its output by default (unlike
+// `Buffer.prototype.toString("utf8")`, which leaves a literal U+FEFF in the
+// decoded string) -- used here instead of the Buffer-based decode
+// quake-2-re-ts's own version has, for that reason. It is also non-fatal by
+// default: a malformed byte sequence decodes to U+FFFD (the standard
+// replacement character) rather than throwing, so a corrupt loc file still
+// loads whatever lines around the bad bytes parse cleanly instead of taking
+// down Loc_ReloadFile entirely -- consistent with this file's own "a
+// malformed entry is skipped, not fatal" convention for a bad `{N}` format
+// string.
+//
+// One measurable, harmless divergence from a byte-for-byte truncation: the
+// MAX_LOC_KEY/MAX_LOC_FORMAT/MAX_STRING_CHARS size limits truncate by JS
+// string length (UTF-16 code units) via strlcpy/strnlcpy, same as
+// quake-2-re-ts's own helpers -- under Latin-1 that was exactly equivalent
+// to the original C code's byte-count truncation (1 byte in = 1 code unit
+// out); under UTF-8 it is not (one multi-byte character is 1-2 code units
+// but 2-4 bytes), so a value within a few bytes of a size limit could
+// truncate a handful of bytes earlier or later than the original C
+// `Q_strlcpy` would have. No real key or format string in the shipped data
+// comes remotely close to these limits (MAX_LOC_KEY=64, MAX_LOC_FORMAT/
+// MAX_STRING_CHARS=1024 -- the longest real value is the mg3 hub-hint text
+// this file's own comParseToken fix already documents, well under 1024
+// code units even with its embedded `\n`s), so this has no observable
+// effect on today's data.
 //
 // U30 additions (none of this exists in q2repro, whose retail loc file has
 // no mod-overlay convention and whose engine has no `language auto`):
@@ -407,6 +467,11 @@ interface TokenState {
   index: number;
 }
 
+// `s` is the whole file already decoded as UTF-8 (Loc_ParseInto, "DEFECT D6
+// FIX" above) -- `charCodeAt` here reads real UTF-16 code units of the
+// decoded text, not raw file bytes, so every `String.fromCharCode(c)` call
+// below (inside comParseToken's quoted-string and bare-word loops) copies a
+// genuine character through rather than re-encoding a Latin-1 byte value.
 function cc(s: string, i: number): number {
   return i < s.length ? s.charCodeAt(i) : 0;
 }
@@ -588,13 +653,15 @@ number of keys the sink accepted.
 function Loc_ParseInto(bytes: Uint8Array, opts: LocReloadOptions, sink: LocEntrySink): number {
   const platform = opts.platform?.toLowerCase();
 
-  // loc.c's own parser is a byte-indexed scanner where every parsing
-  // decision (`{`, `}`, `"`, `\`, `//`, `/*`, whitespace, digits) lives in
-  // the 0-127 ASCII range. Decoding as UTF-8 could merge multibyte
-  // sequences into single JS characters and shift every subsequent byte
-  // offset; Latin-1 preserves an exact 1:1 byte<->code-unit mapping (and
-  // round-trips losslessly back out).
-  const text = Buffer.from(bytes).toString("latin1");
+  // DEFECT D6 FIX -- see this file's own header comment ("DEFECT D6 FIX")
+  // for the full writeup: decoded as UTF-8 (BOM tolerated, malformed bytes
+  // replaced rather than thrown on), not Latin-1. Every structural byte
+  // comParseToken branches on is 7-bit ASCII, and UTF-8 guarantees every
+  // byte of a multibyte sequence is >= 0x80, so decoding up front and
+  // running the same byte-indexed-shaped scanner over the decoded string
+  // tokenizes identically while giving quoted values their real Unicode
+  // text (Cyrillic, accented Latin, etc.) instead of mojibake.
+  const text = new TextDecoder("utf-8").decode(bytes);
   const state: TokenState = { data: text, index: 0 };
   let numLocs = 0;
 

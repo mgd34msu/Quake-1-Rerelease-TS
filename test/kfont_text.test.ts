@@ -458,6 +458,32 @@ describe("kfont_text.ts -- Text_Draw glyph rects (synthetic kfont atlas, softwar
       spy.mockRestore();
     }
   });
+
+  // DEFECT D6 FIX: text never silently disappears -- a codepoint the font
+  // has no glyph for still draws a call (the '?' fallback rect), it does
+  // not just skip that character (see fallbackGlyph in kfont_text.ts).
+  test("DEFECT D6: a codepoint the fixture font does NOT define ('ö', U+00F6, accented-text stand-in) still draws -- the '?' fallback rect, not a silently dropped character", () => {
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      const s = "A" + "ö" + "B";
+      Text_Draw(0, 0, s);
+      // Three draws for three characters -- the unmapped 'ö' is NOT skipped.
+      expect(spy).toHaveBeenCalledTimes(3);
+
+      const [, , , , , srcX2, srcY2, srcW2, srcH2] = spy.mock.calls[1]!;
+      expect([srcX2, srcY2, srcW2, srcH2]).toEqual([GLYPH_QMARK.x, GLYPH_QMARK.y, GLYPH_QMARK.w, GLYPH_QMARK.h]);
+
+      // and the glyph after it still advances from the fallback's own width,
+      // not the original (unmapped) character's non-existent one.
+      const [dstX1] = spy.mock.calls[0]!;
+      const [dstX2] = spy.mock.calls[1]!;
+      const [dstX3] = spy.mock.calls[2]!;
+      expect(dstX2).toBe((dstX1 as number) + GLYPH_A.w);
+      expect(dstX3).toBe((dstX2 as number) + GLYPH_QMARK.w);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
 
 describe("kfont_text.ts -- CL_LocalizeKey", () => {

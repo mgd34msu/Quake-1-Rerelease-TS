@@ -477,6 +477,78 @@ describe("loc.ts -- platform-tagged lines (`key <plat...> = \"...\"`)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// DEFECT D6 FIX: loc file bytes decode as UTF-8, not Latin-1 (see loc.ts's
+// own header comment). Fixture bytes below are hand-encoded UTF-8 (not
+// `enc.encode` of a template literal containing the characters directly,
+// so the test is explicit about which bytes are on the wire rather than
+// relying on the source file's own encoding) for Russian and accented
+// French/German text, matching the real retail loc_russian.txt/
+// loc_french.txt/loc_german.txt shapes this unit's report cites (e.g.
+// `m_single_player = "Один игрок"`, `m_on = "Activé"`).
+// ---------------------------------------------------------------------------
+
+describe("loc.ts -- loc file bytes decode as UTF-8 (DEFECT D6 fix)", () => {
+  test("a Russian (Cyrillic) value decodes to its real Unicode text, not Latin-1 mojibake", () => {
+    Loc_Unload();
+    // g_greeting = "Один игрок" -- "Один игрок" is UTF-8 encoded by
+    // TextEncoder here, same bytes the real loc_russian.txt ships.
+    const locFile = `g_greeting = "Один игрок"\n`;
+    const count = Loc_ReloadFile(enc.encode(locFile));
+    expect(count).toBe(1);
+    const result = Loc_Localize("$g_greeting", true, [], 0);
+    expect(result).toBe("Один игрок");
+    // Every character is a real Cyrillic codepoint (U+0400-U+04FF) or plain
+    // ASCII (the space) -- NOT a Latin-1 mojibake byte (0x80-0xFF), which is
+    // what taking the UTF-8 bytes one byte per character would produce.
+    expect(Array.from(result).every((c) => c.charCodeAt(0) > 0x400 || c.charCodeAt(0) < 0x80)).toBe(true);
+  });
+
+  test("accented French text decodes correctly (loc_french.txt's own m_on/m_off shape)", () => {
+    Loc_Unload();
+    const locFile = [`m_on = "Activé"`, `m_off = "Désactivé"`, ``].join("\n");
+    const count = Loc_ReloadFile(enc.encode(locFile));
+    expect(count).toBe(2);
+    expect(Loc_Localize("$m_on", true, [], 0)).toBe("Activé");
+    expect(Loc_Localize("$m_off", true, [], 0)).toBe("Désactivé");
+  });
+
+  test("a multi-byte codepoint outside Latin-1 entirely (U+2122 TRADEMARK SIGN, 3-byte UTF-8, the real loc_english.txt's own PlayStation-branding strings) decodes to one character", () => {
+    Loc_Unload();
+    const locFile = `g_trademark = "PlayStation™Network"\n`;
+    Loc_ReloadFile(enc.encode(locFile));
+    const result = Loc_Localize("$g_trademark", true, [], 0);
+    expect(result).toBe("PlayStation™Network");
+    expect(result.codePointAt("PlayStation".length)).toBe(0x2122);
+  });
+
+  test("a leading UTF-8 byte-order-mark is tolerated: stripped, not left as a stray U+FEFF prefix on the first key", () => {
+    Loc_Unload();
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+    const body = enc.encode(`g_key = "value"\n`);
+    const withBom = new Uint8Array(bom.length + body.length);
+    withBom.set(bom, 0);
+    withBom.set(body, bom.length);
+    const count = Loc_ReloadFile(withBom);
+    expect(count).toBe(1);
+    expect(Loc_Localize("$g_key", true, [], 0)).toBe("value");
+  });
+
+  test("a malformed UTF-8 byte sequence does not throw -- decodes to the replacement character, the rest of the line still parses", () => {
+    Loc_Unload();
+    const prefix = enc.encode(`g_bad = "a`);
+    const badByte = new Uint8Array([0xff]); // never valid as a UTF-8 lead byte
+    const suffix = enc.encode(`b"\n`);
+    const bytes = new Uint8Array(prefix.length + badByte.length + suffix.length);
+    bytes.set(prefix, 0);
+    bytes.set(badByte, prefix.length);
+    bytes.set(suffix, prefix.length + badByte.length);
+    expect(() => Loc_ReloadFile(bytes)).not.toThrow();
+    const result = Loc_Localize("$g_bad", true, [], 0);
+    expect(result).toBe("a�b");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Guarded end-to-end test: the REAL Quake 1 re-release
 // localization/loc_english.txt, extracted from
 // .../rerelease/id1/pak0.pak with a tiny inline PACK reader (this file's
@@ -675,5 +747,30 @@ describe.skipIf(!HAVE_RERELEASE_PAK0)("loc.ts -- real Quake 1 re-release loc_<la
     expect(mergedCount).toBeGreaterThan(0);
     // the merge added to the table, it did not replace it.
     expect(Loc_TableSize()).toBeGreaterThanOrEqual(baseCount);
+  });
+
+  // DEFECT D6 FIX, against the real retail data: the real loc_russian.txt's
+  // `m_single_player = "Один игрок"` and loc_french.txt's `m_on = "Activé"`
+  // must decode to real Unicode text, not Latin-1 mojibake (this is what
+  // test/e2e/r_text.ts's own "utf8-string"/"utf8-decoded" checks exercise
+  // end-to-end through the client; this is the same assertion directly
+  // against src/lib/loc.ts).
+  test("real loc_russian.txt: $m_single_player decodes to Cyrillic text, not mojibake", () => {
+    Loc_Unload();
+    const bytes = readPakEntry(RERELEASE_PAK0, "localization/loc_russian.txt");
+    expect(bytes).not.toBeNull();
+    Loc_ReloadFile(bytes!);
+    const result = Loc_Localize("$m_single_player", true, [], 0);
+    expect(result).toBe("Один игрок");
+    expect(Array.from(result).every((c) => c.charCodeAt(0) > 0x400 || c.charCodeAt(0) < 0x80)).toBe(true);
+  });
+
+  test("real loc_french.txt: $m_on/$m_off decode with their accented characters intact", () => {
+    Loc_Unload();
+    const bytes = readPakEntry(RERELEASE_PAK0, "localization/loc_french.txt");
+    expect(bytes).not.toBeNull();
+    Loc_ReloadFile(bytes!);
+    expect(Loc_Localize("$m_on", true, [], 0)).toBe("Activé");
+    expect(Loc_Localize("$m_off", true, [], 0)).toBe("Désactivé");
   });
 });
