@@ -48,6 +48,16 @@ Deviations from PORTING.md / the C source:
   C's only other reader, menu.c's "-simsound" perf harness, is unported), so
   they stay private module state in snd_dma.ts; hoist them here if a future
   unit needs them.
+- `snd_speed` and `DEFAULT_SND_SPEED` are U5's own addition, not present in
+  sound.h: WinQuake's snd_linux.c always requested `tryrates[0]` (11025 Hz)
+  with no user-facing knob to ask for anything else, and this port's own
+  earlier default matched that. The 2021 re-release ships 44.1 kHz/16-bit
+  sfx assets (ARCHITECTURE.md's Sound commitment), so the default output
+  format moves to 44100/16-bit/stereo; `snd_speed` is archived (persists via
+  config.cfg like `volume`/`bgmvolume`) and follows the exact `vid_ref`
+  shape vid.ts already established for this port's own added cvars:
+  `-sndspeed` (src/platform/snd.ts's `pickSpeed()`) still wins for the
+  session when given, the cvar's value otherwise.
 - `MAX_SFX` (snd_dma.c's own `#define`, not in sound.h) and `PAINTBUFFER_SIZE`
   (snd_mix.c's own `#define`) are collected here alongside `MAX_CHANNELS`/
   `MAX_DYNAMIC_CHANNELS` per this unit's brief, so every numeric constant the
@@ -197,6 +207,13 @@ export const sound_nominal_clip_dist = 1000.0;
 export const loadas8bit = new CvarT("loadas8bit", "0");
 export const bgmvolume = new CvarT("bgmvolume", "1", true);
 export const volume = new CvarT("volume", "0.7", true);
+
+// U5: default DMA output format -- 44.1 kHz/16-bit/stereo to match the
+// re-release's own sfx assets; see the file header. `snd_speed` is this
+// port's own added cvar (the vid_ref shape); src/platform/snd.ts's
+// pickSpeed() reads it, `-sndspeed` overriding it for the session.
+export const DEFAULT_SND_SPEED = 44100;
+export const snd_speed = new CvarT("snd_speed", String(DEFAULT_SND_SPEED), true);
 
 export let snd_initialized = false;
 export function setSndInitialized(v: boolean): void {

@@ -35,6 +35,12 @@ Deviations from PORTING.md / the C source:
   shows their only reader is snd_next.c (the NeXT platform backend), which
   PORTING.md's dropped-platform list already excludes. They have zero
   consumers in this port.
+- U5: S_Init now also registers `snd_speed` (client/sound.ts's own added
+  archived cvar -- see that file's header) alongside the sound cvars
+  already registered here, and the `-simsound` fakedma fallback's speed
+  field uses the same `DEFAULT_SND_SPEED` (44100) the real driver defaults
+  to, rather than its own separate 22050 literal, so a headless perf-harness
+  run and a real device see the same nominal rate.
 - `known_sfx` (`sfx_t known_sfx[MAX_SFX]`, Hunk-allocated) is a plain,
   reassignable array of `SfxT` objects rather than a `Hunk_AllocName` byte
   block -- see sound.ts's file header for the reasoning (mirrors model.ts's
@@ -115,6 +121,7 @@ import { S_LoadSound } from "./snd_mem";
 import { S_PaintChannels, SND_InitScaletable } from "./snd_mix";
 import {
   ChannelT,
+  DEFAULT_SND_SPEED,
   DmaT,
   MAX_CHANNELS,
   MAX_DYNAMIC_CHANNELS,
@@ -136,6 +143,7 @@ import {
   shm,
   snd_blocked,
   snd_initialized,
+  snd_speed,
   sndDma,
   sound_nominal_clip_dist,
   total_channels,
@@ -247,6 +255,7 @@ export function S_Init(): void {
   Cvar_RegisterVariable(volume);
   Cvar_RegisterVariable(precache);
   Cvar_RegisterVariable(loadas8bit);
+  Cvar_RegisterVariable(snd_speed);
   Cvar_RegisterVariable(bgmvolume);
   Cvar_RegisterVariable(bgmbuffer);
   Cvar_RegisterVariable(ambient_level);
@@ -275,7 +284,7 @@ export function S_Init(): void {
     const fake = new DmaT();
     fake.splitbuffer = false;
     fake.samplebits = 16;
-    fake.speed = 22050;
+    fake.speed = DEFAULT_SND_SPEED; // U5: synthetic fallback matches the real driver's own default
     fake.channels = 2;
     fake.samples = 32768;
     fake.samplepos = 0;

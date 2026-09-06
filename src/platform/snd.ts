@@ -24,8 +24,13 @@ Deviations from PORTING.md / the C source:
   without a second code path, and dedicated servers never call SNDDMA_Init at
   all (host.ts gates `hostClientHooks.sInit` behind `!sysState.isDedicated`).
 - `-sndbits`/`-sndspeed`/`-sndmono`/`-sndstereo` are command-line parms
-  (`COM_CheckParm`), exactly as snd_linux.c reads them -- not cvars (this
-  port has no `s_khz`-style cvar; that is quake-2-ts's own addition). The
+  (`COM_CheckParm`), exactly as snd_linux.c reads them. `-sndbits`/
+  `-sndmono`/`-sndstereo` still have no cvar equivalent (WinQuake's own
+  fixed 16-bit/stereo default never needed one); `-sndspeed` now layers on
+  top of this port's own `snd_speed` archived cvar (U5's addition,
+  client/sound.ts -- the same `vid_ref` shape vid.ts uses): the parm wins
+  for the session when given, `snd_speed.value` (default 44100,
+  `DEFAULT_SND_SPEED`) otherwise. The
   `QUAKE_SOUND_SAMPLEBITS`/`_SPEED`/`_CHANNELS` environment-variable
   overrides snd_linux.c also checks have no equivalent here and are dropped
   (undocumented debug knobs with no other reader in this port).
@@ -35,9 +40,9 @@ Deviations from PORTING.md / the C source:
   is a single requested rate, and its `obtained` spec reports whatever the
   driver actually gave back (mirrored into `sn.speed` below, exactly as
   snd_linux.c copies `shm->speed = tryrates[i]` after its own ioctl
-  succeeds). Requesting 11025 (the C loop's first, and typically only,
-  candidate that any real OSS driver of that era accepted) and trusting
-  `obtained.freq` is this file's equivalent.
+  succeeds). Requesting the session's resolved speed (default 44100 per the
+  `snd_speed` cvar -- see the deviation above; the C's own `tryrates[0]` was
+  11025) and trusting `obtained.freq` is this file's equivalent.
 - `SNDDMA_Submit`'s ring-read-and-queue loop, `SNDDMA_GetDMAPos`'s
   consumed-bytes math, and the `0x10000`-byte ring size are carried over
   unchanged from quake-2-ts's own snd.ts (there is no OSS/mmap equivalent to
@@ -53,7 +58,7 @@ Deviations from PORTING.md / the C source:
 */
 
 import { COM_CheckParm, Q_atoi, com_argv } from "../common/common";
-import { sn, setShm, paintedtime, sndDma, type SndDma } from "../client/sound";
+import { sn, setShm, paintedtime, sndDma, snd_speed, type SndDma } from "../client/sound";
 import { SDLSND_Active, SDLSND_Close, SDLSND_ConsumedBytes, SDLSND_Open, SDLSND_Queue } from "./sdl";
 
 // 0x10000 bytes: the same fixed ring size DirectSound's secondary buffer
@@ -77,7 +82,7 @@ function pickSamplebits(): number {
 function pickSpeed(): number {
   const i = COM_CheckParm("-sndspeed");
   if (i) return Q_atoi(com_argv[i + 1]);
-  return 11025; // snd_linux.c's tryrates[0] -- see file header
+  return snd_speed.value; // U5's archived cvar, default 44100 -- see file header
 }
 
 function pickChannels(): number {

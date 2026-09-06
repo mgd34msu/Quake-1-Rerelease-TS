@@ -45,6 +45,37 @@ Deviations from PORTING.md / the C source:
   reads that last byte as WAV data, so the extra byte is harmless, exactly
   as it is in the C where com_filesize also includes it).
 
+U5 (44.1kHz/16-bit/stereo DMA default, any-rate/any-width WAV loading):
+`ResampleSfx`'s fixed-point stepping (`stepscale = inrate / shm.speed`,
+`fracstep = Math.trunc(stepscale * 256)`, `srcsample = samplefrac >> 8`) was
+already rate-generic before this unit -- it degrades gracefully for any
+upsample or downsample ratio (repeat-sample upsampling, decimation
+downsampling, no anti-aliasing filter, exactly as the C's own naive
+resampler), and already rescales `sc.loopstart` by the same `stepscale` used
+for the data itself, so a cue-chunk loop point survives resampling to any
+target rate unchanged in relative position. The `stepscale === 1` fast path
+(`inrate === shm.speed`) already produces byte-identical output for 8-bit
+sources (classic 11025 Hz assets on an 11025 Hz device), and the general
+path's own arithmetic is exact (not merely close) whenever `stepscale` is an
+integer, including `stepscale === 1` for 16-bit sources (the re-release's
+44.1kHz assets on a 44.1kHz device) -- see test/snd_rate.test.ts for the
+byte-exact assertions on both. No changes to the resampling algorithm itself
+were needed for this unit; only the DMA-side defaults changed
+(src/platform/snd.ts, src/client/snd_dma.ts, src/client/sound.ts).
+`ResampleSfx`'s `data` parameter is (and was already) mono-only: `inwidth`
+describes bytes per sample, not a channel count, and there is no interleave
+stride anywhere in its indexing. `S_LoadSound` never resamples a true stereo
+sfx wav -- it rejects one before ever calling `ResampleSfx` (`info.channels
+!== 1` above), exactly as WinQuake's own S_LoadSound does. That is a
+deliberate fidelity call, not an oversight: the retail assets (both classic
+and re-release, per this unit's brief) are mono sound effects, so this port
+takes the same "vanilla effectively does" position as WinQuake -- true
+stereo sfx wavs are refused rather than silently downmixed, since inventing
+a downmix the original engine never had would be an unasked-for QoL
+addition to a load path that PORTING.md's FIDELITY RAZOR asks to leave
+alone. (Stereo *streaming* audio -- CDAudio/ambient music -- is a separate
+subsystem, out of this file's scope, and unaffected by this ruling.)
+
 QuakeWorld fold: ../qsrc/quake/QW/client/snd_mem.c's only difference is
 wrapping `DumpChunks` in `#if 0` (never compiled under QW). WinQuake compiles
 it but nothing calls it (this file's own commented-out call site is the only

@@ -43,6 +43,18 @@ Deviations from PORTING.md / the C source:
   the same spirit as PORTING.md's sanctioned `goto` control-flow
   restructuring: the mixing order and arithmetic are unchanged, only the
   bookkeeping that used to ride on pointer identity is now explicit.
+- `S_TransferStereo16`'s gather step (de-interleaving `paintbufferLeft`/
+  `paintbufferRight` back into one flat `snd_p` array) has no C equivalent
+  at all: the C's own `snd_p` is a zero-copy `(int *)paintbuffer` cast,
+  since `paintbuffer` there already IS one interleaved array of structs --
+  a consequence of the two-parallel-arrays choice directly above. U5 (44.1
+  kHz default, 4x the classic per-frame mixing work): this gather buffer is
+  a module-scope scratch `Int32Array`, grown once and reused rather than
+  `new Int32Array(...)`'d on every segment, so the added mixing volume does
+  not turn into proportional GC churn. Sized from `PAINTBUFFER_SIZE`, the
+  same bound `S_TransferStereo16`'s own segment length is already known to
+  respect when called from `S_PaintChannels`; it grows (never shrinks) if a
+  caller ever asks for more.
 - `shm->buffer` (`unsigned char *`) is written through a `DataView` for the
   16-bit paths (`Int16Array` alignment on a plain `Uint8Array` is not
   guaranteed) and directly for the 8-bit path.
@@ -90,6 +102,20 @@ function pget(p: number): number {
 }
 
 export const snd_scaletable: Int32Array[] = Array.from({ length: 32 }, () => new Int32Array(256));
+
+// U5 perf: S_TransferStereo16's gather step needs an interleaved (left,
+// right) scratch buffer per segment; at 44.1kHz stereo this function runs
+// several times per S_Update (four times the classic 11025Hz work), so a
+// fresh `new Int32Array(...)` per segment here would mean per-frame GC
+// churn proportional to the mix rate. One reusable buffer, grown (never
+// shrunk) on the rare call that needs more than PAINTBUFFER_SIZE frames --
+// the normal case (bounded by S_PaintChannels' own PAINTBUFFER_SIZE
+// chunking) never reallocates past the first call.
+let transferScratch = new Int32Array(PAINTBUFFER_SIZE * 2);
+function getTransferScratch(lengthNeeded: number): Int32Array {
+  if (transferScratch.length < lengthNeeded) transferScratch = new Int32Array(lengthNeeded);
+  return transferScratch;
+}
 
 function clampShort(val: number): number {
   if (val > 0x7fff) return 0x7fff;
@@ -140,7 +166,7 @@ function S_TransferStereo16(endtime: number): void {
     // gather this segment's (left, right) pairs out of the paintbuffer,
     // starting at the offset already consumed from `paintedtime`
     const base = lpaintedtime - paintedtime;
-    const snd_p = new Int32Array(snd_linear_count * 2);
+    const snd_p = getTransferScratch(snd_linear_count * 2).subarray(0, snd_linear_count * 2);
     for (let f = 0; f < snd_linear_count; f++) {
       snd_p[f * 2] = paintbufferLeft[base + f] ?? 0;
       snd_p[f * 2 + 1] = paintbufferRight[base + f] ?? 0;
