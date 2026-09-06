@@ -11,6 +11,9 @@ cd "$W" && git checkout -qf --detach "$BASE" && git clean -qfd src test
 cd - >/dev/null
 for f in "$@"; do mkdir -p "$W/$(dirname "$f")" && cp "$f" "$W/$f" || exit 1; done
 cd "$W"
+# The fixture suites resolve ../qsrc relative to the repo; a worktree elsewhere
+# would skip them silently, so point them at the real tree unless overridden.
+export Q1TS_QSRC="${Q1TS_QSRC:-/home/buzzkill/Projects/qsrc/quake}"
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 300 bash scripts/check.sh || exit 1
 out=$(SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 300 bun test 2>&1 | grep -E '^ *[0-9]+ (pass|fail)')
 echo "$out"
