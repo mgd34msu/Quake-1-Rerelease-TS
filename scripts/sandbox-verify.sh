@@ -15,6 +15,8 @@ cd "$W"
 # would skip them silently, so point them at the real tree unless overridden.
 export Q1TS_QSRC="${Q1TS_QSRC:-/home/buzzkill/Projects/qsrc/quake}"
 export Q1TS_RERELEASE_DATA="${Q1TS_RERELEASE_DATA:-/home/buzzkill/Projects/qfiles/q1/rerelease}"
+# Unit tests never touch the real per-user write directory (see COM_DefaultHomeDir).
+export Q1TS_NOHOMEDIR=1
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 300 bash scripts/check.sh || exit 1
 # Full output is kept next to the worktree (sandbox-last.log) so a failing
 # gate names its tests; the summary lines are what the caller sees.

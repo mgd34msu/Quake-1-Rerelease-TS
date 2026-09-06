@@ -1525,6 +1525,12 @@ basedir exactly as -nohomedir does.
 ================
 */
 export function COM_DefaultHomeDir(): string {
+  // Q1TS_NOHOMEDIR=1 is the test harness's -nohomedir: `bun test` and the
+  // e2e runner export it so a boot with no explicit -homedir/-nohomedir never
+  // reads or writes the real per-user directory (one archived config.cfg
+  // there would leak into every later test that boots the same gamedir name).
+  const noHome = process.env["Q1TS_NOHOMEDIR"];
+  if (noHome !== undefined && noHome !== "" && noHome !== "0") return "";
   const xdg = process.env["XDG_DATA_HOME"];
   if (xdg !== undefined && xdg.length > 0) return `${stripTrailingSlash(xdg)}/${HOMEDIR_APPNAME}`;
   const home = process.env["HOME"];

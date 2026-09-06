@@ -68,10 +68,18 @@
 //     int32      nodeCount
 //     int32      linkCount
 //     int32      hintCount
-//     float32    scale             -- version >= 16 only; meaning
-//                                     unconfirmed (never referenced by the
-//                                     rest of the file's byte layout), kept
-//                                     as NavFile.scale, defaults to 1 below
+//     float32    heuristic         -- version >= 16 only; the A* edge-cost
+//                                     multiplier, same field and same name as
+//                                     the 2023 Quake II re-release's own
+//                                     nav_data.heuristic (q2repro's
+//                                     src/server/nav.c, read right after the
+//                                     three counts and used as
+//                                     `VectorDistance(...) * nav_data.heuristic`
+//                                     in its own Nav_Weight). 0.8 in 14 of the
+//                                     15 real retail files carrying this
+//                                     field, 0.95 in the one exception (mg3's
+//                                     own dm1.nav). Kept as
+//                                     NavFile.heuristic, defaults to 1 below
 //                                     version 16.
 //
 //   nodeCount * 8-byte nodes, immediately after the header:
@@ -86,16 +94,27 @@
 //
 //   linkCount * 6-byte links, immediately after all positions:
 //     uint16     target            -- always < nodeCount, verified
-//     uint16     type              -- the LINK TYPE, an enum with the same
+//     uint8      type              -- the LINK TYPE, an enum with the same
 //                                     ordinals as the 2023 Quake II
 //                                     re-release's own nav link types
 //                                     (quake-2-re-ts src/server/nav.ts's
-//                                     NavLinkTypeT), truncated at 8 -- Quake
-//                                     1 has no crouch and no ladders, so the
-//                                     enum stops before those. Exported
-//                                     below as NavLinkType/NavLinkTypeT.
-//                                     Per-type counts and evidence, from
-//                                     the id1 sweep:
+//                                     NavLinkTypeT, and q2repro's own
+//                                     nav_link_type_t at inc/server/nav.h:73,
+//                                     also uint8_t there), truncated at 8 --
+//                                     Quake 1 has no crouch and no ladders,
+//                                     so the enum stops before those.
+//                                     Exported below as
+//                                     NavLinkType/NavLinkTypeT. Originally
+//                                     misread as a uint16 (this reader used
+//                                     to compute `flags<<8|type`, which
+//                                     happened to equal the real type on
+//                                     every one of the 58 v12-v17 retail
+//                                     files, since their flags byte is
+//                                     always 0 -- but came back wrong on
+//                                     every link of the 9 real v18 files,
+//                                     whose flags byte is never 0; see LINK
+//                                     FLAGS below). Per-type counts and
+//                                     evidence, from the id1 sweep:
 //
 //                                       0 Walk           39452 links;
 //                                         average dz -0.9, average XY span
@@ -130,6 +149,32 @@
 //                                         21 -- func_train.
 //                                       8 ManualLongJump  192; a jump the
 //                                         mapper placed by hand.
+//
+//     uint8      flags             -- the LINK FLAGS, a bitmask at the same
+//                                     byte offset (+3) and same width
+//                                     (uint8_t) as q2repro's own
+//                                     nav_link_flags_t (inc/server/nav.h:88),
+//                                     whose bit names are TeamRed 1, TeamBlue
+//                                     2, ExitAtTarget 4, WalkOnly 8,
+//                                     EaseIntoTarget 16, InstantTurn 32,
+//                                     Disabled 64. Exposed raw below as
+//                                     NavLink.flags: 0 on every link of every
+//                                     v12-v17 retail file and 6 of the 9 v18
+//                                     ones; the 9 real v18 files (ctf1-4,
+//                                     ctf6-9 and mg3's own remade dm1.nav)
+//                                     carry a non-zero flags byte on EVERY
+//                                     one of their 7555 links -- 0xFF (all
+//                                     eight bits, 7548 links) everywhere
+//                                     except 7 links in ctf1.nav, which carry
+//                                     0x0F (the low nibble only: TeamRed |
+//                                     TeamBlue | ExitAtTarget | WalkOnly, if
+//                                     q2repro's names hold here). 0xFF sets
+//                                     an eighth bit q2repro's enum never
+//                                     names, so whether Quake 1's bits mean
+//                                     the same things q2repro's do -- or this
+//                                     byte is repurposed for something
+//                                     ctf-specific -- is NOT confirmed; kept
+//                                     raw rather than guessed apart.
 //
 //     uint16     traversal         -- a TRAVERSAL INDEX into the hint
 //                                     array below, or 0xFFFF (65535)
@@ -169,8 +214,8 @@
 //                                                the rest.
 //
 //   one uint32 entityLinkCount, immediately after all hints, followed by
-//   entityLinkCount fixed-size records (26/30/34 bytes depending on
-//   version -- see ENTITY_LINK_TAIL_WORDS below). This whole trailing
+//   entityLinkCount fixed-size records (26, 34 or 30 bytes depending on
+//   version -- see ENTITY_LINK_TAIL_INT32_COUNT below). This whole trailing
 //   section is 4 bytes (just the zero count) in the large majority of
 //   retail files. It is the file's ENTITY-BOUND LINK table (Quake II's
 //   nav_edict_t), exposed below as NavFile.entityLinks:
@@ -185,15 +230,32 @@
 //                                     maxs on every axis in every record;
 //                                     this is a bounding box, not a
 //                                     takeoff and a landing point).
-//     uint16[]   tail              -- version-dependent length (0, 2 or 4
-//                                     uint16 words -- see
-//                                     ENTITY_LINK_TAIL_WORDS); last word is
-//                                     0xFFFF in every non-empty sample
-//                                     seen (a sentinel?), the rest vary in
-//                                     a narrow small-signed-int16 range,
-//                                     equivalently a small non-positive
-//                                     int32 in [-1051, 0]; meaning not
-//                                     confirmed, kept raw.
+//     int32[]    tail              -- version-dependent length: 0 entries
+//                                     for v12 (no trailing data at all), 1
+//                                     for v15+ (confirmed to v18;
+//                                     extrapolated beyond), 2 for v13/14 --
+//                                     see ENTITY_LINK_TAIL_INT32_COUNT.
+//                                     Originally misread as 0/2/4 raw
+//                                     uint16 words; regrouping the same
+//                                     bytes into int32s (little-endian, so a
+//                                     uint16 word pair [lo, hi] with hi
+//                                     always 0xFFFF is exactly the byte
+//                                     pattern of a small negative int32, not
+//                                     a "sentinel word") makes each file's
+//                                     v15+ tail a SINGLE value in
+//                                     [-1051, 0] across the retail sweep --
+//                                     meaning not confirmed, kept raw as
+//                                     `tail[0]`. v13/14 (`tail[0]`,
+//                                     `tail[1]`) carries that same value in
+//                                     `tail[1]`, preceded by a `tail[0]`
+//                                     that is zero in 49 of the 53 real
+//                                     v13/14 records swept and, in the
+//                                     other 4 (all in id1's own
+//                                     base32b.nav), exactly one less than
+//                                     `tail[1]` -- so "always zero" is close
+//                                     but not exact; not confirmed either
+//                                     way, kept raw rather than asserted as
+//                                     a strict invariant.
 //
 // NODE FLAGS (NavNode.flags), same sweep -- exported below as
 // NavNodeFlags:
@@ -270,6 +332,8 @@ export class NavNode {
 export class NavLink {
   target = 0;
   type: NavLinkTypeT = NavLinkType.Walk;
+  /** Raw on-disk bitmask; see LINK FLAGS in this file's header for what is and isn't confirmed about its bits. */
+  flags = 0;
   /** Index into the file's hint array, or null when the link carries no traversal (on-disk 0xFFFF). */
   traversal: number | null = null;
 }
@@ -285,14 +349,14 @@ export class NavEntityLink {
   link = 0;
   mins: NavVec3 = { x: 0, y: 0, z: 0 };
   maxs: NavVec3 = { x: 0, y: 0, z: 0 };
-  /** Version-dependent trailing words (0, 2 or 4 of them) whose meaning is not confirmed; see this file's header. */
+  /** Version-dependent trailing int32s (0, 1 or 2 of them) whose meaning is not confirmed; see this file's header. */
   tail: number[] = [];
 }
 
 export class NavFile {
   version = 0;
-  /** version >= 16 only; 1 for older versions, which have no on-disk scale field. */
-  scale = 1;
+  /** version >= 16 only; the A* edge-cost multiplier (Quake II's nav_data.heuristic); 1 for older versions, which have no on-disk field for it. */
+  heuristic = 1;
   nodes: NavNode[] = [];
   links: NavLink[] = [];
   hints: NavHint[] = [];
@@ -313,15 +377,15 @@ const LINK_SIZE = 6;
 const HINT_SIZE = 36;
 const ENTITY_LINK_FIXED_SIZE = 2 + 12 + 12; // link index + mins + maxs
 
-/** Trailing uint16 word count in an entity-link record, by version: 0 for v12, 4 for v13/14, 2 for v15+ (confirmed up to v18; extrapolated beyond). */
-function entityLinkTailWords(version: number): number {
+/** Trailing int32 count in an entity-link record, by version: 0 for v12, 2 for v13/14, 1 for v15+ (confirmed up to v18; extrapolated beyond). See ENTITY LINK TAIL in this file's header. */
+function entityLinkTailInt32Count(version: number): number {
   if (version <= 12) return 0;
-  if (version <= 14) return 4;
-  return 2;
+  if (version <= 14) return 2;
+  return 1;
 }
 
 function entityLinkRecordSize(version: number): number {
-  return ENTITY_LINK_FIXED_SIZE + entityLinkTailWords(version) * 2;
+  return ENTITY_LINK_FIXED_SIZE + entityLinkTailInt32Count(version) * 4;
 }
 
 function readVec3(view: DataView, offset: number): NavVec3 {
@@ -364,8 +428,8 @@ export function parseNav(bytes: Uint8Array): NavParseResult {
   }
 
   const headerSize = version >= 16 ? 24 : 20;
-  if (bytes.length < headerSize) return { file: undefined, errors: [...errors, "file too short for its own header (version >= 16 needs a trailing scale field)"] };
-  const scale = version >= 16 ? view.getFloat32(20, true) : 1;
+  if (bytes.length < headerSize) return { file: undefined, errors: [...errors, "file too short for its own header (version >= 16 needs a trailing heuristic field)"] };
+  const heuristic = version >= 16 ? view.getFloat32(20, true) : 1;
 
   const nodeOff = headerSize;
   const posOff = nodeOff + nodeCount * NODE_SIZE;
@@ -390,7 +454,7 @@ export function parseNav(bytes: Uint8Array): NavParseResult {
 
   const file = new NavFile();
   file.version = version;
-  file.scale = scale;
+  file.heuristic = heuristic;
 
   for (let i = 0; i < nodeCount; i++) {
     const base = nodeOff + i * NODE_SIZE;
@@ -410,7 +474,8 @@ export function parseNav(bytes: Uint8Array): NavParseResult {
     const base = linkOff + i * LINK_SIZE;
     const link = new NavLink();
     link.target = view.getUint16(base, true);
-    link.type = view.getUint16(base + 2, true);
+    link.type = view.getUint8(base + 2);
+    link.flags = view.getUint8(base + 3);
     const rawTraversal = view.getUint16(base + 4, true);
     link.traversal = rawTraversal === 0xffff ? null : rawTraversal;
     file.links.push(link);
@@ -426,14 +491,14 @@ export function parseNav(bytes: Uint8Array): NavParseResult {
     file.hints.push(hint);
   }
 
-  const tailWords = entityLinkTailWords(version);
+  const tailInt32Count = entityLinkTailInt32Count(version);
   for (let i = 0; i < entityLinkCount; i++) {
     const base = entityItemsOff + i * recordSize;
     const record = new NavEntityLink();
     record.link = view.getUint16(base, true);
     record.mins = readVec3(view, base + 2);
     record.maxs = readVec3(view, base + 14);
-    for (let w = 0; w < tailWords; w++) record.tail.push(view.getUint16(base + ENTITY_LINK_FIXED_SIZE + w * 2, true));
+    for (let w = 0; w < tailInt32Count; w++) record.tail.push(view.getInt32(base + ENTITY_LINK_FIXED_SIZE + w * 4, true));
     file.entityLinks.push(record);
   }
 

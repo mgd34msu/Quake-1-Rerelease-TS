@@ -19,7 +19,7 @@ standard_quake) and sv.active are snapshotted and restored in afterAll,
 using the setters src/common/common.ts exports for exactly this purpose.
 */
 
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -598,8 +598,16 @@ describe("home directory tier (-homedir / -nohomedir / the default)", () => {
   describe("the default with neither parameter", () => {
     const savedXdg = process.env.XDG_DATA_HOME;
     const savedHome = process.env.HOME;
+    // `bun run test` exports Q1TS_NOHOMEDIR=1 so unit boots never touch the
+    // real per-user directory; this describe tests the default itself.
+    const savedNoHome = process.env.Q1TS_NOHOMEDIR;
+    beforeAll(() => {
+      delete process.env.Q1TS_NOHOMEDIR;
+    });
 
     afterAll(() => {
+      if (savedNoHome === undefined) delete process.env.Q1TS_NOHOMEDIR;
+      else process.env.Q1TS_NOHOMEDIR = savedNoHome;
       if (savedXdg === undefined) delete process.env.XDG_DATA_HOME;
       else process.env.XDG_DATA_HOME = savedXdg;
       if (savedHome === undefined) delete process.env.HOME;

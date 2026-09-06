@@ -552,6 +552,9 @@ describe.skipIf(!HAVE_PROGS106)("Host_Game_f re-execs quake.rc ahead of the rest
   const savedGamedir = com_gamedir;
 
   afterAll(() => {
+    // sv_ruleset is left on "rerelease" by the last test below; a later
+    // suite's dedicated boot would otherwise run the fixed-step server clock.
+    Cvar_Set("sv_ruleset", "auto");
     setComSearchpaths(savedSearchpaths);
     setComGamedir(savedGamedir);
   });

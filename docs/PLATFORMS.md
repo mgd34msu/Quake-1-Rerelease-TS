@@ -214,3 +214,8 @@ Include:
    whether the other one works.
 5. For a network problem: whether `q1rets -dedicated +map start` on the
    same machine starts and prints `UDP Initialized`.
+
+`Q1TS_NOHOMEDIR=1` in the environment has the same effect as `-nohomedir` for a
+boot that passes neither flag; `bun run test` and `scripts/sandbox-verify.sh`
+export it so unit tests never read or write the real per-user directory. The
+e2e drivers pass an explicit `-homedir` under their scratch directory instead.

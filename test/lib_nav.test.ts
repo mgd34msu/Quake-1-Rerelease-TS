@@ -32,6 +32,7 @@ interface BuildNode {
 interface BuildLink {
   target: number;
   type: number;
+  flags?: number;
   traversal: number;
 }
 interface BuildHint {
@@ -52,8 +53,8 @@ interface BuildEntityLink {
 function buildNav(opts: { version: number; nodes: BuildNode[]; links: BuildLink[]; hints: BuildHint[]; entityLinks: BuildEntityLink[] }): Uint8Array {
   const { version, nodes, links, hints, entityLinks } = opts;
   const headerSize = version >= 16 ? 24 : 20;
-  const tailWords = version <= 12 ? 0 : version <= 14 ? 4 : 2;
-  const entityRecordSize = 2 + 12 + 12 + tailWords * 2;
+  const tailInt32Count = version <= 12 ? 0 : version <= 14 ? 2 : 1;
+  const entityRecordSize = 2 + 12 + 12 + tailInt32Count * 4;
   const total = headerSize + nodes.length * 8 + nodes.length * 12 + links.length * 6 + hints.length * 36 + 4 + entityLinks.length * entityRecordSize;
 
   const bytes = new Uint8Array(total);
@@ -91,7 +92,8 @@ function buildNav(opts: { version: number; nodes: BuildNode[]; links: BuildLink[
     const l = links[i]!;
     const base = linkOff + i * 6;
     view.setUint16(base, l.target, true);
-    view.setUint16(base + 2, l.type, true);
+    view.setUint8(base + 2, l.type);
+    view.setUint8(base + 3, l.flags ?? 0);
     view.setUint16(base + 4, l.traversal, true);
   }
 
@@ -123,7 +125,7 @@ function buildNav(opts: { version: number; nodes: BuildNode[]; links: BuildLink[
     view.setFloat32(base + 14, e.maxs[0], true);
     view.setFloat32(base + 18, e.maxs[1], true);
     view.setFloat32(base + 22, e.maxs[2], true);
-    for (let w = 0; w < tailWords; w++) view.setUint16(base + 26 + w * 2, e.tail[w] ?? 0, true);
+    for (let w = 0; w < tailInt32Count; w++) view.setInt32(base + 26 + w * 4, e.tail[w] ?? 0, true);
   }
 
   return bytes;
@@ -149,7 +151,7 @@ describe("nav.ts -- synthetic input", () => {
     expect(result.file).toBeDefined();
     const file = result.file!;
     expect(file.version).toBe(12);
-    expect(file.scale).toBe(1);
+    expect(file.heuristic).toBe(1);
     expect(file.nodes.length).toBe(2);
     expect(file.nodes[0]!.position).toEqual({ x: 10, y: 20, z: 30 });
     expect(file.nodes[1]!.position).toEqual({ x: 40, y: 50, z: 60 });
@@ -159,14 +161,14 @@ describe("nav.ts -- synthetic input", () => {
     expect(file.entityLinks).toEqual([]);
   });
 
-  test("version >= 16 reads the extra header scale field", () => {
+  test("version >= 16 reads the extra header heuristic field", () => {
     const isolatedNode: BuildNode = { ...NODE_A, linkCount: 0, firstLink: 0 };
     const bytes = buildNav({ version: 16, nodes: [isolatedNode], links: [], hints: [], entityLinks: [] });
     const view = new DataView(bytes.buffer);
     view.setFloat32(20, 2.5, true); // overwrite the default 1 the builder wrote
     const result = parseNav(bytes);
     expect(result.errors).toEqual([]);
-    expect(result.file!.scale).toBe(2.5);
+    expect(result.file!.heuristic).toBe(2.5);
   });
 
   test("parses hints (three vec3 positions each)", () => {
@@ -185,13 +187,13 @@ describe("nav.ts -- synthetic input", () => {
     expect(hint.end).toEqual({ x: 400, y: 500, z: 600 });
   });
 
-  test("parses a v15 entity-link record (2 trailing tail words)", () => {
+  test("parses a v15 entity-link record (one trailing int32)", () => {
     const bytes = buildNav({
       version: 15,
       nodes: [],
       links: [],
       hints: [],
-      entityLinks: [{ link: 1132, mins: [1, 2, 3], maxs: [4, 5, 6], tail: [65456, 65535] }],
+      entityLinks: [{ link: 1132, mins: [1, 2, 3], maxs: [4, 5, 6], tail: [-80] }],
     });
     const result = parseNav(bytes);
     expect(result.errors).toEqual([]);
@@ -199,23 +201,23 @@ describe("nav.ts -- synthetic input", () => {
     expect(e.link).toBe(1132);
     expect(e.mins).toEqual({ x: 1, y: 2, z: 3 });
     expect(e.maxs).toEqual({ x: 4, y: 5, z: 6 });
-    expect(e.tail).toEqual([65456, 65535]);
+    expect(e.tail).toEqual([-80]);
   });
 
-  test("parses a v13 entity-link record (4 trailing tail words)", () => {
+  test("parses a v13 entity-link record (a leading int32 plus the same one trailing int32)", () => {
     const bytes = buildNav({
       version: 13,
       nodes: [],
       links: [],
       hints: [],
-      entityLinks: [{ link: 611, mins: [1, 2, 3], maxs: [4, 5, 6], tail: [0, 0, 65520, 65535] }],
+      entityLinks: [{ link: 611, mins: [1, 2, 3], maxs: [4, 5, 6], tail: [0, -16] }],
     });
     const result = parseNav(bytes);
     expect(result.errors).toEqual([]);
-    expect(result.file!.entityLinks[0]!.tail).toEqual([0, 0, 65520, 65535]);
+    expect(result.file!.entityLinks[0]!.tail).toEqual([0, -16]);
   });
 
-  test("a v12 entity-link record has zero trailing tail words", () => {
+  test("a v12 entity-link record has zero trailing tail int32s", () => {
     const bytes = buildNav({
       version: 12,
       nodes: [],
@@ -225,6 +227,25 @@ describe("nav.ts -- synthetic input", () => {
     });
     const result = parseNav(bytes);
     expect(result.file!.entityLinks[0]!.tail).toEqual([]);
+  });
+
+  test("a link whose flags byte is non-zero decodes type and flags as separate fields, not one combined value", () => {
+    // Regression case for the family-u blocker: this reader used to read
+    // target/type/traversal as three uint16s, so a non-zero byte +3 (the
+    // real flags byte) got folded into the type field as `flags<<8|type`.
+    // ManualLongJump (8) with flags 0xFF used to decode as type 0xFF08.
+    const bytes = buildNav({
+      version: 18,
+      nodes: [{ ...NODE_A, firstLink: 0, linkCount: 1 }, { ...NODE_B, firstLink: 0, linkCount: 0 }],
+      links: [{ target: 1, type: 8, flags: 0xff, traversal: 0xffff }],
+      hints: [],
+      entityLinks: [],
+    });
+    const result = parseNav(bytes);
+    expect(result.errors).toEqual([]);
+    const link = result.file!.links[0]!;
+    expect(link.type).toBe(8);
+    expect(link.flags).toBe(0xff);
   });
 
   test("bad magic is reported, not thrown", () => {
@@ -359,6 +380,65 @@ describe.skipIf(paks.every((p) => !p.have))("nav.ts -- full retail sweep (id1 + 
       expect([s.navName, result.errors]).toEqual([s.navName, []]);
       expect(result.file).toBeDefined();
     }
+  }, 30000); // the retail sweep reads 67 pak-packed files and their maps; 5 s is not enough under a loaded host
+
+  test("every v18 file's link type stays inside the nine-value enum (byte +2 read on its own, not folded with the flags byte at +3)", () => {
+    let v18Files = 0;
+    let v18Links = 0;
+    for (const s of samples) {
+      const pak = new PakFile(s.pakPath);
+      const result = parseNav(pak.read(s.navName));
+      const file = result.file;
+      if (file === undefined || file.version !== 18) continue;
+      v18Files++;
+      for (const link of file.links) {
+        v18Links++;
+        expect([s.navName, link.type]).toEqual([s.navName, Math.max(0, Math.min(8, link.type))]);
+      }
+    }
+    // ctf1-4, ctf6-9 and mg3's own remade dm1.nav: the 9 real v18 files.
+    expect(v18Files).toBe(9);
+    expect(v18Links).toBeGreaterThan(7000);
+  });
+
+  test("ctf1.nav has 5 LongJump and 4 ManualLongJump links, ctf2.nav has 11 Teleport links (F4's counts)", () => {
+    const ctfPak = paks.find((p) => p.dir === "ctf");
+    if (ctfPak === undefined || !ctfPak.have) return;
+    const pak = new PakFile(ctfPak.pakPath);
+
+    const ctf1 = parseNav(pak.read("bots/navigation/ctf1.nav")).file!;
+    const ctf1LongJump = ctf1.links.filter((l) => l.type === 1).length;
+    const ctf1ManualLongJump = ctf1.links.filter((l) => l.type === 8).length;
+    expect(ctf1LongJump).toBe(5);
+    expect(ctf1ManualLongJump).toBe(4);
+
+    const ctf2 = parseNav(pak.read("bots/navigation/ctf2.nav")).file!;
+    const ctf2Teleport = ctf2.links.filter((l) => l.type === 2).length;
+    expect(ctf2Teleport).toBe(11);
+  });
+
+  test("every link in the 9 real v18 files carries a non-zero flags byte (0xFF or, in 7 of ctf1's links, 0x0F), and every other retail file's links carry flags 0", () => {
+    let v18NonZero = 0;
+    let v18Total = 0;
+    let preV18NonZero = 0;
+    const v18Values = new Set<number>();
+    for (const s of samples) {
+      const pak = new PakFile(s.pakPath);
+      const file = parseNav(pak.read(s.navName)).file;
+      if (file === undefined) continue;
+      for (const link of file.links) {
+        if (file.version === 18) {
+          v18Total++;
+          if (link.flags !== 0) v18NonZero++;
+          v18Values.add(link.flags);
+        } else if (link.flags !== 0) {
+          preV18NonZero++;
+        }
+      }
+    }
+    expect(v18Total).toBe(v18NonZero);
+    expect(preV18NonZero).toBe(0);
+    expect([...v18Values].sort((a, b) => a - b)).toEqual([0x0f, 0xff]);
   });
 
   test("every node position lands inside its map's model-0 bounds (generous 128-unit margin; one isolated known-disconnected outlier node in e4m4.nav is exempted, and mg3's own dm1.nav is exempted -- its bundled maps/dm1.bsp's worldspawn bounds don't cover it in the retail data itself, not a parser issue -- see nav.ts's header)", () => {
@@ -397,5 +477,5 @@ describe.skipIf(paks.every((p) => !p.have))("nav.ts -- full retail sweep (id1 + 
     }
 
     expect(checked).toBeGreaterThan(0);
-  });
+  }, 30000); // the retail sweep reads 67 pak-packed files and their maps; 5 s is not enough under a loaded host
 });
