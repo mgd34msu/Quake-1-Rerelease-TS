@@ -1,0 +1,699 @@
+// Force headless SDL before ANY import can reach the FFI layer.
+process.env.SDL_VIDEODRIVER = "dummy";
+process.env.SDL_AUDIODRIVER = "dummy";
+Bun.env.SDL_VIDEODRIVER = "dummy";
+Bun.env.SDL_AUDIODRIVER = "dummy";
+
+/*
+Tests for U29 (the GL renderer's re-release MD5 replacement models):
+src/ref_gl/gl_md5.ts, plus the load-time hook src/ref_gl/gl_model.ts wires
+in (attachMd5GlReplacementIfAny) and the draw-time branch
+src/ref_gl/gl_rmain.ts's R_DrawAliasModel takes when a payload is attached.
+
+Unlike test/ref_soft_md5.test.ts (which needs the FULL software render
+pipeline to compare drawn PIXELS), this suite drives gl_md5.ts's own
+exported entry points directly against a QGLRecording -- "GL correctness"
+here is "the recorded qgl* call sequence", so there is no need for
+Mod_Init/R_Init/a full Mod_ForName load: attachMd5GlReplacementIfAny only
+needs COM_FindFileTier/COM_LoadTempFile (a filesystem), and
+GL_DrawMd5AliasFrame is driven directly with a hand-built payload/entity.
+The one exception is the "r_enhancedmodels branches" describe block, which
+drives the full R_DrawAliasModel entry point (gl_rmain.ts) to prove the
+draw-time branch itself, following test/ref_gl_lerp.test.ts's own
+hand-built-AliashdrT convention.
+
+Self-sufficient per standing order 13: every shared singleton this file
+mutates (qglHolder, glState.currententity/currenttexture, cl.time/
+cl.worldmodel, frustum, r_enhancedmodels, gl_nocolors, r_shadows, the
+common.ts filesystem globals) is snapshotted and restored.
+*/
+
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+
+import {
+  COM_CheckRegistered,
+  COM_InitArgv,
+  COM_InitFilesystem,
+  COM_LoadTempFile,
+  com_gamedir,
+  com_modified,
+  com_searchpaths,
+  pop,
+  setComGamedir,
+  setComModified,
+  setComSearchpaths,
+  setStaticRegistered,
+  static_registered,
+} from "../src/common/common";
+import { ModelT, ModtypeT } from "../src/common/model";
+import { MdlT, readMdl, TrivertxT } from "../src/common/modelgen";
+import { EntityT } from "../src/client/render";
+import { cl } from "../src/client/client";
+import { vec3 } from "../src/common/mathlib";
+import { frustum, glState } from "../src/ref_gl/glquake";
+import { AliashdrT, MaliasframedescT } from "../src/ref_gl/gl_model_types";
+import { GL_TRIANGLE_FAN, GL_TRIANGLES, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
+import { R_DrawAliasModel, gl_nocolors, r_shadows } from "../src/ref_gl/gl_rmain";
+import * as glDraw from "../src/ref_gl/gl_draw";
+import { GL_DrawMd5AliasFrame, type Md5GlAliasT, attachMd5GlReplacementIfAny, getMd5GlPayload, r_enhancedmodels } from "../src/ref_gl/gl_md5";
+import { ensureDir } from "./support/bsp_builder";
+import { writePakToDisk } from "./support/pak_builder";
+
+//============================================================================
+// small local byte/text builders (test infrastructure only, not a port of
+// any C -- mirrors test/ref_soft_md5.test.ts's own helpers of the same
+// shape, duplicated here per standing order 13's self-sufficiency rule)
+
+function buildLmp(width: number, height: number, fillValue: number): Uint8Array {
+  const buf = new Uint8Array(8 + width * height);
+  const view = new DataView(buf.buffer);
+  view.setInt32(0, width, true);
+  view.setInt32(4, height, true);
+  buf.fill(fillValue & 0xff, 8);
+  return buf;
+}
+
+// one joint, one triangle, three verts offset from the joint origin.
+function md5MeshText(shader: string): string {
+  return `MD5Version 10
+commandline ""
+
+numJoints 1
+numMeshes 1
+
+joints {
+  "joint0" -1 ( 0.0 0.0 0.0 ) ( 0.0 0.0 0.0 )
+}
+
+mesh {
+  shader "${shader}"
+
+  numverts 3
+  vert 0 ( 0.0 0.0 ) 0 1
+  vert 1 ( 1.0 0.0 ) 1 1
+  vert 2 ( 0.0 1.0 ) 2 1
+
+  numtris 1
+  tri 0 0 1 2
+
+  numweights 3
+  weight 0 0 1.0 ( 0.0 -30.0 -30.0 )
+  weight 1 0 1.0 ( 0.0 30.0 -30.0 )
+  weight 2 0 1.0 ( 0.0 30.0 30.0 )
+}
+`;
+}
+
+// a static (no animated components) one-frame anim -- `numJoints` is only
+// ever 1 (matching) or 2 (the mg3 ogre_rocket-shaped mismatch): the
+// mismatch throws before this text's own hierarchy/baseframe body (one
+// joint's worth) is ever parsed, so it never needs to vary.
+function md5AnimText(numJoints: number): string {
+  return `MD5Version 10
+commandline ""
+
+numFrames 1
+numJoints ${numJoints}
+frameRate 24
+numAnimatedComponents 0
+
+hierarchy {
+  "joint0" -1 0 0
+}
+
+bounds {
+  ( -30.0 -30.0 -30.0 ) ( 30.0 30.0 30.0 )
+}
+
+baseframe {
+  ( 0.0 0.0 0.0 ) ( 0.0 0.0 0.0 )
+}
+
+frame 0 {
+}
+`;
+}
+
+// two frames, joint position.x animated from 0 to 10 -- the blend test's
+// own fixture.
+function md5AnimTextBlend(): string {
+  return `MD5Version 10
+commandline ""
+
+numFrames 2
+numJoints 1
+frameRate 24
+numAnimatedComponents 1
+
+hierarchy {
+  "joint0" -1 1 0
+}
+
+bounds {
+  ( -30.0 -30.0 -30.0 ) ( 30.0 30.0 30.0 )
+  ( -30.0 -30.0 -30.0 ) ( 30.0 30.0 30.0 )
+}
+
+baseframe {
+  ( 0.0 0.0 0.0 ) ( 0.0 0.0 0.0 )
+}
+
+frame 0 {
+  0.0
+}
+frame 1 {
+  10.0
+}
+`;
+}
+
+//============================================================================
+// shared fixture plumbing
+
+const scratchRoot = process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests";
+mkdirSync(scratchRoot, { recursive: true });
+
+const rec = new QGLRecording();
+let nextTexnum = 1;
+let loadTextureSpy: ReturnType<typeof spyOn>;
+let scratchDir: string;
+
+const saved = {
+  qgl: qglHolder.current,
+  currententity: glState.currententity,
+  currenttexture: glState.currenttexture,
+  comSearchpaths: com_searchpaths,
+  comGamedir: com_gamedir,
+  comModified: com_modified,
+  staticRegistered: static_registered,
+  enhancedString: r_enhancedmodels.string,
+  enhancedValue: r_enhancedmodels.value,
+  clTime: cl.time,
+  clWorldmodel: cl.worldmodel,
+  gl_nocolors: gl_nocolors.value,
+  r_shadows: r_shadows.value,
+  frustum: frustum.map((p) => ({ normal: [p.normal[0], p.normal[1], p.normal[2]], dist: p.dist, type: p.type, signbits: p.signbits })),
+};
+
+function openFrustum(): void {
+  for (let i = 0; i < 4; i++) {
+    frustum[i].normal[0] = 1;
+    frustum[i].normal[1] = 0;
+    frustum[i].normal[2] = 0;
+    frustum[i].dist = -1e9;
+    frustum[i].type = 0;
+    frustum[i].signbits = 0;
+  }
+}
+
+beforeAll(() => {
+  scratchDir = mkdtempSync(join(scratchRoot, "ref-gl-md5-test-"));
+  ensureDir(join(scratchDir, "id1"));
+
+  const popLmp = new Uint8Array(256);
+  for (let i = 0; i < 128; i++) {
+    popLmp[i * 2] = (pop[i] >> 8) & 0xff;
+    popLmp[i * 2 + 1] = pop[i] & 0xff;
+  }
+
+  writePakToDisk(join(scratchDir, "id1", "pak0.pak"), [
+    { name: "gfx/pop.lmp", data: popLmp },
+    // "tri": a matching, tier-equal MD5 pair -- the basic load+draw fixture.
+    { name: "progs/tri.mdl", data: new Uint8Array(4) },
+    { name: "progs/tri.md5mesh", data: new TextEncoder().encode(md5MeshText("tri")) },
+    { name: "progs/tri.md5anim", data: new TextEncoder().encode(md5AnimText(1)) },
+    { name: "progs/tri_00_00.lmp", data: buildLmp(4, 4, 200) },
+    // "blend": a two-frame animated pair, for the pose-lerp test.
+    { name: "progs/blend.mdl", data: new Uint8Array(4) },
+    { name: "progs/blend.md5mesh", data: new TextEncoder().encode(md5MeshText("blend")) },
+    { name: "progs/blend.md5anim", data: new TextEncoder().encode(md5AnimTextBlend()) },
+    { name: "progs/blend_00_00.lmp", data: buildLmp(4, 4, 200) },
+    // "off": has a valid MD5 pair too, but only ever attached with
+    // r_enhancedmodels 0 -- proves the load-time gate skips it entirely.
+    { name: "progs/off.mdl", data: new Uint8Array(4) },
+    { name: "progs/off.md5mesh", data: new TextEncoder().encode(md5MeshText("off")) },
+    { name: "progs/off.md5anim", data: new TextEncoder().encode(md5AnimText(1)) },
+    { name: "progs/off_00_00.lmp", data: buildLmp(4, 4, 200) },
+    // "bad": a REAL, format-broken pair (mesh numJoints 1, anim numJoints
+    // 2 -- the same shape of failure as mg3/progs/ogre_rocket) -- must
+    // fall back (no payload attached) rather than throw.
+    { name: "progs/bad.mdl", data: new Uint8Array(4) },
+    { name: "progs/bad.md5mesh", data: new TextEncoder().encode(md5MeshText("bad")) },
+    { name: "progs/bad.md5anim", data: new TextEncoder().encode(md5AnimText(2)) },
+    // "tier": the .mdl only in pak1 (mounted after pak0, so it is searched
+    // FIRST -- tier 0); the MD5 pair only in pak0 (tier 1, lower priority).
+    { name: "progs/tier.md5mesh", data: new TextEncoder().encode(md5MeshText("tier")) },
+    { name: "progs/tier.md5anim", data: new TextEncoder().encode(md5AnimText(1)) },
+    { name: "progs/tier_00_00.lmp", data: buildLmp(4, 4, 200) },
+    // "mixed": used by the R_DrawAliasModel end-to-end branch tests below,
+    // paired with a HAND-BUILT classic AliashdrT (not loaded through
+    // Mod_LoadAliasModel at all -- only its .mdl NAME needs to resolve to
+    // a tier for attachMd5GlReplacementIfAny's own tier check).
+    { name: "progs/mixed.mdl", data: new Uint8Array(4) },
+    { name: "progs/mixed.md5mesh", data: new TextEncoder().encode(md5MeshText("mixed")) },
+    { name: "progs/mixed.md5anim", data: new TextEncoder().encode(md5AnimText(1)) },
+    { name: "progs/mixed_00_00.lmp", data: buildLmp(4, 4, 200) },
+  ]);
+  writePakToDisk(join(scratchDir, "id1", "pak1.pak"), [{ name: "progs/tier.mdl", data: new Uint8Array(4) }]);
+
+  COM_InitArgv(["quake", "-basedir", scratchDir]);
+  COM_InitFilesystem();
+  COM_CheckRegistered();
+
+  loadTextureSpy = spyOn(glDraw, "GL_LoadTexture").mockImplementation(() => nextTexnum++);
+  SetQGL(rec);
+});
+
+beforeEach(() => {
+  rec.clear();
+  loadTextureSpy.mockClear();
+  glState.currenttexture = -1;
+  glState.currententity = null;
+  cl.time = 0;
+  cl.worldmodel = null; // R_LightPoint returns a deterministic 255 with no lightdata
+  gl_nocolors.value = 1; // skip the player-colormap GL_Bind branch
+  r_shadows.value = 0;
+  r_enhancedmodels.string = "1";
+  r_enhancedmodels.value = 1;
+  openFrustum();
+});
+
+afterAll(() => {
+  loadTextureSpy.mockRestore();
+  SetQGL(saved.qgl);
+  glState.currententity = saved.currententity;
+  glState.currenttexture = saved.currenttexture;
+  setComSearchpaths(saved.comSearchpaths);
+  setComGamedir(saved.comGamedir);
+  setComModified(saved.comModified);
+  setStaticRegistered(saved.staticRegistered);
+  r_enhancedmodels.string = saved.enhancedString;
+  r_enhancedmodels.value = saved.enhancedValue;
+  cl.time = saved.clTime;
+  cl.worldmodel = saved.clWorldmodel;
+  gl_nocolors.value = saved.gl_nocolors;
+  r_shadows.value = saved.r_shadows;
+  for (let i = 0; i < 4; i++) {
+    frustum[i].normal[0] = saved.frustum[i].normal[0];
+    frustum[i].normal[1] = saved.frustum[i].normal[1];
+    frustum[i].normal[2] = saved.frustum[i].normal[2];
+    frustum[i].dist = saved.frustum[i].dist;
+    frustum[i].type = saved.frustum[i].type;
+    frustum[i].signbits = saved.frustum[i].signbits;
+  }
+  rmSync(scratchDir, { recursive: true, force: true });
+});
+
+//============================================================================
+// attachMd5GlReplacementIfAny / getMd5GlPayload
+//============================================================================
+
+describe("attachMd5GlReplacementIfAny", () => {
+  test("loads a payload for a matching MD5 pair, uploading the skin through GL_LoadTexture", () => {
+    const mod = new ModelT();
+    mod.name = "progs/tri.mdl";
+    const hdr = new AliashdrT();
+    const mdl = new MdlT();
+    mdl.numskins = 1;
+    mdl.numframes = 1;
+
+    attachMd5GlReplacementIfAny(mod, hdr, mdl);
+
+    const payload = getMd5GlPayload(hdr);
+    expect(payload).not.toBeNull();
+    if (!payload) return;
+    expect(payload.model.meshes.length).toBe(1);
+    expect(payload.model.meshes[0].numIndices / 3).toBe(1);
+    expect(payload.skins.length).toBe(1);
+    expect(payload.skins[0].width).toBe(4);
+    expect(payload.skins[0].height).toBe(4);
+    expect(glDraw.GL_LoadTexture).toHaveBeenCalledWith("progs/tri_00_00.lmp", 4, 4, expect.anything(), true, false);
+  });
+
+  test("r_enhancedmodels 0 at load time never attaches a payload", () => {
+    r_enhancedmodels.value = 0;
+    const mod = new ModelT();
+    mod.name = "progs/off.mdl";
+    const hdr = new AliashdrT();
+    const mdl = new MdlT();
+    mdl.numskins = 1;
+    mdl.numframes = 1;
+
+    attachMd5GlReplacementIfAny(mod, hdr, mdl);
+
+    expect(getMd5GlPayload(hdr)).toBeNull();
+  });
+
+  test("the tier rule: a .md5mesh in a lower tier than the .mdl is ignored", () => {
+    const mod = new ModelT();
+    mod.name = "progs/tier.mdl";
+    const hdr = new AliashdrT();
+    const mdl = new MdlT();
+    mdl.numskins = 1;
+    mdl.numframes = 1;
+
+    attachMd5GlReplacementIfAny(mod, hdr, mdl);
+
+    expect(getMd5GlPayload(hdr)).toBeNull();
+  });
+
+  test("a format error in the MD5 pair (joint-count mismatch) falls back silently", () => {
+    const mod = new ModelT();
+    mod.name = "progs/bad.mdl";
+    const hdr = new AliashdrT();
+    const mdl = new MdlT();
+    mdl.numskins = 1;
+    mdl.numframes = 1;
+
+    attachMd5GlReplacementIfAny(mod, hdr, mdl);
+
+    expect(getMd5GlPayload(hdr)).toBeNull();
+  });
+});
+
+//============================================================================
+// GL_DrawMd5AliasFrame -- triangle count, texcoords, skin bind
+//============================================================================
+
+describe("GL_DrawMd5AliasFrame", () => {
+  let triPayload: Md5GlAliasT;
+
+  beforeAll(() => {
+    const mod = new ModelT();
+    mod.name = "progs/tri.mdl";
+    const hdr = new AliashdrT();
+    const mdl = new MdlT();
+    mdl.numskins = 1;
+    mdl.numframes = 1;
+    attachMd5GlReplacementIfAny(mod, hdr, mdl);
+    const p = getMd5GlPayload(hdr);
+    if (!p) throw new Error("test setup: no MD5 payload attached for progs/tri.mdl");
+    triPayload = p;
+  });
+
+  test("draws the expected triangle count, the mesh's own texcoords, and binds the skin texture", () => {
+    const ent = new EntityT();
+    ent.skinnum = 0;
+    ent.syncbase = 0;
+    const shadevector = vec3(0, 0, 1);
+    const shadelightColor = vec3(1, 1, 1);
+
+    GL_DrawMd5AliasFrame(triPayload, ent, 0, 0, 0, shadevector, shadelightColor, 1);
+
+    const beginCalls = rec.calls.filter((c) => c.name === "qglBegin");
+    expect(beginCalls.length).toBe(1);
+    expect(beginCalls[0].args).toEqual([GL_TRIANGLES]);
+
+    const vertexCalls = rec.calls.filter((c) => c.name === "qglVertex3f");
+    expect(vertexCalls.length).toBe(3); // one triangle
+
+    const texcoordCalls = rec.calls.filter((c) => c.name === "qglTexCoord2f");
+    expect(texcoordCalls.map((c) => c.args)).toEqual([
+      [0, 0],
+      [1, 0],
+      [0, 1],
+    ]);
+
+    const bindCalls = rec.calls.filter((c) => c.name === "qglBindTexture");
+    expect(bindCalls.some((c) => c.args[1] === triPayload.skins[0].texturenum)).toBe(true);
+  });
+
+  test("an out-of-range skinnum falls back to skin 0", () => {
+    const ent = new EntityT();
+    ent.skinnum = 5;
+    ent.syncbase = 0;
+    const shadevector = vec3(0, 0, 1);
+    const shadelightColor = vec3(1, 1, 1);
+
+    GL_DrawMd5AliasFrame(triPayload, ent, 0, 0, 0, shadevector, shadelightColor, 1);
+
+    const bindCalls = rec.calls.filter((c) => c.name === "qglBindTexture");
+    expect(bindCalls.some((c) => c.args[1] === triPayload.skins[0].texturenum)).toBe(true);
+  });
+});
+
+describe("GL_DrawMd5AliasFrame two-frame pose blend", () => {
+  let blendPayload: Md5GlAliasT;
+
+  beforeAll(() => {
+    const mod = new ModelT();
+    mod.name = "progs/blend.mdl";
+    const hdr = new AliashdrT();
+    const mdl = new MdlT();
+    mdl.numskins = 1;
+    mdl.numframes = 2; // equal case: matches the md5anim's own 2 frames
+    attachMd5GlReplacementIfAny(mod, hdr, mdl);
+    const p = getMd5GlPayload(hdr);
+    if (!p) throw new Error("test setup: no MD5 payload attached for progs/blend.mdl");
+    blendPayload = p;
+  });
+
+  test("a vertex position at blend 0.5 between two frames is the midpoint (hand-computed)", () => {
+    const ent = new EntityT();
+    ent.skinnum = 0;
+    ent.syncbase = 0;
+    const shadevector = vec3(0, 0, 1);
+    const shadelightColor = vec3(1, 1, 1);
+
+    GL_DrawMd5AliasFrame(blendPayload, ent, 0, 1, 0.5, shadevector, shadelightColor, 1);
+
+    const vertexCalls = rec.calls.filter((c) => c.name === "qglVertex3f");
+    // vertex 0's weight offset is (0,-30,-30) off a joint that moves from
+    // (0,0,0) at frame 0 to (10,0,0) at frame 1 -- blend 0.5 puts the
+    // joint (and this vertex, unrotated) at x=5, the hand-computed
+    // midpoint of 0 and 10; y/z are the constant offset, unaffected.
+    expect(vertexCalls[0].args).toEqual([5, -30, -30]);
+  });
+
+  test("blend 0 and blend 1 reproduce each frame's own joint position exactly", () => {
+    const ent = new EntityT();
+    ent.skinnum = 0;
+    ent.syncbase = 0;
+    const shadevector = vec3(0, 0, 1);
+    const shadelightColor = vec3(1, 1, 1);
+
+    GL_DrawMd5AliasFrame(blendPayload, ent, 0, 1, 0, shadevector, shadelightColor, 1);
+    let vertexCalls = rec.calls.filter((c) => c.name === "qglVertex3f");
+    expect(vertexCalls[0].args).toEqual([0, -30, -30]);
+
+    rec.clear();
+    GL_DrawMd5AliasFrame(blendPayload, ent, 0, 1, 1, shadevector, shadelightColor, 1);
+    vertexCalls = rec.calls.filter((c) => c.name === "qglVertex3f");
+    expect(vertexCalls[0].args).toEqual([10, -30, -30]);
+  });
+
+  test("pose1 === pose2 draws the single-frame body (no blend arithmetic)", () => {
+    const ent = new EntityT();
+    ent.skinnum = 0;
+    ent.syncbase = 0;
+    const shadevector = vec3(0, 0, 1);
+    const shadelightColor = vec3(1, 1, 1);
+
+    GL_DrawMd5AliasFrame(blendPayload, ent, 1, 1, 0.5, shadevector, shadelightColor, 1);
+
+    const vertexCalls = rec.calls.filter((c) => c.name === "qglVertex3f");
+    expect(vertexCalls[0].args).toEqual([10, -30, -30]); // frame 1's own vertex, untouched
+  });
+});
+
+//============================================================================
+// R_DrawAliasModel -- the r_enhancedmodels draw-time branch
+//============================================================================
+
+describe("R_DrawAliasModel branches on r_enhancedmodels for an attached MD5 payload", () => {
+  function makeClassicAliashdr(): AliashdrT {
+    const hdr = new AliashdrT();
+    hdr.numframes = 1;
+    hdr.numposes = 1;
+    hdr.poseverts = 1;
+    hdr.numtris = 1;
+    hdr.scale_origin[0] = 1;
+    hdr.scale_origin[1] = 2;
+    hdr.scale_origin[2] = 3;
+    hdr.scale[0] = 1;
+    hdr.scale[1] = 1;
+    hdr.scale[2] = 1;
+    hdr.gl_texturenum[0] = 999; // classic skin texnum -- distinguishable from the MD5 skin's own
+
+    const fr = new MaliasframedescT();
+    fr.firstpose = 0;
+    fr.numposes = 1;
+    fr.interval = 0.1;
+    hdr.frames.push(fr);
+
+    const v0 = new TrivertxT();
+    v0.v[0] = 0;
+    v0.v[1] = 0;
+    v0.v[2] = 0;
+    v0.lightnormalindex = 0;
+    hdr.posedata = [v0];
+
+    // gl_mesh.c's layout: [count][s0 t0][0] -- one GL_TRIANGLE_FAN vertex.
+    const buf = new ArrayBuffer(4 * 4);
+    const cmdI = new Int32Array(buf);
+    const cmdF = new Float32Array(buf);
+    cmdI[0] = -1; // negative count -> GL_TRIANGLE_FAN, one vertex
+    cmdF[1] = 0.0;
+    cmdF[2] = 0.0;
+    cmdI[3] = 0; // terminator
+    hdr.commands = cmdI;
+    return hdr;
+  }
+
+  function makeEntity(name: string, hdr: AliashdrT): EntityT {
+    const e = new EntityT();
+    const mod = new ModelT();
+    mod.name = name;
+    mod.type = ModtypeT.mod_alias;
+    mod.cache.data = hdr;
+    e.model = mod;
+    e.origin.set([0, 0, 0]);
+    e.angles.set([0, 0, 0]);
+    return e;
+  }
+
+  let hdr: AliashdrT;
+
+  beforeAll(() => {
+    hdr = makeClassicAliashdr();
+    const mod = new ModelT();
+    mod.name = "progs/mixed.mdl";
+    const mdl = new MdlT();
+    mdl.numskins = 1;
+    mdl.numframes = 1;
+    attachMd5GlReplacementIfAny(mod, hdr, mdl);
+    expect(getMd5GlPayload(hdr)).not.toBeNull();
+  });
+
+  test("r_enhancedmodels 1 draws the MD5 mesh: GL_TRIANGLES, no scale_origin decompression translate", () => {
+    r_enhancedmodels.value = 1;
+    const e = makeEntity("progs/mixed.mdl", hdr);
+    glState.currententity = e;
+
+    R_DrawAliasModel(e);
+
+    expect(rec.calls.some((c) => c.name === "qglBegin" && c.args[0] === GL_TRIANGLES)).toBe(true);
+    const translates = rec.calls.filter((c) => c.name === "qglTranslatef");
+    expect(translates.some((c) => c.args[0] === 1 && c.args[1] === 2 && c.args[2] === 3)).toBe(false);
+    const bindCalls = rec.calls.filter((c) => c.name === "qglBindTexture");
+    expect(bindCalls.some((c) => c.args[1] === 999)).toBe(false);
+  });
+
+  test("r_enhancedmodels 0 draws the classic strip instead", () => {
+    r_enhancedmodels.value = 0;
+    const e = makeEntity("progs/mixed.mdl", hdr);
+    glState.currententity = e;
+
+    R_DrawAliasModel(e);
+
+    expect(rec.calls.some((c) => c.name === "qglBegin" && c.args[0] === GL_TRIANGLE_FAN)).toBe(true);
+    expect(rec.calls.some((c) => c.name === "qglBegin" && c.args[0] === GL_TRIANGLES)).toBe(false);
+    const translates = rec.calls.filter((c) => c.name === "qglTranslatef");
+    expect(translates.some((c) => c.args[0] === 1 && c.args[1] === 2 && c.args[2] === 3)).toBe(true);
+    const bindCalls = rec.calls.filter((c) => c.name === "qglBindTexture");
+    expect(bindCalls.some((c) => c.args[1] === 999)).toBe(true);
+  });
+});
+
+//============================================================================
+// Guarded: real retail data (rerelease/id1's dog.mdl + dog.md5mesh/anim +
+// dog_00_00.lmp). Skips itself when the retail install isn't present,
+// mirroring test/ref_soft_md5.test.ts's own existsSync-guard idiom.
+
+const RERELEASE_DATA_DIR = process.env.Q1TS_RERELEASE_DATA ?? `${import.meta.dir}/../../qfiles/q1/rerelease`;
+const ID1_PAK0 = `${RERELEASE_DATA_DIR}/id1/pak0.pak`;
+const HAVE_ID1 = existsSync(ID1_PAK0);
+
+(HAVE_ID1 ? describe : describe.skip)("U29: real dog.mdl + dog.md5mesh/anim (guarded)", () => {
+  let dogSavedSearchpaths: typeof com_searchpaths;
+  let dogSavedGamedir = "";
+  let dogSavedModified = false;
+  let dogSavedStatic = 0;
+
+  let dogPayload: Md5GlAliasT | null = null;
+  let dogNumTris = 0;
+
+  beforeAll(() => {
+    dogSavedSearchpaths = com_searchpaths;
+    dogSavedGamedir = com_gamedir;
+    dogSavedModified = com_modified;
+    dogSavedStatic = static_registered;
+
+    // this describe's own beforeAll runs before any beforeEach (this file's
+    // own included), so a prior describe block's last test may have left
+    // r_enhancedmodels at 0 -- set it explicitly rather than rely on
+    // cross-describe beforeEach ordering.
+    r_enhancedmodels.value = 1;
+
+    COM_InitArgv(["quake", "-basedir", RERELEASE_DATA_DIR]);
+    COM_InitFilesystem();
+    COM_CheckRegistered();
+
+    const meshBytes = COM_LoadTempFile("progs/dog.md5mesh");
+    expect(meshBytes).not.toBeNull();
+    if (meshBytes) {
+      const text = new TextDecoder().decode(meshBytes);
+      const m = /numtris\s+(\d+)/.exec(text);
+      expect(m).not.toBeNull();
+      if (m) dogNumTris = Number(m[1]);
+    }
+
+    const mdlBytes = COM_LoadTempFile("progs/dog.mdl");
+    expect(mdlBytes).not.toBeNull();
+    if (!mdlBytes) return;
+    const view = new DataView(mdlBytes.buffer, mdlBytes.byteOffset, mdlBytes.byteLength);
+    const mdl = readMdl(view, 0);
+
+    const mod = new ModelT();
+    mod.name = "progs/dog.mdl";
+    const hdr = new AliashdrT();
+
+    attachMd5GlReplacementIfAny(mod, hdr, mdl);
+    dogPayload = getMd5GlPayload(hdr);
+  });
+
+  afterAll(() => {
+    setComSearchpaths(dogSavedSearchpaths);
+    setComGamedir(dogSavedGamedir);
+    setComModified(dogSavedModified);
+    setStaticRegistered(dogSavedStatic);
+  });
+
+  test("attaches a payload whose triangle count matches dog.md5mesh's own numtris", () => {
+    expect(dogPayload).not.toBeNull();
+    if (!dogPayload) return;
+    expect(dogPayload.model.meshes.length).toBeGreaterThan(0);
+    expect(dogNumTris).toBeGreaterThan(0);
+    const totalTris = dogPayload.model.meshes.reduce((sum, m) => sum + m.numIndices / 3, 0);
+    expect(totalTris).toBe(dogNumTris);
+  });
+
+  test("draws one frame through the recording fake with finite vertex positions", () => {
+    expect(dogPayload).not.toBeNull();
+    if (!dogPayload) return;
+
+    rec.clear();
+    glState.currenttexture = -1;
+    const ent = new EntityT();
+    ent.skinnum = 0;
+    ent.syncbase = 0;
+    const shadevector = vec3(0, 0, 1);
+    const shadelightColor = vec3(1, 1, 1);
+
+    GL_DrawMd5AliasFrame(dogPayload, ent, 0, 0, 0, shadevector, shadelightColor, 1);
+
+    const vertexCalls = rec.calls.filter((c) => c.name === "qglVertex3f");
+    expect(vertexCalls.length).toBe(dogNumTris * 3);
+    for (const c of vertexCalls) {
+      for (const n of c.args) {
+        expect(typeof n).toBe("number");
+        if (typeof n === "number") expect(Number.isFinite(n)).toBe(true);
+      }
+    }
+
+    const bindCalls = rec.calls.filter((c) => c.name === "qglBindTexture");
+    expect(bindCalls.length).toBeGreaterThan(0);
+  });
+});

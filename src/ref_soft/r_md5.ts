@@ -86,6 +86,7 @@ import {
 } from "../lib/md5_model";
 import { COM_FindFileTier, COM_LoadTempFile } from "../common/common";
 import { SwapPic } from "../common/wad";
+import { r_enhancedmodels } from "../common/render_cvars";
 import { CvarT, Cvar_RegisterVariable } from "../common/cvar";
 import { Con_DPrintf } from "../client/console";
 import { cl } from "../client/client";
@@ -123,7 +124,7 @@ import { R_AliasClipTriangle } from "./r_aclip";
 import { R_AliasProjectFinalVert, aliastransform } from "./r_alias";
 
 // Ironwail's own name and default ("1" -- enabled), per this unit's brief.
-export const r_enhancedmodels = new CvarT("r_enhancedmodels", "1");
+export { r_enhancedmodels }; // lives in src/common/render_cvars.ts, shared with the GL renderer
 // Registered here rather than from an Init() function: this unit's SCOPE
 // does not include r_main.ts (R_Init lives there), and Cvar_RegisterVariable
 // is a plain linked-list prepend safe to call at module-evaluation time (it
@@ -131,7 +132,6 @@ export const r_enhancedmodels = new CvarT("r_enhancedmodels", "1");
 // time any module import runs) -- see cvar.ts's own header. Follow-up: move
 // this call into r_main.ts's R_Init, alongside the other renderer cvars,
 // once that file's owner can take it.
-Cvar_RegisterVariable(r_enhancedmodels);
 
 // this port's own choice for the ST_FRAMETIME pickup case -- see this
 // file's header.

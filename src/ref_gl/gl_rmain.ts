@@ -274,6 +274,8 @@ import {
   qgl,
 } from "./qgl";
 import { GL_Bind } from "./gl_draw";
+// U29: re-release MD5 replacement models -- see gl_md5.ts's own header.
+import { GL_DrawMd5AliasFrame, getMd5GlPayload, r_enhancedmodels } from "./gl_md5";
 import { GL_DisableMultitexture, R_DrawBrushModel, R_DrawWaterSurfaces, R_DrawWorld, R_MarkLeaves, R_RenderBrushPoly } from "./gl_rsurf";
 import { R_AnimateLight, R_LightPoint, R_RenderDlights, lightcolor, lightspot } from "./gl_rlight";
 import { Fog_DisableGFog, Fog_EnableGFog, Fog_SetupFrame } from "./gl_fog";
@@ -998,6 +1000,14 @@ export function R_DrawAliasModel(e: EntityT): void {
 
   glState.c_alias_polys += paliashdr.numtris;
 
+  // U29: an attached MD5 replacement takes over the "translate/scale +
+  // bind + draw" portion of this function once the classic setup above
+  // (lerp bookkeeping, culling, lighting, shadevector) is in place -- see
+  // gl_md5.ts's header (TRANSFORM) for why the scale_origin/scale
+  // decompression pair below is skipped for it, and (SHADOW) for why
+  // r_shadows draws nothing for it.
+  const md5Payload = r_enhancedmodels.value ? getMd5GlPayload(paliashdr) : null;
+
   //
   // draw all the triangles
   //
@@ -1010,9 +1020,13 @@ export function R_DrawAliasModel(e: EntityT): void {
   // header), with the entity's own ENTSCALE_DECODE scale applied on top.
   R_RotateForEntity(entityTransformLerp.origin, entityTransformLerp.angles, currententity.scale);
 
-  // QW/client/gl_rmain.c drops the gl_doubleeyes guard entirely (see file
-  // header) -- the eyes.mdl special case always applies when qw.active.
-  if (clmodel.name === "progs/eyes.mdl" && (qw.active || gl_doubleeyes.value)) {
+  if (md5Payload) {
+    // md5Skin's output is already real model-space floats -- no
+    // scale_origin/scale byte-decompression translate/scale on top (see
+    // this function's own U29 comment above).
+  } else if (clmodel.name === "progs/eyes.mdl" && (qw.active || gl_doubleeyes.value)) {
+    // QW/client/gl_rmain.c drops the gl_doubleeyes guard entirely (see file
+    // header) -- the eyes.mdl special case always applies when qw.active.
     qgl().qglTranslatef(paliashdr.scale_origin[0], paliashdr.scale_origin[1], paliashdr.scale_origin[2] - (22 + 8));
     // double size of eyes, since they are really hard to see in gl
     qgl().qglScalef(paliashdr.scale[0] * 2, paliashdr.scale[1] * 2, paliashdr.scale[2] * 2);
@@ -1021,27 +1035,33 @@ export function R_DrawAliasModel(e: EntityT): void {
     qgl().qglScalef(paliashdr.scale[0], paliashdr.scale[1], paliashdr.scale[2]);
   }
 
-  const anim = ((cl.time * 10) | 0) & 3;
-  GL_Bind(paliashdr.gl_texturenum[currententity.skinnum * 4 + anim]);
+  if (!md5Payload) {
+    const anim = ((cl.time * 10) | 0) & 3;
+    GL_Bind(paliashdr.gl_texturenum[currententity.skinnum * 4 + anim]);
 
-  // we can't dynamically colormap textures, so they are cached
-  // seperately for the players.  Heads are just uncolored.
-  if (qw.active) {
-    // QW/client/gl_rmain.c replaces this whole block's condition and body
-    // (see file header)
-    if (currententity.scoreboard !== null && !gl_nocolors.value) {
-      const sc = currententity.scoreboard;
-      i = cl.qw.players.indexOf(sc);
-      if (!sc.skin) {
-        skinMod().Skin_Find(sc);
-        glRmiscMod().R_TranslatePlayerSkin(i);
+    // we can't dynamically colormap textures, so they are cached
+    // seperately for the players.  Heads are just uncolored. (MD5
+    // replacements carry no player-recolor concept -- r_md5.ts's own skin
+    // rule loads exactly mdl.numskins .lmp files and nothing else -- so
+    // this whole block, and its own texture bind, is skipped on that path;
+    // GL_DrawMd5AliasFrame below binds the MD5 skin unconditionally.)
+    if (qw.active) {
+      // QW/client/gl_rmain.c replaces this whole block's condition and body
+      // (see file header)
+      if (currententity.scoreboard !== null && !gl_nocolors.value) {
+        const sc = currententity.scoreboard;
+        i = cl.qw.players.indexOf(sc);
+        if (!sc.skin) {
+          skinMod().Skin_Find(sc);
+          glRmiscMod().R_TranslatePlayerSkin(i);
+        }
+        if (i >= 0 && i < MAX_CLIENTS) GL_Bind(glState.playertextures + i);
       }
-      if (i >= 0 && i < MAX_CLIENTS) GL_Bind(glState.playertextures + i);
+    } else if (currententity.colormap !== vid.colormap && !gl_nocolors.value) {
+      i = cl_entities.indexOf(currententity);
+      if (i >= 1 && i <= cl.maxclients /* && !strcmp (currententity->model->name, "progs/player.mdl") */)
+        GL_Bind(glState.playertextures - 1 + i);
     }
-  } else if (currententity.colormap !== vid.colormap && !gl_nocolors.value) {
-    i = cl_entities.indexOf(currententity);
-    if (i >= 1 && i <= cl.maxclients /* && !strcmp (currententity->model->name, "progs/player.mdl") */)
-      GL_Bind(glState.playertextures - 1 + i);
   }
 
   if (gl_smoothmodels.value) qgl().qglShadeModel(GL_SMOOTH);
@@ -1059,7 +1079,14 @@ export function R_DrawAliasModel(e: EntityT): void {
   }
   rmainState.alpha = entAlpha;
 
-  GL_DrawAliasFrame(paliashdr, aliasFrameLerp.pose1, aliasFrameLerp.pose2, aliasFrameLerp.blend);
+  if (md5Payload) {
+    GL_DrawMd5AliasFrame(md5Payload, currententity, aliasFrameLerp.pose1, aliasFrameLerp.pose2, aliasFrameLerp.blend, shadevector, rmainState.shadelightColor, rmainState.alpha);
+    rmainState.lastpose1 = aliasFrameLerp.pose1;
+    rmainState.lastpose2 = aliasFrameLerp.pose2;
+    rmainState.lastblend = aliasFrameLerp.blend;
+  } else {
+    GL_DrawAliasFrame(paliashdr, aliasFrameLerp.pose1, aliasFrameLerp.pose2, aliasFrameLerp.blend);
+  }
 
   rmainState.alpha = 1;
   if (entAlpha < 1) {
@@ -1074,7 +1101,8 @@ export function R_DrawAliasModel(e: EntityT): void {
 
   qgl().qglPopMatrix();
 
-  if (r_shadows.value) {
+  // U29: no shadow for an MD5 replacement -- see gl_md5.ts's header (SHADOW).
+  if (r_shadows.value && !md5Payload) {
     qgl().qglPushMatrix();
     R_RotateForEntity(entityTransformLerp.origin, entityTransformLerp.angles, currententity.scale);
     qgl().qglDisable(GL_TEXTURE_2D);

@@ -263,6 +263,9 @@ import {
 import { GL_LoadTexture } from "./gl_draw";
 import { GL_SubdivideSurface, R_InitSky } from "./gl_warp";
 import { GL_MakeAliasModelDisplayLists } from "./gl_mesh";
+// U29 (concurrent with U071-U075): the re-release MD5 replacement-model
+// attach hook -- see gl_md5.ts's own header.
+import { attachMd5GlReplacementIfAny } from "./gl_md5";
 // QuakeWorld track: gl_model.c's player.mdl/eyes.mdl CRC -> cls.qw.userinfo fold.
 import { qw } from "../common/quakedef";
 import { cl, cls, CactiveT } from "../client/client";
@@ -876,6 +879,13 @@ export function Mod_LoadAliasModel(mod: ModelT, buffer: Uint8Array): void {
   hdr.frames = frames;
 
   hdr.numposes = posenum;
+
+  // U29: attach a re-release MD5 replacement, if r_enhancedmodels allows
+  // one at this model's own search-path tier or higher. The .mdl data
+  // built above (flags, mins/maxs, frame/skin counts) stays authoritative
+  // either way -- see gl_md5.ts's header, and src/ref_soft/model.ts's own
+  // U26 call site for the software renderer's identical hook.
+  attachMd5GlReplacementIfAny(mod, hdr, pinmodel);
 
   mod.type = ModtypeT.mod_alias;
 
