@@ -1,0 +1,29 @@
+{
+  "name": "quake-1-ts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Quake (v1.09 GPL, Dec 1999) and QuakeWorld ported to TypeScript on Bun: the NetQuake engine (q1ts), the QuakeWorld server (qwsv) and the QuakeWorld client (qwcl), with both the software and GL renderers.",
+  "license": "GPL-2.0-or-later",
+  "repository": "https://github.com/mgd34msu/Quake-1-TS",
+  "type": "module",
+  "scripts": {
+    "check": "bash scripts/check.sh",
+    "test": "bun test",
+    "start": "bun run src/main.ts",
+    "build": "bun build --compile src/main.ts --outfile q1ts",
+    "start:qwsv": "bun run src/qw/main_sv.ts",
+    "build:qwsv": "bun build --compile src/qw/main_sv.ts --outfile qwsv",
+    "start:qwcl": "bun run src/qw/main_cl.ts",
+    "build:qwcl": "bun build --compile src/qw/main_cl.ts --outfile qwcl",
+    "build:all": "bun run build && bun run build:qwsv && bun run build:qwcl",
+    "build:linux-x64": "bash scripts/release-build.sh linux-x64",
+    "build:windows-x64": "bash scripts/release-build.sh windows-x64",
+    "build:darwin-arm64": "bash scripts/release-build.sh darwin-arm64",
+    "build:darwin-x64": "bash scripts/release-build.sh darwin-x64",
+    "build:release": "bash scripts/release-build.sh --zip all"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.6.0"
+  }
+}

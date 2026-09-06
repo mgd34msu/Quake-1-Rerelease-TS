@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # SDL2, an OpenGL loader and libvorbisfile are opened at runtime through
+      # bun:ffi, so they have to exist even for the headless dummy drivers.
+      - name: Install runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libsdl2-2.0-0 libgl1 libvorbisfile3
+
+      - run: bun install --frozen-lockfile
+
+      - name: Gate (tsc + no `any`)
+        run: bun run check
+
+      # The unit suite builds its own synthetic paks, maps and models, so it
+      # needs no game data. Q1TS_DATA is deliberately unset here: the few
+      # suites that boot the real engine skip without it.
+      - name: Tests
+        env:
+          SDL_VIDEODRIVER: dummy
+          SDL_AUDIODRIVER: dummy
+        run: bun test

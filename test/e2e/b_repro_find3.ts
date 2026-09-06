@@ -1,0 +1,11 @@
+import { boot, frames, exec } from "./b_lib";
+import { Q1TS_DATA } from "./q1data";
+boot(["-basedir",Q1TS_DATA,"-game","e2e_b","-nosound"]);
+frames(5);
+console.log("MARK load1");
+exec("map e1m1", 30);
+console.log("MARK load1done");
+console.log("MARK load2");
+exec("map e1m1", 30);
+console.log("MARK load2done");
+process.exit(0);

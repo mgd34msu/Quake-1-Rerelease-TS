@@ -1,0 +1,52 @@
+# Dependencies
+node_modules/
+
+# Agent / session scratch (not part of the port)
+.goodvibes/
+.orch/
+.claude/
+
+# Compiled engine binaries (bun build --compile) and release output
+q1ts
+qwsv
+qwcl
+dist/
+
+# Game data. Quake's pak files are id Software / Bethesda property and are
+# never redistributed here; these rules keep an installation dropped into the
+# working tree from being committed by accident.
+*.pak
+*.PAK
+/id1/
+/Id1/
+/hipnotic/
+/rogue/
+/data/
+/qw/
+/qw/skins/
+
+# Engine output written next to the game data (screenshots, demos, saves,
+# configs, logs). docs/images/ is the one place a .tga or .pcx is deliberate.
+*.pcx
+*.tga
+!docs/images/**/*.tga
+!docs/images/**/*.pcx
+*.dem
+*.qwd
+*.sav
+qconsole.log
+config.cfg
+*.log
+
+# Build and tooling artifacts
+*.tsbuildinfo
+coverage/
+/tmp/
+*.zip
+
+# OS and editor junk
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/

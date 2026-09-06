@@ -1,0 +1,11 @@
+import { boot, frames, exec } from "./b_lib";
+import { cls, cl } from "../../src/client/client";
+import { Q1TS_DATA } from "./q1data";
+boot(["-basedir",Q1TS_DATA,"-game","e2e_b","-nosound"]);
+frames(5);
+console.log("A cls.state", cls.state, "demoplayback", cls.demoplayback);
+exec("disconnect", 3);
+console.log("B cls.state", cls.state);
+exec("map e1m1", 30);
+console.log("C cls.state", cls.state, "mapname", cl.levelname);
+process.exit(0);
