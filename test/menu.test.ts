@@ -35,13 +35,14 @@
 // com_classic_root/com_basedir have no exported setter -- see this file's
 // afterAll for the compensating final COM_InitFilesystem reset).
 
-import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 
 import type { ModelLoaderHooks } from "../src/common/model";
 import type { QpicT } from "../src/common/wad";
-import type { Renderer } from "../src/client/render";
+import type { GlyphAtlasSourceT, Renderer } from "../src/client/render";
 import { Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue, Cvar_VariableValue, Cvar_VariableString } from "../src/common/cvar";
 import { v_gamma } from "../src/client/view";
 import {
@@ -95,6 +96,7 @@ import { sv_protocol } from "../src/server/sv_main";
 import { Bot_ForgetKnowledge, Bot_ForgetMapdb, bot_count, bot_skill } from "../src/bots";
 import type { ContentFsSeam } from "../src/client/menu_content";
 import { LoadMenuLocalization, test_ResetMenuLocCache } from "../src/client/menu_content";
+import { con_font, scr_usekfont, test_ResetGlyphCache } from "../src/client/kfont_text";
 import * as menu from "../src/client/menu";
 
 // cmd_text (cmd.ts's command buffer) is unallocated until Cbuf_Init runs;
@@ -317,12 +319,25 @@ const fakeRenderer: Renderer = {
   SCR_DrawCrosshair(): void {},
   Draw_SubPic(): void {},
   Draw_Alt_String(): void {},
-  // Renderer interface addition (U19/U44, landed concurrently with this
-  // unit): menu.ts never calls this (it's kfont_text.ts's own primitive),
-  // but the Renderer interface requires every implementer to have it. Not
-  // this unit's own work -- see this file's own header note if this test
-  // ever needs to assert on it.
-  Draw_GlyphAtlas(): void {},
+  // F14: menu.ts's M_Print/M_PrintWhite reach this through kfont_text.ts's
+  // Text_Draw whenever a kfont/TTF font is selected, so it records like
+  // every other Draw_* here. With the classic charset (scr_usekfont 0, this
+  // file's baseline) Text_Draw takes its Draw_Character branch instead and
+  // nothing lands here at all.
+  Draw_GlyphAtlas(
+    dstX: number,
+    dstY: number,
+    dstW: number,
+    dstH: number,
+    source: GlyphAtlasSourceT,
+    srcX: number,
+    srcY: number,
+    srcW: number,
+    srcH: number,
+    tint: readonly [number, number, number] | null,
+  ): void {
+    drawCalls.push({ fn: "Draw_GlyphAtlas", args: [dstX, dstY, dstW, dstH, source.kind, srcX, srcY, srcW, srcH, tint] });
+  },
   isGL: false,
   SCR_ScreenShot_f(): void {},
 };
@@ -1803,5 +1818,266 @@ describe("M_ScanSaves: KEX comments and nested autosave slots", () => {
       expect(menu.autosaveLoadable).toBe(false);
       expect(menu.autosaveFilename).toBe("--- NO AUTOSAVE ---");
     });
+  });
+});
+
+//=============================================================================
+// F14: menu labels draw through kfont_text.ts's glyph path, so a localized
+// (Cyrillic) label resolves the font's own glyphs instead of indexing the
+// classic 8x8 charset with code points it has no entries for.
+
+describe("menu labels through the kfont glyph path (F14)", () => {
+  // A synthetic fonts/qfont.kfont + fonts/qfont.png, built here rather than
+  // shared with test/kfont_text.test.ts (standing order 13: every suite is
+  // self-sufficient). Its glyph cell is 16px tall -- twice the 8px menu row
+  // -- so menu.ts's Text_RowScale(8) is a visible 0.5 rather than an
+  // accidental 1, and 12px wide, so a proportional advance is visibly not
+  // the classic 8.
+  const KF_GLYPH_W = 12;
+  const KF_GLYPH_H = 16;
+  const MENU_ROW = 8;
+  const KF_SCALE = MENU_ROW / KF_GLYPH_H;
+
+  // Every code point the labels below draw: printable ASCII plus the
+  // Cyrillic letters of the Russian fixture strings.
+  const KF_CODEPOINTS: readonly number[] = Array.from(
+    new Set([
+      ...Array.from({ length: 95 }, (_, i) => 32 + i),
+      ...Array.from("ВсегдабежатьОдинигрокЯзык", (c) => c.codePointAt(0) ?? 0),
+    ]),
+  );
+  const KF_SLOT = new Map<number, number>(KF_CODEPOINTS.map((cp, i) => [cp, i]));
+  const KF_ATLAS_W = KF_CODEPOINTS.length * KF_GLYPH_W;
+
+  function buildKfontText(): string {
+    const lines = ['texture "fonts/qfont.png"', "unicode", "mapchar", "{"];
+    for (const cp of KF_CODEPOINTS) {
+      lines.push(`\t${cp} ${(KF_SLOT.get(cp) ?? 0) * KF_GLYPH_W} 0 ${KF_GLYPH_W} ${KF_GLYPH_H} 0`);
+    }
+    lines.push("}", "");
+    return lines.join("\n");
+  }
+
+  // A colortype-6 (RGBA8) PNG, every pixel opaque white -- src/lib/png.ts
+  // only has to decode it; nothing here reads the pixels back.
+  function buildAtlasPng(): Uint8Array {
+    const SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+    function chunk(type: string, data: Uint8Array): Uint8Array {
+      const out = new Uint8Array(8 + data.length + 4);
+      new DataView(out.buffer).setUint32(0, data.length, false);
+      for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+      out.set(data, 8);
+      return out;
+    }
+    const rowBytes = KF_ATLAS_W * 4;
+    const raw = new Uint8Array((rowBytes + 1) * KF_GLYPH_H);
+    let o = 0;
+    for (let y = 0; y < KF_GLYPH_H; y++) {
+      raw[o++] = 0; // filter: None
+      for (let x = 0; x < KF_ATLAS_W; x++) {
+        raw[o++] = 255;
+        raw[o++] = 255;
+        raw[o++] = 255;
+        raw[o++] = 255;
+      }
+    }
+    const ihdr = new Uint8Array(13);
+    const iv = new DataView(ihdr.buffer);
+    iv.setUint32(0, KF_ATLAS_W, false);
+    iv.setUint32(4, KF_GLYPH_H, false);
+    ihdr[8] = 8; // bit depth
+    ihdr[9] = 6; // color type: RGBA
+    const parts = [new Uint8Array(SIGNATURE), chunk("IHDR", ihdr), chunk("IDAT", new Uint8Array(deflateSync(raw))), chunk("IEND", new Uint8Array(0))];
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    const out = new Uint8Array(total);
+    let at = 0;
+    for (const p of parts) {
+      out.set(p, at);
+      at += p.length;
+    }
+    return out;
+  }
+
+  function fakeLocSeam(files: Readonly<Record<string, string>>): ContentFsSeam {
+    return {
+      directoryExists: () => false,
+      loadTempFile: (path: string) => {
+        const text = files[path];
+        if (text === undefined) return null;
+        const bytes = new TextEncoder().encode(text);
+        const out = new Uint8Array(bytes.length + 1);
+        out.set(bytes, 0);
+        return out;
+      },
+      loadAllFiles: () => [],
+    };
+  }
+
+  const RUSSIAN_ALWAYS_RUN = "Всегда бежать";
+  const LOC_FILES = {
+    "localization/loc_english.txt": 'm_always_run = "Always Run"\nm_language = "Language"\nm_on = "On"\nm_off = "Off"\n',
+    "localization/loc_russian.txt": `m_always_run = "${RUSSIAN_ALWAYS_RUN}"\nm_language = "Язык"\nm_on = "On"\nm_off = "Off"\n`,
+  };
+
+  let fontDir = "";
+  const savedFontSearchpaths = com_searchpaths;
+  const savedFontGamedir = com_gamedir;
+  const savedConFont = con_font.string;
+  const savedUsekfont = scr_usekfont.value;
+  const savedLang = language.string;
+
+  function useLanguage(lang: string): void {
+    Cvar_Set("language", lang);
+    test_ResetMenuLocCache();
+    LoadMenuLocalization(fakeLocSeam(LOC_FILES));
+  }
+
+  function useKfont(on: boolean): void {
+    scr_usekfont.value = on ? 1 : 0;
+    scr_usekfont.string = on ? "1" : "0";
+    con_font.string = "kfont";
+    test_ResetGlyphCache();
+  }
+
+  /** Every Draw_GlyphAtlas call recorded so far, unpacked. */
+  function atlasDraws(): Array<{ x: number; y: number; w: number; h: number; source: string; srcX: number }> {
+    const out: Array<{ x: number; y: number; w: number; h: number; source: string; srcX: number }> = [];
+    for (const c of drawCalls) {
+      if (c.fn !== "Draw_GlyphAtlas") continue;
+      const [x, y, w, h, source, srcX] = c.args;
+      if (typeof x !== "number" || typeof y !== "number" || typeof w !== "number" || typeof h !== "number") continue;
+      if (typeof source !== "string" || typeof srcX !== "number") continue;
+      out.push({ x, y, w, h, source, srcX });
+    }
+    return out;
+  }
+
+  /** The code point each atlas draw resolved to, read back from its source
+   * column in the fixture atlas. */
+  function drawnCodepoints(draws: ReadonlyArray<{ srcX: number }>): number[] {
+    return draws.map((d) => KF_CODEPOINTS[d.srcX / KF_GLYPH_W] ?? -1);
+  }
+
+  beforeAll(() => {
+    fontDir = mkdtempSync(join(scratchRoot, "menu-f14-kfont-"));
+    mkdirSync(join(fontDir, "fonts"), { recursive: true });
+    writeFileSync(join(fontDir, "fonts", "qfont.kfont"), buildKfontText(), "latin1");
+    writeFileSync(join(fontDir, "fonts", "qfont.png"), buildAtlasPng());
+    COM_AddGameDirectory(fontDir);
+  });
+
+  beforeEach(() => {
+    resetMenuState();
+    useKfont(false);
+  });
+
+  afterAll(() => {
+    useKfont(false);
+    con_font.string = savedConFont;
+    scr_usekfont.value = savedUsekfont;
+    scr_usekfont.string = String(savedUsekfont);
+    test_ResetGlyphCache();
+    Cvar_Set("language", savedLang);
+    test_ResetMenuLocCache();
+    setComSearchpaths(savedFontSearchpaths);
+    setComGamedir(savedFontGamedir);
+    if (fontDir !== "") rmSync(fontDir, { recursive: true, force: true });
+  });
+
+  test("a classic boot draws every label through the charset, never the glyph atlas", () => {
+    useKfont(false);
+    useLanguage("english");
+    drawCalls.length = 0;
+    menu.M_Options_Draw();
+
+    expect(atlasDraws()).toHaveLength(0);
+    const chars = drawCalls.filter((c) => c.fn === "Draw_Character");
+    expect(chars.length).toBeGreaterThan(100);
+    // "Always Run" is still spelled out one charset index per character.
+    // x < 200 drops the checkbox's own value column at x=220.
+    const alwaysRun = chars
+      .filter((c) => c.args[1] === 96 && typeof c.args[0] === "number" && c.args[0] < 200 && typeof c.args[2] === "number" && c.args[2] >= 128)
+      .map((c) => String.fromCharCode((typeof c.args[2] === "number" ? c.args[2] : 128) - 128))
+      .join("");
+    expect(alwaysRun.trim()).toBe("Always Run");
+  });
+
+  test("a Cyrillic label resolves kfont glyphs instead of charset characters", () => {
+    useKfont(true);
+    useLanguage("russian");
+    drawCalls.length = 0;
+    menu.menuState.options_cursor = 0; // keeps the blinking cursor off the row read below
+    menu.M_Options_Draw();
+
+    const row = atlasDraws().filter((d) => d.y === 96 && d.x < 200); // x=220 is the checkbox's own value
+    expect(String.fromCodePoint(...drawnCodepoints(row))).toBe(RUSSIAN_ALWAYS_RUN);
+    for (const d of row) expect(d.source).toBe("custom");
+    // Nothing on that row went to the classic charset, which is where those
+    // code points used to land as `charCodeAt(i) + 128`.
+    expect(drawCalls.filter((c) => c.fn === "Draw_Character" && c.args[1] === 96)).toHaveLength(0);
+  });
+
+  test("kfont glyphs are scaled to the 8px menu row", () => {
+    useKfont(true);
+    useLanguage("english");
+    drawCalls.length = 0;
+    menu.M_Options_Draw();
+
+    const draws = atlasDraws();
+    expect(draws.length).toBeGreaterThan(0);
+    for (const d of draws) {
+      expect(d.h).toBe(MENU_ROW);
+      expect(d.w).toBe(KF_GLYPH_W * KF_SCALE);
+    }
+  });
+
+  test("an English row starts at the same x with the kfont as with the charset", () => {
+    useLanguage("english");
+
+    useKfont(false);
+    drawCalls.length = 0;
+    menu.M_Print(64, 40, "Hostname");
+    const classicX = drawCalls.filter((c) => c.fn === "Draw_Character").map((c) => c.args[0]);
+    expect(classicX[0]).toBe(64);
+    expect(classicX[1]).toBe(72); // the classic 8px column grid
+
+    useKfont(true);
+    drawCalls.length = 0;
+    menu.M_Print(64, 40, "Hostname");
+    const kfontDraws = atlasDraws();
+    expect(kfontDraws).toHaveLength("Hostname".length);
+    expect(kfontDraws[0]?.x).toBe(64); // same row origin
+    expect(kfontDraws[1]?.x).toBe(64 + KF_GLYPH_W * KF_SCALE); // the font's own advance
+  });
+
+  test("a right-aligned row measures with the font, so its right edge stays put", () => {
+    useKfont(true);
+    useLanguage("english");
+    drawCalls.length = 0;
+    menu.M_Options_Draw();
+
+    // menu.ts right-aligns the Options labels to `cx + width * 8` -- x=16,
+    // width=22 for "Always Run" (y=96), so the row's last glyph must end at
+    // 16 + 22 * 8 no matter how wide the font drew it.
+    const row = atlasDraws().filter((d) => d.y === 96 && d.x < 200); // x=220 is the checkbox's own value
+    expect(row.length).toBe("Always Run".length);
+    const last = row[row.length - 1];
+    expect(last === undefined ? -1 : last.x + last.w).toBeCloseTo(16 + 22 * 8, 6);
+  });
+
+  test("M_DrawCharacter stays on the charset under the kfont, so the cursor and sliders still draw", () => {
+    useKfont(true);
+    useLanguage("english");
+    drawCalls.length = 0;
+    menu.menuState.options_cursor = 0;
+    menu.M_Options_Draw();
+
+    // The blinking cursor menu.c draws with charset entries 12/13.
+    const cursor = drawCalls.find((c) => c.fn === "Draw_Character" && c.args[0] === 200 && c.args[1] === 32);
+    expect(cursor).toBeDefined();
+    expect(cursor === undefined ? -1 : cursor.args[2]).toBeGreaterThanOrEqual(12);
+    // The slider bar's own charset artwork (128..131).
+    const sliderEnd = drawCalls.filter((c) => c.fn === "Draw_Character" && c.args[2] === 128);
+    expect(sliderEnd.length).toBeGreaterThan(0);
   });
 });

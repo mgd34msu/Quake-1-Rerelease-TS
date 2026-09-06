@@ -136,6 +136,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   client is implemented: team scores and each flag's state (at base,
   carried, dropped) are kept per connection and drawn under the status bar
   and on the scoreboard, cleared on level change and disconnect.
+- Menu text draws through the kfont/TTF path when a kfont is mounted, scaled
+  to the classic 8-pixel row with the same column positions, so localized
+  labels in Cyrillic and accented scripts render; classic content keeps the
+  charset path byte-for-byte (cursor, slider and level-select marks stay
+  charset artwork).
 - Menus draw their labels through the localization table (`$m_*` keys with
   the English literal as fallback), so `language` changes the menus; the
   Options, difficulty, level-select, bots, setup, key-bind, quit and

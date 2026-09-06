@@ -180,6 +180,30 @@ entirely.
   own assumption (colors 4/13, the commonly cited id1-era CTF mod's Red/Blue)
   rather than asserting it against source; follow-up: revisit once
   quakec_ctf lands.
+
+F14 addition (2026-09-06, "menu text draws through the kfont path"): U17/F3
+gave the menus localized labels through MenuLoc, but every one of them still
+reached the screen one byte at a time through the classic 8x8 conchars
+charset, so loc_russian.txt's "Один игрок" drew whatever those Cyrillic code
+points happened to index into that charset. M_Print/M_PrintWhite (and
+M_PrintRight's alignment) now go through src/client/kfont_text.ts's
+Text_Draw/Text_Width -- the same glyph provider the console and status bar
+already use, gated by the same `scr_usekfont`/`con_font` cvars -- at
+menuTextScale(), which is Text_RowScale(MENU_ROW_HEIGHT). With no kfont
+selected (a classic boot; scr_usekfont defaults to 0) that scale is exactly
+1 and Text_Draw's own classic branch emits the same Draw_Character calls at
+the same coordinates menu.c's loops did, so a classic menu is unchanged.
+The screens that place something after or around a run of text
+(Setup/LanConfig's typing cursor, the Customize-controls "or" column, the
+centred one-line notices) measure that run with M_TextWidth instead of
+`length * 8`, which is the same number with the classic charset and the real
+drawn width with a proportional font.
+
+M_DrawCharacter is deliberately NOT rerouted: its callers draw the blinking
+cursor (charset entries 12/13 and 10/11), the slider parts (128-131) and the
+level-select '*', none of which any kfont defines a glyph for -- they are
+conchars artwork, not text, and stay on the classic primitive under every
+font setting. Menu titles are .lmp pics and are likewise untouched.
 */
 
 import { getRenderer, TOP_RANGE, BOTTOM_RANGE } from "./render";
@@ -225,6 +249,7 @@ import { SAVEGAME_COMMENT_LENGTH } from "../common/quakedef";
 import { Com_sprintf } from "../common/sprintf";
 import { Con_ToggleConsole_f } from "./console";
 import { SCR_ModalMessage, SCR_BeginLoadingPlaque } from "./screen";
+import { Text_Draw, Text_RowScale, Text_Width } from "./kfont_text";
 import { S_LocalSound, S_ExtraUpdate } from "./snd_dma";
 import {
   type ContentModel,
@@ -446,20 +471,43 @@ export function M_DrawCharacter(cx: number, line: number, num: number): void {
   getRenderer().Draw_Character(cx + ((vid.width - 320) >> 1), line, num);
 }
 
+/* Every menu screen in menu.c is laid out on a fixed 8-pixel row grid. */
+const MENU_ROW_HEIGHT = 8;
+
+/* The Text_Draw/Text_Width scale one menu row asks for: 1 with the classic
+ * charset (its cell is the row), and however much shrinks one kfont/TTF line
+ * into a row when one of those fonts is selected -- see kfont_text.ts's F14
+ * note. */
+function menuTextScale(): number {
+  return Text_RowScale(MENU_ROW_HEIGHT);
+}
+
+/* The drawn width of a menu string, for the screens that position something
+ * after or around a run of text. Equals `str.length * 8` with the classic
+ * charset, which is the literal the C wrote at each of those sites. */
+function M_TextWidth(str: string): number {
+  return Text_Width(str, menuTextScale());
+}
+
+/* menu.c has M_Print and M_PrintWhite as two copies of one loop differing
+ * only by the `+128` alt-charset bit. Both route through kfont_text.ts's
+ * Text_Draw so a localized label draws the font's own glyphs; with the
+ * classic charset selected Text_Draw's scale-1 branch emits the same
+ * per-character Draw_Character calls at the same positions, and the `| 0x80`
+ * it applies for `alt` is the same value `+128` produced for every character
+ * menu.c could hold (a codepoint above 127 -- only reachable through a
+ * localized string, which menu.c had no way to draw at all -- wraps into the
+ * charset instead of running off the end of it). */
+function M_DrawText(cx: number, cy: number, str: string, alt: boolean): void {
+  Text_Draw(cx + ((vid.width - 320) >> 1), cy, str, alt, menuTextScale());
+}
+
 export function M_Print(cx: number, cy: number, str: string): void {
-  let x = cx;
-  for (let i = 0; i < str.length; i++) {
-    M_DrawCharacter(x, cy, str.charCodeAt(i) + 128);
-    x += 8;
-  }
+  M_DrawText(cx, cy, str, true);
 }
 
 export function M_PrintWhite(cx: number, cy: number, str: string): void {
-  let x = cx;
-  for (let i = 0; i < str.length; i++) {
-    M_DrawCharacter(x, cy, str.charCodeAt(i));
-    x += 8;
-  }
+  M_DrawText(cx, cy, str, false);
 }
 
 /* D7: a menu label the retail localization tables have a key for. `english`
@@ -475,9 +523,12 @@ function M_Loc(key: string, english: string): string {
  * computed here instead of being written into the string. `width` is the
  * original literal's own length, which keeps the English layout of each row
  * pixel-identical to the C -- including the rows menu.c itself left one
- * column short of its neighbours. */
+ * column short of its neighbours. The padding measures the label with
+ * M_TextWidth rather than counting characters, so a proportional kfont
+ * right-aligns on its own drawn width; with the classic charset
+ * M_TextWidth(str) is str.length * 8 and the column is the C's. */
 function M_PrintRight(cx: number, cy: number, width: number, str: string): void {
-  M_Print(cx + Math.max(0, width - str.length) * 8, cy, str);
+  M_Print(cx + Math.max(0, width * 8 - M_TextWidth(str)), cy, str);
 }
 
 /* menu.c hand-wraps the multi-line message boxes into fixed-width literals.
@@ -1333,7 +1384,7 @@ export function M_MultiPlayer_Draw(): void {
   M_DrawTransPic(54, 32 + menuState.m_multiplayer_cursor * 20, cachePic(`gfx/menudot${f + 1}.lmp`));
 
   if (serialAvailable || ipxAvailable || tcpipAvailable) return;
-  M_PrintWhite(Math.trunc(320 / 2 - (27 * 8) / 2), 148, "No Communications Available");
+  M_PrintWhite(Math.trunc(320 / 2 - M_TextWidth("No Communications Available") / 2), 148, "No Communications Available");
 }
 
 export function M_MultiPlayer_Key(key: number): void {
@@ -1436,7 +1487,7 @@ export function M_QexBots_Draw(): void {
     const note = !model.available
       ? "This game directory has no bots data"
       : `"${model.mapName || "this map"}" is not flagged for bots`;
-    M_PrintWhite(Math.trunc(320 / 2 - (note.length * 8) / 2), 184, note);
+    M_PrintWhite(Math.trunc(320 / 2 - M_TextWidth(note) / 2), 184, note);
   }
 }
 
@@ -1587,14 +1638,14 @@ export function M_Setup_Draw(): void {
 
   if (menuState.setup_cursor === 0)
     M_DrawCharacter(
-      168 + 8 * menuState.setup_hostname.length,
+      168 + M_TextWidth(menuState.setup_hostname),
       cursorTable[menuState.setup_cursor]!,
       10 + (Math.trunc(host.realtime * 4) & 1),
     );
 
   if (menuState.setup_cursor === 1)
     M_DrawCharacter(
-      168 + 8 * menuState.setup_myname.length,
+      168 + M_TextWidth(menuState.setup_myname),
       cursorTable[menuState.setup_cursor]!,
       10 + (Math.trunc(host.realtime * 4) & 1),
     );
@@ -2224,7 +2275,7 @@ export function M_Keys_Draw(): void {
     } else {
       const name = Key_KeynumToString(keys[0]);
       M_Print(140, y, name);
-      const x = name.length * 8;
+      const x = M_TextWidth(name);
       if (keys[1] !== -1) {
         M_Print(140 + x + 8, y, "or");
         M_Print(140 + x + 32, y, Key_KeynumToString(keys[1]));
@@ -2543,14 +2594,14 @@ export function M_LanConfig_Draw(): void {
 
   if (menuState.lanConfig_cursor === 0)
     M_DrawCharacter(
-      bx + 9 * 8 + 8 * menuState.lanConfig_portname.length,
+      bx + 9 * 8 + M_TextWidth(menuState.lanConfig_portname),
       lanConfig_cursor_table[0],
       10 + (Math.trunc(host.realtime * 4) & 1),
     );
 
   if (menuState.lanConfig_cursor === 2)
     M_DrawCharacter(
-      bx + 16 + 8 * menuState.lanConfig_joinname.length,
+      bx + 16 + M_TextWidth(menuState.lanConfig_joinname),
       lanConfig_cursor_table[2],
       10 + (Math.trunc(host.realtime * 4) & 1),
     );

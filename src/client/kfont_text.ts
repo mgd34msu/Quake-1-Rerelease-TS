@@ -98,6 +98,18 @@ SCALING RULES (QuakeSpasm gl_screen.c names/semantics, this unit's SCOPE):
   scoreboard overlays (real QuakeSpasm's own `GL_SetCanvas(CANVAS_MENU)` --
   checked against ~/Projects/qsrc/quakespasm/Quake/sbar.c) are explicitly
   out of this unit's scope; their unscaled path is unchanged.
+
+F14 addition (2026-09-06): menu.ts's M_Print/M_PrintWhite/M_PrintRight now
+draw through Text_Draw as well, so a localized label (loc_russian.txt's
+Cyrillic "Один игрок", say) resolves real glyphs instead of the classic
+charset's byte-indexed garbage. menu.c lays its screens out on a fixed 8px
+row grid, and the kfont's own line height is whatever the shipped font
+declares (28px in the retail fonts/qfont.kfont), so the menu asks
+Text_RowScale(8) below for the multiplier that fits one kfont line into one
+menu row and hands it to Text_Draw/Text_Width as the scale. Text_RowScale
+returns exactly 1 on the classic charset path, which is what keeps a
+classic boot's menu geometry and its per-character Draw_Character sequence
+byte-identical. `scr_menuscale` is still not ported.
 */
 
 import { CvarT, Cvar_FindVar, Cvar_RegisterVariable } from "../common/cvar";
@@ -390,6 +402,21 @@ function drawGlyphAtlas(
 
 function fallbackGlyph(font: ActiveFontT): GlyphRectT | null {
   return font.glyph("?".charCodeAt(0));
+}
+
+/** The active font's declared line height, in atlas pixels. The classic
+ * charset has no declaration of its own: its 8px cell IS its line. */
+export function Text_LineHeight(): number {
+  const font = resolveFont();
+  return font !== null && font.lineHeight > 0 ? font.lineHeight : CLASSIC_GLYPH_SIZE;
+}
+
+/** The Text_Draw/Text_Width scale that fits one line of the active font into
+ * `rowHeight` real pixels. Exactly 1 on the classic charset path at the
+ * classic 8px row height, so a caller laid out on that grid keeps its
+ * classic geometry unchanged. */
+export function Text_RowScale(rowHeight: number): number {
+  return rowHeight / Text_LineHeight();
 }
 
 /** Total advance width, in real pixels, of `s` at the given scale. */

@@ -50,6 +50,8 @@ import {
   con_font,
   scr_usekfont,
   Text_Draw,
+  Text_LineHeight,
+  Text_RowScale,
   Text_Width,
   test_ResetClLocCache,
   test_ResetGlyphCache,
@@ -362,6 +364,27 @@ describe("kfont_text.ts -- Text_Width (synthetic kfont atlas)", () => {
   });
 });
 
+// F14: menu.ts asks for the multiplier that fits one line of the active font
+// into one 8px menu row, and needs that multiplier to be exactly 1 with the
+// classic charset so a classic menu keeps its per-character Draw_Character
+// geometry.
+describe("kfont_text.ts -- Text_LineHeight / Text_RowScale", () => {
+  test("classic (scr_usekfont=0): the 8px charset cell IS the line, so an 8px row scales by exactly 1", () => {
+    scr_usekfont.value = 0;
+    con_font.string = "kfont";
+    expect(Text_LineHeight()).toBe(8);
+    expect(Text_RowScale(8)).toBe(1);
+    expect(Text_RowScale(16)).toBe(2);
+  });
+
+  test("kfont: the line height is the font's own declared glyph height", () => {
+    scr_usekfont.value = 1;
+    con_font.string = "kfont";
+    expect(Text_LineHeight()).toBe(GLYPH_A.h);
+    expect(Text_RowScale(GLYPH_A.h / 2)).toBe(0.5);
+  });
+});
+
 describe("kfont_text.ts -- Text_Draw glyph rects (synthetic kfont atlas, software dispatch)", () => {
   beforeEach(() => {
     scr_usekfont.value = 1;
@@ -548,6 +571,11 @@ describe.skipIf(!HAVE_REAL_Q1)("kfont_text.ts -- real QuakeEX.kpf fonts/qfont.kf
 
   test("fonts/qfont.kfont's real ASCII glyph metrics resolve through Text_Width (codepoint 56 '8' is 22px wide, spot-checked against the extracted file)", () => {
     expect(Text_Width("8")).toBe(22);
+  });
+
+  test("F14: the real font's line height is its 28px cell, so an 8px menu row scales it by 8/28", () => {
+    expect(Text_LineHeight()).toBe(28);
+    expect(Text_RowScale(8)).toBeCloseTo(8 / 28, 10);
   });
 
   test("Text_Draw emits one real GL atlas quad (qglBegin(GL_QUADS)...qglEnd()) per character", () => {
