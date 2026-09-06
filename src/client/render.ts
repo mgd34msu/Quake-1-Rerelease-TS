@@ -600,6 +600,29 @@ export interface Renderer {
     tint: readonly [number, number, number] | null,
   ): void;
 
+  // F2 addition, not from draw.h: sbar.ts's scr_sbarscale scaling of the
+  // status bar's PIC-based elements (Sbar_DrawPic/Sbar_DrawTransPic, the
+  // only two callers) needs a scaled-blit primitive parallel to
+  // Draw_GlyphAtlas's text one above. GL (src/ref_gl/gl_draw.ts): the same
+  // textured quad Draw_Pic already draws, with the destination width/height
+  // multiplied by `scale` (a vertex scale; the texture coordinates are
+  // unchanged). Software (src/ref_soft/draw.ts): a nearest-neighbour scaled
+  // blit into vid.buffer (8-bit) and vid.buffer32 (true-color overlay), the
+  // same technique Draw_GlyphAtlas's own "custom" branch already uses.
+  // Draw_ScaledTransPic differs from Draw_ScaledPic only in whether
+  // TRANSPARENT_COLOR (255) is skipped, exactly like Draw_TransPic vs
+  // Draw_Pic.
+  //
+  // Optional for the same reason Draw_GlyphAtlas is (see that member's own
+  // comment just above): wiring these two onto the live
+  // glRenderer/softRenderer object literals (src/ref_gl/ref_gl.ts,
+  // src/ref_soft/ref_soft.ts -- one line each) is outside this unit's
+  // SCOPE. sbar.ts falls back to a lazy require()-based direct dispatch,
+  // keyed on isGL, exactly like kfont_text.ts's own drawGlyphAtlas did for
+  // Draw_GlyphAtlas before U44 closed that identical seam gap.
+  Draw_ScaledPic?(x: number, y: number, pic: QpicT, scale: number): void;
+  Draw_ScaledTransPic?(x: number, y: number, pic: QpicT, scale: number): void;
+
   //
   // the particle drawing half of r_part.c's R_DrawParticles
   //

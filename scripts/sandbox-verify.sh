@@ -27,7 +27,7 @@ if ! echo "$out" | grep -qE '^ *0 fail$'; then
   # driver running a QuakeWorld client elsewhere on the host fails them for
   # reasons unrelated to the files under test. When every failing test lives
   # in one of those files, run just those files once more, alone.
-  QW_FILES="test/qw_listen.test.ts test/qwcl_boot.test.ts test/qw_selfplay.test.ts test/unified_server.test.ts"
+  QW_FILES="test/qw_listen.test.ts test/qwcl_boot.test.ts test/qw_selfplay.test.ts test/unified_server.test.ts test/unified_client.test.ts"
   failing_files=$(awk '/^test\/.*\.test\.ts:$/ { f=$0; sub(":$","",f) } /^\(fail\)/ { print f }' "$FULL" | sort -u)
   only_qw=1
   for f in $failing_files; do case " $QW_FILES " in *" $f "*) ;; *) only_qw=0 ;; esac; done

@@ -98,6 +98,8 @@ import {
   Draw_Fill,
   Draw_Init,
   Draw_Pic,
+  Draw_ScaledPic,
+  Draw_ScaledTransPic,
   Draw_String,
   Draw_TextureMode_f,
   Draw_TileClear,
@@ -357,6 +359,41 @@ describe("gl_draw.ts (WinQuake gl_draw.c)", () => {
     Draw_Pic(0, 0, draw_disc);
     const secondUploads = rec.calls.filter((c) => c.name === "qglTexImage2D" && c.args[3] === 256 && c.args[4] === 256);
     expect(secondUploads.length).toBe(0);
+  });
+
+  test("F2: Draw_ScaledPic emits the same texcoords as Draw_Pic but a vertex-scaled quad", () => {
+    if (!draw_disc) throw new Error("unreachable");
+
+    rec.clear();
+    Draw_Pic(0, 0, draw_disc);
+    const plainTexcoords = rec.calls.filter((c) => c.name === "qglTexCoord2f").map((c) => c.args);
+
+    rec.clear();
+    Draw_ScaledPic(10, 20, draw_disc, 2);
+    const scaledTexcoords = rec.calls.filter((c) => c.name === "qglTexCoord2f").map((c) => c.args);
+    const vertices = rec.calls.filter((c) => c.name === "qglVertex2f").map((c) => c.args);
+
+    expect(scaledTexcoords).toEqual(plainTexcoords); // texture coordinates are unchanged by the scale -- only the vertex quad grows
+    expect(vertices).toEqual([
+      [10, 20],
+      [10 + DISC_W * 2, 20],
+      [10 + DISC_W * 2, 20 + DISC_H * 2],
+      [10, 20 + DISC_H * 2],
+    ]);
+  });
+
+  test("F2: Draw_ScaledTransPic is the same call sequence as Draw_ScaledPic (GL has no separate transparent body, matching Draw_TransPic vs Draw_Pic above)", () => {
+    if (!draw_disc) throw new Error("unreachable");
+
+    rec.clear();
+    Draw_ScaledPic(0, 0, draw_disc, 3);
+    const scaledPicCalls = rec.calls.map((c) => ({ name: c.name, args: c.args }));
+
+    rec.clear();
+    Draw_ScaledTransPic(0, 0, draw_disc, 3);
+    const scaledTransPicCalls = rec.calls.map((c) => ({ name: c.name, args: c.args }));
+
+    expect(scaledTransPicCalls).toEqual(scaledPicCalls);
   });
 
   test("Scrap_Upload runs exactly once the first time a fresh scrap pic is drawn", () => {

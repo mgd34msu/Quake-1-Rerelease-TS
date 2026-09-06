@@ -38,6 +38,8 @@ import {
   Draw_Pic,
   Draw_TransPic,
   Draw_TransPicTranslate,
+  Draw_ScaledPic,
+  Draw_ScaledTransPic,
   Draw_TileClear,
   Draw_Fill,
   Draw_FadeScreen,
@@ -324,6 +326,67 @@ describe("draw.ts (WinQuake draw.c)", () => {
     expect(() => Draw_Pic(-1, 0, pic)).toThrow(SysError);
     expect(() => Draw_Pic(-1, 0, pic)).toThrow(/Draw_Pic: bad coordinates/);
     expect(() => Draw_Pic(vid.width - 3, 0, pic)).toThrow(SysError); // x + width > vid.width
+  });
+
+  test("F2: Draw_ScaledPic at scale 1 matches Draw_Pic exactly (same pixels, no clipping)", () => {
+    vid.buffer = freshVidBuffer();
+    const pic = new QpicT();
+    pic.width = 4;
+    pic.height = 4;
+    pic.data = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+
+    Draw_ScaledPic(10, 20, pic, 1);
+
+    for (let v = 0; v < 4; v++) {
+      for (let u = 0; u < 4; u++) {
+        const ofs = (20 + v) * vid.rowbytes + 10 + u;
+        expect(vid.buffer?.[ofs]).toBe(pic.data[v * 4 + u]);
+      }
+    }
+  });
+
+  test("F2: Draw_ScaledPic at scale 2 nearest-neighbour-stretches a 4x4 pic to its 8x8 pixel extent", () => {
+    vid.buffer = freshVidBuffer();
+    const pic = new QpicT();
+    pic.width = 4;
+    pic.height = 4;
+    pic.data = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+
+    Draw_ScaledPic(10, 20, pic, 2);
+
+    // every 2x2 destination block maps to one source pixel (nearest neighbour)
+    for (let v = 0; v < 8; v++) {
+      for (let u = 0; u < 8; u++) {
+        const srcV = Math.floor(v / 2);
+        const srcU = Math.floor(u / 2);
+        const ofs = (20 + v) * vid.rowbytes + 10 + u;
+        expect(vid.buffer?.[ofs]).toBe(pic.data[srcV * 4 + srcU]);
+      }
+    }
+    // exactly the 8x8 extent was written -- one pixel past each edge is untouched
+    expect(vid.buffer?.[20 * vid.rowbytes + 9]).toBe(SENTINEL);
+    expect(vid.buffer?.[19 * vid.rowbytes + 10]).toBe(SENTINEL);
+    expect(vid.buffer?.[28 * vid.rowbytes + 10]).toBe(SENTINEL);
+    expect(vid.buffer?.[20 * vid.rowbytes + 18]).toBe(SENTINEL);
+  });
+
+  test("F2: Draw_ScaledTransPic at scale 2 skips TRANSPARENT_COLOR (255) in the scaled block it maps to", () => {
+    vid.buffer = freshVidBuffer();
+    const pic = new QpicT();
+    pic.width = 2;
+    pic.height = 1;
+    pic.data = new Uint8Array([5, 255]);
+
+    Draw_ScaledTransPic(0, 0, pic, 2);
+
+    // left 2x2 block (source pixel 0, value 5) is drawn
+    expect(vid.buffer?.[0]).toBe(5);
+    expect(vid.buffer?.[1]).toBe(5);
+    expect(vid.buffer?.[vid.rowbytes]).toBe(5);
+    expect(vid.buffer?.[vid.rowbytes + 1]).toBe(5);
+    // right 2x2 block (source pixel 1, value 255 == TRANSPARENT_COLOR) is skipped
+    expect(vid.buffer?.[2]).toBe(SENTINEL);
+    expect(vid.buffer?.[3]).toBe(SENTINEL);
   });
 
   test("Draw_TransPic skips TRANSPARENT_COLOR (255)", () => {

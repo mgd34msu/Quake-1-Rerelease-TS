@@ -132,6 +132,29 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- Bots survive a `map` change: the roster (names, colours, skill) is kept
+  across Host_ShutdownServer and re-seated on the next level; `bot_count`
+  applies live and never removes a bot added with `addbot`; the connection
+  counter is only decremented for clients that had a connection. Monster
+  navigation (`walkpathtogoal`) sets `self` around the step, re-plans on
+  repeated blocks and restores the yaw for the QuakeC fallback, so nav
+  monsters now close more distance than `movetogoal` instead of an eighth.
+  Bots fight monsters and regroup with the player in coop, treat the enemy
+  flag (not their own) as the CTF objective, recover from being wedged
+  within about a second, roam when a map has no navigation, and chat
+  through the localized `m_bot_chat_*` variants for every event type
+  (`bot_chat 0` silences them).
+- Splitscreen: `cl_splitscreen N` on an active server defers the widen to
+  the next level instead of resizing a live client table; a seat that has
+  not signed on shows the loading plaque instead of rendering without a
+  world; each seat's message buffer is allocated; the loopback socket pool
+  is sized for the seats; seat colours default to distinct teams under
+  CTF; the seat rectangle no longer compounds across frames (the cause of
+  the re-release two-seat hang); four seats and map changes with seats
+  active work end to end. A missing optional pic never aborts the engine.
+- `scr_sbarscale` scales the picture-based status bar elements in both
+  renderers (numbers, faces, weapon and item icons, backgrounds), not only
+  the kfont text, and a scale change redraws the bar.
 - A game-directory switch from the menu no longer reverts the chosen
   ruleset or protocol. The `game` command re-execs `quake.rc` with
   `Cbuf_InsertText` instead of appending it, so the new gamedir's archived

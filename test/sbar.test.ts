@@ -11,7 +11,7 @@
 // other suite that shares this process. Per the brief's fallback, this file
 // exercises the standard (non-rogue, non-hipnotic) path only.
 
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { cl } from "../src/client/client";
 import { ScoreboardT } from "../src/client/client";
@@ -24,6 +24,8 @@ import type { ModelLoaderHooks } from "../src/common/model";
 import { TextureT } from "../src/common/model";
 import { QpicT } from "../src/common/wad";
 import { STAT_HEALTH } from "../src/common/quakedef";
+import { GAME_DEATHMATCH } from "../src/common/protocol";
+import { scr_sbarscale } from "../src/client/kfont_text";
 
 import {
   Sbar_Changed,
@@ -31,9 +33,12 @@ import {
   Sbar_Draw,
   Sbar_DrawFace,
   Sbar_DrawNum,
+  Sbar_DrawPic,
+  Sbar_DrawTransPic,
   Sbar_Init,
   Sbar_IntermissionOverlay,
   Sbar_SortFrags,
+  SBAR_HEIGHT,
   fragsort,
   sb_faces,
   sb_items,
@@ -47,6 +52,8 @@ import {
 type DrawCall =
   | { fn: "Draw_Pic"; x: number; y: number; picName: string }
   | { fn: "Draw_TransPic"; x: number; y: number; picName: string }
+  | { fn: "Draw_ScaledPic"; x: number; y: number; picName: string; scale: number }
+  | { fn: "Draw_ScaledTransPic"; x: number; y: number; picName: string; scale: number }
   | { fn: "Draw_Character"; x: number; y: number; num: number }
   | { fn: "Draw_String"; x: number; y: number; str: string }
   | { fn: "Draw_Fill"; x: number; y: number; w: number; h: number; c: number }
@@ -117,6 +124,15 @@ function makeFakeRenderer(): { renderer: Renderer; calls: DrawCall[]; picByName:
     },
     Draw_TransPic(x: number, y: number, pic: QpicT): void {
       calls.push({ fn: "Draw_TransPic", x, y, picName: nameOf(pic) });
+    },
+    // F2: recorded, not dispatched to a real renderer module, so scale
+    // tests here stay self-sufficient (no vid.buffer/rowbytes fixture
+    // needed) -- see this file's own header.
+    Draw_ScaledPic(x: number, y: number, pic: QpicT, scale: number): void {
+      calls.push({ fn: "Draw_ScaledPic", x, y, picName: nameOf(pic), scale });
+    },
+    Draw_ScaledTransPic(x: number, y: number, pic: QpicT, scale: number): void {
+      calls.push({ fn: "Draw_ScaledTransPic", x, y, picName: nameOf(pic), scale });
     },
     Draw_TransPicTranslate(x: number, y: number, pic: QpicT, _translation: Uint8Array): void {
       calls.push({ fn: "Draw_TransPic", x, y, picName: nameOf(pic) });
@@ -310,5 +326,60 @@ describe("Sbar_IntermissionOverlay", () => {
     expect(transPics).toContainEqual({ fn: "Draw_TransPic", x: 234, y: 64, picName: "num_colon" });
     expect(transPics).toContainEqual({ fn: "Draw_TransPic", x: 246, y: 64, picName: "num_0" }); // tens of 05
     expect(transPics).toContainEqual({ fn: "Draw_TransPic", x: 266, y: 64, picName: "num_5" }); // units of 05
+  });
+});
+
+describe("Sbar_DrawPic / Sbar_DrawTransPic scr_sbarscale (F2)", () => {
+  const savedSbarscale = scr_sbarscale.value;
+  const savedGametype = cl.gametype;
+
+  afterAll(() => {
+    scr_sbarscale.value = savedSbarscale;
+    cl.gametype = savedGametype;
+  });
+
+  afterEach(() => {
+    cl.gametype = savedGametype;
+  });
+
+  test("at scale 1 (vid.width 320 clamps SbarScale to 1 regardless of the cvar), draws through the plain unscaled Draw_Pic/Draw_TransPic", () => {
+    scr_sbarscale.value = 4; // irrelevant here: sbarSeatScale caps at vid.width/320 = 1
+    cl.gametype = 0; // not GAME_DEATHMATCH
+
+    Sbar_DrawPic(10, 5, sb_scorebar);
+    Sbar_DrawTransPic(20, 8, sb_scorebar);
+
+    const anchorY = vid.height - SBAR_HEIGHT; // 176
+    expect(fake.calls).toEqual([
+      { fn: "Draw_Pic", x: 10, y: 5 + anchorY, picName: "scorebar" },
+      { fn: "Draw_TransPic", x: 20, y: 8 + anchorY, picName: "scorebar" },
+    ]);
+  });
+
+  test("at scale 2 (vid.width 640, scr_sbarscale 2), position and size both scale around the SAME fixed anchor Sbar_DrawCharacter uses", () => {
+    vid.width = 640;
+    scr_sbarscale.value = 2;
+    cl.gametype = 0; // not GAME_DEATHMATCH
+
+    Sbar_DrawPic(10, 5, sb_scorebar);
+    Sbar_DrawTransPic(20, -16, sb_scorebar);
+
+    const anchorX = (vid.width - 320) >> 1; // 160
+    const anchorY = vid.height - SBAR_HEIGHT; // the anchor itself is NOT scaled -- see this suite's own header note and sbar.ts's file header
+
+    expect(fake.calls).toEqual([
+      { fn: "Draw_ScaledPic", x: anchorX + 10 * 2, y: anchorY + 5 * 2, picName: "scorebar", scale: 2 },
+      { fn: "Draw_ScaledTransPic", x: anchorX + 20 * 2, y: anchorY + -16 * 2, picName: "scorebar", scale: 2 },
+    ]);
+  });
+
+  test("deathmatch drops the (vid.width-320)>>1 centering term, at scale 2", () => {
+    vid.width = 640;
+    scr_sbarscale.value = 2;
+    cl.gametype = GAME_DEATHMATCH;
+
+    Sbar_DrawPic(0, 0, sb_scorebar);
+
+    expect(fake.calls).toEqual([{ fn: "Draw_ScaledPic", x: 0, y: vid.height - SBAR_HEIGHT, picName: "scorebar", scale: 2 }]);
   });
 });

@@ -617,6 +617,60 @@ export function Draw_GlyphAtlas(
 }
 
 /*
+================
+Draw_ScaledPic / Draw_ScaledTransPic
+
+F2 addition -- NOT from draw.c. sbar.ts's scr_sbarscale scaling of the
+status bar's PIC-based elements (Sbar_DrawPic/Sbar_DrawTransPic, the only
+two callers) needs the same nearest-neighbour scaled blit Draw_GlyphAtlas's
+own "custom" branch above already does for a glyph, applied here to a whole
+8-bit-palette QpicT instead of an RGBA8 glyph atlas. Unlike Draw_Pic/
+Draw_TransPic, a destination pixel that lands outside the buffer is clipped
+rather than Sys_Error'd: a scaled pic legitimately extends past a seat's
+pane edge at some scale/seat-size combinations (sbar.ts's own sbarSeatScale
+clamp keeps that within reason, but does not guarantee zero clipping at the
+pane's own edge), which is not the bad-caller-coordinates case those two
+functions guard against.
+================
+*/
+function drawScaledPic8(x: number, y: number, pic: QpicT, scale: number, transparent: boolean): void {
+  const buffer = vid.buffer;
+  if (!buffer) return;
+
+  const dx0 = Math.round(x);
+  const dy0 = Math.round(y);
+  const dw = Math.max(1, Math.round(pic.width * scale));
+  const dh = Math.max(1, Math.round(pic.height * scale));
+  const source = pic.data;
+  const out32 = overlay32();
+
+  for (let py = 0; py < dh; py++) {
+    const dy = dy0 + py;
+    if (dy < 0 || dy >= vid.height) continue;
+    const sy = Math.min(pic.height - 1, Math.floor((py * pic.height) / dh));
+    const srcRowOfs = sy * pic.width;
+    let destOfs = dy * vid.rowbytes + dx0;
+    for (let px = 0; px < dw; px++, destOfs++) {
+      const dx = dx0 + px;
+      if (dx < 0 || dx >= vid.width) continue;
+      const sx = Math.min(pic.width - 1, Math.floor((px * pic.width) / dw));
+      const c = source[srcRowOfs + sx];
+      if (transparent && c === TRANSPARENT_COLOR) continue;
+      buffer[destOfs] = c;
+      if (out32 !== null) out32[destOfs] = d_8to24table[c];
+    }
+  }
+}
+
+export function Draw_ScaledPic(x: number, y: number, pic: QpicT, scale: number): void {
+  drawScaledPic8(x, y, pic, scale, false);
+}
+
+export function Draw_ScaledTransPic(x: number, y: number, pic: QpicT, scale: number): void {
+  drawScaledPic8(x, y, pic, scale, true);
+}
+
+/*
 =============
 Draw_TransPic
 =============

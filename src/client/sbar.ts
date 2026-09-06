@@ -50,11 +50,68 @@ Deviations from PORTING.md / the C source:
   port's scope (vid_sunx.c/vid_sunxil.c also touch `sb_updates` but are
   DOS/X platform files PORTING.md does not port), so per PORTING.md they are
   plain `export let` rather than a holder.
+
+F2 (scr_sbarscale for the PIC-based elements): kfont_text.ts's own header
+documented that its unit scaled only the status bar's TEXT
+(Sbar_DrawCharacter/Sbar_DrawString) and left every PIC-based element
+(Sbar_DrawPic/Sbar_DrawTransPic, hence Sbar_DrawNum's digits, Sbar_DrawFace,
+Sbar_DrawInventory, and Sbar_Draw's own sb_sbar/sb_ibar/sb_scorebar) at
+scale 1, as a documented follow-up. This unit closes that follow-up:
+- Sbar_DrawPic/Sbar_DrawTransPic now scale both the destination position
+  (`anchorX + x*s`, `anchorY + y*s`, the exact anchor formula
+  Sbar_DrawCharacter/Sbar_DrawString already use -- see kfont_text.ts's own
+  header and test/screen_scale.test.ts's "the anchor is NOT itself scaled,
+  only the (x,y) sbar-local offset scales around it" case) and the pic's own
+  drawn size (`pic.width*s` x `pic.height*s`), through two new render.ts
+  `Renderer` members, `Draw_ScaledPic`/`Draw_ScaledTransPic` (implemented in
+  src/ref_soft/draw.ts and src/ref_gl/gl_draw.ts, both this unit's SCOPE).
+  At `s === 1` both functions call the plain `Draw_Pic`/`Draw_TransPic`
+  instead, so the default case's call sequence -- and every existing test
+  that exercises it -- is byte-identical to pre-F2 behaviour (mirrors
+  kfont_text.ts's own Text_Draw "scale === 1" fast path).
+- The two new Renderer members are declared OPTIONAL, for the same reason
+  Draw_GlyphAtlas is (render.ts's own comment on that member): wiring them
+  onto the live `glRenderer`/`softRenderer` object literals is one line
+  each in src/ref_gl/ref_gl.ts / src/ref_soft/ref_soft.ts, both outside this
+  unit's SCOPE. `drawScaledPic` below reaches the two renderer modules
+  directly through a lazy `require()`, keyed on `isGL`, exactly like
+  kfont_text.ts's own (pre-U44) `drawGlyphAtlas` fallback -- a documented,
+  temporary crossing of PORTING.md's "nothing outside src/ref_soft and
+  src/ref_gl imports either renderer" rule, closed the same way U44 closed
+  it for Draw_GlyphAtlas: FOLLOW-UP for the coordinator, one line in each of
+  those two files.
+- Sbar_DrawFrags's and Sbar_DrawFace's rogue-team-color background swatches
+  (`r.Draw_Fill` calls -- not one of Draw_Pic/Draw_TransPic/Draw_Character,
+  so not reachable through the wrapper above) are scaled by hand at each
+  call site, using the identical anchor formula: position multiplied by `s`
+  and offset from the same unscaled anchor, width/height multiplied by `s`.
+  Draw_Fill needs no Renderer seam change for this -- a scaled solid
+  rectangle is still just a solid rectangle at different real-pixel
+  coordinates, computed entirely in this file.
+- Sbar_Draw's own `Draw_TileClear` call (clearing the margin beside the bar
+  when the seat's canvas is wider than 320) reads a LOCALLY scaled height
+  (`scrState.sb_lines * sbarSeatScale()`, computed here, not written back)
+  so the clear region matches the now-taller-at-scale drawn bar. This does
+  NOT fix `scrState.sb_lines` itself, which is written by each renderer's
+  own `SCR_CalcRefdef` (src/ref_gl/ref_gl.ts / src/ref_soft/ref_soft.ts,
+  both outside this unit's SCOPE) with no `scr_sbarscale` term at all --
+  see this unit's report for why that is a genuine, proven-out-of-SCOPE gap
+  (the 3D view's reserved-height/`r_refdef.vrect` calculation) and not a
+  dismissal.
+- Deathmatch/mini-deathmatch/intermission/finale full-screen overlays
+  (Sbar_DeathmatchOverlay, Sbar_MiniDeathmatchOverlay,
+  Sbar_IntermissionOverlay, Sbar_IntermissionNumber, Sbar_FinaleOverlay,
+  M_DrawPic) are left unscaled, unchanged from before this unit -- the same
+  boundary kfont_text.ts's own header already draws ("the
+  deathmatch/mini-deathmatch scoreboard overlays ... are explicitly out of
+  this unit's scope"), since Ironwail's own `GL_SetCanvas(CANVAS_SBAR)` does
+  not cover them either (they are `CANVAS_MENU`-equivalent draws).
 */
 
 import { cl } from "./client";
 import type { ScoreboardT } from "./client";
 import { getRenderer } from "./render";
+import type { Renderer } from "./render";
 import { vid } from "./vid";
 import { scrState } from "./screen_types";
 import { hostClientHooks, teamplay } from "../common/host";
@@ -109,6 +166,13 @@ import type { QpicT } from "../common/wad";
 // through a lazy require() there; see that file's header).
 import { CL_LocalizeKey, SbarScale, Text_Draw, Text_Width } from "./kfont_text";
 import { SS_Canvas } from "./splitscreen";
+// F2: see this file's header's "F2 (scr_sbarscale for the PIC-based
+// elements)" paragraph -- type-only, erased at compile time (same reasoning
+// as kfont_text.ts's own identical type-only renderer imports); the runtime
+// call goes through the lazy require()s in drawScaledPic below, reached
+// only when a live Renderer omits Draw_ScaledPic/Draw_ScaledTransPic.
+import type * as GlDrawModule from "../ref_gl/gl_draw";
+import type * as SoftDrawModule from "../ref_soft/draw";
 
 export const SBAR_HEIGHT = 24;
 
@@ -121,6 +185,12 @@ function nullGrid(rows: number, cols: number): Array<Array<QpicT | null>> {
 }
 
 export let sb_updates = 0; // if >= vid.numpages, no update needed
+
+// F2, not from sbar.c: Sbar_Draw's own scr_sbarscale change-watch state --
+// see that function's header note. -1 is not a valid sbarSeatScale() result
+// (its own clamp floors at 1), so the very first Sbar_Draw call always
+// forces one Sbar_Changed(), harmlessly (sb_updates already starts at 0).
+let lastSbarScale = -1;
 
 export const sb_nums: Array<Array<QpicT | null>> = nullGrid(2, 11);
 export let sb_colon: QpicT | null = null;
@@ -204,6 +274,30 @@ function sbarSeatScale(): number {
 
 function M_DrawPic(x: number, y: number, pic: QpicT): void {
   getRenderer().Draw_Pic(x + sbarCenterX(), y, pic);
+}
+
+// F2: see this file's header -- fallback-only lazy require()s, reached only
+// when the active Renderer omits Draw_ScaledPic/Draw_ScaledTransPic.
+function glDrawMod(): typeof GlDrawModule {
+  return require("../ref_gl/gl_draw");
+}
+function softDrawMod(): typeof SoftDrawModule {
+  return require("../ref_soft/draw");
+}
+
+/** Dispatches to the Renderer's Draw_ScaledPic/Draw_ScaledTransPic member
+ * when present, else directly to the matching renderer module -- see this
+ * file's header. Only called at scale !== 1 (see Sbar_DrawPic/
+ * Sbar_DrawTransPic's own `s === 1` fast path, which never reaches here). */
+function drawScaledPic(r: Renderer, x: number, y: number, pic: QpicT, scale: number, transparent: boolean): void {
+  if (r.Draw_ScaledPic && r.Draw_ScaledTransPic) {
+    if (transparent) r.Draw_ScaledTransPic(x, y, pic, scale);
+    else r.Draw_ScaledPic(x, y, pic, scale);
+    return;
+  }
+  const mod = r.isGL ? glDrawMod() : softDrawMod();
+  if (transparent) mod.Draw_ScaledTransPic(x, y, pic, scale);
+  else mod.Draw_ScaledPic(x, y, pic, scale);
 }
 
 /*
@@ -390,9 +484,18 @@ Sbar_DrawPic
 export function Sbar_DrawPic(x: number, y: number, pic: QpicT | null): void {
   if (!pic) return;
   const r = getRenderer();
-  if (cl.gametype === GAME_DEATHMATCH)
-    r.Draw_Pic(x + sbarCanvasX() /* + ((vid.width - 320)>>1) */, y + (sbarCanvasBottom() - SBAR_HEIGHT), pic);
-  else r.Draw_Pic(x + sbarCenterX(), y + (sbarCanvasBottom() - SBAR_HEIGHT), pic);
+  // F2: scaled around the SAME anchor point Sbar_DrawCharacter/
+  // Sbar_DrawString already use -- see this file's header. At SbarScale()'s
+  // default (1) this is byte-identical to the pre-F2 formula (`x +
+  // sbarCanvasX()/sbarCenterX()`, `y + (sbarCanvasBottom() - SBAR_HEIGHT)`).
+  const s = sbarSeatScale();
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() /* + ((vid.width - 320)>>1) */ : sbarCenterX();
+  const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
+  if (s === 1) {
+    r.Draw_Pic(anchorX + x, anchorY + y, pic);
+    return;
+  }
+  drawScaledPic(r, anchorX + x * s, anchorY + y * s, pic, s, false);
 }
 
 /*
@@ -403,9 +506,15 @@ Sbar_DrawTransPic
 export function Sbar_DrawTransPic(x: number, y: number, pic: QpicT | null): void {
   if (!pic) return;
   const r = getRenderer();
-  if (cl.gametype === GAME_DEATHMATCH)
-    r.Draw_TransPic(x + sbarCanvasX() /*+ ((vid.width - 320)>>1)*/, y + (sbarCanvasBottom() - SBAR_HEIGHT), pic);
-  else r.Draw_TransPic(x + sbarCenterX(), y + (sbarCanvasBottom() - SBAR_HEIGHT), pic);
+  // F2: see Sbar_DrawPic's own note just above.
+  const s = sbarSeatScale();
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() /*+ ((vid.width - 320)>>1)*/ : sbarCenterX();
+  const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
+  if (s === 1) {
+    r.Draw_TransPic(anchorX + x, anchorY + y, pic);
+    return;
+  }
+  drawScaledPic(r, anchorX + x * s, anchorY + y * s, pic, s, true);
 }
 
 /*
@@ -759,8 +868,15 @@ export function Sbar_DrawFrags(): void {
   const l = scoreboardlines <= 4 ? scoreboardlines : 4;
 
   let x = 23;
-  const xofs = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX();
-  const y = sbarCanvasBottom() - SBAR_HEIGHT - 23;
+  // F2: scaled around the same anchor as Sbar_DrawCharacter's own calls just
+  // below -- see this file's header. `anchorX`/`anchorY` are the same
+  // unscaled anchor Sbar_DrawPic/Sbar_DrawCharacter use; the -23/+4 offsets
+  // and the 28/4/28/3 box size are the pre-F2 constants, all multiplied by
+  // `scale` here since Draw_Fill has no scaled-primitive Renderer member of
+  // its own (a scaled solid rectangle needs none -- see this file's header).
+  const scale = sbarSeatScale();
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX();
+  const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
 
   const r = getRenderer();
 
@@ -775,8 +891,14 @@ export function Sbar_DrawFrags(): void {
     top = Sbar_ColorForMap(top);
     bottom = Sbar_ColorForMap(bottom);
 
-    r.Draw_Fill(xofs + x * 8 + 10, y, 28, 4, top);
-    r.Draw_Fill(xofs + x * 8 + 10, y + 4, 28, 3, bottom);
+    r.Draw_Fill(Math.round(anchorX + (x * 8 + 10) * scale), Math.round(anchorY - 23 * scale), Math.round(28 * scale), Math.round(4 * scale), top);
+    r.Draw_Fill(
+      Math.round(anchorX + (x * 8 + 10) * scale),
+      Math.round(anchorY + (-23 + 4) * scale),
+      Math.round(28 * scale),
+      Math.round(3 * scale),
+      bottom,
+    );
 
     // draw number
     const f = s.frags;
@@ -814,11 +936,16 @@ export function Sbar_DrawFace(): void {
     top = Sbar_ColorForMap(top);
     bottom = Sbar_ColorForMap(bottom);
 
-    const xofs = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() + 113 : sbarCenterX() + 113;
+    // F2: scaled around the same anchor as Sbar_DrawPic/Sbar_DrawCharacter --
+    // see this file's header and Sbar_DrawFrags's own identical note above.
+    const scale = sbarSeatScale();
+    const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX();
+    const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
+    const xofs = anchorX + 113 * scale;
 
     Sbar_DrawPic(112, 0, rsb_teambord);
-    r.Draw_Fill(xofs, sbarCanvasBottom() - SBAR_HEIGHT + 3, 22, 9, top);
-    r.Draw_Fill(xofs, sbarCanvasBottom() - SBAR_HEIGHT + 12, 22, 9, bottom);
+    r.Draw_Fill(Math.round(xofs), Math.round(anchorY + 3 * scale), Math.round(22 * scale), Math.round(9 * scale), top);
+    r.Draw_Fill(Math.round(xofs), Math.round(anchorY + 12 * scale), Math.round(22 * scale), Math.round(9 * scale), bottom);
 
     // draw number
     const f = s.frags;
@@ -877,14 +1004,33 @@ export function Sbar_Draw(): void {
 
   if (scrState.scr_con_current === vid.height) return; // console is full screen
 
+  // F2: not from sbar.c -- WinQuake's `sb_updates >= vid.numpages` early-out
+  // just below assumes every sbar-affecting change (health, ammo, items,
+  // ...) already resets `sb_updates` to 0 somewhere in this file, which was
+  // true before this unit added `scr_sbarscale` as ANOTHER thing that
+  // changes the bar's drawn footprint with no such reset of its own. Without
+  // this watch, a `scr_sbarscale` change alone would never invalidate the
+  // stale (previous-scale) content already sitting in the frame buffer.
+  const currentSbarScale = sbarSeatScale();
+  if (currentSbarScale !== lastSbarScale) {
+    lastSbarScale = currentSbarScale;
+    Sbar_Changed();
+  }
+
   if (sb_updates >= vid.numpages) return;
 
   scrState.scr_copyeverything = 1;
 
   sb_updates++;
 
-  if (scrState.sb_lines && sbarCanvasWidth() > 320)
-    r.Draw_TileClear(sbarCanvasX(), sbarCanvasBottom() - scrState.sb_lines, sbarCanvasWidth(), scrState.sb_lines);
+  // F2: the height read here is scaled LOCALLY (see this file's header) so
+  // the clear region matches the now-possibly-taller-at-scale drawn bar;
+  // `scrState.sb_lines` itself is left untouched (owned by each renderer's
+  // own SCR_CalcRefdef, outside this unit's SCOPE -- see this file's header
+  // and this unit's report for the proven-out-of-SCOPE follow-up).
+  const sbLinesDrawn = Math.round(scrState.sb_lines * sbarSeatScale());
+  if (sbLinesDrawn && sbarCanvasWidth() > 320)
+    r.Draw_TileClear(sbarCanvasX(), sbarCanvasBottom() - sbLinesDrawn, sbarCanvasWidth(), sbLinesDrawn);
 
   if (scrState.sb_lines > 24) {
     Sbar_DrawInventory();

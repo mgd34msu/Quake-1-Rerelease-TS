@@ -977,6 +977,51 @@ export function Draw_TransPic(x: number, y: number, pic: QpicT): void {
 }
 
 /*
+================
+Draw_ScaledPic / Draw_ScaledTransPic
+
+F2 addition -- NOT from gl_draw.c. sbar.ts's scr_sbarscale scaling of the
+status bar's PIC-based elements: the same textured quad Draw_Pic already
+draws above, with the destination width/height multiplied by `scale` (a GL
+vertex scale -- the texture coordinates sl/sh/tl/th are unchanged, only the
+four qglVertex2f corners move). Draw_TransPic has no separate GL body
+(alpha test handles transparency; it just bounds-checks and calls Draw_Pic,
+see above), so Draw_ScaledTransPic is the same function under the two
+names, matching that convention.
+================
+*/
+function drawScaledPicGl(x: number, y: number, pic: QpicT, scale: number): void {
+  if (scrap_dirty) Scrap_Upload();
+  const gl = picGl.get(pic);
+  if (!gl) return; // Draw_PicFromWad/Draw_CachePic/Draw_Init not yet run for this pic
+
+  const w = pic.width * scale;
+  const h = pic.height * scale;
+
+  const q = qgl();
+  q.qglColor4f(1, 1, 1, 1);
+  GL_Bind(gl.texnum);
+  q.qglBegin(GL_QUADS);
+  q.qglTexCoord2f(gl.sl, gl.tl);
+  q.qglVertex2f(x, y);
+  q.qglTexCoord2f(gl.sh, gl.tl);
+  q.qglVertex2f(x + w, y);
+  q.qglTexCoord2f(gl.sh, gl.th);
+  q.qglVertex2f(x + w, y + h);
+  q.qglTexCoord2f(gl.sl, gl.th);
+  q.qglVertex2f(x, y + h);
+  q.qglEnd();
+}
+
+export function Draw_ScaledPic(x: number, y: number, pic: QpicT, scale: number): void {
+  drawScaledPicGl(x, y, pic, scale);
+}
+
+export function Draw_ScaledTransPic(x: number, y: number, pic: QpicT, scale: number): void {
+  drawScaledPicGl(x, y, pic, scale);
+}
+
+/*
 =============
 Draw_TransPicTranslate
 
