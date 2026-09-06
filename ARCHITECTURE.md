@@ -92,6 +92,14 @@ own is quake-2-re-ts's bot, nav, localization and cgame work.
 Excluded: `../qsrc/fteqw` (Mike's ruling). GPLv3 projects are excluded
 entirely, including as reading references, as in quake-2-re-ts.
 
+Ruling (Mike, 2026-09-06): **lift from quake-2-re-ts wherever the lifted
+code lands with the gates still green.** Game-agnostic modules (protocol
+codec seam, `sizebuf` helpers, TTF and kfont, loc parser, PNG/JPG/TGA/zip
+decoders, MD5 loader, nav loader, UI scale and mouse menus, gamepad
+assignment and haptics, the sweep harness) are copied and adapted rather
+than rewritten. Each lifted file names its source path and commit in its
+header.
+
 ## Core model: one engine, one VM, content x ruleset
 
 ```
@@ -305,6 +313,13 @@ Both renderers load and draw everything. Feature list:
   in scope, sequenced after the GL renderer has every feature.
 
 ## Bots and navigation
+
+Ruling (Mike, 2026-09-06): the bot brain is written as a **game-agnostic
+module** so it can be fed back into quake-2-re-ts, which today has the nav
+loader and the game-side adapter but no decision-making (the Quake II
+brain is also inside the closed KEX engine). The world it reasons about
+(positions, visibility, items, weapons, damage) is presented through a
+small interface each game binds; Quake 1 binds it first.
 
 Engine-side, from scratch, data-driven: `.nav` (NAV2 v12: nodes with
 flags/links/radius, links with targets and hint types), the eight
