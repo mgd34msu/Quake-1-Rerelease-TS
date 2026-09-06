@@ -3,118 +3,20 @@
 // list of steering points, and the nearest-node lookup a path request starts
 // from.
 //
-// WHAT THE NAV2 "UNKNOWN" FIELDS ACTUALLY ARE
-// -------------------------------------------
-// src/lib/nav.ts decodes the file's byte layout but names three fields
-// conservatively ("unknown0", "unknown1", the trailing "jump link" array)
-// because it had no source to confirm them against. This unit resolved all
-// three empirically, by measuring every one of the 42 real (non-debug) .nav
-// files in the retail id1 pak against the matching maps/*.bsp. The numbers
-// below are from that sweep and are reproduced as assertions in
-// test/lib_bot_brain.test.ts.
-//
-//   NavLink.unknown0 is the LINK TYPE, an enum with the same ordinals as
-//   the 2023 Quake II re-release's own nav link types (quake-2-re-ts
-//   src/server/nav.ts's NavLinkTypeT), truncated at 8 -- Quake 1 has no
-//   crouch and no ladders, so the enum stops before those:
-//
-//     0 Walk           39452 links; average dz -0.9, average XY span 118.
-//     1 LongJump         213; carries a traversal; average dz -27.
-//     2 Teleport         125; NEVER carries a traversal; average XY span
-//                        1142 units, and the single nearest map entity to
-//                        its endpoints is `info_teleport_destination` in
-//                        44 of 125 cases -- by far the top classname.
-//     3 WalkOffLedge    2866; average dz -131.8, i.e. it drops. 2284 of the
-//                        2866 have an all-zero traversal funnel.
-//     4 Pusher            11; average dz +408, average XY span 757
-//                        (trigger_push arcs).
-//     5 BarrierJump     255; dz in [-48, 256], average XY span 98 -- a hop
-//                        over something small.
-//     6 Elevator        166; average dz +184 with an average XY span of
-//                        only 91: straight up, on a platform.
-//     7 Train            21; average XY span 462, and `path_corner` is the
-//                        nearest entity for 12 of the 21 -- func_train.
-//     8 ManualLongJump  192; a jump the mapper placed by hand.
-//
-//   NavLink.unknown1 is a TRAVERSAL INDEX into the file's hint array, with
-//   0xFFFF meaning "none". Every hint in every file is referenced exactly
-//   once, and the indices run 0..hintCount-1 in link order (dm4: 11 hints,
-//   11 links referencing 0..10; e1m1: 78 hints, indices 0..77). A link with
-//   type 0 (Walk) never carries one.
-//
-//   NavHint's three positions are that traversal, and they line up with the
-//   Quake II NavTraversalT minus its ladder plane:
-//     pos0 = funnel     (0,0,0) when unused
-//     pos1 = start      average distance to the link's SOURCE node: 1 unit
-//                       for Elevator, 24-37 units for every other type.
-//     pos2 = end        average distance to the link's TARGET node: 0-1
-//                       unit for WalkOffLedge/Elevator/ManualLongJump,
-//                       20-33 for the rest.
-//
-//   The trailing array src/lib/nav.ts calls `jumpLinks` is NOT a jump list:
-//   it is the file's ENTITY-BOUND LINK table (Quake II's nav_edict_t). Its
-//   leading uint16 is a LINK INDEX -- all 409 records across the retail id1
-//   files index a valid link, and 163 of them index an Elevator link and 19
-//   a Train link -- and its two vectors are that entity's bounding box
-//   MINS and MAXS, not a takeoff and a landing point (`from` is less than
-//   `to` on every axis in every record). The trailing words are a small
-//   non-positive int32 in [-1051, 0] whose meaning is still unconfirmed and
-//   is kept raw. This graph exposes the table as `entityLinks` so a link
-//   whose traversal depends on a door/plat/train can be recognised and
-//   weighted, which is what it is for.
-//
-// NODE FLAGS (NavNode.flags), same sweep:
-//
-//   1   Teleporter     124 nodes; 100% of their outgoing links are Teleport.
-//   2   Pusher          11 nodes; 100% of their outgoing links are Pusher.
-//   4   ElevatorTop    159 nodes; their INCOMING links are Elevator (153 of
-//                      them) and none of their outgoing links are.
-//   8   ElevatorBottom 130 nodes; the mirror image -- 150 outgoing Elevator
-//                      links, only 8 incoming.
-//   16  UnderWater    1835 nodes; a point-contents walk of each map's own
-//                      BSP hull puts 1835 of 1835 in water/slime/lava,
-//                      against a 1.24% base rate for every other node.
-//                      This one is airtight.
-//   32/64/128/256      120-150 nodes each, no correlation with link types
-//                      at all, and they occur almost exclusively in
-//                      combination with one another (320, 352, 384, 288,
-//                      96, 144, 160). Quake II's nav has four "re-check
-//                      this node at runtime" flags in exactly these bit
-//                      positions (CheckForHazard, CheckHasFloor,
-//                      CheckInSolid, NoMonsters); that reading fits the
-//                      distribution but nothing here confirms which is
-//                      which, so they are exposed as one `conditional`
-//                      predicate rather than four guessed names.
-//   No retail node uses bit 9 or above.
+// The NAV2 field meanings (link types, traversal hints, the entity-bound
+// link table, node flags) are documented on src/lib/nav.ts itself, which is
+// where this unit's empirical sweep against the retail id1 pak ended up
+// once the fields were confirmed -- see that file's header. The sweep's
+// assertions live in test/lib_bot_brain.test.ts's "NAV2 vocabulary, against
+// the real id1 data" describe block.
 
-import type { NavFile, NavNode } from "../nav";
+import { NavLinkType, NavNodeFlags, type NavFile, type NavLinkTypeT, type NavNode } from "../nav";
 import { bvec, bvecAdd, bvecDistance, bvecDistance2D, bvecNormalized, bvecScale, bvecSub, type BotVec3 } from "./math";
 
 //============================================================================
 // vocabulary
 
-export const NavLinkType = {
-  Walk: 0,
-  LongJump: 1,
-  Teleport: 2,
-  WalkOffLedge: 3,
-  Pusher: 4,
-  BarrierJump: 5,
-  Elevator: 6,
-  Train: 7,
-  ManualLongJump: 8,
-} as const;
-export type NavLinkTypeT = number;
-
-export const NavNodeFlag = {
-  Teleporter: 1,
-  Pusher: 2,
-  ElevatorTop: 4,
-  ElevatorBottom: 8,
-  UnderWater: 16,
-  /** Bits 5..8 together: "the engine re-checks this node at runtime". See the file header. */
-  ConditionalMask: 32 | 64 | 128 | 256,
-} as const;
+export { NavLinkType, NavNodeFlags, type NavLinkTypeT };
 
 /** The link types that only work by leaving the ground under power. */
 export function navLinkIsJump(type: NavLinkTypeT): boolean {
@@ -228,18 +130,18 @@ export class NavGraph {
         if (raw.target >= this.nodes.length) continue;
 
         let traversal: NavTraversalT | null = null;
-        if (raw.unknown1 !== 0xffff) {
-          const hint = file.hints[raw.unknown1];
+        if (raw.traversal !== null) {
+          const hint = file.hints[raw.traversal];
           if (hint !== undefined) {
             traversal = {
-              funnel: { x: hint.pos0.x, y: hint.pos0.y, z: hint.pos0.z },
-              start: { x: hint.pos1.x, y: hint.pos1.y, z: hint.pos1.z },
-              end: { x: hint.pos2.x, y: hint.pos2.y, z: hint.pos2.z },
+              funnel: { x: hint.funnel.x, y: hint.funnel.y, z: hint.funnel.z },
+              start: { x: hint.start.x, y: hint.start.y, z: hint.start.z },
+              end: { x: hint.end.x, y: hint.end.y, z: hint.end.z },
             };
           }
         }
 
-        const link: NavGraphLinkT = { from: i, to: raw.target, type: raw.unknown0, traversal, entityBounds: null };
+        const link: NavGraphLinkT = { from: i, to: raw.target, type: raw.type, traversal, entityBounds: null };
         this.nodes[i]!.links.push(link);
         this.links.push(link);
       }
@@ -254,12 +156,12 @@ export class NavGraph {
         for (let k = 0; k < src.linkCount; k++) flatIndexOf.set(src.firstLink + k, this.links[flat++]!);
       }
     }
-    for (const record of file.jumpLinks) {
-      const link = flatIndexOf.get(record.edict);
+    for (const record of file.entityLinks) {
+      const link = flatIndexOf.get(record.link);
       if (link === undefined) continue;
       link.entityBounds = {
-        mins: { x: record.from.x, y: record.from.y, z: record.from.z },
-        maxs: { x: record.to.x, y: record.to.y, z: record.to.z },
+        mins: { x: record.mins.x, y: record.mins.y, z: record.mins.z },
+        maxs: { x: record.maxs.x, y: record.maxs.y, z: record.maxs.z },
       };
       this.entityLinks.push(link);
     }
@@ -281,7 +183,7 @@ export class NavGraph {
     const to = this.nodes[link.to];
     if (from === undefined || to === undefined) return false;
 
-    if (!caps.swim && (to.flags & NavNodeFlag.UnderWater) !== 0) return false;
+    if (!caps.swim && (to.flags & NavNodeFlags.UnderWater) !== 0) return false;
     if (caps.avoid !== undefined && caps.avoid(to)) return false;
 
     if (navLinkIsEntity(link.type)) {
@@ -317,7 +219,7 @@ export class NavGraph {
     // still needs a node to start from.
     for (let pass = 0; pass < 2; pass++) {
       for (const node of this.nodes) {
-        if (caps !== undefined && !caps.swim && (node.flags & NavNodeFlag.UnderWater) !== 0) continue;
+        if (caps !== undefined && !caps.swim && (node.flags & NavNodeFlags.UnderWater) !== 0) continue;
         if (caps?.avoid !== undefined && caps.avoid(node)) continue;
         if (node.origin.z < point.z - below) continue;
         if (node.origin.z > point.z + above) continue;

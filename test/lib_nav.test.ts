@@ -31,30 +31,30 @@ interface BuildNode {
 }
 interface BuildLink {
   target: number;
-  unknown0: number;
-  unknown1: number;
+  type: number;
+  traversal: number;
 }
 interface BuildHint {
-  pos0: [number, number, number];
-  pos1: [number, number, number];
-  pos2: [number, number, number];
+  funnel: [number, number, number];
+  start: [number, number, number];
+  end: [number, number, number];
 }
-interface BuildJumpLink {
-  edict: number;
-  from: [number, number, number];
-  to: [number, number, number];
+interface BuildEntityLink {
+  link: number;
+  mins: [number, number, number];
+  maxs: [number, number, number];
   tail: number[];
 }
 
 // Mirrors nav.ts's own documented layout, in the write direction --
 // deliberately independent of nav.ts's internals so a bug in one isn't
 // masked by the same bug in the other.
-function buildNav(opts: { version: number; nodes: BuildNode[]; links: BuildLink[]; hints: BuildHint[]; jumpLinks: BuildJumpLink[] }): Uint8Array {
-  const { version, nodes, links, hints, jumpLinks } = opts;
+function buildNav(opts: { version: number; nodes: BuildNode[]; links: BuildLink[]; hints: BuildHint[]; entityLinks: BuildEntityLink[] }): Uint8Array {
+  const { version, nodes, links, hints, entityLinks } = opts;
   const headerSize = version >= 16 ? 24 : 20;
   const tailWords = version <= 12 ? 0 : version <= 14 ? 4 : 2;
-  const jumpRecordSize = 2 + 12 + 12 + tailWords * 2;
-  const total = headerSize + nodes.length * 8 + nodes.length * 12 + links.length * 6 + hints.length * 36 + 4 + jumpLinks.length * jumpRecordSize;
+  const entityRecordSize = 2 + 12 + 12 + tailWords * 2;
+  const total = headerSize + nodes.length * 8 + nodes.length * 12 + links.length * 6 + hints.length * 36 + 4 + entityLinks.length * entityRecordSize;
 
   const bytes = new Uint8Array(total);
   const view = new DataView(bytes.buffer);
@@ -91,39 +91,39 @@ function buildNav(opts: { version: number; nodes: BuildNode[]; links: BuildLink[
     const l = links[i]!;
     const base = linkOff + i * 6;
     view.setUint16(base, l.target, true);
-    view.setUint16(base + 2, l.unknown0, true);
-    view.setUint16(base + 4, l.unknown1, true);
+    view.setUint16(base + 2, l.type, true);
+    view.setUint16(base + 4, l.traversal, true);
   }
 
   const hintOff = linkOff + links.length * 6;
   for (let i = 0; i < hints.length; i++) {
     const h = hints[i]!;
     const base = hintOff + i * 36;
-    view.setFloat32(base, h.pos0[0], true);
-    view.setFloat32(base + 4, h.pos0[1], true);
-    view.setFloat32(base + 8, h.pos0[2], true);
-    view.setFloat32(base + 12, h.pos1[0], true);
-    view.setFloat32(base + 16, h.pos1[1], true);
-    view.setFloat32(base + 20, h.pos1[2], true);
-    view.setFloat32(base + 24, h.pos2[0], true);
-    view.setFloat32(base + 28, h.pos2[1], true);
-    view.setFloat32(base + 32, h.pos2[2], true);
+    view.setFloat32(base, h.funnel[0], true);
+    view.setFloat32(base + 4, h.funnel[1], true);
+    view.setFloat32(base + 8, h.funnel[2], true);
+    view.setFloat32(base + 12, h.start[0], true);
+    view.setFloat32(base + 16, h.start[1], true);
+    view.setFloat32(base + 20, h.start[2], true);
+    view.setFloat32(base + 24, h.end[0], true);
+    view.setFloat32(base + 28, h.end[1], true);
+    view.setFloat32(base + 32, h.end[2], true);
   }
 
-  const jumpCountOff = hintOff + hints.length * 36;
-  view.setUint32(jumpCountOff, jumpLinks.length, true);
-  const jumpItemsOff = jumpCountOff + 4;
-  for (let i = 0; i < jumpLinks.length; i++) {
-    const j = jumpLinks[i]!;
-    const base = jumpItemsOff + i * jumpRecordSize;
-    view.setUint16(base, j.edict, true);
-    view.setFloat32(base + 2, j.from[0], true);
-    view.setFloat32(base + 6, j.from[1], true);
-    view.setFloat32(base + 10, j.from[2], true);
-    view.setFloat32(base + 14, j.to[0], true);
-    view.setFloat32(base + 18, j.to[1], true);
-    view.setFloat32(base + 22, j.to[2], true);
-    for (let w = 0; w < tailWords; w++) view.setUint16(base + 26 + w * 2, j.tail[w] ?? 0, true);
+  const entityCountOff = hintOff + hints.length * 36;
+  view.setUint32(entityCountOff, entityLinks.length, true);
+  const entityItemsOff = entityCountOff + 4;
+  for (let i = 0; i < entityLinks.length; i++) {
+    const e = entityLinks[i]!;
+    const base = entityItemsOff + i * entityRecordSize;
+    view.setUint16(base, e.link, true);
+    view.setFloat32(base + 2, e.mins[0], true);
+    view.setFloat32(base + 6, e.mins[1], true);
+    view.setFloat32(base + 10, e.mins[2], true);
+    view.setFloat32(base + 14, e.maxs[0], true);
+    view.setFloat32(base + 18, e.maxs[1], true);
+    view.setFloat32(base + 22, e.maxs[2], true);
+    for (let w = 0; w < tailWords; w++) view.setUint16(base + 26 + w * 2, e.tail[w] ?? 0, true);
   }
 
   return bytes;
@@ -133,16 +133,16 @@ const NODE_A: BuildNode = { flags: 0, linkCount: 1, firstLink: 0, radius: 32, x:
 const NODE_B: BuildNode = { flags: 0, linkCount: 1, firstLink: 1, radius: 32, x: 40, y: 50, z: 60 };
 
 describe("nav.ts -- synthetic input", () => {
-  test("parses a minimal two-node, two-link, no-hint, no-jump-link v12 file", () => {
+  test("parses a minimal two-node, two-link, no-hint, no-entity-link v12 file", () => {
     const bytes = buildNav({
       version: 12,
       nodes: [NODE_A, NODE_B],
       links: [
-        { target: 1, unknown0: 0, unknown1: 0xffff },
-        { target: 0, unknown0: 0, unknown1: 0xffff },
+        { target: 1, type: 0, traversal: 0xffff },
+        { target: 0, type: 0, traversal: 0xffff },
       ],
       hints: [],
-      jumpLinks: [],
+      entityLinks: [],
     });
     const result = parseNav(bytes);
     expect(result.errors).toEqual([]);
@@ -154,13 +154,14 @@ describe("nav.ts -- synthetic input", () => {
     expect(file.nodes[0]!.position).toEqual({ x: 10, y: 20, z: 30 });
     expect(file.nodes[1]!.position).toEqual({ x: 40, y: 50, z: 60 });
     expect(file.links.map((l) => l.target)).toEqual([1, 0]);
+    expect(file.links.map((l) => l.traversal)).toEqual([null, null]);
     expect(file.hints).toEqual([]);
-    expect(file.jumpLinks).toEqual([]);
+    expect(file.entityLinks).toEqual([]);
   });
 
   test("version >= 16 reads the extra header scale field", () => {
     const isolatedNode: BuildNode = { ...NODE_A, linkCount: 0, firstLink: 0 };
-    const bytes = buildNav({ version: 16, nodes: [isolatedNode], links: [], hints: [], jumpLinks: [] });
+    const bytes = buildNav({ version: 16, nodes: [isolatedNode], links: [], hints: [], entityLinks: [] });
     const view = new DataView(bytes.buffer);
     view.setFloat32(20, 2.5, true); // overwrite the default 1 the builder wrote
     const result = parseNav(bytes);
@@ -173,57 +174,57 @@ describe("nav.ts -- synthetic input", () => {
       version: 12,
       nodes: [],
       links: [],
-      hints: [{ pos0: [0, 0, 0], pos1: [100, 200, 300], pos2: [400, 500, 600] }],
-      jumpLinks: [],
+      hints: [{ funnel: [0, 0, 0], start: [100, 200, 300], end: [400, 500, 600] }],
+      entityLinks: [],
     });
     const result = parseNav(bytes);
     expect(result.errors).toEqual([]);
     const hint = result.file!.hints[0]!;
-    expect(hint.pos0).toEqual({ x: 0, y: 0, z: 0 });
-    expect(hint.pos1).toEqual({ x: 100, y: 200, z: 300 });
-    expect(hint.pos2).toEqual({ x: 400, y: 500, z: 600 });
+    expect(hint.funnel).toEqual({ x: 0, y: 0, z: 0 });
+    expect(hint.start).toEqual({ x: 100, y: 200, z: 300 });
+    expect(hint.end).toEqual({ x: 400, y: 500, z: 600 });
   });
 
-  test("parses a v15 jump-link record (2 trailing tail words)", () => {
+  test("parses a v15 entity-link record (2 trailing tail words)", () => {
     const bytes = buildNav({
       version: 15,
       nodes: [],
       links: [],
       hints: [],
-      jumpLinks: [{ edict: 1132, from: [1, 2, 3], to: [4, 5, 6], tail: [65456, 65535] }],
+      entityLinks: [{ link: 1132, mins: [1, 2, 3], maxs: [4, 5, 6], tail: [65456, 65535] }],
     });
     const result = parseNav(bytes);
     expect(result.errors).toEqual([]);
-    const j = result.file!.jumpLinks[0]!;
-    expect(j.edict).toBe(1132);
-    expect(j.from).toEqual({ x: 1, y: 2, z: 3 });
-    expect(j.to).toEqual({ x: 4, y: 5, z: 6 });
-    expect(j.tail).toEqual([65456, 65535]);
+    const e = result.file!.entityLinks[0]!;
+    expect(e.link).toBe(1132);
+    expect(e.mins).toEqual({ x: 1, y: 2, z: 3 });
+    expect(e.maxs).toEqual({ x: 4, y: 5, z: 6 });
+    expect(e.tail).toEqual([65456, 65535]);
   });
 
-  test("parses a v13 jump-link record (4 trailing tail words)", () => {
+  test("parses a v13 entity-link record (4 trailing tail words)", () => {
     const bytes = buildNav({
       version: 13,
       nodes: [],
       links: [],
       hints: [],
-      jumpLinks: [{ edict: 611, from: [1, 2, 3], to: [4, 5, 6], tail: [0, 0, 65520, 65535] }],
+      entityLinks: [{ link: 611, mins: [1, 2, 3], maxs: [4, 5, 6], tail: [0, 0, 65520, 65535] }],
     });
     const result = parseNav(bytes);
     expect(result.errors).toEqual([]);
-    expect(result.file!.jumpLinks[0]!.tail).toEqual([0, 0, 65520, 65535]);
+    expect(result.file!.entityLinks[0]!.tail).toEqual([0, 0, 65520, 65535]);
   });
 
-  test("a v12 jump-link record has zero trailing tail words", () => {
+  test("a v12 entity-link record has zero trailing tail words", () => {
     const bytes = buildNav({
       version: 12,
       nodes: [],
       links: [],
       hints: [],
-      jumpLinks: [{ edict: 121, from: [1, 2, 3], to: [4, 5, 6], tail: [] }],
+      entityLinks: [{ link: 121, mins: [1, 2, 3], maxs: [4, 5, 6], tail: [] }],
     });
     const result = parseNav(bytes);
-    expect(result.file!.jumpLinks[0]!.tail).toEqual([]);
+    expect(result.file!.entityLinks[0]!.tail).toEqual([]);
   });
 
   test("bad magic is reported, not thrown", () => {
@@ -241,14 +242,14 @@ describe("nav.ts -- synthetic input", () => {
   });
 
   test("a version below 12 (the retail debug-map format) is rejected with a clear message, not guessed", () => {
-    const bytes = buildNav({ version: 11, nodes: [], links: [], hints: [], jumpLinks: [] });
+    const bytes = buildNav({ version: 11, nodes: [], links: [], hints: [], entityLinks: [] });
     const result = parseNav(bytes);
     expect(result.file).toBeUndefined();
     expect(result.errors[0]).toMatch(/older than 12/);
   });
 
   test("a link target out of range is reported but the file still parses", () => {
-    const bytes = buildNav({ version: 12, nodes: [NODE_A], links: [{ target: 5, unknown0: 0, unknown1: 0 }], hints: [], jumpLinks: [] });
+    const bytes = buildNav({ version: 12, nodes: [NODE_A], links: [{ target: 5, type: 0, traversal: 0 }], hints: [], entityLinks: [] });
     const result = parseNav(bytes);
     expect(result.file).toBeDefined();
     expect(result.errors.some((e) => e.includes("out of range"))).toBe(true);
@@ -256,22 +257,22 @@ describe("nav.ts -- synthetic input", () => {
 
   test("a node whose firstLink+linkCount exceeds linkCount is reported but the file still parses", () => {
     const badNode: BuildNode = { ...NODE_A, firstLink: 5, linkCount: 3 };
-    const bytes = buildNav({ version: 12, nodes: [badNode], links: [{ target: 0, unknown0: 0, unknown1: 0 }], hints: [], jumpLinks: [] });
+    const bytes = buildNav({ version: 12, nodes: [badNode], links: [{ target: 0, type: 0, traversal: 0 }], hints: [], entityLinks: [] });
     const result = parseNav(bytes);
     expect(result.file).toBeDefined();
     expect(result.errors.some((e) => e.includes("exceeds the file's linkCount"))).toBe(true);
   });
 
-  test("a truncated file (declared jumpLinkCount doesn't fit) is reported, not thrown", () => {
-    const bytes = buildNav({ version: 12, nodes: [], links: [], hints: [], jumpLinks: [] });
+  test("a truncated file (declared entityLinkCount doesn't fit) is reported, not thrown", () => {
+    const bytes = buildNav({ version: 12, nodes: [], links: [], hints: [], entityLinks: [] });
     const truncated = bytes.slice(0, bytes.length - 1);
     const result = parseNav(truncated);
     expect(result.file).toBeUndefined();
     expect(result.errors[0]).toMatch(/too short/);
   });
 
-  test("a file whose trailing byte count doesn't match any valid jumpLinkCount is reported, not thrown", () => {
-    const bytes = buildNav({ version: 12, nodes: [], links: [], hints: [], jumpLinks: [] });
+  test("a file whose trailing byte count doesn't match any valid entityLinkCount is reported, not thrown", () => {
+    const bytes = buildNav({ version: 12, nodes: [], links: [], hints: [], entityLinks: [] });
     const padded = new Uint8Array(bytes.length + 3);
     padded.set(bytes);
     const result = parseNav(padded);
@@ -326,7 +327,7 @@ describe.skipIf(!HAVE_ID1)("nav.ts -- real retail dm4.nav (the brief's own worke
     expect(result!.file!.nodes.length).toBe(85);
     expect(result!.file!.links.length).toBe(197);
     expect(result!.file!.hints.length).toBe(11);
-    expect(result!.file!.jumpLinks.length).toBe(0);
+    expect(result!.file!.entityLinks.length).toBe(0);
   });
 
   test("every link target is a valid node index", () => {

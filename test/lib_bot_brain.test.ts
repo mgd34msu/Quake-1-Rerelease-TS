@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 
-import { NavFile, NavHint, NavJumpLink, NavLink, NavNode, parseNav } from "../src/lib/nav";
+import { NavEntityLink, NavFile, NavHint, NavLink, NavNode, parseNav } from "../src/lib/nav";
 import { PakFile } from "./support/pak_reader";
 import {
   aimError,
@@ -28,7 +28,7 @@ import {
   itemValue,
   NavGraph,
   NavLinkType,
-  NavNodeFlag,
+  NavNodeFlags,
   newAimState,
   newAwareness,
   newPathState,
@@ -84,16 +84,16 @@ function buildNav(positions: BotVec3[], links: SyntheticLink[], radius = 32, fla
     for (const l of byNode[i]!) {
       const link = new NavLink();
       link.target = l.to;
-      link.unknown0 = l.type ?? NavLinkType.Walk;
+      link.type = l.type ?? NavLinkType.Walk;
       if (l.traversal !== undefined) {
-        link.unknown1 = file.hints.length;
+        link.traversal = file.hints.length;
         const hint = new NavHint();
-        hint.pos0 = l.traversal.funnel;
-        hint.pos1 = l.traversal.start;
-        hint.pos2 = l.traversal.end;
+        hint.funnel = l.traversal.funnel;
+        hint.start = l.traversal.start;
+        hint.end = l.traversal.end;
         file.hints.push(hint);
       } else {
-        link.unknown1 = 0xffff;
+        link.traversal = null;
       }
       file.links.push(link);
     }
@@ -440,7 +440,7 @@ describe("nav graph: A*", () => {
           { from: 4, to: 2 },
         ],
         32,
-        [0, NavNodeFlag.UnderWater, 0, 0, 0],
+        [0, NavNodeFlags.UnderWater, 0, 0, 0],
       ),
     );
     const swimmer = { jump: true, walkOffLedge: true, entityTraversal: true, swim: true, maxDrop: 0, maxJumpHeight: 0 };
@@ -1246,10 +1246,10 @@ describe.skipIf(!HAVE_ID1)("NAV2 vocabulary, against the real id1 data", () => {
       files++;
       const used = new Set<number>();
       for (const link of file.links) {
-        if (link.unknown1 === 0xffff) continue;
-        expect(link.unknown1).toBeLessThan(file.hints.length);
-        expect(used.has(link.unknown1)).toBe(false);
-        used.add(link.unknown1);
+        if (link.traversal === null) continue;
+        expect(link.traversal).toBeLessThan(file.hints.length);
+        expect(used.has(link.traversal)).toBe(false);
+        used.add(link.traversal);
       }
       expect(used.size).toBe(file.hints.length);
     }
@@ -1264,9 +1264,9 @@ describe.skipIf(!HAVE_ID1)("NAV2 vocabulary, against the real id1 data", () => {
       const file = parseNav(pak.read(name)).file;
       if (file === undefined) continue;
       for (const link of file.links) {
-        expect(link.unknown0).toBeLessThanOrEqual(NavLinkType.ManualLongJump);
-        if (link.unknown0 === NavLinkType.Walk && link.unknown1 !== 0xffff) walkWithTraversal++;
-        if (link.unknown0 === NavLinkType.Teleport && link.unknown1 !== 0xffff) teleportWithTraversal++;
+        expect(link.type).toBeLessThanOrEqual(NavLinkType.ManualLongJump);
+        if (link.type === NavLinkType.Walk && link.traversal !== null) walkWithTraversal++;
+        if (link.type === NavLinkType.Teleport && link.traversal !== null) teleportWithTraversal++;
       }
     }
     expect(walkWithTraversal).toBe(0);
@@ -1304,11 +1304,11 @@ describe.skipIf(!HAVE_ID1)("NAV2 vocabulary, against the real id1 data", () => {
       if (file === undefined) continue;
       const graph = new NavGraph(file);
       for (const node of graph.nodes) {
-        if ((node.flags & NavNodeFlag.Teleporter) !== 0) {
+        if ((node.flags & NavNodeFlags.Teleporter) !== 0) {
           teleporterNodes++;
           for (const link of node.links) expect(link.type).toBe(NavLinkType.Teleport);
         }
-        if ((node.flags & NavNodeFlag.Pusher) !== 0) {
+        if ((node.flags & NavNodeFlags.Pusher) !== 0) {
           pusherNodes++;
           if (node.links.some((l) => l.type === NavLinkType.Pusher)) pusherNodesWithPusherLink++;
         }
@@ -1329,15 +1329,15 @@ describe.skipIf(!HAVE_ID1)("NAV2 vocabulary, against the real id1 data", () => {
     for (const name of realNames(pak)) {
       const file = parseNav(pak.read(name)).file;
       if (file === undefined) continue;
-      for (const record of file.jumpLinks) {
+      for (const record of file.entityLinks) {
         total++;
-        expect(record.edict).toBeLessThan(file.links.length);
-        const type = file.links[record.edict]!.unknown0;
+        expect(record.link).toBeLessThan(file.links.length);
+        const type = file.links[record.link]!.type;
         if (type === NavLinkType.Elevator || type === NavLinkType.Train || type === NavLinkType.Pusher || type === NavLinkType.Teleport) entityTyped++;
         // The two vectors are a bounding box: mins is below maxs on every axis.
-        expect(record.from.x).toBeLessThanOrEqual(record.to.x);
-        expect(record.from.y).toBeLessThanOrEqual(record.to.y);
-        expect(record.from.z).toBeLessThanOrEqual(record.to.z);
+        expect(record.mins.x).toBeLessThanOrEqual(record.maxs.x);
+        expect(record.mins.y).toBeLessThanOrEqual(record.maxs.y);
+        expect(record.mins.z).toBeLessThanOrEqual(record.maxs.z);
       }
     }
     expect(total).toBeGreaterThan(300);
@@ -1382,15 +1382,15 @@ describe.skipIf(!HAVE_ID1)("NAV2 vocabulary, against the real id1 data", () => {
   });
 });
 
-// A NavJumpLink built by hand, so the type is exercised even with no retail
-// data on disk: the graph must attach it to the link its index names.
+// A NavEntityLink built by hand, so the type is exercised even with no
+// retail data on disk: the graph must attach it to the link its index names.
 test("the trailing entity table attaches a bounding box to the link it indexes", () => {
   const file = buildNav([bvec(0, 0, 0), bvec(256, 0, 128)], [{ from: 0, to: 1, type: NavLinkType.Elevator }]);
-  const record = new NavJumpLink();
-  record.edict = 0;
-  record.from = { x: -16, y: -16, z: 0 };
-  record.to = { x: 16, y: 16, z: 128 };
-  file.jumpLinks.push(record);
+  const record = new NavEntityLink();
+  record.link = 0;
+  record.mins = { x: -16, y: -16, z: 0 };
+  record.maxs = { x: 16, y: 16, z: 128 };
+  file.entityLinks.push(record);
 
   const graph = new NavGraph(file);
   expect(graph.entityLinks.length).toBe(1);

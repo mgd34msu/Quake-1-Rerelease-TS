@@ -51,6 +51,15 @@
 // matches the ONE layout documented below exactly. This reader supports
 // version >= 12 only, erroring clearly (not guessing) below that.
 //
+// FIELD SEMANTICS: the byte layout below was pinned down first (see
+// METHOD, above); the meaning of the link/hint/entity-table/flag fields
+// was resolved afterwards by measuring every one of the 42 real
+// (non-debug) .nav files in the retail id1 pak against the matching
+// maps/*.bsp -- reproduced as assertions in the "NAV2 vocabulary, against
+// the real id1 data" describe block in test/lib_bot_brain.test.ts. That
+// evidence is folded into LAYOUT and NODE FLAGS below so this reader
+// documents its own semantics rather than leaving it to a caller.
+//
 // LAYOUT (version >= 12):
 //
 //   header (20 bytes, or 24 for version >= 16):
@@ -66,7 +75,7 @@
 //                                     version 16.
 //
 //   nodeCount * 8-byte nodes, immediately after the header:
-//     uint16     flags
+//     uint16     flags             -- see NODE FLAGS below.
 //     uint16     linkCount
 //     uint16     firstLink         -- index into the link array below
 //     uint16     radius
@@ -77,60 +86,141 @@
 //
 //   linkCount * 6-byte links, immediately after all positions:
 //     uint16     target            -- always < nodeCount, verified
-//     uint16     unknown0          -- 0 in every sample seen except a
-//                                     handful of specific node-pairs in the
-//                                     bots/navigation/test/ debug maps
-//                                     (link size differs there anyway, so
-//                                     not cross-checked against retail
-//                                     content); meaning not confirmed.
-//     uint16     unknown1          -- 0xFFFF (65535) in every debug-map
-//                                     sample seen except one specific
-//                                     link per test map (test_button.nav,
-//                                     test_door.nav: a link gated by a
-//                                     button/door has a distinct small
-//                                     value here instead, e.g. 176 or 158)
-//                                     -- consistent with an edict/entity
-//                                     index the link is conditioned on,
-//                                     but not confirmed against source, so
-//                                     named conservatively.
+//     uint16     type              -- the LINK TYPE, an enum with the same
+//                                     ordinals as the 2023 Quake II
+//                                     re-release's own nav link types
+//                                     (quake-2-re-ts src/server/nav.ts's
+//                                     NavLinkTypeT), truncated at 8 -- Quake
+//                                     1 has no crouch and no ladders, so the
+//                                     enum stops before those. Exported
+//                                     below as NavLinkType/NavLinkTypeT.
+//                                     Per-type counts and evidence, from
+//                                     the id1 sweep:
+//
+//                                       0 Walk           39452 links;
+//                                         average dz -0.9, average XY span
+//                                         118.
+//                                       1 LongJump         213; carries a
+//                                         traversal; average dz -27.
+//                                       2 Teleport         125; NEVER
+//                                         carries a traversal; average XY
+//                                         span 1142 units, and the single
+//                                         nearest map entity to its
+//                                         endpoints is
+//                                         `info_teleport_destination` in 44
+//                                         of 125 cases -- by far the top
+//                                         classname.
+//                                       3 WalkOffLedge    2866; average dz
+//                                         -131.8, i.e. it drops. 2284 of
+//                                         the 2866 have an all-zero
+//                                         traversal funnel.
+//                                       4 Pusher            11; average dz
+//                                         +408, average XY span 757
+//                                         (trigger_push arcs).
+//                                       5 BarrierJump     255; dz in [-48,
+//                                         256], average XY span 98 -- a hop
+//                                         over something small.
+//                                       6 Elevator        166; average dz
+//                                         +184 with an average XY span of
+//                                         only 91: straight up, on a
+//                                         platform.
+//                                       7 Train            21; average XY
+//                                         span 462, and `path_corner` is
+//                                         the nearest entity for 12 of the
+//                                         21 -- func_train.
+//                                       8 ManualLongJump  192; a jump the
+//                                         mapper placed by hand.
+//
+//     uint16     traversal         -- a TRAVERSAL INDEX into the hint
+//                                     array below, or 0xFFFF (65535)
+//                                     meaning "none" (parsed as `null`
+//                                     below). Every hint in every file is
+//                                     referenced exactly once, and the
+//                                     indices run 0..hintCount-1 in link
+//                                     order (dm4: 11 hints, 11 links
+//                                     referencing 0..10; e1m1: 78 hints,
+//                                     indices 0..77). A link of type Walk
+//                                     never carries one.
 //
 //   hintCount * 36-byte hints, immediately after all links:
-//     float32    pos0[3], pos1[3], pos2[3]   -- three positions. pos0 is
-//                                     (0,0,0) in most samples (an
-//                                     "unused" slot for most hints); pos2
-//                                     is often IDENTICAL across several
-//                                     consecutive hints in the same file
-//                                     (observed in dm4.nav: hints 0,1,3,4,7
-//                                     all share the exact same pos2),
-//                                     consistent with several hints
-//                                     pointing at one shared destination
-//                                     (a jump pad or similar), but which
-//                                     of the three is "approach" vs
-//                                     "landing" is not confirmed against
-//                                     source -- named pos0/pos1/pos2, not
-//                                     "from"/"to", deliberately.
+//     float32    funnel[3], start[3], end[3]   -- three positions that
+//                                     line up with the Quake II
+//                                     NavTraversalT minus its ladder plane:
 //
-//   one uint32 jumpLinkCount, immediately after all hints, followed by
-//   jumpLinkCount fixed-size records (26/30/34 bytes depending on
-//   version -- see JUMP_LINK_TAIL_WORDS below). This whole trailing
+//                                       funnel   (0,0,0) when unused. Often
+//                                                IDENTICAL across several
+//                                                consecutive hints in the
+//                                                same file (observed in
+//                                                dm4.nav: hints 0,1,3,4,7
+//                                                all share the exact same
+//                                                value), consistent with
+//                                                several hints pointing at
+//                                                one shared destination (a
+//                                                jump pad or similar).
+//                                       start    average distance to the
+//                                                link's SOURCE node: 1 unit
+//                                                for Elevator, 24-37 units
+//                                                for every other type.
+//                                       end      average distance to the
+//                                                link's TARGET node: 0-1
+//                                                unit for
+//                                                WalkOffLedge/Elevator/
+//                                                ManualLongJump, 20-33 for
+//                                                the rest.
+//
+//   one uint32 entityLinkCount, immediately after all hints, followed by
+//   entityLinkCount fixed-size records (26/30/34 bytes depending on
+//   version -- see ENTITY_LINK_TAIL_WORDS below). This whole trailing
 //   section is 4 bytes (just the zero count) in the large majority of
-//   retail files; every file with jumpLinkCount > 0 confirmed the record
-//   layout: entries repeat a pattern of "one uint16 that is far too large
-//   to be a node or hint index in that file (seen up to 1544 against a
-//   526-node map) but is a plausible edict/entity index, followed by two
-//   xyz float32 positions in the map's coordinate space" -- consistent
-//   with a jump-pad/trigger cross-reference (an entity id plus a takeoff
-//   and landing point), not confirmed against source. Record layout:
-//     uint16     edict             -- see above; named conservatively
-//     float32    from[3]
-//     float32    to[3]
+//   retail files. It is the file's ENTITY-BOUND LINK table (Quake II's
+//   nav_edict_t), exposed below as NavFile.entityLinks:
+//     uint16     link              -- a LINK INDEX into the flat link
+//                                     array above -- all 409 records
+//                                     across the retail id1 files index a
+//                                     valid link, and 163 of them index an
+//                                     Elevator link and 19 a Train link.
+//     float32    mins[3]           -- the bound entity's bounding box
+//                                     MINS
+//     float32    maxs[3]           -- ... and MAXS (mins is less than
+//                                     maxs on every axis in every record;
+//                                     this is a bounding box, not a
+//                                     takeoff and a landing point).
 //     uint16[]   tail              -- version-dependent length (0, 2 or 4
 //                                     uint16 words -- see
-//                                     JUMP_LINK_TAIL_WORDS); last word is
+//                                     ENTITY_LINK_TAIL_WORDS); last word is
 //                                     0xFFFF in every non-empty sample
 //                                     seen (a sentinel?), the rest vary in
-//                                     a narrow small-signed-int16 range;
-//                                     meaning not confirmed, kept raw.
+//                                     a narrow small-signed-int16 range,
+//                                     equivalently a small non-positive
+//                                     int32 in [-1051, 0]; meaning not
+//                                     confirmed, kept raw.
+//
+// NODE FLAGS (NavNode.flags), same sweep -- exported below as
+// NavNodeFlags:
+//
+//   1   Teleporter     124 nodes; 100% of their outgoing links are
+//                      Teleport.
+//   2   Pusher          11 nodes; 100% of their outgoing links are Pusher.
+//   4   ElevatorTop    159 nodes; their INCOMING links are Elevator (153 of
+//                      them) and none of their outgoing links are.
+//   8   ElevatorBottom 130 nodes; the mirror image -- 150 outgoing Elevator
+//                      links, only 8 incoming.
+//   16  UnderWater    1835 nodes; a point-contents walk of each map's own
+//                      BSP hull puts 1835 of 1835 in water/slime/lava,
+//                      against a 1.24% base rate for every other node.
+//                      This one is airtight.
+//   32/64/128/256      120-150 nodes each, no correlation with link types
+//                      at all, and they occur almost exclusively in
+//                      combination with one another (320, 352, 384, 288,
+//                      96, 144, 160). Quake II's nav has four "re-check
+//                      this node at runtime" flags in exactly these bit
+//                      positions (CheckForHazard, CheckHasFloor,
+//                      CheckInSolid, NoMonsters); that reading fits the
+//                      distribution but nothing here confirms which is
+//                      which, so they are exposed together below as
+//                      NavNodeFlags.ConditionalMask / NavNode.conditionalMask
+//                      rather than four guessed names.
+//   No retail node uses bit 9 or above.
 
 export interface NavVec3 {
   x: number;
@@ -138,30 +228,63 @@ export interface NavVec3 {
   z: number;
 }
 
+/** NavLink.type's nine values; see this file's header for the evidence behind each. */
+export const NavLinkType = {
+  Walk: 0,
+  LongJump: 1,
+  Teleport: 2,
+  WalkOffLedge: 3,
+  Pusher: 4,
+  BarrierJump: 5,
+  Elevator: 6,
+  Train: 7,
+  ManualLongJump: 8,
+} as const;
+export type NavLinkTypeT = number;
+
+/** NavNode.flags's bits; see NODE FLAGS in this file's header for the evidence behind each. */
+export const NavNodeFlags = {
+  Teleporter: 1,
+  Pusher: 2,
+  ElevatorTop: 4,
+  ElevatorBottom: 8,
+  UnderWater: 16,
+  /** Bits 5..8 together: "the engine re-checks this node at runtime". See the file header. */
+  ConditionalMask: 32 | 64 | 128 | 256,
+} as const;
+export type NavNodeFlagsT = number;
+
 export class NavNode {
   flags = 0;
   linkCount = 0;
   firstLink = 0;
   radius = 0;
   position: NavVec3 = { x: 0, y: 0, z: 0 };
+
+  /** The four unconfirmed "re-check at runtime" bits of `flags`, isolated together; see NODE FLAGS above. */
+  get conditionalMask(): number {
+    return this.flags & NavNodeFlags.ConditionalMask;
+  }
 }
 
 export class NavLink {
   target = 0;
-  unknown0 = 0;
-  unknown1 = 0;
+  type: NavLinkTypeT = NavLinkType.Walk;
+  /** Index into the file's hint array, or null when the link carries no traversal (on-disk 0xFFFF). */
+  traversal: number | null = null;
 }
 
 export class NavHint {
-  pos0: NavVec3 = { x: 0, y: 0, z: 0 };
-  pos1: NavVec3 = { x: 0, y: 0, z: 0 };
-  pos2: NavVec3 = { x: 0, y: 0, z: 0 };
+  funnel: NavVec3 = { x: 0, y: 0, z: 0 };
+  start: NavVec3 = { x: 0, y: 0, z: 0 };
+  end: NavVec3 = { x: 0, y: 0, z: 0 };
 }
 
-export class NavJumpLink {
-  edict = 0;
-  from: NavVec3 = { x: 0, y: 0, z: 0 };
-  to: NavVec3 = { x: 0, y: 0, z: 0 };
+export class NavEntityLink {
+  /** Index into the file's flat link array. */
+  link = 0;
+  mins: NavVec3 = { x: 0, y: 0, z: 0 };
+  maxs: NavVec3 = { x: 0, y: 0, z: 0 };
   /** Version-dependent trailing words (0, 2 or 4 of them) whose meaning is not confirmed; see this file's header. */
   tail: number[] = [];
 }
@@ -173,7 +296,7 @@ export class NavFile {
   nodes: NavNode[] = [];
   links: NavLink[] = [];
   hints: NavHint[] = [];
-  jumpLinks: NavJumpLink[] = [];
+  entityLinks: NavEntityLink[] = [];
 }
 
 export interface NavParseResult {
@@ -188,17 +311,17 @@ const NODE_SIZE = 8;
 const POSITION_SIZE = 12;
 const LINK_SIZE = 6;
 const HINT_SIZE = 36;
-const JUMP_LINK_FIXED_SIZE = 2 + 12 + 12; // edict + from + to
+const ENTITY_LINK_FIXED_SIZE = 2 + 12 + 12; // link index + mins + maxs
 
-/** Trailing uint16 word count in a jump-link record, by version: 0 for v12, 4 for v13/14, 2 for v15+ (confirmed up to v18; extrapolated beyond). */
-function jumpLinkTailWords(version: number): number {
+/** Trailing uint16 word count in an entity-link record, by version: 0 for v12, 4 for v13/14, 2 for v15+ (confirmed up to v18; extrapolated beyond). */
+function entityLinkTailWords(version: number): number {
   if (version <= 12) return 0;
   if (version <= 14) return 4;
   return 2;
 }
 
-function jumpLinkRecordSize(version: number): number {
-  return JUMP_LINK_FIXED_SIZE + jumpLinkTailWords(version) * 2;
+function entityLinkRecordSize(version: number): number {
+  return ENTITY_LINK_FIXED_SIZE + entityLinkTailWords(version) * 2;
 }
 
 function readVec3(view: DataView, offset: number): NavVec3 {
@@ -248,20 +371,20 @@ export function parseNav(bytes: Uint8Array): NavParseResult {
   const posOff = nodeOff + nodeCount * NODE_SIZE;
   const linkOff = posOff + nodeCount * POSITION_SIZE;
   const hintOff = linkOff + linkCount * LINK_SIZE;
-  const jumpCountOff = hintOff + hintCount * HINT_SIZE;
-  const jumpItemsOff = jumpCountOff + 4;
+  const entityCountOff = hintOff + hintCount * HINT_SIZE;
+  const entityItemsOff = entityCountOff + 4;
 
-  if (jumpItemsOff > bytes.length) {
-    return { file: undefined, errors: [...errors, `file too short: expected at least ${jumpItemsOff} bytes for ${nodeCount} nodes / ${linkCount} links / ${hintCount} hints, got ${bytes.length}`] };
+  if (entityItemsOff > bytes.length) {
+    return { file: undefined, errors: [...errors, `file too short: expected at least ${entityItemsOff} bytes for ${nodeCount} nodes / ${linkCount} links / ${hintCount} hints, got ${bytes.length}`] };
   }
 
-  const jumpLinkCount = view.getUint32(jumpCountOff, true);
-  const recordSize = jumpLinkRecordSize(version);
-  const expectedEnd = jumpItemsOff + jumpLinkCount * recordSize;
+  const entityLinkCount = view.getUint32(entityCountOff, true);
+  const recordSize = entityLinkRecordSize(version);
+  const expectedEnd = entityItemsOff + entityLinkCount * recordSize;
   if (expectedEnd !== bytes.length) {
     return {
       file: undefined,
-      errors: [...errors, `file length mismatch: computed end offset ${expectedEnd} (jumpLinkCount=${jumpLinkCount}, record size ${recordSize}) does not match actual length ${bytes.length}`],
+      errors: [...errors, `file length mismatch: computed end offset ${expectedEnd} (entityLinkCount=${entityLinkCount}, record size ${recordSize}) does not match actual length ${bytes.length}`],
     };
   }
 
@@ -287,8 +410,9 @@ export function parseNav(bytes: Uint8Array): NavParseResult {
     const base = linkOff + i * LINK_SIZE;
     const link = new NavLink();
     link.target = view.getUint16(base, true);
-    link.unknown0 = view.getUint16(base + 2, true);
-    link.unknown1 = view.getUint16(base + 4, true);
+    link.type = view.getUint16(base + 2, true);
+    const rawTraversal = view.getUint16(base + 4, true);
+    link.traversal = rawTraversal === 0xffff ? null : rawTraversal;
     file.links.push(link);
     if (link.target >= nodeCount) errors.push(`link ${i}: target node ${link.target} is out of range (nodeCount=${nodeCount})`);
   }
@@ -296,21 +420,21 @@ export function parseNav(bytes: Uint8Array): NavParseResult {
   for (let i = 0; i < hintCount; i++) {
     const base = hintOff + i * HINT_SIZE;
     const hint = new NavHint();
-    hint.pos0 = readVec3(view, base);
-    hint.pos1 = readVec3(view, base + 12);
-    hint.pos2 = readVec3(view, base + 24);
+    hint.funnel = readVec3(view, base);
+    hint.start = readVec3(view, base + 12);
+    hint.end = readVec3(view, base + 24);
     file.hints.push(hint);
   }
 
-  const tailWords = jumpLinkTailWords(version);
-  for (let i = 0; i < jumpLinkCount; i++) {
-    const base = jumpItemsOff + i * recordSize;
-    const jump = new NavJumpLink();
-    jump.edict = view.getUint16(base, true);
-    jump.from = readVec3(view, base + 2);
-    jump.to = readVec3(view, base + 14);
-    for (let w = 0; w < tailWords; w++) jump.tail.push(view.getUint16(base + JUMP_LINK_FIXED_SIZE + w * 2, true));
-    file.jumpLinks.push(jump);
+  const tailWords = entityLinkTailWords(version);
+  for (let i = 0; i < entityLinkCount; i++) {
+    const base = entityItemsOff + i * recordSize;
+    const record = new NavEntityLink();
+    record.link = view.getUint16(base, true);
+    record.mins = readVec3(view, base + 2);
+    record.maxs = readVec3(view, base + 14);
+    for (let w = 0; w < tailWords; w++) record.tail.push(view.getUint16(base + ENTITY_LINK_FIXED_SIZE + w * 2, true));
+    file.entityLinks.push(record);
   }
 
   return { file, errors };
