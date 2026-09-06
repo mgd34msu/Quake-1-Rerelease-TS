@@ -110,6 +110,43 @@ menu row and hands it to Text_Draw/Text_Width as the scale. Text_RowScale
 returns exactly 1 on the classic charset path, which is what keeps a
 classic boot's menu geometry and its per-character Draw_Character sequence
 byte-identical. `scr_menuscale` is still not ported.
+
+F17 addition (2026-09-06): GLYPH FALLBACK POLICY -- what Text_Draw/Text_Width
+do with a code point the active kfont/ttf font does not define. Before this
+unit, an unmapped code point fell back to the font's own '?' glyph if it had
+one, and drew NOTHING (a silently dropped character, only advancing the
+cursor) if it did not -- the Keys screen's bound-key names ("???" for an
+unbound key) and most ASCII punctuation are absent from the retail
+fonts/qfont.kfont (see src/lib/kfont.ts's U31 header note and this file's own
+guarded coverage test in test/kfont_text.test.ts), so under `con_font kfont`
+real UI text was going missing outright. This is a QUALITY-OF-LIFE addition,
+not a KEX fidelity concern: the KEX engine is closed source, so its own
+uncovered-glyph behavior is unknown and unspecifiable, and there is no
+existing cvar family (`scr_usekfont`/`con_font`) whose semantics this
+changes -- the policy is unconditional, not gated behind a new cvar, because
+"draw nothing" was never an intentional behavior to preserve, just the
+absence of one.
+
+The new policy, applied identically inside Text_Width and Text_Draw so the
+two never disagree on an advance width:
+  1. `font.glyph(cp)` found -- draw/measure the atlas glyph, unchanged.
+  2. cp is U+0020 (space) and the font has no glyph for it -- just advance
+     by one classic cell, unchanged (matches Draw_Character's own
+     `num === 32` skip).
+  3. cp <= 0xFF (representable as one of the classic charset's 256
+     byte-indexed cells) -- draw/measure the classic 8x8 charset glyph AT
+     THAT CODE POINT'S OWN INDEX (row = cp>>4, col = cp&15), scaled by the
+     same `scale` the caller passed in (so it sits on the row like the
+     kfont glyphs around it, per Text_RowScale) -- e.g. a codepoint in
+     Latin-1 Supplement that happens to share a byte value with a WinQuake
+     charset cell draws that cell, not '?'; this is a deliberate reuse of
+     the charset's existing 256-cell layout as a fallback source, not a
+     claim that the two code spaces mean the same glyph.
+  4. cp > 0xFF (the classic charset has no cell for it at all) -- the
+     font's own '?' glyph if it defines one (the pre-F17 behavior for this
+     case); otherwise the classic charset's own '?' cell (still scaled).
+Every one of these draws or explicitly no-ops (case 2) -- none of them skip
+a character silently.
 */
 
 import { CvarT, Cvar_FindVar, Cvar_RegisterVariable } from "../common/cvar";
@@ -404,6 +441,34 @@ function fallbackGlyph(font: ActiveFontT): GlyphRectT | null {
   return font.glyph("?".charCodeAt(0));
 }
 
+const CLASSIC_QMARK_CODEPOINT = "?".charCodeAt(0);
+
+// F17: what Text_Width/Text_Draw do with a code point `font.glyph(cp)` did
+// not resolve -- see this file's header "GLYPH FALLBACK POLICY" paragraph
+// for the full policy writeup and case numbering (cases 2-4 below).
+type GlyphResolutionT =
+  | { readonly draw: "atlas"; readonly glyph: GlyphRectT }
+  | { readonly draw: "classic"; readonly codepoint: number }
+  | { readonly draw: "none" };
+
+function resolveGlyph(font: ActiveFontT, cp: number): GlyphResolutionT {
+  const g = font.glyph(cp);
+  if (g) return { draw: "atlas", glyph: g }; // case 1
+  if (cp === 0x20) return { draw: "none" }; // case 2
+  if (cp <= 0xff) return { draw: "classic", codepoint: cp }; // case 3
+  const fb = fallbackGlyph(font);
+  if (fb) return { draw: "atlas", glyph: fb }; // case 4, font's own '?'
+  return { draw: "classic", codepoint: CLASSIC_QMARK_CODEPOINT }; // case 4, charset '?'
+}
+
+/** The real-pixel advance width `resolveGlyph`'s result contributes, at the
+ * given scale. Shared by Text_Width and Text_Draw so the two never
+ * disagree: an atlas glyph advances by its own (possibly non-8px) width, and
+ * every classic-charset or no-op case advances by one classic cell. */
+function resolvedAdvance(r: GlyphResolutionT, scale: number): number {
+  return r.draw === "atlas" ? r.glyph.w * scale : CLASSIC_GLYPH_SIZE * scale;
+}
+
 /** The active font's declared line height, in atlas pixels. The classic
  * charset has no declaration of its own: its 8px cell IS its line. */
 export function Text_LineHeight(): number {
@@ -425,7 +490,6 @@ export function Text_Width(s: string, scale = 1): number {
   if (!font) return s.length * CLASSIC_GLYPH_SIZE * scale;
 
   let w = 0;
-  const fb = fallbackGlyph(font);
   // DEFECT D6 FIX: iterate real Unicode code points (`for...of` over a JS
   // string decodes surrogate pairs), not UTF-16 code units -- a codepoint
   // past the Basic Multilingual Plane is two `charCodeAt` units, and
@@ -437,8 +501,7 @@ export function Text_Width(s: string, scale = 1): number {
   // effect on today's fixtures; it is still the correct general contract.
   for (const ch of s) {
     const cp = ch.codePointAt(0)!;
-    const g = font.glyph(cp) ?? fb;
-    w += (g ? g.w : CLASSIC_GLYPH_SIZE) * scale;
+    w += resolvedAdvance(resolveGlyph(font, cp), scale);
   }
   return w;
 }
@@ -490,7 +553,6 @@ export function Text_Draw(x: number, y: number, s: string, alt = false, scale = 
 
   const source: GlyphAtlasSourceT = { kind: "custom", id: font.atlasId, width: font.width, height: font.height, pixels: font.pixels ?? new Uint8Array(0) };
   const tint = alt ? ALT_TINT : null;
-  const fb = fallbackGlyph(font);
 
   let cx = x;
   // DEFECT D6 FIX: code points, not UTF-16 units -- see Text_Width's own
@@ -498,12 +560,25 @@ export function Text_Draw(x: number, y: number, s: string, alt = false, scale = 
   // text now that src/lib/loc.ts decodes as UTF-8).
   for (const ch of s) {
     const cp = ch.codePointAt(0)!;
-    const g = font.glyph(cp) ?? (cp === 0x20 ? null : fb); // a real, resolvable space just advances; an unmapped glyph falls back to '?'
-    if (g) {
-      const dstW = g.w * scale;
-      const dstH = g.h * scale;
-      drawGlyphAtlas(cx, y, dstW, dstH, source, g.x, g.y, g.w, g.h, g.color ? null : tint);
+    const r = resolveGlyph(font, cp);
+    if (r.draw === "atlas") {
+      const dstW = r.glyph.w * scale;
+      const dstH = r.glyph.h * scale;
+      drawGlyphAtlas(cx, y, dstW, dstH, source, r.glyph.x, r.glyph.y, r.glyph.w, r.glyph.h, r.glyph.color ? null : tint);
       cx += dstW;
+    } else if (r.draw === "classic") {
+      // F17: the classic charset fallback -- see this file's header "GLYPH
+      // FALLBACK POLICY" paragraph. Sources the SAME char_texture/draw_chars
+      // atlas the font-less branch above and Draw_Character itself read,
+      // scaled to the row like every other glyph on this line; `alt`
+      // reaches the same baked golden-row selection Draw_Alt_String uses
+      // (`| 0x80`), not a runtime tint (there is no baked golden variant to
+      // tint -- see ALT_TINT's own doc comment on kfont/ttf glyphs).
+      const num = r.codepoint | (alt ? 0x80 : 0);
+      const row = num >> 4;
+      const col = num & 15;
+      drawGlyphAtlas(cx, y, CLASSIC_GLYPH_SIZE * scale, CLASSIC_GLYPH_SIZE * scale, { kind: "classic" }, col * 8, row * 8, 8, 8, null);
+      cx += CLASSIC_GLYPH_SIZE * scale;
     } else {
       cx += CLASSIC_GLYPH_SIZE * scale;
     }

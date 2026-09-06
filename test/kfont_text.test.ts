@@ -339,11 +339,19 @@ describe("kfont_text.ts -- Text_Width (synthetic kfont atlas)", () => {
     expect(Text_Width("AB", 2)).toBe((GLYPH_A.w + GLYPH_B.w) * 2);
   });
 
-  test("an unmapped codepoint (UTF-8/accented text the fixture atlas has no glyph for) falls back to '?'", () => {
-    // U+00F6 (ö) -- this fixture's font simply doesn't define this
-    // codepoint (unlike CYRILLIC_VE_CODEPOINT below, which it does), so the
-    // fallback exercised here is the general "glyph() found nothing" path.
-    expect(Text_Width("ö")).toBe(GLYPH_QMARK.w);
+  test("F17: an unmapped codepoint <= 0xFF (UTF-8/accented text the fixture atlas has no glyph for) falls back to the classic charset's 8px cell, not the font's own '?'", () => {
+    // U+00F6 (ö, 246) -- this fixture's font simply doesn't define this
+    // codepoint (unlike CYRILLIC_VE_CODEPOINT below, which it does), and
+    // 246 <= 0xFF means the classic charset has a cell for it -- see
+    // kfont_text.ts's "GLYPH FALLBACK POLICY" header paragraph, case 3.
+    expect(Text_Width("ö")).toBe(8); // the classic charset's fixed 8px cell, not GLYPH_QMARK.w (also 8, coincidentally, in this fixture)
+  });
+
+  test("F17: an unmapped codepoint > 0xFF (past the classic charset's 256 cells) falls back to the font's own '?' glyph, when the font defines one", () => {
+    // U+2026 (ellipsis, 8230) -- outside both this fixture's glyph map and
+    // the classic charset's [0, 255] range, so case 4 applies: the font's
+    // own '?' (GLYPH_QMARK, present in this fixture).
+    expect(Text_Width("…")).toBe(GLYPH_QMARK.w);
   });
 
   test("U31: a non-ASCII codepoint the font DOES define (Cyrillic 'В', codepoint 1042, outside kfont.ts's legacy [32,126] `chars` bound) resolves to its real glyph width, not the '?' fallback", () => {
@@ -482,10 +490,18 @@ describe("kfont_text.ts -- Text_Draw glyph rects (synthetic kfont atlas, softwar
     }
   });
 
-  // DEFECT D6 FIX: text never silently disappears -- a codepoint the font
-  // has no glyph for still draws a call (the '?' fallback rect), it does
-  // not just skip that character (see fallbackGlyph in kfont_text.ts).
-  test("DEFECT D6: a codepoint the fixture font does NOT define ('ö', U+00F6, accented-text stand-in) still draws -- the '?' fallback rect, not a silently dropped character", () => {
+  // DEFECT D6 FIX (superseded by F17 for the <= 0xFF case, see below): text
+  // never silently disappears -- a codepoint the font has no glyph for
+  // still draws a call, it does not just skip that character.
+  //
+  // F17: for a codepoint <= 0xFF specifically, that call is now the classic
+  // 8x8 charset glyph AT THAT CODEPOINT'S OWN INDEX (kfont_text.ts's
+  // "GLYPH FALLBACK POLICY" header paragraph, case 3), not the font's own
+  // '?' -- so this test (which uses 'ö', U+00F6 = 246, still <= 0xFF) now
+  // expects the classic-charset atlas source and 'ö'.charCodeAt(0)'s own
+  // row/col, replacing its pre-F17 GLYPH_QMARK expectation. The >0xFF
+  // "font's own '?'" case (case 4) is covered by the ellipsis test below.
+  test("F17: a codepoint <= 0xFF the fixture font does NOT define ('ö', U+00F6, accented-text stand-in) still draws -- the classic charset's own cell for that codepoint, not a silently dropped character", () => {
     const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
     try {
       const s = "A" + "ö" + "B";
@@ -493,18 +509,88 @@ describe("kfont_text.ts -- Text_Draw glyph rects (synthetic kfont atlas, softwar
       // Three draws for three characters -- the unmapped 'ö' is NOT skipped.
       expect(spy).toHaveBeenCalledTimes(3);
 
-      const [, , , , , srcX2, srcY2, srcW2, srcH2] = spy.mock.calls[1]!;
-      expect([srcX2, srcY2, srcW2, srcH2]).toEqual([GLYPH_QMARK.x, GLYPH_QMARK.y, GLYPH_QMARK.w, GLYPH_QMARK.h]);
+      const oCodepoint = "ö".charCodeAt(0); // 246
+      const [, , dstW2, dstH2, source2, srcX2, srcY2, srcW2, srcH2] = spy.mock.calls[1]!;
+      expect(source2).toEqual({ kind: "classic" });
+      expect([dstW2, dstH2]).toEqual([8, 8]);
+      expect([srcX2, srcY2, srcW2, srcH2]).toEqual([(oCodepoint & 15) * 8, (oCodepoint >> 4) * 8, 8, 8]);
 
-      // and the glyph after it still advances from the fallback's own width,
-      // not the original (unmapped) character's non-existent one.
+      // and the glyph after it still advances from the classic cell's fixed
+      // 8px width, not the original (unmapped) character's non-existent one.
       const [dstX1] = spy.mock.calls[0]!;
       const [dstX2] = spy.mock.calls[1]!;
       const [dstX3] = spy.mock.calls[2]!;
       expect(dstX2).toBe((dstX1 as number) + GLYPH_A.w);
-      expect(dstX3).toBe((dstX2 as number) + GLYPH_QMARK.w);
+      expect(dstX3).toBe((dstX2 as number) + 8); // the classic cell's fixed 8px advance, not GLYPH_QMARK.w (also 8, coincidentally, in this fixture)
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  test("F17: the classic-charset fallback scales with `scale` like the kfont glyphs around it on the same row", () => {
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      Text_Draw(10, 20, "ö", false, 3);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const oCodepoint = "ö".charCodeAt(0); // 246
+      const [dstX, dstY, dstW, dstH, source, srcX, srcY, srcW, srcH] = spy.mock.calls[0]!;
+      expect([dstX, dstY, dstW, dstH]).toEqual([10, 20, 8 * 3, 8 * 3]); // dst scaled, matching a kfont glyph's own g.w*scale/g.h*scale
+      expect(source).toEqual({ kind: "classic" });
+      expect([srcX, srcY, srcW, srcH]).toEqual([(oCodepoint & 15) * 8, (oCodepoint >> 4) * 8, 8, 8]); // src rect never scales
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("F17: a codepoint > 0xFF the fixture font does NOT define (ellipsis, U+2026 = 8230, past the classic charset's 256 cells) falls back to the font's own '?' glyph", () => {
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      Text_Draw(0, 0, "…");
+      expect(spy).toHaveBeenCalledTimes(1);
+      const [, , dstW, dstH, source, srcX, srcY, srcW, srcH] = spy.mock.calls[0]!;
+      expect(source).toMatchObject({ kind: "custom" });
+      expect([dstW, dstH]).toEqual([GLYPH_QMARK.w, GLYPH_QMARK.h]);
+      expect([srcX, srcY, srcW, srcH]).toEqual([GLYPH_QMARK.x, GLYPH_QMARK.y, GLYPH_QMARK.w, GLYPH_QMARK.h]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("F17: a codepoint > 0xFF falls back to the classic charset's own '?' cell when the font has no '?' glyph either", () => {
+    // Overwrites the fixture's fonts/qfont.kfont/.png with a variant that
+    // drops the '?' mapchar entry entirely, so case 4's second branch (no
+    // font '?' to fall back to) is reachable; restored in this test's own
+    // cleanup so every other test in this file keeps seeing the normal
+    // fixture (self-sufficiency, standing order 13).
+    const originalKfont = readFileSync(join(scratchDir, "fonts", "qfont.kfont"));
+    const originalPng = readFileSync(join(scratchDir, "fonts", "qfont.png"));
+    const noQmarkKfont = [
+      'texture "fonts/qfont.png"',
+      "unicode",
+      "mapchar",
+      "{",
+      `\t${"A".charCodeAt(0)} ${GLYPH_A.x} ${GLYPH_A.y} ${GLYPH_A.w} ${GLYPH_A.h} 0`,
+      `\t32 ${GLYPH_SPACE.x} ${GLYPH_SPACE.y} ${GLYPH_SPACE.w} ${GLYPH_SPACE.h} 0`,
+      "}",
+      "",
+    ].join("\n");
+    writeFileSync(join(scratchDir, "fonts", "qfont.kfont"), noQmarkKfont, "latin1");
+    test_ResetGlyphCache();
+
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      Text_Draw(0, 0, "…");
+      expect(spy).toHaveBeenCalledTimes(1);
+      const qmarkCodepoint = "?".charCodeAt(0); // 63
+      const [, , dstW, dstH, source, srcX, srcY, srcW, srcH] = spy.mock.calls[0]!;
+      expect(source).toEqual({ kind: "classic" });
+      expect([dstW, dstH]).toEqual([8, 8]);
+      expect([srcX, srcY, srcW, srcH]).toEqual([(qmarkCodepoint & 15) * 8, (qmarkCodepoint >> 4) * 8, 8, 8]);
+    } finally {
+      spy.mockRestore();
+      writeFileSync(join(scratchDir, "fonts", "qfont.kfont"), originalKfont);
+      writeFileSync(join(scratchDir, "fonts", "qfont.png"), originalPng);
+      test_ResetGlyphCache();
     }
   });
 });

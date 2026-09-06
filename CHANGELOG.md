@@ -145,6 +145,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   client is implemented: team scores and each flag's state (at base,
   carried, dropped) are kept per connection and drawn under the status bar
   and on the scoreboard, cleared on level change and disconnect.
+- A code point the active kfont does not define draws the classic charset
+  cell (the retail `qfont.kfont` lacks most punctuation, even `?`), so the
+  Keys screen's unbound marker and console/HUD/menu punctuation are visible
+  under `con_font kfont`; above 255 the font's own `?` is used, else the
+  charset's.
 - Menu text draws through the kfont/TTF path when a kfont is mounted, scaled
   to the classic 8-pixel row with the same column positions, so localized
   labels in Cyrillic and accented scripts render; classic content keeps the
