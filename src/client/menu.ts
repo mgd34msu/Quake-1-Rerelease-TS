@@ -2749,19 +2749,19 @@ export function M_ServerList_Key(k: number): void {
 /* Menu Subsystem */
 
 export function M_Init(): void {
-  Cmd_AddCommand("togglemenu", M_ToggleMenu_f);
+  Cmd_AddCommand("togglemenu", M_ToggleMenu_f, "nq");
 
-  Cmd_AddCommand("menu_main", M_Menu_Main_f);
+  Cmd_AddCommand("menu_main", M_Menu_Main_f, "nq");
   Cmd_AddCommand("menu_singleplayer", M_Menu_SinglePlayer_f);
   Cmd_AddCommand("menu_load", M_Menu_Load_f);
   Cmd_AddCommand("menu_save", M_Menu_Save_f);
   Cmd_AddCommand("menu_multiplayer", M_Menu_MultiPlayer_f);
   Cmd_AddCommand("menu_setup", M_Menu_Setup_f);
-  Cmd_AddCommand("menu_options", M_Menu_Options_f);
-  Cmd_AddCommand("menu_keys", M_Menu_Keys_f);
-  Cmd_AddCommand("menu_video", M_Menu_Video_f);
-  Cmd_AddCommand("help", M_Menu_Help_f);
-  Cmd_AddCommand("menu_quit", M_Menu_Quit_f);
+  Cmd_AddCommand("menu_options", M_Menu_Options_f, "nq");
+  Cmd_AddCommand("menu_keys", M_Menu_Keys_f, "nq");
+  Cmd_AddCommand("menu_video", M_Menu_Video_f, "nq");
+  Cmd_AddCommand("help", M_Menu_Help_f, "nq");
+  Cmd_AddCommand("menu_quit", M_Menu_Quit_f, "nq");
   Cmd_AddCommand("menu_addons", M_Menu_QexAddons_f); // U17 addition
 }
 

@@ -70,13 +70,22 @@ Deviations from PORTING.md / the C source:
   `Cvar_Set` from here. This is additive and under the same `qw.active` fold.
 - QW's `Cvar_CompleteVariable` checks for an exact name match before falling
   back to the same prefix-match loop WinQuake's uses; folded the same way.
+- Unified client (ARCHITECTURE.md "Unified client and server"): the info hook
+  is no longer one process-wide slot standing in for whichever binary was
+  compiled. There are two, `client` and `server`, because one process can now
+  hold both a QuakeWorld client and a QuakeWorld server; a set propagates to
+  userinfo when the CLIENT profile is `qw` and to serverinfo when the SERVER
+  profile is `qw` (src/common/profile.ts), which is exactly what the C's
+  `#ifndef SERVERONLY` / `#ifdef SERVERONLY` pair selected at compile time.
+  `setCvarInfoHook` with no target names the slot the way the C did: the
+  server's in a `qw.serveronly` process (qwsv), the client's otherwise.
 */
 
 import { Q_atof } from "./common";
 import { Cmd_Exists, Cmd_Argc, Cmd_Argv, cmdHost } from "./cmd";
 import { Con_Printf } from "../client/console";
 import { Com_sprintf } from "./sprintf";
-import { qw } from "./quakedef";
+import { clientProfile, connectionProfile, qwActive, serverProfile } from "./profile";
 
 export class CvarT {
   name: string;
@@ -103,17 +112,30 @@ export class CvarT {
 // behavior, the qwsv entry point the serverinfo behavior; only one is ever
 // registered in a given process (qwcl and qwsv are separate binaries).
 export type CvarInfoHook = (name: string, value: string) => void;
-let cvarInfoHook: CvarInfoHook | null = null;
-export function setCvarInfoHook(fn: CvarInfoHook | null): void {
-  cvarInfoHook = fn;
+
+// Which side's propagation a hook implements: userinfo (client) or
+// serverinfo (server). See the file header.
+export type CvarInfoTargetT = "client" | "server";
+
+const cvarInfoHooks: { client: CvarInfoHook | null; server: CvarInfoHook | null } = {
+  client: null,
+  server: null,
+};
+
+function defaultInfoTarget(): CvarInfoTargetT {
+  return connectionProfile.serveronly ? "server" : "client";
+}
+
+export function setCvarInfoHook(fn: CvarInfoHook | null, target?: CvarInfoTargetT): void {
+  cvarInfoHooks[target ?? defaultInfoTarget()] = fn;
 }
 // Test-only getter: a suite that temporarily swaps this process-wide
 // singleton (e.g. to install its own binary's hook for a few tests, when
 // both qwcl's and qwsv's modules happen to share this one test process)
 // needs to restore whatever was ambient before it touched it, not assume
 // null, per this project's test hygiene rule 15.
-export function getCvarInfoHook(): CvarInfoHook | null {
-  return cvarInfoHook;
+export function getCvarInfoHook(target?: CvarInfoTargetT): CvarInfoHook | null {
+  return cvarInfoHooks[target ?? defaultInfoTarget()];
 }
 
 // cvar_t *cvar_vars;
@@ -175,7 +197,7 @@ export function Cvar_CompleteVariable(partial: string): string | null {
   // QW/client/cvar.c's Cvar_CompleteVariable checks for an exact match before
   // falling back to the prefix match below; folded under qw.active (see file
   // header). WinQuake's cvar.c has no such exact-match pass.
-  if (qw.active) {
+  if (qwActive()) {
     for (let cvar = cvar_vars; cvar !== null; cvar = cvar.next) if (partial === cvar.name) return cvar.name;
   }
 
@@ -205,8 +227,11 @@ export function Cvar_Set(var_name: string, value: string): void {
 
   // QuakeWorld track (QW/client/cvar.c's Cvar_Set): propagate an info-flagged
   // cvar to userinfo (qwcl) or serverinfo (qwsv) -- see file header.
-  if (qw.active && v.info && cvarInfoHook !== null) {
-    cvarInfoHook(v.name, value);
+  if (v.info) {
+    const clientHook = cvarInfoHooks.client;
+    if (clientProfile() === "qw" && clientHook !== null) clientHook(v.name, value);
+    const serverHook = cvarInfoHooks.server;
+    if (serverProfile() === "qw" && serverHook !== null) serverHook(v.name, value);
   }
 
   if (v.server && changed) {
@@ -244,10 +269,15 @@ export function Cvar_RegisterVariable(variable: CvarT): void {
     // a C file-scope object that this second pass finds already linked into
     // cvar_vars. Re-linking THE SAME object is a no-op, not the double
     // definition this guard exists to catch, so inside VID_CheckChanges's
-    // switch window it returns quietly. A DIFFERENT object under a name
-    // already taken is still a real collision -- the second object would
-    // never be reachable from the console -- and still prints.
-    if (cmdHost.rendererSwitch && existing === variable) return;
+    // switch window it returns quietly, and so does any other re-link of the
+    // same object. A DIFFERENT object under a name already taken is still a
+    // real collision -- the second object would never be reachable from the
+    // console -- and still prints.
+    // The unified client reaches this the same way: a profile's CL_Init
+    // registers cvar objects the other profile's init already linked (the two
+    // trees share one object per name, see src/qw/client/cl_main.ts), and
+    // that is a re-link of the same object, not a collision either.
+    if (existing === variable) return;
     Con_Printf("Can't register variable %s, allready defined\n", variable.name);
     return;
   }
@@ -270,7 +300,7 @@ export function Cvar_RegisterVariable(variable: CvarT): void {
   // value) right after linking, unconditionally, so an info-flagged cvar
   // propagates immediately on registration; WinQuake's never does this.
   // Folded under qw.active (see file header).
-  if (qw.active) Cvar_Set(variable.name, variable.string);
+  if (qwActive()) Cvar_Set(variable.name, variable.string);
 }
 
 /*

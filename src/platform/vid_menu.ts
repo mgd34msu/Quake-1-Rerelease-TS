@@ -52,13 +52,13 @@ import { getRenderer } from "../client/render";
 import type { QpicT } from "../common/wad";
 import { Sys_Error } from "./sys";
 import { host } from "../common/host";
-import { qw } from "../common/quakedef";
 import { Cvar_Set, Cvar_SetValue } from "../common/cvar";
 import { S_LocalSound } from "../client/snd_dma";
 import { K_DOWNARROW, K_ENTER, K_ESCAPE, K_LEFTARROW, K_RIGHTARROW, K_UPARROW } from "../client/keys";
 import { VID_CheckChanges, VID_MODES, vid_fullscreen, vid_mode, vid_ref } from "./vid";
 import type * as NqMenuModule from "../client/menu";
 import type * as QwMenuModule from "../qw/client/menu";
+import { clientProfile } from "../common/profile";
 
 /*
 menu.c is the one file this port has TWO of -- WinQuake's src/client/menu.ts
@@ -94,7 +94,7 @@ function qwMenuMod(): typeof QwMenuModule {
   return require("../qw/client/menu");
 }
 function menu(): MenuModule {
-  return qw.active ? qwMenuMod() : nqMenuMod();
+  return clientProfile() === "qw" ? qwMenuMod() : nqMenuMod();
 }
 
 function cachePic(path: string): QpicT {

@@ -71,7 +71,25 @@ import {
   IT_SUPER_SHOTGUN,
   STAT_ACTIVEWEAPON,
 } from "../common/quakedef";
-import { Cbuf_AddText, Cbuf_InsertText, Cmd_AddCommand, Cmd_Args, Cmd_Argc, Cmd_Argv, setForwardToServerHandler } from "../common/cmd";
+import {
+  Cbuf_AddText,
+  Cbuf_InsertText,
+  Cmd_AddCommand,
+  Cmd_Args,
+  Cmd_Argc,
+  Cmd_Argv,
+  Cmd_WithProfileRegistration,
+  setForwardToServerHandler,
+} from "../common/cmd";
+import { bootProfile, clientProfile, connectProfileFor, resetClientProfile, setClientProfile } from "../common/profile";
+
+import type * as QwClMainModule from "../qw/client/cl_main";
+import type * as QwNetChanModule from "../qw/net_chan";
+import type * as QwNetUdpModule from "../qw/net_udp";
+import type * as QwProtocolModule from "../qw/protocol";
+import type * as QwCommonModule from "../qw/common";
+import type * as QwCmdModule from "../qw/cmd";
+import type * as HostCmdModule from "../common/host_cmd";
 import { CvarT, Cvar_RegisterVariable } from "../common/cvar";
 import type { Vec3 } from "../common/mathlib";
 import { AngleVectors, VectorCopy, VectorMA, anglemod, vec3 } from "../common/mathlib";
@@ -259,11 +277,146 @@ export function CL_Disconnect(): void {
 
   cls.demoplayback = cls.timedemo = false;
   cls.signon = 0;
+
+  // Unified client: with no connection open the client goes back to the boot
+  // profile, so the next `connect` is decided by the rule again (and a `-qw`
+  // client stays QuakeWorld). See src/common/profile.ts.
+  resetClientProfile();
 }
 
 export function CL_Disconnect_f(): void {
   CL_Disconnect();
   if (sv.active) Host_ShutdownServer(false);
+}
+
+//=============================================================================
+//
+// The QuakeWorld half of the unified client (ARCHITECTURE.md "Unified client
+// and server"). src/qw/client/* is reached lazily, the same cycle-breaking
+// idiom cl_demo.ts's `clMainMod()` already uses here: those modules import
+// this one, so a top-level import would deadlock the load order.
+
+// host_cmd.ts imports this module, so it too is reached lazily.
+function hostCmdMod(): typeof HostCmdModule {
+  return require("../common/host_cmd");
+}
+
+function qwClMainMod(): typeof QwClMainModule {
+  return require("../qw/client/cl_main");
+}
+
+function qwNetChanMod(): typeof QwNetChanModule {
+  return require("../qw/net_chan");
+}
+
+function qwNetUdpMod(): typeof QwNetUdpModule {
+  return require("../qw/net_udp");
+}
+
+function qwProtocolMod(): typeof QwProtocolModule {
+  return require("../qw/protocol");
+}
+
+function qwCommonMod(): typeof QwCommonModule {
+  return require("../qw/common");
+}
+
+function qwCmdMod(): typeof QwCmdModule {
+  return require("../qw/cmd");
+}
+
+// cl_protocol: this port's own cvar, the `connect` rule's override (see
+// src/common/profile.ts). "auto" reads the address; "qw"/"28"/"29" force the
+// QuakeWorld handshake; "nq"/"15"/"666"/"999" force NetQuake.
+export const cl_protocol = new CvarT("cl_protocol", "auto", true);
+
+// The QuakeWorld client's subsystems, brought up the first time this process
+// opens a QuakeWorld connection. QW/client/cl_main.c does all of this inside
+// its own Host_Init, which the `-qw` boot still runs; from a NetQuake boot
+// the shared subsystems are already up, so only QuakeWorld's own parts are
+// left: the `qw` game directory, the obfuscated command names, QW's UDP
+// socket and netchan, and CL_Init (its cvars, its profile-scoped commands,
+// input, temp entities, prediction, camera and pmove).
+let qwProfileInitialized = false;
+
+export function CL_QwProfileInitialized(): boolean {
+  return qwProfileInitialized;
+}
+
+export function CL_InitQwProfile(): void {
+  if (qwProfileInitialized) return;
+  qwProfileInitialized = true;
+
+  // QW/client/cl_main.c's Host_Init mounts `qw` with COM_AddParm("-game")/
+  // COM_AddParm("qw") before its own COM_Init. Here COM_Init has already run
+  // on the shared filesystem state (src/qw/common.ts's header: both trees
+  // read src/common/common.ts's com_searchpaths), so the QuakeWorld half of
+  // that init is what is left to do -- including pinning the base the
+  // server-driven `gamedir` switch is allowed to unwind to, which is
+  // otherwise null and would take id1 down with it.
+  qwCommonMod().COM_AdoptSharedFilesystem();
+
+  const qwcl = qwClMainMod();
+  qwcl.Host_FixupModelNames();
+  qwNetUdpMod().NET_Init(qwProtocolMod().PORT_CLIENT);
+  qwNetChanMod().Netchan_Init();
+  // CL_Init registers commands, and this runs after host init -- see
+  // cmd.ts's cmdHost.profileRegistration.
+  Cmd_WithProfileRegistration(() => {
+    qwcl.CL_Init();
+    // QW/client/cmd.c's own Cmd_Init registers `cmd` as its
+    // Cmd_ForwardToServer_f, which writes straight into the netchan; the
+    // shared src/common/cmd.ts registers the WinQuake one, which goes through
+    // cls.netcon. Both are needed, one per profile.
+    Cmd_AddCommand("cmd", qwCmdMod().Cmd_ForwardToServer_f, "qw");
+  });
+}
+
+/*
+=====================
+CL_Connect_f
+
+`connect <server>` for the unified client. The rule (src/common/profile.ts):
+an address with an explicit port, or `cl_protocol` naming QuakeWorld, takes
+the QuakeWorld getchallenge handshake; anything else takes NetQuake's
+NET_Connect. Registered under the `nq` profile only -- once the client is on
+the QuakeWorld profile, QW/client/cl_main.c's own `connect` (registered under
+`qw`) is the one in force, which is what the separate qwcl binary had.
+=====================
+*/
+export function CL_Connect_f(): void {
+  // Cmd_Args() rather than Cmd_Argv(1): the shared COM_Parse
+  // (src/common/common.ts) breaks ':' out as its own token under the
+  // NetQuake profile -- WinQuake's QuakeC-lexer behaviour, which QW/client's
+  // own COM_Parse drops -- so "1.2.3.4:27500" tokenizes into four arguments
+  // here. The raw remainder of the line is the address either way.
+  const server = (Cmd_Args() ?? "").trim();
+  if (server === "" || server.includes(" ")) {
+    Con_Printf("usage: connect <server>\n");
+    return;
+  }
+
+  if (connectProfileFor(server, cl_protocol.string) === "qw") {
+    CL_Disconnect();
+    CL_InitQwProfile();
+    setClientProfile("qw");
+    // QW/client/cl_main.c's CL_Connect_f, minus the argument parsing this
+    // function already did.
+    cls.qw.servername = server;
+    qwClMainMod().CL_BeginServerConnect();
+    return;
+  }
+
+  // host_cmd.c's Host_Connect_f, with the address taken from Cmd_Args() for
+  // the same reason.
+  setClientProfile("nq");
+  cls.demonum = -1; // stop demo loop in case this fails
+  if (cls.demoplayback) {
+    CL_StopPlayback();
+    CL_Disconnect();
+  }
+  CL_EstablishConnection(server);
+  hostCmdMod().Host_Reconnect_f();
 }
 
 /*
@@ -841,12 +994,18 @@ export function CL_Init(): void {
 
   Cmd_AddCommand("entities", CL_PrintEntities_f);
   Cmd_AddCommand("switchweapon", CL_SwitchWeapon_f);
-  Cmd_AddCommand("disconnect", CL_Disconnect_f);
-  Cmd_AddCommand("record", CL_Record_f);
-  Cmd_AddCommand("stop", CL_Stop_f);
-  Cmd_AddCommand("playdemo", CL_PlayDemo_f);
-  Cmd_AddCommand("timedemo", CL_TimeDemo_f);
+  Cmd_AddCommand("disconnect", CL_Disconnect_f, "nq");
+  Cmd_AddCommand("record", CL_Record_f, "nq");
+  Cmd_AddCommand("stop", CL_Stop_f, "nq");
+  Cmd_AddCommand("playdemo", CL_PlayDemo_f, "nq");
+  Cmd_AddCommand("timedemo", CL_TimeDemo_f, "nq");
   Cmd_AddCommand("vibrate", Haptics_Vibrate_f);
+
+  // Unified client: `connect` under the NetQuake profile is the rule's
+  // dispatcher (src/common/host_cmd.ts's Host_Connect_f stays registered
+  // unscoped and is what this calls for the NetQuake arm).
+  Cvar_RegisterVariable(cl_protocol);
+  Cmd_AddCommand("connect", CL_Connect_f, "nq");
 }
 
 //=============================================================================

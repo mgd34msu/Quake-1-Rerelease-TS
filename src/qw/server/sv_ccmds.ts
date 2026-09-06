@@ -819,30 +819,30 @@ export function SV_InitOperatorCommands(): void {
     svs.info = Info_SetValueForStarKey(svs.info, "*cheats", "ON", MAX_SERVERINFO_STRING);
   }
 
-  Cmd_AddCommand("logfile", SV_Logfile_f);
-  Cmd_AddCommand("fraglogfile", SV_Fraglogfile_f);
+  Cmd_AddCommand("logfile", SV_Logfile_f, "qw");
+  Cmd_AddCommand("fraglogfile", SV_Fraglogfile_f, "qw");
 
-  Cmd_AddCommand("snap", SV_Snap_f);
-  Cmd_AddCommand("snapall", SV_SnapAll_f);
-  Cmd_AddCommand("kick", SV_Kick_f);
-  Cmd_AddCommand("status", SV_Status_f);
+  Cmd_AddCommand("snap", SV_Snap_f, "qw");
+  Cmd_AddCommand("snapall", SV_SnapAll_f, "qw");
+  Cmd_AddCommand("kick", SV_Kick_f, "qw");
+  Cmd_AddCommand("status", SV_Status_f, "qw");
 
-  Cmd_AddCommand("map", SV_Map_f);
-  Cmd_AddCommand("setmaster", SV_SetMaster_f);
+  Cmd_AddCommand("map", SV_Map_f, "qw");
+  Cmd_AddCommand("setmaster", SV_SetMaster_f, "qw");
 
-  Cmd_AddCommand("say", SV_ConSay_f);
-  Cmd_AddCommand("heartbeat", SV_Heartbeat_f);
-  Cmd_AddCommand("quit", SV_Quit_f);
-  Cmd_AddCommand("god", SV_God_f);
-  Cmd_AddCommand("give", SV_Give_f);
-  Cmd_AddCommand("noclip", SV_Noclip_f);
-  Cmd_AddCommand("serverinfo", SV_Serverinfo_f);
-  Cmd_AddCommand("localinfo", SV_Localinfo_f);
-  Cmd_AddCommand("user", SV_User_f);
-  Cmd_AddCommand("gamedir", SV_Gamedir_f);
-  Cmd_AddCommand("sv_gamedir", SV_Gamedir);
-  Cmd_AddCommand("floodprot", SV_Floodprot_f);
-  Cmd_AddCommand("floodprotmsg", SV_Floodprotmsg_f);
+  Cmd_AddCommand("say", SV_ConSay_f, "qw");
+  Cmd_AddCommand("heartbeat", SV_Heartbeat_f, "qw");
+  Cmd_AddCommand("quit", SV_Quit_f, "qw");
+  Cmd_AddCommand("god", SV_God_f, "qw");
+  Cmd_AddCommand("give", SV_Give_f, "qw");
+  Cmd_AddCommand("noclip", SV_Noclip_f, "qw");
+  Cmd_AddCommand("serverinfo", SV_Serverinfo_f, "qw");
+  Cmd_AddCommand("localinfo", SV_Localinfo_f, "qw");
+  Cmd_AddCommand("user", SV_User_f, "qw");
+  Cmd_AddCommand("gamedir", SV_Gamedir_f, "qw");
+  Cmd_AddCommand("sv_gamedir", SV_Gamedir, "qw");
+  Cmd_AddCommand("floodprot", SV_Floodprot_f, "qw");
+  Cmd_AddCommand("floodprotmsg", SV_Floodprotmsg_f, "qw");
 
   cl_warncmd.value = 1;
 }

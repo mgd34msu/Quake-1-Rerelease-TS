@@ -83,6 +83,7 @@ import { qw } from "../common/quakedef";
 import { Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite, Sys_mkdir } from "../platform/sys";
 import type { AliashdrT } from "./gl_model_types";
 import { pheader, poseverts, stverts, triangles } from "./gl_model";
+import { clientProfile } from "../common/profile";
 
 /*
 =================================================================
@@ -369,7 +370,7 @@ export function GL_MakeAliasModelDisplayLists(m: ModelT, hdr: AliashdrT): void {
     } catch {
       handle = -1; // the C's fopen(fullpath, "wb") returning NULL
     }
-    if (handle === -1 && qw.active) {
+    if (handle === -1 && clientProfile() === "qw") {
       // QW/client/gl_mesh.c: create com_gamedir/glquake/ and retry once
       // (see file header) instead of relying on VID_Init having done it.
       Sys_mkdir(`${com_gamedir}/glquake`);

@@ -921,6 +921,32 @@ export function COM_InitFilesystem(): void {
 
 //================
 //
+// COM_AdoptSharedFilesystem
+//
+// Not in the C: the unified client (ARCHITECTURE.md "Unified client and
+// server") can boot as NetQuake and open a QuakeWorld connection later, in
+// which case src/common/common.ts's COM_InitFilesystem already mounted the
+// search path and THIS module's COM_InitFilesystem never ran -- leaving
+// `com_basedir` empty and `com_base_searchpaths` null, which would make
+// COM_Gamedir's "free up any current game dir info" loop walk the whole
+// shared path and unmount id1 with it. This is the missing half of that init,
+// run once when the QuakeWorld profile comes up: fill in this module's own
+// basedir, mount `qw` the way COM_InitFilesystem does, and pin the base the
+// gamedir switch is allowed to unwind to.
+//================
+
+export function COM_AdoptSharedFilesystem(): void {
+  const i = COM_CheckParm("-basedir");
+  com_basedir = i && i < com_argc - 1 ? com_argv[i + 1] : host_parms.basedir;
+
+  COM_AddGameDirectory(`${com_basedir}/qw`);
+
+  com_base_searchpaths = com_searchpaths;
+  gamedirfile = "qw";
+}
+
+//================
+//
 // COM_CheckRegistered
 //
 // Looks for the pop.txt file and verifies it.
@@ -964,7 +990,7 @@ export const registered: CvarT = new CvarT("registered", "0");
 
 export function COM_Init(): void {
   Cvar_RegisterVariable(registered);
-  Cmd_AddCommand("path", COM_Path_f);
+  Cmd_AddCommand("path", COM_Path_f, "qw");
 
   COM_InitFilesystem();
   COM_CheckRegistered();

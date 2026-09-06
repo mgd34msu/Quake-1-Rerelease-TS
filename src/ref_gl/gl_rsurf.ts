@@ -228,6 +228,7 @@ import { R_MarkLights } from "./gl_rlight";
 import { R_StoreEfrags } from "./gl_refrag";
 import { isPermedia } from "./gl_vid";
 import { EmitBothSkyLayers, EmitSkyPolys, EmitWaterPolys, glWarpState, R_DrawSkyChain } from "./gl_warp";
+import { clientProfile } from "../common/profile";
 
 // U15: was `18*18` (a single channel sized for the old 256-unit extents
 // cap); colored lighting needs three channels per luxel (r,g,b interleaved,
@@ -371,7 +372,7 @@ export function R_BuildLightMap(surf: MsurfaceT, dest: Uint8Array, destOfs: numb
 
   // set to full bright if no light data. QW/client/gl_rsurf.c comments out
   // the r_fullbright.value check (dynamic lightmaps always rebuild).
-  if ((!qw.active && r_fullbright.value) || worldmodel === null || !worldmodel.lightdata) {
+  if ((clientProfile() !== "qw" && r_fullbright.value) || worldmodel === null || !worldmodel.lightdata) {
     for (let i = 0; i < size; i++) {
       const i3 = i * 3;
       blocklights[i3] = blocklights[i3 + 1] = blocklights[i3 + 2] = 255 * 256;
@@ -594,7 +595,7 @@ export function R_DrawSequentialPoly(s: MsurfaceT): void {
   // non-SURF_DRAWTURB surface, including plain opaque walls, falls all the
   // way through the SURF_DRAWSKY check into the underwater-warp-with-lightmap
   // tail unconditionally. Exactly as the original.
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     if (s.flags & SURF_DRAWTURB) {
       GL_Bind(texinfo.texture.gl_texturenum);
       EmitWaterPolys(s);
@@ -842,7 +843,7 @@ export function R_BlendLightmaps(): void {
   const gl = qgl();
 
   // QW/client/gl_rsurf.c wraps this check in `#if 0` (always dead there).
-  if (!qw.active && r_fullbright.value) return;
+  if (clientProfile() !== "qw" && r_fullbright.value) return;
   if (!gl_texsort.value) return;
 
   gl.qglDepthMask(false); // don't bother writing Z
@@ -887,7 +888,7 @@ export function R_BlendLightmaps(): void {
       theRect.w = 0;
     }
     for (; p; p = p.chain) {
-      if (qw.active ? qwShouldWarp(p.flags) : (p.flags & SURF_UNDERWATER) !== 0) DrawGLWaterPolyLightmap(p);
+      if (clientProfile() === "qw" ? qwShouldWarp(p.flags) : (p.flags & SURF_UNDERWATER) !== 0) DrawGLWaterPolyLightmap(p);
       else {
         gl.qglBegin(GL_POLYGON);
         for (let j = 0, v = 0; j < p.numverts; j++, v += VERTEXSIZE) {
@@ -977,7 +978,7 @@ export function R_RenderBrushPoly(fa: MsurfaceT): void {
   const polys = surfPolys(fa);
   if (polys === null) return Sys_Error("R_RenderBrushPoly: surface has no polys");
 
-  if (qw.active ? qwShouldWarp(fa.flags) : (fa.flags & SURF_UNDERWATER) !== 0) DrawGLWaterPoly(polys);
+  if (clientProfile() === "qw" ? qwShouldWarp(fa.flags) : (fa.flags & SURF_UNDERWATER) !== 0) DrawGLWaterPoly(polys);
   else DrawGLPoly(polys);
 
   // add the poly to the proper lightmap chain
@@ -1344,7 +1345,7 @@ export function R_RecursiveWorldNode(node: MnodeT | MleafT): void {
 
         // don't backface underwater surfaces, because they warp
         if (
-          !(qw.active ? qwShouldWarp(surf.flags) : (surf.flags & SURF_UNDERWATER) !== 0) &&
+          !(clientProfile() === "qw" ? qwShouldWarp(surf.flags) : (surf.flags & SURF_UNDERWATER) !== 0) &&
           ((dot < 0 ? 1 : 0) ^ (surf.flags & SURF_PLANEBACK ? 1 : 0))
         )
           continue; // wrong side
@@ -1655,7 +1656,7 @@ export function GL_BuildLightmaps(): void {
 
   glDrawState.gl_lightmap_format = GL_LUMINANCE;
   // default differently on the Permedia -- QW/client/gl_rsurf.c drops this.
-  if (!qw.active && isPermedia) glDrawState.gl_lightmap_format = GL_RGBA;
+  if (clientProfile() !== "qw" && isPermedia) glDrawState.gl_lightmap_format = GL_RGBA;
 
   if (COM_CheckParm("-lm_1")) glDrawState.gl_lightmap_format = GL_LUMINANCE;
   if (COM_CheckParm("-lm_a")) glDrawState.gl_lightmap_format = GL_ALPHA;

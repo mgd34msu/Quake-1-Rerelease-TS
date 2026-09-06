@@ -88,6 +88,21 @@ Deviations from PORTING.md / the C source:
     (`hostMod()` below), the same cycle-breaking idiom src/common/common.ts's
     `cvarMod()` already uses, since host.ts statically imports this module's
     `Cmd_Init`/`Cbuf_*` (a real cycle a top-level import would deadlock).
+- Unified client (ARCHITECTURE.md "Unified client and server"): `cmd_functions`
+  is one table for the whole process, and the two trees register ~90 of the
+  same names (`say`, `status`, `kick`, `connect`, `+attack`, `screenshot`,
+  `menu_main`, ...). `Cmd_AddCommand` takes an optional third argument, the
+  `NetProfileT` the registration belongs to; a registration with no profile is
+  unscoped and serves both. Lookup (`Cmd_ExecuteString`, `Cmd_CompleteCommand`)
+  prefers the entry whose profile matches the profile in force and falls back
+  to the unscoped one, so the NetQuake commands that live outside this unit's
+  files (host_cmd.ts's `connect`, `status`, `map`, ... and this file's own
+  `exec`/`echo`/`alias`) stay unscoped and keep serving the NetQuake profile
+  while QuakeWorld's same-named registrations answer under `qw`. The
+  duplicate-name rejection is now per (name, profile) pair rather than per
+  name. `Cmd_RemoveCommand` is this port's own addition, the inverse the C
+  never needed (it never unregisters anything): the unified client uses it to
+  take a profile's registrations back out.
   `Cmd_ForwardToServer` is not folded: it stays hook-based, as it already is
   (`setForwardToServerHandler`); QW's own `Cmd_ForwardToServer`/
   `Cmd_ForwardToServer_f` (src/qw/cmd.ts) write directly into a netchan
@@ -104,7 +119,7 @@ import { Cvar_Command, Cvar_VariableString } from "./cvar";
 import { Hunk_LowMark, Hunk_FreeToLowMark } from "./zone";
 import { Con_Printf } from "../client/console";
 import { Sys_Error } from "../platform/sys";
-import { qw } from "./quakedef";
+import { activeProfile, clientProfile, type NetProfileT } from "./profile";
 import type * as HostModule from "./host";
 
 // see file header's QuakeWorld-track deviation note: host.ts statically
@@ -148,7 +163,25 @@ export enum CmdSourceT {
 export const cmdState = { source: CmdSourceT.src_command, wait: false };
 
 // host_initialized (host.c); host.ts sets this once it exists.
-export const cmdHost = { initialized: false, rendererSwitch: false };
+// `profileRegistration`: the unified client brings a second profile's
+// subsystems up after host init (the QuakeWorld client's CL_Init when the
+// first QuakeWorld connection is opened from a NetQuake boot), which means
+// Cmd_AddCommand calls after `initialized`. The C never had to do this --
+// each binary registered everything in its one Host_Init -- so this window,
+// like `rendererSwitch`, is the port's own. It opens the `host_initialized`
+// guard only; the duplicate-name rules are unchanged.
+export const cmdHost = { initialized: false, rendererSwitch: false, profileRegistration: false };
+
+// Runs `fn` with the post-host-init registration guard open. See cmdHost.
+export function Cmd_WithProfileRegistration(fn: () => void): void {
+  const saved = cmdHost.profileRegistration;
+  cmdHost.profileRegistration = true;
+  try {
+    fn();
+  } finally {
+    cmdHost.profileRegistration = saved;
+  }
+}
 
 //=============================================================================
 //
@@ -199,7 +232,7 @@ export function Cbuf_InsertText(text: string): void {
   // add the entire text of the file
   // QW/client/cmd.c appends an extra "\n" after the text itself -- folded
   // under qw.active, see file header.
-  Cbuf_AddText(qw.active ? `${text}\n` : text);
+  Cbuf_AddText(clientProfile() === "qw" ? `${text}\n` : text);
 
   // add the copied off data
   if (templen && temp) {
@@ -258,7 +291,7 @@ export function Cbuf_Execute(): void {
 export function Cmd_StuffCmds_f(): void {
   // QW/client/cmd.c has no such guard (added later in retail WinQuake) --
   // folded under qw.active, see file header.
-  if (!qw.active && Cmd_Argc() !== 1) {
+  if (clientProfile() !== "qw" && Cmd_Argc() !== 1) {
     Con_Printf("stuffcmds : execute command line parameters\n");
     return;
   }
@@ -386,9 +419,14 @@ const MAX_ARGS = 80;
 class CmdFunctionT {
   name: string;
   fn: XCommandT;
-  constructor(name: string, fn: XCommandT) {
+  // null = unscoped: this registration answers under either profile, and is
+  // what every WinQuake-tree registration outside the unified client's own
+  // files still is. See the file header.
+  profile: NetProfileT | null;
+  constructor(name: string, fn: XCommandT, profile: NetProfileT | null) {
     this.name = name;
     this.fn = fn;
+    this.profile = profile;
   }
 }
 
@@ -466,13 +504,15 @@ export function Cmd_TokenizeString(text: string): void {
 // called by the init functions of other parts of the program to
 // register commands and functions to call for them.
 // The cmd_name is referenced later, so it should not be in temp memory
-export function Cmd_AddCommand(cmd_name: string, fn: XCommandT): void {
+export function Cmd_AddCommand(cmd_name: string, fn: XCommandT, profile?: NetProfileT): void {
+  const scope: NetProfileT | null = profile ?? null;
   // Port deviation: a runtime renderer switch (`vid_restart`, the port's own
   // feature -- the C's renderers are separate binaries) re-runs R_Init after
   // host init; VID_CheckChanges opens `cmdHost.rendererSwitch` for that
   // window so the new renderer's commands register and replace the old
   // renderer's functions of the same name.
-  if (cmdHost.initialized && !cmdHost.rendererSwitch) Sys_Error("Cmd_AddCommand after host_initialized"); // because hunk allocation would get stomped
+  if (cmdHost.initialized && !cmdHost.rendererSwitch && !cmdHost.profileRegistration)
+    Sys_Error("Cmd_AddCommand after host_initialized"); // because hunk allocation would get stomped
 
   // fail if the command is a variable name
   if (Cvar_VariableString(cmd_name).length > 0) {
@@ -480,9 +520,9 @@ export function Cmd_AddCommand(cmd_name: string, fn: XCommandT): void {
     return;
   }
 
-  // fail if the command already exists
+  // fail if the command already exists under the same profile scope
   for (const cmd of cmd_functions) {
-    if (cmd_name === cmd.name) {
+    if (cmd_name === cmd.name && cmd.profile === scope) {
       if (cmdHost.rendererSwitch) {
         cmd.fn = fn; // the previous renderer's function must not survive the switch
         return;
@@ -492,7 +532,37 @@ export function Cmd_AddCommand(cmd_name: string, fn: XCommandT): void {
     }
   }
 
-  cmd_functions.unshift(new CmdFunctionT(cmd_name, fn));
+  cmd_functions.unshift(new CmdFunctionT(cmd_name, fn, scope));
+}
+
+// Not in the C: WinQuake and QuakeWorld never unregister a command. The
+// unified client does, when a profile's registrations have to come back out
+// (see the file header). With no profile given, every registration of that
+// name goes; with one, only that scope's. Returns how many were removed.
+export function Cmd_RemoveCommand(cmd_name: string, profile?: NetProfileT): number {
+  const scope: NetProfileT | null = profile ?? null;
+  let removed = 0;
+  for (let i = cmd_functions.length - 1; i >= 0; i--) {
+    const cmd = cmd_functions[i];
+    if (cmd.name !== cmd_name) continue;
+    if (profile !== undefined && cmd.profile !== scope) continue;
+    cmd_functions.splice(i, 1);
+    removed++;
+  }
+  return removed;
+}
+
+// The registration in force for `name` right now: the one scoped to the
+// active profile if there is one, else the unscoped one. See the file header.
+function Cmd_FindCommand(cmd_name: string): CmdFunctionT | null {
+  const active = activeProfile();
+  let unscoped: CmdFunctionT | null = null;
+  for (const cmd of cmd_functions) {
+    if (Q_strcasecmp(cmd_name, cmd.name) !== 0) continue;
+    if (cmd.profile === active) return cmd;
+    if (cmd.profile === null && unscoped === null) unscoped = cmd;
+  }
+  return unscoped;
 }
 
 // used by the cvar code to check for cvar / command name overlap
@@ -509,8 +579,11 @@ export function Cmd_CompleteCommand(partial: string): string | null {
 
   if (!len) return null;
 
-  // check functions
+  // check functions -- a registration scoped to the other profile is not a
+  // command the player can run right now, so it is not a completion either.
+  const active = activeProfile();
   for (const cmd of cmd_functions) {
+    if (cmd.profile !== null && cmd.profile !== active) continue;
     if (cmd.name.slice(0, len) === partial) return cmd.name;
   }
 
@@ -527,11 +600,10 @@ export function Cmd_ExecuteString(text: string, src: CmdSourceT): void {
   if (!Cmd_Argc()) return; // no tokens
 
   // check functions
-  for (const cmd of cmd_functions) {
-    if (Q_strcasecmp(Cmd_Argv(0), cmd.name) === 0) {
-      cmd.fn();
-      return;
-    }
+  const cmd = Cmd_FindCommand(Cmd_Argv(0));
+  if (cmd !== null) {
+    cmd.fn();
+    return;
   }
 
   // check alias
@@ -547,7 +619,7 @@ export function Cmd_ExecuteString(text: string, src: CmdSourceT): void {
     // QW/client/cmd.c gates this print behind `cl_warncmd.value ||
     // developer.value` instead of printing unconditionally -- folded under
     // qw.active as `developer.value` alone, see file header.
-    if (qw.active) {
+    if (clientProfile() === "qw") {
       if (hostMod().developer.value) Con_Printf('Unknown command "%s"\n', Cmd_Argv(0));
     } else {
       Con_Printf('Unknown command "%s"\n', Cmd_Argv(0));

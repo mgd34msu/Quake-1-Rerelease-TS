@@ -29,6 +29,7 @@ Deviations from PORTING.md / the C source:
 */
 
 import type { Vec3 } from "./mathlib";
+import { connectionProfile, qwActive, setProcessProfile } from "./profile";
 
 export type Byte = number;
 
@@ -257,4 +258,25 @@ export class QuakeParmsT {
 // share this file's `qw.active`-gated deltas. Same "no C source line" idiom
 // as `active` above; default false (qwcl), set true by src/qw/main_sv.ts
 // (qwsv) before Host_Init/SV_Init.
-export const qw = { active: false, serveronly: false };
+//
+// Unified client (ARCHITECTURE.md "Unified client and server"): the flag is
+// no longer a process-wide boolean of its own. It is a compatibility view
+// over src/common/profile.ts's per-connection profiles -- reading it asks
+// "is the profile in force right now QuakeWorld?" (the client's, or the
+// server's in a qwsv process), and assigning it moves both profiles at once,
+// which is exactly what the entry points and the suites that set it mean.
+// Sites converted to the explicit profile call profile.ts directly.
+export const qw = {
+  get active(): boolean {
+    return qwActive();
+  },
+  set active(value: boolean) {
+    setProcessProfile(value ? "qw" : "nq");
+  },
+  get serveronly(): boolean {
+    return connectionProfile.serveronly;
+  },
+  set serveronly(value: boolean) {
+    connectionProfile.serveronly = value;
+  },
+};

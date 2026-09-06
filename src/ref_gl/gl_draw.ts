@@ -220,6 +220,7 @@ import { d_15to8table, VID_Is8bit } from "./gl_vid";
 // (see src/client/kfont_text.ts's own header for why the runtime call goes
 // through a lazy require() there instead of a static import of this file).
 import type { GlyphAtlasSourceT } from "../client/kfont_text";
+import { clientProfile } from "../common/profile";
 
 // cvar_t gl_nobind = {"gl_nobind", "0"}; etc.
 export const gl_nobind = new CvarT("gl_nobind", "0");
@@ -332,7 +333,7 @@ let scrap_texnum = 0;
 // returns a texture number and the position inside it
 export function Scrap_AllocBlock(w: number, h: number): { texnum: number; x: number; y: number } {
   // see Scrap_Upload's note: QW only ever uploads/binds scrap texture 0.
-  const scraps = qw.active ? 1 : MAX_SCRAPS;
+  const scraps = clientProfile() === "qw" ? 1 : MAX_SCRAPS;
   for (let texnum = 0; texnum < scraps; texnum++) {
     let best = BLOCK_HEIGHT;
     let x = 0;
@@ -371,7 +372,7 @@ export function Scrap_Upload(): void {
   // still allocated, harmless) and only narrows the upload/alloc loop bound
   // under qw.active, since qw.active cannot gate a module-load-time const
   // (see this unit's report).
-  const scraps = qw.active ? 1 : MAX_SCRAPS;
+  const scraps = clientProfile() === "qw" ? 1 : MAX_SCRAPS;
   for (let texnum = 0; texnum < scraps; texnum++) {
     GL_Bind(scrap_texnum + texnum);
     GL_Upload8(scrap_texels[texnum], BLOCK_WIDTH, BLOCK_HEIGHT, false, true);
@@ -555,7 +556,7 @@ export function Draw_Init(): void {
   // "Mesa" instead of the WinQuake "Glide" substring match.
   if (
     Q_strncasecmp(glState.gl_renderer, "3dfx", 4) === 0 ||
-    (qw.active ? Q_strncasecmp(glState.gl_renderer, "Mesa", 4) === 0 : glState.gl_renderer.includes("Glide"))
+    (clientProfile() === "qw" ? Q_strncasecmp(glState.gl_renderer, "Mesa", 4) === 0 : glState.gl_renderer.includes("Glide"))
   ) {
     Cvar_Set("gl_max_size", "256");
   }
@@ -577,7 +578,7 @@ export function Draw_Init(): void {
 
   // QW/client/gl_draw.c addition: a second small texture for the
   // crosshair.value==2 colored-dot crosshair; no WinQuake counterpart.
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     cs_texture = GL_LoadTexture("crosshair", 8, 8, cs_data, false, true);
   }
 
@@ -586,16 +587,16 @@ export function Draw_Init(): void {
   // QW/client/gl_draw.c reads gfx/conback.lmp with COM_LoadHunkFile instead
   // of WinQuake's COM_LoadTempFile (both then Hunk_FreeToLowMark it a few
   // lines below either way, so this is not observable).
-  const cbRaw = qw.active ? COM_LoadHunkFile("gfx/conback.lmp") : COM_LoadTempFile("gfx/conback.lmp");
+  const cbRaw = clientProfile() === "qw" ? COM_LoadHunkFile("gfx/conback.lmp") : COM_LoadTempFile("gfx/conback.lmp");
   if (!cbRaw) return Sys_Error("Couldn't load gfx/conback.lmp");
   const cb = SwapPic(cbRaw);
 
   // hack the version number directly into the pic
-  const ver = qw.active
+  const ver = clientProfile() === "qw"
     ? Com_sprintf("%4.2f", VERSION)
     : // #if defined(__linux__) branch (RULING; see draw.ts's precedent for the same choice)
       Com_sprintf("(Linux %2.2f, gl %4.2f) %4.2f", LINUX_VERSION, GLQUAKE_VERSION, VERSION);
-  const verDestBase = qw.active ? 320 + 320 * 186 - 11 - 8 * ver.length : 320 * 186 + 320 - 11 - 8 * ver.length;
+  const verDestBase = clientProfile() === "qw" ? 320 + 320 * 186 - 11 - 8 * ver.length : 320 * 186 + 320 - 11 - 8 * ver.length;
   for (let x = 0; x < ver.length; x++) {
     Draw_CharToConback(ver.charCodeAt(x), cb.data, verDestBase + (x << 3));
   }
@@ -617,8 +618,8 @@ export function Draw_Init(): void {
   picGl.set(conback, gl);
   // QW/client/gl_draw.c uses vid.conwidth/conheight here instead of
   // WinQuake's vid.width/height.
-  conback.width = qw.active ? vid.conwidth : vid.width;
-  conback.height = qw.active ? vid.conheight : vid.height;
+  conback.width = clientProfile() === "qw" ? vid.conwidth : vid.width;
+  conback.height = clientProfile() === "qw" ? vid.conheight : vid.height;
 
   // free loaded console
   Hunk_FreeToLowMark(start);
@@ -913,7 +914,7 @@ export function Draw_AlphaPic(x: number, y: number, pic: QpicT, alpha: number): 
   q.qglDisable(GL_ALPHA_TEST);
   q.qglEnable(GL_BLEND);
   // QW/client/gl_draw.c addition: `glCullFace(GL_FRONT);` (WinQuake has none here).
-  if (qw.active) q.qglCullFace(GL_FRONT);
+  if (clientProfile() === "qw") q.qglCullFace(GL_FRONT);
   q.qglColor4f(1, 1, 1, alpha);
   GL_Bind(gl.texnum);
   q.qglBegin(GL_QUADS);
@@ -1035,7 +1036,7 @@ export function Draw_ConsoleBackground(lines: number): void {
   // QW/client/gl_draw.c addition: hack the version number directly onto the
   // screen (not into the pic, unlike draw.ts's soft path) when not
   // downloading. No WinQuake counterpart.
-  if (qw.active && !cls.qw.download) {
+  if (clientProfile() === "qw" && !cls.qw.download) {
     const ver = Com_sprintf("Linux (%4.2f) QuakeWorld", LINUX_VERSION); // #ifdef __linux__ branch, RULING per this unit's precedent
     const overlayY = lines - 14;
     const x = vid.conwidth - (ver.length * 8 + 11) - (((vid.conwidth * 8) / 320) | 0) * 7;
@@ -1527,7 +1528,7 @@ export function GL_LoadTexture(identifier: string, width: number, height: number
     // identifier === "" branch below already increments unconditionally in
     // both trees, so it is unchanged.
     glt = gltextures[i];
-    if (qw.active) numgltextures++;
+    if (clientProfile() === "qw") numgltextures++;
   } else {
     glt = gltextures[numgltextures];
     numgltextures++;
@@ -1565,7 +1566,7 @@ export function GL_SelectTexture(target: number): void {
   // multitexture under Linux yet` -- this port targets Linux only (PORTING.md:
   // "take the portable, non-asm path"), so under qw.active that call is
   // compiled out entirely, exactly as it would be for a real QW Linux build.
-  if (!qw.active) qgl().qglSelectTextureSGIS?.(target);
+  if (clientProfile() !== "qw") qgl().qglSelectTextureSGIS?.(target);
   if (target === glState.oldtarget) return;
   cnttextures[glState.oldtarget - TEXTURE0_SGIS] = glState.currenttexture;
   glState.currenttexture = cnttextures[target - TEXTURE0_SGIS];

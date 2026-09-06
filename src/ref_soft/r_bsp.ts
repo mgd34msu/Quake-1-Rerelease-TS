@@ -92,7 +92,7 @@ import { R_TransformFrustum } from "./r_misc";
 import { R_RenderBmodelFace, R_RenderFace, R_RenderPoly } from "./r_draw";
 import { R_StoreEfrags } from "./r_efrag";
 import { r_worldentity } from "./r_main";
-import { qw } from "../common/quakedef";
+import { clientProfile } from "../common/profile";
 
 export enum SolidstateT {
   touchessolid = 0,
@@ -656,7 +656,7 @@ export function R_RenderWorld(): void {
   // r_bsp.c has `currententity = &cl_entities[0];` -- QW's cl_parse never
   // fills cl_entities[0].model, and its R_NewMap sets r_worldentity.model
   // from cl.worldmodel instead.
-  rState.currententity = qw.active ? r_worldentity : cl_entities[0];
+  rState.currententity = clientProfile() === "qw" ? r_worldentity : cl_entities[0];
   VectorCopy(r_origin, modelorg);
   const clmodel = rState.currententity.model;
   if (clmodel === null) Sys_Error("R_RenderWorld: no world model");

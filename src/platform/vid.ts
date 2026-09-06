@@ -122,7 +122,6 @@ Deviations from PORTING.md / the C source:
 
 import { d_8to24table, vid, vidBackend, type VidBackend, vidMenuHooks, VrectT } from "../client/vid";
 import { Sys_Error } from "./sys";
-import { qw } from "../common/quakedef";
 import { S_Init } from "../client/snd_dma";
 import { hostClientHooks, hostColormap } from "../common/host";
 import type * as QwClMainModule from "../qw/client/cl_main";
@@ -163,6 +162,7 @@ import { VID_MenuDraw, VID_MenuKey } from "./vid_menu";
 // way vid_x.c's ResetFrameBuffer does. r_shared.ts is a pure types/state
 // leaf (no imports back into src/platform), so this creates no cycle.
 import { rState } from "../ref_soft/r_shared";
+import { clientProfile } from "../common/profile";
 
 // The true-color software frame goes to SDL directly (U25 follow-up).
 swimpRawPresent.current = (rgba, w, h) => SDLVID_PresentRGBA(rgba, w, h);
@@ -526,7 +526,7 @@ function VID_RestartLevel(): void {
   // r_main.c's software half is an empty body, so this costs nothing there.
   // QW reaches R_TranslatePlayerSkin from gl_rmain.c's own per-frame
   // `if (!sc->skin)` branch instead, so it needs no help here.
-  if (!qw.active) {
+  if (clientProfile() !== "qw") {
     const players = Math.min(cl.maxclients, cl.scores.length);
     for (let i = 0; i < players; i++) r.R_TranslatePlayerSkin(i);
   }
@@ -655,10 +655,10 @@ function VID_CheckChanges_(runRInit: boolean, restartLevel: boolean): void {
     // status-bar qpic_t pointing into the renderer that was just destroyed.
     // Routed here rather than by adding a second hook slot, matching this
     // file's own `qw.active ? qwClMainMod().host_colormap.data : ...`.
-    if (qw.active) qwScreenMod().SCR_Init();
+    if (clientProfile() === "qw") qwScreenMod().SCR_Init();
     else hostClientHooks.scrInit?.(); // SCR_Init
     hostClientHooks.rInit?.(); // R_Init
-    if (qw.active) qwSbarMod().Sbar_Init();
+    if (clientProfile() === "qw") qwSbarMod().Sbar_Init();
     else hostClientHooks.sbarInit?.(); // Sbar_Init
     if (restartLevel) VID_RestartLevel();
   }
@@ -834,7 +834,7 @@ export function VID_Init(palette: Uint8Array): void {
   // lives behind the same SDL backend `SDL_SetBackendEnabled(true)` above
   // arms. Ordering against Draw_Init/SCR_Init/R_Init -- the only ordering
   // either Host_Init depends on -- is unchanged: all three still follow.
-  if (qw.active) S_Init();
+  if (clientProfile() === "qw") S_Init();
 }
 
 export function VID_Shutdown(): void {

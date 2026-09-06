@@ -149,6 +149,7 @@ import {
   total_channels,
   volume,
 } from "./sound";
+import { clientProfile } from "../common/profile";
 
 let sound_started = 0;
 export { sound_started };
@@ -229,7 +230,7 @@ export function S_Startup(): void {
 // `cl.qw.playernum + 1`. WinQuake's own `cl.viewentity` field is read
 // otherwise.
 function sndViewentity(): number {
-  return qw.active ? cl.qw.playernum + 1 : cl.viewentity;
+  return clientProfile() === "qw" ? cl.qw.playernum + 1 : cl.viewentity;
 }
 
 /*
@@ -239,7 +240,7 @@ S_Init
 */
 export function S_Init(): void {
   // QW snd_dma.c comments out this banner print.
-  if (!qw.active) Con_Printf("\nSound Initialization\n");
+  if (clientProfile() !== "qw") Con_Printf("\nSound Initialization\n");
 
   if (COM_CheckParm("-nosound")) return;
 
@@ -297,7 +298,7 @@ export function S_Init(): void {
 
   // QW snd_dma.c comments out this print (see file header: also guarded
   // against a null shm, this port's own addition).
-  if (!qw.active && shm) Con_Printf("Sound sampling rate: %i\n", shm.speed);
+  if (clientProfile() !== "qw" && shm) Con_Printf("Sound sampling rate: %i\n", shm.speed);
 
   // provides a tick sound until washed clean
 

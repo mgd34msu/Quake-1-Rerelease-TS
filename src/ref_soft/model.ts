@@ -181,7 +181,6 @@ import { R_InitSky } from "./r_sky";
 // .mdl); see r_md5.ts's own header for the loading/tier rules.
 import { attachMd5ReplacementIfAny } from "./r_md5";
 // QuakeWorld track: model.c's player.mdl/eyes.mdl CRC -> cls.qw.userinfo fold.
-import { qw } from "../common/quakedef";
 import { cls, CactiveT } from "../client/client";
 import { CRC_Block } from "../common/crc";
 import { com_filesize } from "../common/common";
@@ -189,6 +188,7 @@ import { Info_SetValueForKey, MAX_INFO_STRING } from "../qw/common";
 import { modelNames } from "../qw/client/cl_main";
 import { MSG_WriteByte, SZ_Print } from "../common/sizebuf";
 import { ClcOpsT } from "../qw/protocol";
+import { clientProfile } from "../common/profile";
 
 /*
 ==============================================================================
@@ -405,7 +405,7 @@ export function Mod_LoadAliasModel(mod: ModelT, buffer: Uint8Array): void {
 
   // QW/client/model.c: player.mdl/eyes.mdl CRC -> cls.userinfo "pmodel"/"emodel",
   // so the server can verify the skin the client says it is using.
-  if (qw.active && (mod.name === "progs/player.mdl" || mod.name === "progs/eyes.mdl")) {
+  if (clientProfile() === "qw" && (mod.name === "progs/player.mdl" || mod.name === "progs/eyes.mdl")) {
     // CRC_Block(buffer, com_filesize): com_filesize is the exact on-disk
     // length COM_LoadStackFile just set, WITHOUT the trailing 0 byte
     // COM_LoadFile appends to `buffer` -- CRC_Block(buffer) alone would hash

@@ -134,7 +134,19 @@ import { NET_AdrToString, NET_CompareAdr, NET_Init, NET_IsClientLegal, NET_SendP
 import { Netchan_Init, Netchan_Process, Netchan_Setup, Netchan_Transmit, netchanState } from "../net_chan";
 import { A2A_ACK, A2A_PING, A2C_CLIENT_COMMAND, A2C_PRINT, ClcOpsT, MAX_CLIENTS, PORT_CLIENT, PROTOCOL_VERSION, S2C_CHALLENGE, S2C_CONNECTION } from "../protocol";
 import { Cvar_RegisterVariable, Cvar_Set, Cvar_VariableValue, Cvar_WriteVariables, CvarT, setCvarInfoHook } from "../../common/cvar";
-import { host, HostEndGame, SysFileTextWriter } from "../../common/host";
+import { developer, host, HostEndGame, host_speeds, SysFileTextWriter } from "../../common/host";
+import { resetClientProfile } from "../../common/profile";
+// One object per cvar name -- see the blocks below.
+import {
+  cl_shownet,
+  lookspring,
+  lookstrafe,
+  m_forward,
+  m_pitch,
+  m_side,
+  m_yaw,
+  sensitivity,
+} from "../../client/cl_main";
 import { FileHandle } from "../../common/common";
 import type { QuakeParmsT } from "../../common/quakedef";
 import { Mod_ClearAll, Mod_Init } from "../../common/model";
@@ -196,20 +208,24 @@ export const rcon_address = new CvarT("rcon_address", "");
 
 export const cl_timeout = new CvarT("cl_timeout", "60");
 
-export const cl_shownet = new CvarT("cl_shownet", "0"); // can be 0, 1, or 2
+// One object per cvar name: WinQuake/cl_main.c and QW/client/cl_main.c both
+// declare `cl_shownet`, `lookspring`, `lookstrafe`, `sensitivity` and the four
+// `m_*` cvars with the same names, and the C links one of the two per binary.
+// This port links both into one binary (ARCHITECTURE.md "Unified client and
+// server"), so a second set here would leave whichever set the other
+// profile's CL_Init did not register at value 0. Registered by whichever
+// profile's CL_Init runs first; the second registration of the same object is
+// the no-op re-link src/common/cvar.ts recognizes. `m_yaw`/`m_forward`/
+// `m_side` carry WinQuake's `archive` flag as a result, which QW's own
+// declarations did not set -- documented deviation: they are now written to
+// config.cfg under the qw profile too.
+export { cl_shownet };
 
 export const cl_sbar = new CvarT("cl_sbar", "0", true);
 export const cl_hudswap = new CvarT("cl_hudswap", "0", true);
 export const cl_maxfps = new CvarT("cl_maxfps", "0", true);
 
-export const lookspring = new CvarT("lookspring", "0", true);
-export const lookstrafe = new CvarT("lookstrafe", "0", true);
-export const sensitivity = new CvarT("sensitivity", "3", true);
-
-export const m_pitch = new CvarT("m_pitch", "0.022", true);
-export const m_yaw = new CvarT("m_yaw", "0.022");
-export const m_forward = new CvarT("m_forward", "1");
-export const m_side = new CvarT("m_side", "0.8");
+export { lookspring, lookstrafe, sensitivity, m_pitch, m_yaw, m_forward, m_side }; // one object per name -- see above
 
 export const entlatency = new CvarT("entlatency", "20");
 export const cl_predict_players = new CvarT("cl_predict_players", "1");
@@ -236,9 +252,12 @@ export const msg = new CvarT("msg", "1", true, false, true);
 
 export const master_adr = new NetadrT(); // address of the master server
 
-export const host_speeds = new CvarT("host_speeds", "0"); // set for running times
 export const show_fps = new CvarT("show_fps", "0"); // set for running times
-export const developer = new CvarT("developer", "0");
+// `host_speeds` and `developer` are host.c's in WinQuake and cl_main.c's in
+// QW; one object per name -- see above. src/common/cmd.ts's "Unknown command"
+// gate already reads src/common/host.ts's `developer`, which this makes the
+// one every profile sets.
+export { host_speeds, developer };
 
 // The five obfuscated command names: each C initializer is a char array of
 // bytes XOR 0xff, decoded in place by Host_FixupModelNames.
@@ -581,6 +600,12 @@ export function CL_Disconnect(): void {
   }
 
   CL_StopUpload();
+
+  // Unified client (ARCHITECTURE.md "Unified client and server"): with no
+  // connection open the client goes back to its boot profile, so the next
+  // `connect` is decided by the rule again. A `-qw` boot's boot profile is
+  // "qw", so qwcl stays QuakeWorld exactly as the separate binary did.
+  resetClientProfile();
 }
 
 export function CL_Disconnect_f(): void {
@@ -1149,47 +1174,47 @@ export function CL_Init(): void {
   Cvar_RegisterVariable(msg);
   Cvar_RegisterVariable(noaim);
 
-  Cmd_AddCommand("version", CL_Version_f);
+  Cmd_AddCommand("version", CL_Version_f, "qw");
 
-  Cmd_AddCommand("changing", CL_Changing_f);
-  Cmd_AddCommand("disconnect", CL_Disconnect_f);
-  Cmd_AddCommand("record", CL_Record_f);
-  Cmd_AddCommand("rerecord", CL_ReRecord_f);
-  Cmd_AddCommand("stop", CL_Stop_f);
-  Cmd_AddCommand("playdemo", CL_PlayDemo_f);
-  Cmd_AddCommand("timedemo", CL_TimeDemo_f);
+  Cmd_AddCommand("changing", CL_Changing_f, "qw");
+  Cmd_AddCommand("disconnect", CL_Disconnect_f, "qw");
+  Cmd_AddCommand("record", CL_Record_f, "qw");
+  Cmd_AddCommand("rerecord", CL_ReRecord_f, "qw");
+  Cmd_AddCommand("stop", CL_Stop_f, "qw");
+  Cmd_AddCommand("playdemo", CL_PlayDemo_f, "qw");
+  Cmd_AddCommand("timedemo", CL_TimeDemo_f, "qw");
 
-  Cmd_AddCommand("skins", Skin_Skins_f);
-  Cmd_AddCommand("allskins", Skin_AllSkins_f);
+  Cmd_AddCommand("skins", Skin_Skins_f, "qw");
+  Cmd_AddCommand("allskins", Skin_AllSkins_f, "qw");
 
-  Cmd_AddCommand("quit", CL_Quit_f);
+  Cmd_AddCommand("quit", CL_Quit_f, "qw");
 
-  Cmd_AddCommand("connect", CL_Connect_f);
-  Cmd_AddCommand("reconnect", CL_Reconnect_f);
+  Cmd_AddCommand("connect", CL_Connect_f, "qw");
+  Cmd_AddCommand("reconnect", CL_Reconnect_f, "qw");
 
-  Cmd_AddCommand("rcon", CL_Rcon_f);
-  Cmd_AddCommand("packet", CL_Packet_f);
-  Cmd_AddCommand("user", CL_User_f);
-  Cmd_AddCommand("users", CL_Users_f);
+  Cmd_AddCommand("rcon", CL_Rcon_f, "qw");
+  Cmd_AddCommand("packet", CL_Packet_f, "qw");
+  Cmd_AddCommand("user", CL_User_f, "qw");
+  Cmd_AddCommand("users", CL_Users_f, "qw");
 
-  Cmd_AddCommand("setinfo", CL_SetInfo_f);
-  Cmd_AddCommand("fullinfo", CL_FullInfo_f);
-  Cmd_AddCommand("fullserverinfo", CL_FullServerinfo_f);
+  Cmd_AddCommand("setinfo", CL_SetInfo_f, "qw");
+  Cmd_AddCommand("fullinfo", CL_FullInfo_f, "qw");
+  Cmd_AddCommand("fullserverinfo", CL_FullServerinfo_f, "qw");
 
-  Cmd_AddCommand("color", CL_Color_f);
-  Cmd_AddCommand("download", CL_Download_f);
+  Cmd_AddCommand("color", CL_Color_f, "qw");
+  Cmd_AddCommand("download", CL_Download_f, "qw");
 
-  Cmd_AddCommand("nextul", CL_NextUpload);
-  Cmd_AddCommand("stopul", CL_StopUpload);
+  Cmd_AddCommand("nextul", CL_NextUpload, "qw");
+  Cmd_AddCommand("stopul", CL_StopUpload, "qw");
 
   //
   // forward to server commands
   //
-  Cmd_AddCommand("kill", Cmd_ForwardToServer); // Cmd_AddCommand ("kill", NULL) -- see file header
-  Cmd_AddCommand("pause", Cmd_ForwardToServer); // Cmd_AddCommand ("pause", NULL) -- see file header
-  Cmd_AddCommand("say", Cmd_ForwardToServer); // Cmd_AddCommand ("say", NULL) -- see file header
-  Cmd_AddCommand("say_team", Cmd_ForwardToServer); // Cmd_AddCommand ("say_team", NULL) -- see file header
-  Cmd_AddCommand("serverinfo", Cmd_ForwardToServer); // Cmd_AddCommand ("serverinfo", NULL) -- see file header
+  Cmd_AddCommand("kill", Cmd_ForwardToServer, "qw"); // Cmd_AddCommand ("kill", NULL) -- see file header
+  Cmd_AddCommand("pause", Cmd_ForwardToServer, "qw"); // Cmd_AddCommand ("pause", NULL) -- see file header
+  Cmd_AddCommand("say", Cmd_ForwardToServer, "qw"); // Cmd_AddCommand ("say", NULL) -- see file header
+  Cmd_AddCommand("say_team", Cmd_ForwardToServer, "qw"); // Cmd_AddCommand ("say_team", NULL) -- see file header
+  Cmd_AddCommand("serverinfo", Cmd_ForwardToServer, "qw"); // Cmd_AddCommand ("serverinfo", NULL) -- see file header
 }
 
 /*

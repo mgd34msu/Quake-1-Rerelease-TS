@@ -405,9 +405,9 @@ export function SCR_Init(): void {
   //
   // register our commands
   //
-  Cmd_AddCommand("screenshot", SCR_ScreenShot_f);
-  Cmd_AddCommand("sizeup", SCR_SizeUp_f);
-  Cmd_AddCommand("sizedown", SCR_SizeDown_f);
+  Cmd_AddCommand("screenshot", SCR_ScreenShot_f, "nq");
+  Cmd_AddCommand("sizeup", SCR_SizeUp_f, "nq");
+  Cmd_AddCommand("sizedown", SCR_SizeDown_f, "nq");
 
   const re = getRenderer();
   scr_ram = re.Draw_PicFromWad("ram");

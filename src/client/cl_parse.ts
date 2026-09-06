@@ -171,6 +171,8 @@ import { SCR_CenterPrint } from "./screen";
 // view.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { V_ParseDamage } from "./view";
 import { VID_GRADES, vid } from "./vid";
+import { clientProfile } from "../common/profile";
+import type * as QwClParseModule from "../qw/client/cl_parse";
 
 /*
 ==================
@@ -288,6 +290,10 @@ This error checks and tracks the total number of entities
 // CL_ParseServerInfo, from the live stream or from a demo's recorded
 // serverinfo -- the two are the same bytes, so a demo re-derives its protocol
 // exactly as a connect does (Ironwail cl_demo.c:133-146's rule).
+function qwClParseMod(): typeof QwClParseModule {
+  return require("../qw/client/cl_parse");
+}
+
 function clCodec() {
   return getCodec(cl.protocol);
 }
@@ -888,6 +894,15 @@ CL_ParseServerMessage
 */
 export function CL_ParseServerMessage(): void {
   let i: number;
+
+  // Unified client (ARCHITECTURE.md "Unified client and server"): the message
+  // in net_message belongs to whichever protocol family this connection
+  // speaks, so the QuakeWorld profile parses it with QW/client/cl_parse.c's
+  // own CL_ParseServerMessage. Reached lazily -- that module imports this one.
+  if (clientProfile() === "qw") {
+    qwClParseMod().CL_ParseServerMessage();
+    return;
+  }
 
   //
   // if recording demos, copy the message out

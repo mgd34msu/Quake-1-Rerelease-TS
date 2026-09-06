@@ -45,10 +45,10 @@ import { ModtypeT, type MleafT, type MnodeT, isMleaf } from "../common/model";
 import { Con_Printf } from "../client/console";
 import { Sys_Error } from "../platform/sys";
 import { cl, cl_entities, cl_visedicts, clState, MAX_VISEDICTS } from "../client/client";
-import { qw } from "../common/quakedef";
 import type { EfragT, EntityT } from "../client/render";
 import { r_emins, r_emaxs } from "./r_local";
 import { rState } from "./r_shared";
+import { clientProfile } from "../common/profile";
 
 let r_addent: EntityT | null = null;
 let lastEfrag: EfragT | null = null; // null => next link target is r_addent.efrag
@@ -259,7 +259,7 @@ export function R_StoreEfrags(leafEfrags: EfragT | null): void {
           // republishes every frame, so copying into it is the C's `= *pent`
           // and leaves no stale packet-entity data behind it.
           const slot = cl_visedicts[clState.cl_numvisedicts];
-          if (qw.active && slot !== null) slot.copyFrom(pent);
+          if (clientProfile() === "qw" && slot !== null) slot.copyFrom(pent);
           else cl_visedicts[clState.cl_numvisedicts] = pent;
           clState.cl_numvisedicts++;
 

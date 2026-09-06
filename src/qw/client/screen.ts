@@ -133,7 +133,16 @@ import { Con_CheckResize, Con_ClearNotify, Con_DrawConsole, Con_DrawNotify, Con_
 import { K_ESCAPE, KeydestT, keyState, key_lastpress } from "../../client/keys";
 import { M_Draw } from "./menu"; // QW/client/screen.c:1119 links QW/client/menu.c, not WinQuake's
 import { getRenderer, r_netgraph } from "../../client/render";
-import { scr_fov, scr_viewsize } from "../../client/screen"; // one object per cvar name -- see the block below
+import {
+  scr_centertime,
+  scr_conspeed,
+  scr_fov,
+  scr_printspeed,
+  scr_showpause,
+  scr_showram,
+  scr_showturtle,
+  scr_viewsize,
+} from "../../client/screen"; // one object per cvar name -- see the block below
 import { scrState, scr_vrect } from "../../client/screen_types";
 import { S_ClearBuffer, S_StopAllSounds } from "../../client/snd_dma";
 import { V_RenderView, V_UpdatePalette } from "../../client/view";
@@ -159,12 +168,16 @@ let oldsbar = 0; // QW-only: SCR_UpdateScreen's `oldsbar != cl_sbar.value` recal
 // with "Bad fov: 0.000000" on the first qwcl frame. One object per name,
 // registered by whichever binary's SCR_Init runs.
 export { scr_fov, scr_viewsize };
-export const scr_conspeed = new CvarT("scr_conspeed", "300");
-export const scr_centertime = new CvarT("scr_centertime", "2");
-export const scr_showram = new CvarT("showram", "1");
-export const scr_showturtle = new CvarT("showturtle", "0");
-export const scr_showpause = new CvarT("showpause", "1");
-export const scr_printspeed = new CvarT("scr_printspeed", "8");
+// One object per cvar name, the pattern this file already uses for
+// scr_fov/scr_viewsize (see the block above / src/qw/client/screen.ts): both
+// screen.c files declare these with identical values and the C links one of
+// the two per binary, but this port links both modules into one binary
+// (ARCHITECTURE.md "Unified client and server"), so a second object would
+// leave whichever one the other profile's SCR_Init did not register sitting
+// at value 0. Registered by whichever profile's SCR_Init runs first;
+// Cvar_RegisterVariable treats the second, same-object registration as the
+// no-op re-link it is.
+export { scr_conspeed, scr_centertime, scr_showram, scr_showturtle, scr_showpause, scr_printspeed };
 export const scr_allowsnap = new CvarT("scr_allowsnap", "1"); // QW-only
 
 let scr_initialized = false; // ready to draw
@@ -313,10 +326,10 @@ export function SCR_Init(): void {
   Cvar_RegisterVariable(scr_printspeed);
   Cvar_RegisterVariable(scr_allowsnap);
 
-  Cmd_AddCommand("screenshot", SCR_ScreenShot_f);
-  Cmd_AddCommand("snap", SCR_RSShot_f);
-  Cmd_AddCommand("sizeup", SCR_SizeUp_f);
-  Cmd_AddCommand("sizedown", SCR_SizeDown_f);
+  Cmd_AddCommand("screenshot", SCR_ScreenShot_f, "qw");
+  Cmd_AddCommand("snap", SCR_RSShot_f, "qw");
+  Cmd_AddCommand("sizeup", SCR_SizeUp_f, "qw");
+  Cmd_AddCommand("sizedown", SCR_SizeDown_f, "qw");
 
   scr_ram = W_GetQpic("ram");
   scr_net = W_GetQpic("net");

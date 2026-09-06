@@ -282,8 +282,8 @@ export function Sbar_Init(): void {
   sb_face_invis_invuln = r.Draw_PicFromWad("face_inv2");
   sb_face_quad = r.Draw_PicFromWad("face_quad");
 
-  Cmd_AddCommand("+showscores", Sbar_ShowScores);
-  Cmd_AddCommand("-showscores", Sbar_DontShowScores);
+  Cmd_AddCommand("+showscores", Sbar_ShowScores, "nq");
+  Cmd_AddCommand("-showscores", Sbar_DontShowScores, "nq");
 
   sb_sbar = r.Draw_PicFromWad("sbar");
   sb_ibar = r.Draw_PicFromWad("ibar");

@@ -212,6 +212,7 @@ import { STAT_ITEMS } from "../qw/bothdefs";
 import { PF_DEAD, PF_GIB, UPDATE_MASK } from "../qw/protocol";
 import { pmState } from "../qw/pmove_types";
 import { FrameT, PlayerStateT } from "../qw/client/client";
+import { clientProfile } from "../common/profile";
 
 export const lcd_x = new CvarT("lcd_x", "0");
 export const lcd_yaw = new CvarT("lcd_yaw", "0");
@@ -305,7 +306,7 @@ V_CalcBob
 ===============
 */
 export function V_CalcBob(): number {
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     if (cl.qw.spectator) return 0;
     if (pmState.onground === -1) return qwBob; // just use old value
 
@@ -381,7 +382,7 @@ export function V_DriftPitch(): void {
   let delta: number;
   let move: number;
 
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     if (qwViewMessage.onground === -1 || cls.demoplayback) {
       cl.driftmove = 0;
       cl.pitchvel = 0;
@@ -395,7 +396,7 @@ export function V_DriftPitch(): void {
 
   // don't count small mouse motion
   if (cl.nodrift) {
-    if (qw.active) {
+    if (clientProfile() === "qw") {
       const idx = (cls.qw.netchan.outgoing_sequence - 1) & UPDATE_MASK;
       if (Math.abs(cl.qw.frames[idx].cmd.forwardmove) < 200) cl.driftmove = 0;
       else cl.driftmove += host.frametime;
@@ -410,7 +411,7 @@ export function V_DriftPitch(): void {
     return;
   }
 
-  delta = qw.active ? 0 - cl.viewangles[PITCH] : cl.idealpitch - cl.viewangles[PITCH];
+  delta = clientProfile() === "qw" ? 0 - cl.viewangles[PITCH] : cl.idealpitch - cl.viewangles[PITCH];
 
   if (!delta) {
     cl.pitchvel = 0;
@@ -553,7 +554,7 @@ export function V_ParseDamage(): void {
   //
   // calculate view angle kicks
   //
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     VectorSubtract(from, cl.qw.simorg, from);
     VectorNormalize(from);
     AngleVectors(cl.qw.simangles, dmgForward, dmgRight, dmgUp);
@@ -633,7 +634,7 @@ V_CalcPowerupCshift
 export function V_CalcPowerupCshift(): void {
   // WinQuake reads `cl.items`; QW/client/view.c reads `cl.stats[STAT_ITEMS]`
   // (src/qw/bothdefs.ts) instead -- see file header.
-  const items = qw.active ? cl.stats[STAT_ITEMS] : cl.items;
+  const items = clientProfile() === "qw" ? cl.stats[STAT_ITEMS] : cl.items;
 
   if (items & IT_QUAD) {
     cl.cshifts[CSHIFT_POWERUP].destcolor[0] = 0;
@@ -733,7 +734,7 @@ export function CalcGunAngle(): void {
 
   // QW moves these three lines into V_AddIdle's own tail instead -- see file
   // header ("CalcGunAngle/V_AddIdle").
-  if (!qw.active) {
+  if (clientProfile() !== "qw") {
     cl.viewent.angles[ROLL] -= v_idlescale.value * Math.sin(cl.time * v_iroll_cycle.value) * v_iroll_level.value;
     cl.viewent.angles[PITCH] -= v_idlescale.value * Math.sin(cl.time * v_ipitch_cycle.value) * v_ipitch_level.value;
     cl.viewent.angles[YAW] -= v_idlescale.value * Math.sin(cl.time * v_iyaw_cycle.value) * v_iyaw_level.value;
@@ -749,7 +750,7 @@ export function V_BoundOffsets(): void {
   // QW/client/view.c bounds `cl.simorg`; WinQuake bounds the view entity's
   // origin. QW's own V_CalcRefdef no longer calls this function at all (see
   // file header), but it stays folded and exported for completeness.
-  const origin = qw.active ? cl.qw.simorg : cl_entities[cl.viewentity].origin;
+  const origin = clientProfile() === "qw" ? cl.qw.simorg : cl_entities[cl.viewentity].origin;
 
   // absolutely bound refresh reletive to entity clipping hull
   // so the view can never be inside a solid wall
@@ -776,7 +777,7 @@ export function V_AddIdle(): void {
 
   // QW moves these three lines here from CalcGunAngle's tail -- see file
   // header ("CalcGunAngle/V_AddIdle").
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     cl.viewent.angles[ROLL] -= v_idlescale.value * Math.sin(cl.time * v_iroll_cycle.value) * v_iroll_level.value;
     cl.viewent.angles[PITCH] -= v_idlescale.value * Math.sin(cl.time * v_ipitch_cycle.value) * v_ipitch_level.value;
     cl.viewent.angles[YAW] -= v_idlescale.value * Math.sin(cl.time * v_iyaw_cycle.value) * v_iyaw_level.value;
@@ -793,7 +794,7 @@ Roll is induced by movement and damage
 export function V_CalcViewRoll(): void {
   let side: number;
 
-  side = qw.active
+  side = clientProfile() === "qw"
     ? V_CalcRoll(cl.qw.simangles, cl.qw.simvel)
     : V_CalcRoll(cl_entities[cl.viewentity].angles, cl.velocity);
   r_refdef.viewangles[ROLL] += side;
@@ -807,7 +808,7 @@ export function V_CalcViewRoll(): void {
   // QW drops this dead-view-angle tail entirely; V_CalcRefdef's own
   // `view_message.flags & PF_DEAD` check handles it instead -- see file
   // header.
-  if (!qw.active && cl.stats[STAT_HEALTH] <= 0) {
+  if (clientProfile() !== "qw" && cl.stats[STAT_HEALTH] <= 0) {
     r_refdef.viewangles[ROLL] = 80; // dead view angle
     return;
   }
@@ -825,7 +826,7 @@ export function V_CalcIntermissionRefdef(): void {
   // view is the weapon model (only visible from inside body)
   const view = cl.viewent;
 
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     VectorCopy(cl.qw.simorg, r_refdef.vieworg);
     VectorCopy(cl.qw.simangles, r_refdef.viewangles);
   } else {
@@ -861,7 +862,7 @@ export function V_CalcRefdef(): void {
 
   V_DriftPitch();
 
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     const view = cl.viewent;
     bob = V_CalcBob();
 
@@ -1037,7 +1038,7 @@ function DropPunchAngle(): void {
 }
 
 export function V_RenderView(): void {
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     // literal `// FIXME @@@` in the C -- ported as written, see file header
     cl.qw.simangles[ROLL] = 0;
 
@@ -1127,7 +1128,7 @@ export function V_Init(): void {
 
   // QW drops lcd_x/lcd_yaw's registration entirely (dead cvars in QW, see
   // file header)
-  if (!qw.active) {
+  if (clientProfile() !== "qw") {
     Cvar_RegisterVariable(lcd_x);
     Cvar_RegisterVariable(lcd_yaw);
   }
@@ -1142,10 +1143,10 @@ export function V_Init(): void {
   Cvar_RegisterVariable(v_iroll_level);
   Cvar_RegisterVariable(v_ipitch_level);
 
-  if (qw.active) Cvar_RegisterVariable(v_contentblend);
+  if (clientProfile() === "qw") Cvar_RegisterVariable(v_contentblend);
 
   Cvar_RegisterVariable(v_idlescale);
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     Cvar_RegisterVariable(crosshaircolor);
     // QW/client/view.c: cvar_t cl_crossx = {"cl_crossx", "0", true}; (WinQuake: false)
     cl_crossx.archive = true;
@@ -1158,7 +1159,7 @@ export function V_Init(): void {
 
   // QW drops scr_ofsx/y/z's registration entirely (dead cvars in QW, see
   // file header)
-  if (!qw.active) {
+  if (clientProfile() !== "qw") {
     Cvar_RegisterVariable(scr_ofsx);
     Cvar_RegisterVariable(scr_ofsy);
     Cvar_RegisterVariable(scr_ofsz);

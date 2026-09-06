@@ -65,6 +65,19 @@ Deviations from the C:
   process from pushing the same driver into net_main.ts's `net_landrivers[]`
   twice; a real process only ever calls this once, same as the C's one-time
   static initialization.
+- Unified client (ARCHITECTURE.md "Unified client and server"): this is the
+  one binary. It links both client trees, and `Sys_Main_Init` picks the boot
+  stack from the command line: `-qw` (what the `qwcl` entry point passes)
+  boots QW/client/cl_main.c's Host_Init, anything else boots WinQuake's. Both
+  boots leave the per-connection machinery live -- `connect` follows the rule
+  in src/common/profile.ts, `playdemo` reads the file's extension, and this
+  module's own `Host_Frame` runs whichever tree's frame function matches
+  `cls.profile`, so a NetQuake boot that opens a QuakeWorld connection runs
+  QW/client/cl_main.c's Host_Frame for the life of that connection and
+  WinQuake's again after the disconnect. Booting BOTH stacks' shared
+  subsystems in one process (one merged Host_Init, `-dedicated` hosting both
+  server profiles) is the server-side half of the unification and is not this
+  unit's.
 - `main`'s top-level try/catch is this port's stand-in for the process
   simply calling `exit(1)` from inside `Sys_Error` (platform/sys.ts, which
   throws `SysError` instead so a caller -- here, and every test -- can
@@ -76,10 +89,22 @@ Deviations from the C:
 */
 
 import { COM_CheckParm, COM_InitArgv, Q_atof, com_argc, com_argv } from "./common/common";
-import { Host_Frame, Host_Init, sys_ticrate } from "./common/host";
+import { Host_Frame as NQ_Host_Frame, Host_Init as NQ_Host_Init, sys_ticrate } from "./common/host";
 import { LINUX_VERSION, QuakeParmsT } from "./common/quakedef";
+import { clientProfile, connectProfileFor, setBootProfile } from "./common/profile";
+import { qwConsoleHooks } from "./client/console";
+import { hostClientHooks } from "./common/host";
+import { setHostShutdown } from "./platform/sys";
+import {
+  Host_Frame as QW_Host_Frame,
+  Host_Init as QW_Host_Init,
+  Host_Shutdown as QW_Host_Shutdown,
+} from "./qw/client/cl_main";
+import { Con_DPrintf as QW_Con_DPrintf, Con_Printf as QW_Con_Printf, Con_SafePrintf as QW_Con_SafePrintf } from "./qw/client/console";
+import { SCR_UpdateScreen as QW_SCR_UpdateScreen } from "./qw/client/screen";
 import { registerLandriver, vcrState } from "./common/net_main";
 import { udpLandriver } from "./platform/net_udp";
+import { NET_Ready as qwNetReady } from "./qw/net_udp";
 import { Sys_FloatTime, Sys_Init, Sys_Printf, Sys_Quit, SysError, installTerminationSignals, sysState } from "./platform/sys";
 // The client subsystems host.c links against. Each registers its
 // hostClientHooks members at module load, so importing them here is the
@@ -114,8 +139,85 @@ import "./platform/cd_ogg";
 // vid_ref).
 import "./ref_soft/ref_soft";
 import "./ref_gl/ref_gl"; // registers itself under "gl"
+// The QuakeWorld object files the unified binary links -- the qwcl half of
+// the link step src/qw/main_cl.ts used to make on its own. Nothing here runs
+// until a QuakeWorld connection or a `-qw` boot asks for it.
+import "./qw/client/cl_input";
+import "./qw/client/cl_parse";
+import "./qw/client/cl_tent";
+import "./qw/client/cl_demo";
+import "./qw/client/cl_ents";
+import "./qw/client/cl_pred";
+import "./qw/client/cl_cam";
+import "./qw/client/skin";
+import "./qw/client/menu";
+import "./qw/client/sbar";
+import "./qw/pmove";
 
 let landriverRegistered = false;
+
+/*
+================
+Host_Frame
+
+One frame of whichever profile the client is on. The two trees' Host_Frame
+functions are genuinely different loops (QW/client/cl_main.c throttles on
+`cl_maxfps`/`rate` and runs prediction and CL_EmitEntities; WinQuake's runs
+the listen server), so the unified binary picks per frame rather than trying
+to merge them. See the file header.
+================
+*/
+export function Host_Frame(time: number): void {
+  if (clientProfile() === "qw") QW_Host_Frame(time);
+  else NQ_Host_Frame(time);
+}
+
+// Does this command line ask for the QuakeWorld boot? `-qw` (the `qwcl`
+// entry point's own argument) says so outright; so does a `+connect` whose
+// address carries a port, or `cl_protocol qw` set on the command line, which
+// is the connect rule (src/common/profile.ts) applied before Host_Init.
+function wantsQwBoot(argv: string[]): boolean {
+  if (COM_CheckParm("-qw")) return true;
+  for (let i = 0; i < argv.length - 1; i++) {
+    if (argv[i] === "+connect") return connectProfileFor(argv[i + 1], "auto") === "qw";
+    if (argv[i] === "+cl_protocol") return connectProfileFor("", argv[i + 1]) === "qw";
+  }
+  return false;
+}
+
+/*
+================
+Sys_Main_Init_QW
+
+QW/client/sys_linux.c's main() up to and including its Host_Init call, which
+this binary runs when the command line asks for the QuakeWorld boot. The link
+step it performs by hand (setHostShutdown, qwConsoleHooks, the
+scrUpdateScreen hook) is what the C's Makefile did by linking QW/client's
+console.c and screen.c instead of WinQuake's.
+================
+*/
+function Sys_Main_Init_QW(parms: QuakeParmsT): void {
+  setBootProfile("qw");
+
+  setHostShutdown(QW_Host_Shutdown);
+  qwConsoleHooks.Con_Printf = QW_Con_Printf;
+  qwConsoleHooks.Con_DPrintf = QW_Con_DPrintf;
+  qwConsoleHooks.Con_SafePrintf = QW_Con_SafePrintf;
+  hostClientHooks.scrUpdateScreen = QW_SCR_UpdateScreen;
+
+  parms.memsize = 16 * 1024 * 1024; // QW/client/sys_linux.c's own default
+
+  const j = COM_CheckParm("-mem");
+  if (j) parms.memsize = (Q_atof(com_argv[j + 1]) * 1024 * 1024) | 0;
+
+  COM_CheckParm("-noconinput"); // the fcntl it guards has no port, see file header
+
+  if (COM_CheckParm("-nostdout")) sysState.nostdout = 1;
+
+  Sys_Init();
+
+  QW_Host_Init(parms);
+}
 
 /*
 ================
@@ -148,13 +250,20 @@ export function Sys_Main_Init(argv: string[]): void {
 
   // fcntl (0, F_SETFL, fcntl (0, F_GETFL, 0) | FNDELAY); -- dropped, see file header
 
-  // net_bsd.c's static net_landrivers[] initializer -- see file header.
+  if (wantsQwBoot(argv)) {
+    Sys_Main_Init_QW(parms);
+    return;
+  }
+
+  // net_bsd.c's static net_landrivers[] initializer -- see file header. The
+  // QuakeWorld boot above does not reach it: QW's netcode is its own
+  // src/qw/net_udp.ts, never net_main.ts's driver table.
   if (!landriverRegistered) {
     landriverRegistered = true;
     registerLandriver(udpLandriver);
   }
 
-  Host_Init(parms);
+  NQ_Host_Init(parms);
 
   Sys_Init();
 
@@ -177,6 +286,21 @@ this at all, so it never has to await an infinite loop.
 ================
 */
 export async function Sys_Main_Loop(): Promise<never> {
+  // QW/client/sys_linux.c's own loop: no sys_ticrate branch (Host_Frame's
+  // cl_maxfps/rate check throttles it) and no dedicated arm. Bun's UDP bind
+  // is asynchronous where the C's is not, so the socket Host_Init's NET_Init
+  // opened is not usable until NET_Ready resolves.
+  if (clientProfile() === "qw") {
+    await qwNetReady();
+    let qwOldtime = Sys_FloatTime();
+    for (;;) {
+      const newtime = Sys_FloatTime();
+      Host_Frame(newtime - qwOldtime);
+      qwOldtime = newtime;
+      await Bun.sleep(1);
+    }
+  }
+
   let oldtime = Sys_FloatTime() - 0.1;
   for (;;) {
     // find time spent rendering last frame

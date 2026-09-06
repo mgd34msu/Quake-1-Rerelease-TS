@@ -70,6 +70,7 @@ import { hostClientHooks } from "../common/host";
 import { sysState } from "./sys";
 import { qw } from "../common/quakedef";
 import { SDLCD_Active, SDLCD_Close, SDLCD_Open, SDLCD_Queue, SDLCD_QueuedBytes } from "./sdl";
+import { clientProfile } from "../common/profile";
 
 const vorbisSymbols = {
   ov_fopen: { args: ["cstring", "ptr"], returns: "i32" },
@@ -432,7 +433,7 @@ export function CDAudio_Init(): number {
   // QW cd_linux.c wraps this check in `#if 0` -- qwcl's CDAudio_Init never
   // early-returns for a dedicated state (already non-load-bearing here per
   // this file's header: host.ts gates the call before it happens).
-  if (!qw.active && sysState.isDedicated) return -1;
+  if (clientProfile() !== "qw" && sysState.isDedicated) return -1;
 
   if (COM_CheckParm("-nocdaudio")) return -1;
 

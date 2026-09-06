@@ -145,6 +145,7 @@ import { Con_Printf } from "../client/console";
 // (see src/client/kfont_text.ts's own header for why the runtime call goes
 // through a lazy require() there instead of a static import of this file).
 import type { GlyphAtlasSourceT } from "../client/kfont_text";
+import { clientProfile } from "../common/profile";
 
 /*
 U25 (no C original): the 2D overlay -- console, HUD, menus -- draws 8-bit
@@ -728,7 +729,7 @@ export function Draw_ConsoleBackground(lines: number): void {
   let ver: string;
   let verDestBase: number;
 
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     // QW/client/draw.c:661-671 -- the version-string hack branches on
     // cls.download, and (unlike WinQuake's Draw_Init, which bakes the string
     // into the pic once at load time) writes it into the shared conback
@@ -790,7 +791,7 @@ export function Draw_ConsoleBackground(lines: number): void {
   // QW/client/draw.c: `memcpy(conback->data + 320*186, saveback, 320*8);` --
   // put the pre-hack bytes back so the shared cache data isn't left mutated
   // for the next Draw_CachePic caller.
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     conback.data.set(conback_saveback, 320 * 186);
   }
 }
@@ -913,7 +914,7 @@ export function Draw_Fill(x: number, y: number, w: number, h: number, c: number)
 
   // QW/client/draw.c adds this bounds check (WinQuake's Draw_Fill has none);
   // dropped silently when qw.active is false, matching WinQuake exactly.
-  if (qw.active && (x < 0 || x + w > vid.width || y < 0 || y + h > vid.height)) {
+  if (clientProfile() === "qw" && (x < 0 || x + w > vid.width || y < 0 || y + h > vid.height)) {
     Con_Printf("Bad Draw_Fill(%d, %d, %d, %d, %c)\n", x, y, w, h, c);
     return;
   }

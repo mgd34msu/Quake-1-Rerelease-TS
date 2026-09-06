@@ -74,6 +74,7 @@ import { r_origin, vpn, vright, vup } from "../client/render";
 import { d_lightstylevalue, gl_coloredlight, glState, r_lerplightstyles } from "./glquake";
 import { GL_BLEND, GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_SMOOTH, GL_SRC_ALPHA, GL_TEXTURE_2D, GL_TRIANGLE_FAN, qgl } from "./qgl";
 import { gl_flashblend, v_blend } from "./gl_rmain";
+import { clientProfile } from "../common/profile";
 
 // gl_rlight.c's reassigned file-scope globals (see the header note).
 export const rlightState: { r_dlightframecount: number; lightplane: MplaneT | null } = {
@@ -174,12 +175,12 @@ export function R_RenderDlight(light: DlightT): void {
   qgl().qglBegin(GL_TRIANGLE_FAN);
   // QW/client/gl_rlight.c replaces the fixed fan color with the dlight's own
   // color[4] (the two WinQuake values are the C's own commented-out lines).
-  if (qw.active) qgl().qglColor4f(light.color[0], light.color[1], light.color[2], light.color[3]);
+  if (clientProfile() === "qw") qgl().qglColor4f(light.color[0], light.color[1], light.color[2], light.color[3]);
   else qgl().qglColor3f(0.2, 0.1, 0.0);
   for (let i = 0; i < 3; i++) dlightV[i] = light.origin[i] - vpn[i] * rad;
   qgl().qglVertex3fv(dlightV);
   qgl().qglColor3f(0, 0, 0);
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     // QW/client/gl_rlight.c: table lookup instead of per-vertex sin/cos
     // (R_InitBubble precomputes bubbleSintable/bubbleCostable).
     for (let i = 0; i < 17; i++) {

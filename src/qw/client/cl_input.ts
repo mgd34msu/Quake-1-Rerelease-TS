@@ -53,11 +53,15 @@ Deviations from PORTING.md / the C source:
 - `in_impulse` (bare `int`, reassigned only inside this file) is `export let
   in_impulse`, per the same live-ES-binding ruling WinQuake's cl_input.ts
   documents for its own copy.
-- The eight movement cvars (`cl_upspeed` .. `cl_anglespeedkey`) are `export
-  const` CvarT instances; src/qw/client/cl_main.ts (already landed) imports
-  them by these exact names and registers them (mirroring cl_main.c's
-  CL_Init calling Cvar_RegisterVariable on cl_input.c's cvars) -- confirmed
-  by reading that file's own import list before writing this one.
+- The eight movement cvars (`cl_upspeed` .. `cl_anglespeedkey`) are re-exported
+  from src/client/cl_input.ts rather than declared again: both cl_input.c files
+  declare them with identical names and values, the C links one of the two per
+  binary, and this port links both into one binary (ARCHITECTURE.md "Unified
+  client and server"). src/qw/client/cl_main.ts imports them by these exact
+  names and registers them (mirroring cl_main.c's CL_Init calling
+  Cvar_RegisterVariable on cl_input.c's cvars); whichever profile's CL_Init
+  runs first is the one that links them, and the second registration of the
+  same object is the no-op re-link src/common/cvar.ts already recognizes.
 - `lookspring`, `V_StartPitchDrift`/`V_StopPitchDrift`: QW's `IN_MLookUp`/
   `CL_AdjustAngles` read these exactly as WinQuake's do. `lookspring` is
   cl_main.c's own cvar, imported from ./cl_main -- the same import
@@ -95,6 +99,16 @@ import { Con_Printf } from "./console";
 import { Cmd_AddCommand, Cmd_Argv } from "../cmd";
 import { Q_atoi } from "../../common/common";
 import { CvarT, Cvar_RegisterVariable } from "../../common/cvar";
+import {
+  cl_anglespeedkey,
+  cl_backspeed,
+  cl_forwardspeed,
+  cl_movespeedkey,
+  cl_pitchspeed,
+  cl_sidespeed,
+  cl_upspeed,
+  cl_yawspeed,
+} from "../../client/cl_input"; // one object per cvar name -- see the block below
 import { host } from "../../common/host";
 import { anglemod, VectorCopy } from "../../common/mathlib";
 import { PITCH, YAW, ROLL } from "../../common/quakedef";
@@ -347,17 +361,23 @@ export function CL_KeyState(key: KbuttonT): number {
 
 export const cl_nodelta = new CvarT("cl_nodelta", "0");
 
-export const cl_upspeed = new CvarT("cl_upspeed", "200");
-export const cl_forwardspeed = new CvarT("cl_forwardspeed", "200", true);
-export const cl_backspeed = new CvarT("cl_backspeed", "200", true);
-export const cl_sidespeed = new CvarT("cl_sidespeed", "350");
-
-export const cl_movespeedkey = new CvarT("cl_movespeedkey", "2.0");
-
-export const cl_yawspeed = new CvarT("cl_yawspeed", "140");
-export const cl_pitchspeed = new CvarT("cl_pitchspeed", "150");
-
-export const cl_anglespeedkey = new CvarT("cl_anglespeedkey", "1.5");
+// One object per cvar name: WinQuake/cl_input.c and QW/client/cl_input.c
+// declare these eight with identical names and identical values, and the C
+// links one of the two per binary. This port links both into one binary
+// (ARCHITECTURE.md "Unified client and server"), so a second set of objects
+// would leave whichever set the other profile's CL_Init did not register at
+// value 0 -- movement keys that do nothing. Registered by whichever
+// profile's CL_Init runs first.
+export {
+  cl_anglespeedkey,
+  cl_backspeed,
+  cl_forwardspeed,
+  cl_movespeedkey,
+  cl_pitchspeed,
+  cl_sidespeed,
+  cl_upspeed,
+  cl_yawspeed,
+};
 
 /*
 ================
@@ -584,41 +604,41 @@ CL_InitInput
 ============
 */
 export function CL_InitInput(): void {
-  Cmd_AddCommand("+moveup", IN_UpDown);
-  Cmd_AddCommand("-moveup", IN_UpUp);
-  Cmd_AddCommand("+movedown", IN_DownDown);
-  Cmd_AddCommand("-movedown", IN_DownUp);
-  Cmd_AddCommand("+left", IN_LeftDown);
-  Cmd_AddCommand("-left", IN_LeftUp);
-  Cmd_AddCommand("+right", IN_RightDown);
-  Cmd_AddCommand("-right", IN_RightUp);
-  Cmd_AddCommand("+forward", IN_ForwardDown);
-  Cmd_AddCommand("-forward", IN_ForwardUp);
-  Cmd_AddCommand("+back", IN_BackDown);
-  Cmd_AddCommand("-back", IN_BackUp);
-  Cmd_AddCommand("+lookup", IN_LookupDown);
-  Cmd_AddCommand("-lookup", IN_LookupUp);
-  Cmd_AddCommand("+lookdown", IN_LookdownDown);
-  Cmd_AddCommand("-lookdown", IN_LookdownUp);
-  Cmd_AddCommand("+strafe", IN_StrafeDown);
-  Cmd_AddCommand("-strafe", IN_StrafeUp);
-  Cmd_AddCommand("+moveleft", IN_MoveleftDown);
-  Cmd_AddCommand("-moveleft", IN_MoveleftUp);
-  Cmd_AddCommand("+moveright", IN_MoverightDown);
-  Cmd_AddCommand("-moveright", IN_MoverightUp);
-  Cmd_AddCommand("+speed", IN_SpeedDown);
-  Cmd_AddCommand("-speed", IN_SpeedUp);
-  Cmd_AddCommand("+attack", IN_AttackDown);
-  Cmd_AddCommand("-attack", IN_AttackUp);
-  Cmd_AddCommand("+use", IN_UseDown);
-  Cmd_AddCommand("-use", IN_UseUp);
-  Cmd_AddCommand("+jump", IN_JumpDown);
-  Cmd_AddCommand("-jump", IN_JumpUp);
-  Cmd_AddCommand("impulse", IN_Impulse);
-  Cmd_AddCommand("+klook", IN_KLookDown);
-  Cmd_AddCommand("-klook", IN_KLookUp);
-  Cmd_AddCommand("+mlook", IN_MLookDown);
-  Cmd_AddCommand("-mlook", IN_MLookUp);
+  Cmd_AddCommand("+moveup", IN_UpDown, "qw");
+  Cmd_AddCommand("-moveup", IN_UpUp, "qw");
+  Cmd_AddCommand("+movedown", IN_DownDown, "qw");
+  Cmd_AddCommand("-movedown", IN_DownUp, "qw");
+  Cmd_AddCommand("+left", IN_LeftDown, "qw");
+  Cmd_AddCommand("-left", IN_LeftUp, "qw");
+  Cmd_AddCommand("+right", IN_RightDown, "qw");
+  Cmd_AddCommand("-right", IN_RightUp, "qw");
+  Cmd_AddCommand("+forward", IN_ForwardDown, "qw");
+  Cmd_AddCommand("-forward", IN_ForwardUp, "qw");
+  Cmd_AddCommand("+back", IN_BackDown, "qw");
+  Cmd_AddCommand("-back", IN_BackUp, "qw");
+  Cmd_AddCommand("+lookup", IN_LookupDown, "qw");
+  Cmd_AddCommand("-lookup", IN_LookupUp, "qw");
+  Cmd_AddCommand("+lookdown", IN_LookdownDown, "qw");
+  Cmd_AddCommand("-lookdown", IN_LookdownUp, "qw");
+  Cmd_AddCommand("+strafe", IN_StrafeDown, "qw");
+  Cmd_AddCommand("-strafe", IN_StrafeUp, "qw");
+  Cmd_AddCommand("+moveleft", IN_MoveleftDown, "qw");
+  Cmd_AddCommand("-moveleft", IN_MoveleftUp, "qw");
+  Cmd_AddCommand("+moveright", IN_MoverightDown, "qw");
+  Cmd_AddCommand("-moveright", IN_MoverightUp, "qw");
+  Cmd_AddCommand("+speed", IN_SpeedDown, "qw");
+  Cmd_AddCommand("-speed", IN_SpeedUp, "qw");
+  Cmd_AddCommand("+attack", IN_AttackDown, "qw");
+  Cmd_AddCommand("-attack", IN_AttackUp, "qw");
+  Cmd_AddCommand("+use", IN_UseDown, "qw");
+  Cmd_AddCommand("-use", IN_UseUp, "qw");
+  Cmd_AddCommand("+jump", IN_JumpDown, "qw");
+  Cmd_AddCommand("-jump", IN_JumpUp, "qw");
+  Cmd_AddCommand("impulse", IN_Impulse, "qw");
+  Cmd_AddCommand("+klook", IN_KLookDown, "qw");
+  Cmd_AddCommand("-klook", IN_KLookUp, "qw");
+  Cmd_AddCommand("+mlook", IN_MLookDown, "qw");
+  Cmd_AddCommand("-mlook", IN_MLookUp, "qw");
 
   Cvar_RegisterVariable(cl_nodelta);
 

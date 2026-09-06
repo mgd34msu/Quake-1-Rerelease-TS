@@ -359,11 +359,14 @@ describe("src/platform/sdl.ts -- mouse motion and IN_Move", () => {
 
   test("under qw.active IN_MoveQw reads QuakeWorld's own cvars and buttons", () => {
     captureMouse();
-    // the WinQuake objects are left at values that would give a different
-    // answer, so a wrong read shows up as a wrong number, not as a zero.
-    sensitivity.value = 1;
-    m_pitch.value = 0.5;
-    m_yaw.value = 0.5;
+    // U32 (ARCHITECTURE.md "Unified client and server"): `sensitivity`,
+    // `m_pitch`, `m_yaw`, `m_forward`, `m_side` and `lookstrafe` are now ONE
+    // object per name across the two trees (src/qw/client/cl_main.ts
+    // re-exports src/client/cl_main.ts's), the same rule screen.c's
+    // scr_fov/scr_viewsize already followed, so the two halves of this test
+    // can no longer be told apart by giving them different cvar values. What
+    // still distinguishes IN_MoveQw is which kbutton_t it reads: QW's own
+    // `+mlook`/`+strafe` through qwInputHooks, not the WinQuake tree's.
     in_mlook.state = 0;
     in_strafe.state = 0;
 
@@ -407,7 +410,9 @@ describe("src/platform/sdl.ts -- mouse motion and IN_Move", () => {
       qw_in_mlook.state = 0;
     }
 
-    // with qw.active back off the same pushed delta takes the WinQuake objects
+    // with qw.active back off the same pushed delta takes the WinQuake
+    // buttons -- IN_Move only moves the pitch when THIS tree's +mlook is
+    // down, which the QuakeWorld leg above never touched.
     cl.viewangles[PITCH] = 0;
     cl.viewangles[YAW] = 0;
     in_mlook.state = 1;
@@ -417,7 +422,7 @@ describe("src/platform/sdl.ts -- mouse motion and IN_Move", () => {
     Sys_SendKeyEvents();
     const cmd2 = new UsercmdT();
     IN_Move(cmd2);
-    expect(cl.viewangles[PITCH]).toBeCloseTo(0.5 * 1 * 40, 4);
+    expect(cl.viewangles[PITCH]).toBeCloseTo(0.022 * 3 * 40, 4);
     in_mlook.state = 0;
   });
 });

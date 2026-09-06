@@ -61,6 +61,7 @@ import {
   GL_UNSIGNED_BYTE,
   qgl,
 } from "./qgl";
+import { clientProfile } from "../common/profile";
 
 export const NET_GRAPHHEIGHT = 32;
 

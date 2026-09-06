@@ -448,11 +448,11 @@ export function Con_Init(): void {
   //
   Cvar_RegisterVariable(con_notifytime);
 
-  Cmd_AddCommand("toggleconsole", Con_ToggleConsole_f);
-  Cmd_AddCommand("togglechat", Con_ToggleChat_f);
-  Cmd_AddCommand("messagemode", Con_MessageMode_f);
-  Cmd_AddCommand("messagemode2", Con_MessageMode2_f);
-  Cmd_AddCommand("clear", Con_Clear_f);
+  Cmd_AddCommand("toggleconsole", Con_ToggleConsole_f, "qw");
+  Cmd_AddCommand("togglechat", Con_ToggleChat_f, "qw");
+  Cmd_AddCommand("messagemode", Con_MessageMode_f, "qw");
+  Cmd_AddCommand("messagemode2", Con_MessageMode2_f, "qw");
+  Cmd_AddCommand("clear", Con_Clear_f, "qw");
   conState.con_initialized = true;
 }
 

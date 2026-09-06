@@ -76,7 +76,7 @@ Deviations from PORTING.md / the C source:
   before its serverinfo cannot inherit the last connection's protocol.
 */
 
-import { Q_atoi, va, com_gamedir, COM_DefaultExtension, COM_FOpenFile, COM_FRead, COM_FClose, type FileHandle } from "../common/common";
+import { Q_atoi, va, com_gamedir, COM_DefaultExtension, COM_FileExtension, COM_FOpenFile, COM_FRead, COM_FClose, type FileHandle } from "../common/common";
 import { Com_sprintf } from "../common/sprintf";
 import { Cmd_Argc, Cmd_Argv, Cmd_ExecuteString, cmdState, CmdSourceT } from "../common/cmd";
 import { MSG_WriteByte, net_message, SZ_Clear } from "../common/sizebuf";
@@ -89,8 +89,14 @@ import { Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite } from "../p
 import { Con_Printf } from "./console";
 import { CactiveT, SIGNONS, cl, cls } from "./client";
 import type * as ClMainModule from "./cl_main";
+import type * as QwClDemoModule from "../qw/client/cl_demo";
+import { setClientProfile } from "../common/profile";
 
 // see the file header's import-cycle note
+function qwClDemoMod(): typeof QwClDemoModule {
+  return require("../qw/client/cl_demo");
+}
+
 function clMainMod(): typeof ClMainModule {
   return require("./cl_main");
 }
@@ -332,6 +338,18 @@ export function CL_PlayDemo_f(): void {
     return;
   }
 
+  // Unified client (ARCHITECTURE.md "Unified client and server"): a demo's
+  // profile comes from the file. `.qwd` is a QuakeWorld capture and is played
+  // by QW/client/cl_demo.c's own CL_PlayDemo_f; anything else is a NetQuake
+  // `.dem` (whose protocol is re-derived from the recorded serverinfo), which
+  // is the rest of this function.
+  if (COM_FileExtension(Cmd_Argv(1)).toLowerCase() === "qwd") {
+    clMainMod().CL_InitQwProfile();
+    setClientProfile("qw");
+    qwClDemoMod().CL_PlayDemo_f();
+    return;
+  }
+
   //
   // disconnect from server
   //
@@ -401,6 +419,14 @@ export function CL_TimeDemo_f(): void {
 
   if (Cmd_Argc() !== 2) {
     Con_Printf("timedemo <demoname> : gets demo speeds\n");
+    return;
+  }
+
+  // see CL_PlayDemo_f: a `.qwd` is QuakeWorld's, timing included
+  if (COM_FileExtension(Cmd_Argv(1)).toLowerCase() === "qwd") {
+    clMainMod().CL_InitQwProfile();
+    setClientProfile("qw");
+    qwClDemoMod().CL_TimeDemo_f();
     return;
   }
 

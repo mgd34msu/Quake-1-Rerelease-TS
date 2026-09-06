@@ -207,6 +207,7 @@ import {
   GL_Set2D,
 } from "./gl_draw";
 import { R_NetGraph } from "./gl_ngraph";
+import { clientProfile } from "../common/profile";
 
 export const gl_triplebuffer = new CvarT("gl_triplebuffer", "1", true);
 
@@ -355,7 +356,7 @@ function SCR_CalcRefdef(): void {
   // view, the refresh gets the whole screen and the status bar overlays it,
   // instead of the view being cut short by sb_lines. The same fold is in the
   // software renderer's R_SetVrect (src/ref_soft/r_main.ts).
-  const qwFullNoSbar = qw.active && !qwClMainMod().cl_sbar.value && full;
+  const qwFullNoSbar = clientProfile() === "qw" && !qwClMainMod().cl_sbar.value && full;
 
   if (qwFullNoSbar) h = vid.height;
   else h = vid.height - scrState.sb_lines;
@@ -369,7 +370,7 @@ function SCR_CalcRefdef(): void {
   r_refdef.vrect.height = (vid.height * size) | 0;
   if (!qwFullNoSbar) {
     if (r_refdef.vrect.height > vid.height - scrState.sb_lines) r_refdef.vrect.height = vid.height - scrState.sb_lines;
-    if (!qw.active && r_refdef.vrect.height > vid.height) r_refdef.vrect.height = vid.height;
+    if (clientProfile() !== "qw" && r_refdef.vrect.height > vid.height) r_refdef.vrect.height = vid.height;
   } else if (r_refdef.vrect.height > vid.height) r_refdef.vrect.height = vid.height;
   r_refdef.vrect.x = ((vid.width - r_refdef.vrect.width) / 2) | 0;
   if (full) r_refdef.vrect.y = 0;
@@ -440,7 +441,7 @@ function SCR_DrawCrosshair(): void {
     // QW/client/gl_screen.c:1172 factors the same site out into gl_draw.c's
     // Draw_Crosshair, which adds the crosshair.value==2 textured crosshair
     // and the -4 centering offset.
-    if (qw.active) {
+    if (clientProfile() === "qw") {
       Draw_Crosshair();
       return;
     }

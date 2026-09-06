@@ -65,6 +65,7 @@ import type { ModelT } from "../common/model";
 import type { QsocketT } from "../common/net";
 import { MAX_CL_STATS, MAX_EDICTS, MAX_LIGHTSTYLES, MAX_MODELS, MAX_SOUNDS } from "../common/quakedef";
 import { PROTOCOL_NETQUAKE } from "../common/protocol";
+import { clientProfile, setClientProfile, type NetProfileT } from "../common/profile";
 import { type Vec3, vec3 } from "../common/mathlib";
 import { SizeBuf } from "../common/sizebuf";
 import { UsercmdT } from "../server/server";
@@ -184,6 +185,19 @@ export enum CactiveT {
 //
 export class ClientStaticT {
   state: CactiveT = CactiveT.ca_dedicated;
+
+  // Not in client.h: ARCHITECTURE.md "Unified client and server" -- which of
+  // the two protocol families this connection speaks. Set when a connection
+  // or a demo is opened (src/common/profile.ts's header states the rule) and
+  // read by every site that used to read the process-wide `qw.active`. It
+  // lives on src/common/profile.ts's holder rather than in this object, so
+  // the shared modules can ask for it without importing the client.
+  get profile(): NetProfileT {
+    return clientProfile();
+  }
+  set profile(value: NetProfileT) {
+    setClientProfile(value);
+  }
 
   // personalization data sent to server
   mapstring = ""; // char mapstring[MAX_QPATH]

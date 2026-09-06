@@ -139,6 +139,7 @@ import { conState } from "./console";
 import { M_Keydown, M_ToggleMenu_f } from "./menu";
 import type * as QwMenuModule from "../qw/client/menu";
 import { svUserHooks } from "../server/sv_user";
+import { clientProfile } from "../common/profile";
 
 // keys.c is one of the files both trees share, but the menu.c it calls
 // M_Keydown/M_ToggleMenu_f in is not: WinQuake's menu.c and QW/client/menu.c
@@ -154,12 +155,12 @@ function qwMenuMod(): typeof QwMenuModule {
 }
 
 function menuKeydown(key: number): void {
-  if (qw.active) qwMenuMod().M_Keydown(key);
+  if (clientProfile() === "qw") qwMenuMod().M_Keydown(key);
   else M_Keydown(key);
 }
 
 function menuToggleMenu_f(): void {
-  if (qw.active) qwMenuMod().M_ToggleMenu_f();
+  if (clientProfile() === "qw") qwMenuMod().M_ToggleMenu_f();
   else M_ToggleMenu_f();
 }
 
@@ -479,7 +480,7 @@ function CompleteCommand(): void {
 
 function Key_Console(key: number): void {
   if (key === K_ENTER) {
-    if (qw.active) {
+    if (clientProfile() === "qw") {
       // QW/client/keys.c's Key_Console K_ENTER branch (~216-233): distinguish
       // an explicit command from a chat message -- see file header.
       const line = key_lines[keyState.edit_line];
@@ -512,7 +513,7 @@ function Key_Console(key: number): void {
   }
 
   if (key === K_TAB) {
-    if (qw.active) {
+    if (clientProfile() === "qw") {
       // QW/client/keys.c's Key_Console K_TAB branch calls CompleteCommand()
       // (see file header for how it differs from WinQuake's inline version
       // below).
@@ -627,7 +628,7 @@ function Key_Message(key: number): void {
 
   // QW: chat_buffer[MAXCMDLINE] (255-char cap), not WinQuake's fixed 32-byte
   // chat_buffer[32] (31-char cap) -- see file header.
-  if (chat_bufferlen === (qw.active ? MAXCMDLINE - 1 : 31)) return; // all full
+  if (chat_bufferlen === (clientProfile() === "qw" ? MAXCMDLINE - 1 : 31)) return; // all full
 
   keyState.chat_buffer += String.fromCharCode(key);
   chat_bufferlen++;
@@ -764,7 +765,7 @@ export function Key_WriteBindings(f: { write(s: string): void }): void {
   for (let i = 0; i < 256; i++) {
     const binding = keybindings[i];
     if (binding === null) continue;
-    if (qw.active) {
+    if (clientProfile() === "qw") {
       // QW writes a line for any binding at all (even ""), and does not
       // quote the key name -- see file header.
       f.write(`bind ${Key_KeynumToString(i)} "${binding}"\n`);
@@ -797,7 +798,7 @@ export function Key_Init(): void {
   consolekeys[K_DOWNARROW] = true;
   consolekeys[K_BACKSPACE] = true;
   // QW/client/keys.c's Key_Init additionally marks Home/End as console keys.
-  if (qw.active) {
+  if (clientProfile() === "qw") {
     consolekeys[K_HOME] = true;
     consolekeys[K_END] = true;
   }
@@ -868,7 +869,7 @@ export function Key_Event(key: number, down: boolean): void {
     key_repeats[key]++;
     // QW additionally exempts K_PGUP/K_PGDN from autorepeat suppression --
     // see file header.
-    const autorepeatExempt = qw.active ? key !== K_BACKSPACE && key !== K_PAUSE && key !== K_PGUP && key !== K_PGDN : key !== K_BACKSPACE && key !== K_PAUSE;
+    const autorepeatExempt = clientProfile() === "qw" ? key !== K_BACKSPACE && key !== K_PAUSE && key !== K_PGUP && key !== K_PGDN : key !== K_BACKSPACE && key !== K_PAUSE;
     if (autorepeatExempt && key_repeats[key] > 1) {
       return; // ignore most autorepeats
     }
@@ -959,7 +960,7 @@ export function Key_Event(key: number, down: boolean): void {
     // QW's key_game routing gate is `cls.state === ca_active || !consolekeys[key]`,
     // not WinQuake's `con_forcedup`-based one (QW/client/console.c has no
     // `con_forcedup` at all) -- see file header.
-    (keyState.key_dest === KeydestT.key_game && ((qw.active ? cls.state === CactiveT.ca_active : !conState.con_forcedup) || !consolekeys[key]))
+    (keyState.key_dest === KeydestT.key_game && ((clientProfile() === "qw" ? cls.state === CactiveT.ca_active : !conState.con_forcedup) || !consolekeys[key]))
   ) {
     const kb = keybindings[key];
     if (kb !== null) {

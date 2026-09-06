@@ -94,6 +94,7 @@ import { SPEED, r_refdef, rState, sintable } from "./r_local";
 import { r_fullbright } from "./r_main";
 import { qw } from "../common/quakedef";
 import { R_GenSkyTile } from "./r_sky";
+import { clientProfile } from "../common/profile";
 
 export { r_drawsurf };
 
@@ -231,7 +232,7 @@ export function R_BuildLightMap(): void {
   // QW r_surf.c comments out the `r_fullbright.value ||` half of this guard:
   // under qw.active the lightmap always rebuilds from lightdata (or clears
   // to black if there is none), regardless of r_fullbright.
-  if ((!qw.active && r_fullbright.value) || worldmodel === null || worldmodel.lightdata === null) {
+  if ((clientProfile() !== "qw" && r_fullbright.value) || worldmodel === null || worldmodel.lightdata === null) {
     for (let i = 0; i < size; i++) blocklights[i] = 0;
     return;
   }
@@ -347,7 +348,7 @@ export function R_BuildLightMapRGB(): void {
   let lightmapofs = 0;
 
   const worldmodel = cl.worldmodel;
-  if ((!qw.active && r_fullbright.value) || worldmodel === null || worldmodel.lightdata === null) {
+  if ((clientProfile() !== "qw" && r_fullbright.value) || worldmodel === null || worldmodel.lightdata === null) {
     for (let i = 0; i < size * 3; i++) blocklights_rgb[i] = 0;
     return;
   }

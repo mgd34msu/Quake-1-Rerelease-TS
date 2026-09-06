@@ -1059,14 +1059,14 @@ export function M_MultiPlayer_Key(key: number): void {
 /* Menu Subsystem */
 
 export function M_Init(): void {
-  Cmd_AddCommand("togglemenu", M_ToggleMenu_f);
+  Cmd_AddCommand("togglemenu", M_ToggleMenu_f, "qw");
 
-  Cmd_AddCommand("menu_main", M_Menu_Main_f);
-  Cmd_AddCommand("menu_options", M_Menu_Options_f);
-  Cmd_AddCommand("menu_keys", M_Menu_Keys_f);
-  Cmd_AddCommand("menu_video", M_Menu_Video_f);
-  Cmd_AddCommand("help", M_Menu_Help_f);
-  Cmd_AddCommand("menu_quit", M_Menu_Quit_f);
+  Cmd_AddCommand("menu_main", M_Menu_Main_f, "qw");
+  Cmd_AddCommand("menu_options", M_Menu_Options_f, "qw");
+  Cmd_AddCommand("menu_keys", M_Menu_Keys_f, "qw");
+  Cmd_AddCommand("menu_video", M_Menu_Video_f, "qw");
+  Cmd_AddCommand("help", M_Menu_Help_f, "qw");
+  Cmd_AddCommand("menu_quit", M_Menu_Quit_f, "qw");
 }
 
 export function M_Draw(): void {

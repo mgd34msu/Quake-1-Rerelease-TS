@@ -296,11 +296,11 @@ export function Sbar_Init(): void {
   sb_face_invis_invuln = r.Draw_PicFromWad("face_inv2");
   sb_face_quad = r.Draw_PicFromWad("face_quad");
 
-  Cmd_AddCommand("+showscores", Sbar_ShowScores);
-  Cmd_AddCommand("-showscores", Sbar_DontShowScores);
+  Cmd_AddCommand("+showscores", Sbar_ShowScores, "qw");
+  Cmd_AddCommand("-showscores", Sbar_DontShowScores, "qw");
 
-  Cmd_AddCommand("+showteamscores", Sbar_ShowTeamScores);
-  Cmd_AddCommand("-showteamscores", Sbar_DontShowTeamScores);
+  Cmd_AddCommand("+showteamscores", Sbar_ShowTeamScores, "qw");
+  Cmd_AddCommand("-showteamscores", Sbar_DontShowTeamScores, "qw");
 
   sb_sbar = r.Draw_PicFromWad("sbar");
   sb_ibar = r.Draw_PicFromWad("ibar");

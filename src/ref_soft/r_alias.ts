@@ -76,7 +76,6 @@ import { Mod_Extradata } from "../common/model";
 import { Con_DPrintf } from "../client/console";
 import { Sys_Error } from "../platform/sys";
 import { cl } from "../client/client";
-import { qw } from "../common/quakedef";
 import type * as SkinModule from "../qw/client/skin";
 
 // QW skin.c reaches the whole QuakeWorld client (skin.c -> cl_parse.c ->
@@ -118,6 +117,7 @@ import { R_AliasClipTriangle } from "./r_aclip";
 import { D_PolysetDraw, D_PolysetDrawFinalVerts, D_PolysetUpdateTables } from "./d_polyse";
 // U26: re-release MD5 replacement models -- see r_md5.ts's own header.
 import { R_MD5DrawModel, getMd5Payload, r_enhancedmodels } from "./r_md5";
+import { clientProfile } from "../common/profile";
 
 const LIGHT_MIN = 5; // lowest light value we'll allow, to avoid the
 //  need for inner-loop light clamping
@@ -615,7 +615,7 @@ export function R_AliasSetupSkin(): void {
   // QW/client/r_alias.c appends this to R_AliasSetupSkin: the connected
   // player's downloaded skin overrides the model's own, so player models
   // don't all wear the pak0 default.
-  if (qw.active && ent.scoreboard !== null) {
+  if (clientProfile() === "qw" && ent.scoreboard !== null) {
     const sc = ent.scoreboard;
     if (!sc.skin) skinMod().Skin_Find(sc);
     // Skin_Find leaves sc.skin null only on its ran-out-of-slots flush path;

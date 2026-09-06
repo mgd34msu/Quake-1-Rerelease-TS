@@ -155,6 +155,7 @@ import type * as KeysModule from "./keys";
 import type * as MenuModule from "./menu";
 import type * as SndDmaModule from "./snd_dma";
 import type * as KfontTextModule from "./kfont_text";
+import { qwActive } from "../common/profile";
 
 // see the file header's import-cycle note
 function cvarMod(): typeof CvarModule {
@@ -420,10 +421,10 @@ export function Con_Init(): void {
   cvarMod().Cvar_RegisterVariable(con_notifytime);
 
   const cmd = cmdMod();
-  cmd.Cmd_AddCommand("toggleconsole", Con_ToggleConsole_f);
-  cmd.Cmd_AddCommand("messagemode", Con_MessageMode_f);
-  cmd.Cmd_AddCommand("messagemode2", Con_MessageMode2_f);
-  cmd.Cmd_AddCommand("clear", Con_Clear_f);
+  cmd.Cmd_AddCommand("toggleconsole", Con_ToggleConsole_f, "nq");
+  cmd.Cmd_AddCommand("messagemode", Con_MessageMode_f, "nq");
+  cmd.Cmd_AddCommand("messagemode2", Con_MessageMode2_f, "nq");
+  cmd.Cmd_AddCommand("clear", Con_Clear_f, "nq");
   conState.con_initialized = true;
 }
 
@@ -560,7 +561,7 @@ export function Con_Printf(fmt: string, ...args: Array<string | number>): void {
 
   const client = clientMod();
 
-  if (!qw.active) {
+  if (!qwActive()) {
     // cls.state == ca_dedicated in the C; sysState.isDedicated (platform/sys.ts)
     // is also checked -- see file header. QW/client/console.c's Con_Printf has
     // no such early return at all -- see this file's QuakeWorld track note.
@@ -571,7 +572,7 @@ export function Con_Printf(fmt: string, ...args: Array<string | number>): void {
   Con_Print(msg);
 
   // update the screen if the console is displayed
-  const shouldUpdate = qw.active
+  const shouldUpdate = qwActive()
     ? client.cls.state !== client.CactiveT.ca_active // QW: `if (cls.state != ca_active)`
     : client.cls.signon !== client.SIGNONS && !scrState.scr_disabled_for_loading;
 

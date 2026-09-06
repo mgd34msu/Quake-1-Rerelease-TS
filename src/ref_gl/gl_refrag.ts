@@ -50,9 +50,9 @@ import { ModtypeT, type MleafT, type MnodeT, isMleaf } from "../common/model";
 import { Con_Printf } from "../client/console";
 import { Sys_Error } from "../platform/sys";
 import { MAX_VISEDICTS, cl, cl_visedicts, clState } from "../client/client";
-import { qw } from "../common/quakedef";
 import type { EfragT, EntityT } from "../client/render";
 import { glState } from "./glquake";
+import { clientProfile } from "../common/profile";
 
 export const refragState: { r_pefragtopnode: MnodeT | MleafT | null } = { r_pefragtopnode: null };
 
@@ -244,7 +244,7 @@ export function R_StoreEfrags(leafEfrags: EfragT | null): void {
           // republishes every frame, so copying into it is the C's `= *pent`
           // and leaves no stale packet-entity data behind it.
           const slot = cl_visedicts[clState.cl_numvisedicts];
-          if (qw.active && slot !== null) slot.copyFrom(pent);
+          if (clientProfile() === "qw" && slot !== null) slot.copyFrom(pent);
           else cl_visedicts[clState.cl_numvisedicts] = pent;
           clState.cl_numvisedicts++;
 
