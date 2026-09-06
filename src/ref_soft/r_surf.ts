@@ -32,8 +32,13 @@ Deviations from PORTING.md / the C source:
   and `>=` compares the same numbers the C compared.
 - `unsigned *r_lightptr` walks `blocklights`, so it is an element index into
   that `Uint32Array`.
-- `blocklights` is `Uint32Array(18*18)`; the C's `(int)blocklights[i]`
-  unsigned-to-int conversion in R_BuildLightMap is written `| 0`.
+- `blocklights` was `Uint32Array(18*18)` in WinQuake, sized for the 256-texel
+  extents cap ((256>>4)+1 = 17, rounded up to 18 for headroom). Re-release
+  maps load with model.ts's MAX_SURFACE_EXTENTS (2000), so it is sized from
+  that instead: `(MAX_SURFACE_EXTENTS>>4)+2` per side, the same "+2" headroom
+  WinQuake's own 18 (one more than the 17 the 256 cap strictly needs) used.
+  The C's `(int)blocklights[i]` unsigned-to-int conversion in R_BuildLightMap
+  is written `| 0`.
 - `int td = local[1] - t*16;` and `int sd = ...` truncate a float toward zero,
   so they use `Math.trunc`.
 - R_DrawSurfaceBlock16 writes `unsigned short`s through a pointer cast of
@@ -66,7 +71,7 @@ no-op noted above, not a QW delta) -- folded at the guard in R_BuildLightMap.
 
 import { DotProduct, type Vec3, vec3 } from "../common/mathlib";
 import { MAXLIGHTMAPS } from "../common/bspfile";
-import { SURF_DRAWSKY, SURF_DRAWTURB, type MsurfaceT, type TextureT } from "../common/model";
+import { MAX_SURFACE_EXTENTS, SURF_DRAWSKY, SURF_DRAWTURB, mipDim, type MsurfaceT, type TextureT } from "../common/model";
 import { MAX_DLIGHTS, cl, cl_dlights } from "../client/client";
 import { VID_CBITS, d_8to16table, vid } from "../client/vid";
 import { Sys_Error } from "../platform/sys";
@@ -111,7 +116,10 @@ const surfmiptable: Array<() => void> = [
   R_DrawSurfaceBlock8_mip3,
 ];
 
-export const blocklights: Uint32Array = new Uint32Array(18 * 18);
+// see the header note above: sized from MAX_SURFACE_EXTENTS instead of the
+// WinQuake-fixed 18*18, which only covered a 256-texel extents cap.
+const LM_BLOCK = (MAX_SURFACE_EXTENTS >> 4) + 2;
+export const blocklights: Uint32Array = new Uint32Array(LM_BLOCK * LM_BLOCK);
 
 function drawsurfDest(): Uint8Array {
   const d = r_drawsurf.surfdat;
@@ -281,7 +289,13 @@ export function R_DrawSurface(): void {
   // the fractional light values should range from 0 to (VID_GRADES - 1) << 16
   // from a source range of 0 - 255
 
-  const texwidth = mt.width >> r_drawsurf.surfmip;
+  // mipDim, not a plain shift: model.ts's Mod_LoadTextures generates each mip
+  // level's own pixel data with a floor-and-minimum-1 rounding (a re-release
+  // texture need not be 16-aligned, or even large enough that every mip
+  // level's dimension stays nonzero under a plain `>> level`), so reading it
+  // back has to divide the same way or drift off the real data -- see this
+  // file's header for the offsets-into-`data` addressing this reads through.
+  const texwidth = mipDim(mt.width, r_drawsurf.surfmip);
 
   blocksize = 16 >> r_drawsurf.surfmip;
   blockdivshift = 4 - r_drawsurf.surfmip;
@@ -306,9 +320,9 @@ export function R_DrawSurface(): void {
     horzblockstep = blocksize << 1;
   }
 
-  const smax = mt.width >> r_drawsurf.surfmip;
+  const smax = texwidth;
   const twidth = texwidth;
-  const tmax = mt.height >> r_drawsurf.surfmip;
+  const tmax = mipDim(mt.height, r_drawsurf.surfmip);
   sourcetstep = texwidth;
   r_stepback = tmax * twidth;
 

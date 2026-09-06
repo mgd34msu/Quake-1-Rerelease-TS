@@ -585,7 +585,7 @@ function baseView(): DataView {
 // the same live-binding pattern common.ts's own reassigned globals use.
 export let mod_novis = new Uint8Array(MAX_MAP_LEAFS / 8);
 
-export const MAX_MOD_KNOWN = 256;
+export const MAX_MOD_KNOWN = 8192;
 const mod_known: ModelT[] = [];
 let mod_numknown = 0;
 
@@ -908,6 +908,24 @@ function charAtOrZero(s: string, i: number): number {
   return i < s.length ? s.charCodeAt(i) : 0;
 }
 
+// a mip level's dimension is the previous level's halved and floored, never
+// below 1 (WinQuake's mip chain assumed 16-alignment kept every level even
+// down to mip 3; re-release textures can be any size, so every consumer of
+// a texture's per-mip width/height -- this loader and the software
+// renderer's surface cache and texture sampling -- must round the same way).
+export function mipDim(n: number, level: number): number {
+  return Math.max(1, n >> level);
+}
+
+// replaces the classic width*height/64*85 shortcut (exact only when width
+// and height are both multiples of 8): sums each of the MIPLEVELS levels'
+// own pixel count so the total is exact for any width/height.
+function textureMipPixels(width: number, height: number): number {
+  let total = 0;
+  for (let level = 0; level < MIPLEVELS; level++) total += mipDim(width, level) * mipDim(height, level);
+  return total;
+}
+
 /*
 =================
 Mod_LoadTextures
@@ -952,9 +970,17 @@ export function Mod_LoadTextures(mod: ModelT, buffer: Uint8Array, l: LumpT, text
     const mtOffset = l.fileofs + dataofs;
     const mt = readMiptex(view, mtOffset);
 
-    if (mt.width & 15 || mt.height & 15) Sys_Error("Texture %s is not 16 aligned", mt.name);
+    // re-release textures are not all multiples of 16 (Ironwail/QuakeSpasm
+    // gl_model.c only warns here, under developer 1, and neither aligns nor
+    // rejects the texture -- see this file's header). The mip pixel count
+    // below replaces the classic width*height/64*85 shortcut, which only
+    // stays exact when width and height are both multiples of 8; textureMipPixels
+    // sums each mip level's own dimensions (halved with a floor and a
+    // minimum of 1, same as the mip sampling code) so it is exact for any
+    // width/height.
+    if (mt.width & 15 || mt.height & 15) Con_DPrintf("Texture %s (%d x %d) is not 16 aligned\n", mt.name, mt.width, mt.height);
 
-    const pixels = Math.floor((mt.width * mt.height) / 64) * 85;
+    const pixels = textureMipPixels(mt.width, mt.height);
     const tx = new TextureT();
     textures[i] = tx;
 
@@ -1439,9 +1465,18 @@ CalcSurfaceExtents
 Fills in s->texturemins[] and s->extents[]
 ================
 */
-// gl_model.c's copy caps extents at 512 where model.c caps at 256; the cap is
-// a parameter so the GL hook can pass its own.
-export function CalcSurfaceExtents(s: MsurfaceT, maxextents = 256): void {
+// WinQuake's model.c capped extents at 256 texels, sized for its 18x18
+// blocklights buffer; re-release maps (vault, tboss) exceed that. QuakeSpasm/
+// Ironwail raise the software-shaped cap to 2000 (gl_rsurf.c CalcSurfaceExtents,
+// "was 512 in glquake, 256 in winquake") and size their lightmap block from
+// it instead of a fixed 18x18; the software renderer here does the same (see
+// src/ref_soft/r_surf.ts). gl_model.c's own copy caps at 512, a GL-only
+// limit; the cap is a parameter so each renderer can pass its own -- the
+// default here is what the shared/dedicated-server load path (Mod_LoadFaces
+// below) and the software renderer use.
+export const MAX_SURFACE_EXTENTS = 2000;
+
+export function CalcSurfaceExtents(s: MsurfaceT, maxextents = MAX_SURFACE_EXTENTS): void {
   const loadmodel = currentModel();
   const mins = [999999, 999999];
   const maxs = [-99999, -99999];

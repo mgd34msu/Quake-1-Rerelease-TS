@@ -49,13 +49,18 @@ Deviations from PORTING.md / the C source:
 - Dropped: nothing. d_surf.c has no #ifdef branches; the two `// DEBUG`
   comments and the `D_CheckCacheGuard()` call they mark are the shipping code
   and are kept.
+- D_SCAlloc's sanity bounds (`width > 256`, `size > 0x10000`) were derived
+  from WinQuake's 256-texel extents cap: 256 is the max possible surfwidth,
+  and 256*256 = 0x10000 the max possible cache size at mip 0. Both are
+  re-derived from model.ts's MAX_SURFACE_EXTENTS now that re-release maps
+  raise the cap to 2000, so a legitimate large surface no longer trips them.
 */
 
 import { Con_Printf } from "../client/console";
 import { Sys_Error, Sys_Printf } from "../platform/sys";
 import { COM_CheckParm, Q_atoi, com_argv, msg_suppress_1 } from "../common/common";
 import { CacheUser } from "../common/zone";
-import type { MsurfaceT } from "../common/model";
+import { MAX_SURFACE_EXTENTS, type MsurfaceT } from "../common/model";
 import { GUARDSIZE, SURFCACHE_HEADER_SIZE, SURFCACHE_SIZE_AT_320X200, SurfcacheT, dState } from "./d_local";
 import { r_drawsurf } from "./d_iface";
 import { d_lightstylevalue, rState } from "./r_shared";
@@ -169,9 +174,9 @@ export function D_SCAlloc(width: number, sizeIn: number): SurfcacheT {
   let size = sizeIn;
   let wrapped_this_time: boolean;
 
-  if (width < 0 || width > 256) Sys_Error("D_SCAlloc: bad cache width %d\n", width);
+  if (width < 0 || width > MAX_SURFACE_EXTENTS) Sys_Error("D_SCAlloc: bad cache width %d\n", width);
 
-  if (size <= 0 || size > 0x10000) Sys_Error("D_SCAlloc: bad cache size %d\n", size);
+  if (size <= 0 || size > MAX_SURFACE_EXTENTS * MAX_SURFACE_EXTENTS) Sys_Error("D_SCAlloc: bad cache size %d\n", size);
 
   size = size + SURFCACHE_HEADER_SIZE;
   size = (size + 3) & ~3;

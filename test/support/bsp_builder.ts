@@ -131,6 +131,16 @@ export interface BspBuildOptions {
   // bytes stored in the bsp at all -- src/common/model.ts's Mod_LoadTextures
   // must resolve its pixels from one of worldspawn's "wad" key's wads.
   externalMiptex?: boolean;
+
+  // U14 addition: overrides the primary miptex's on-disk width/height
+  // (default BSP_MIPTEX_WIDTH/BSP_MIPTEX_HEIGHT, both 16) -- a re-release
+  // texture need not be 16-aligned. The emitted mip pixel data and offsets
+  // use the real per-mip-level sizing (floor-and-minimum-1, matching
+  // src/common/model.ts's Mod_LoadTextures/mipDim), not the classic
+  // width*height/64*85 shortcut, which only stays exact when both
+  // dimensions are multiples of 8.
+  miptexWidth?: number;
+  miptexHeight?: number;
 }
 
 class Writer {
@@ -349,20 +359,38 @@ function facesLump(width: BspWidth, skyFace: boolean, lit: boolean): Uint8Array 
   return w.bytes;
 }
 
-function texturesLump(name: string, skyName: string | null, external: boolean): Uint8Array {
+// floor-and-minimum-1 mip dimension, matching src/common/model.ts's mipDim
+// (this file's own convention is to hand-duplicate on-disk constants/math
+// rather than import from src/ -- see the file header).
+function mipDim(n: number, level: number): number {
+  return Math.max(1, n >> level);
+}
+
+function miptexPixelCount(width: number, height: number): number {
+  let total = 0;
+  for (let m = 0; m < MIPLEVELS; m++) total += mipDim(width, m) * mipDim(height, m);
+  return total;
+}
+
+function texturesLump(name: string, skyName: string | null, external: boolean, texWidth = BSP_MIPTEX_WIDTH, texHeight = BSP_MIPTEX_HEIGHT): Uint8Array {
   // dmiptexlump_t { int nummiptex; int dataofs[nummiptex]; } then one (or
   // two, with skyName) miptex_t { char name[16]; unsigned width, height;
-  // unsigned offsets[4]; } each followed by its width*height/64*85 mip pixels
-  // -- EXCEPT the primary miptex when `external` is set (U4: the re-release
-  // "external texture wad" case), which stores just the 40-byte header with
-  // all four mip offsets zero and no pixel bytes at all; src/common/model.ts's
-  // Mod_LoadTextures must then resolve its pixels from a wad named in
-  // worldspawn's "wad" key.
+  // unsigned offsets[4]; } each followed by its mip pixels (miptexPixelCount,
+  // not the classic width*height/64*85 shortcut, which only stays exact when
+  // both dimensions are multiples of 8) -- EXCEPT the primary miptex when
+  // `external` is set (U4: the re-release "external texture wad" case),
+  // which stores just the 40-byte header with all four mip offsets zero and
+  // no pixel bytes at all; src/common/model.ts's Mod_LoadTextures must then
+  // resolve its pixels from a wad named in worldspawn's "wad" key.
   const nummiptex = skyName === null ? 1 : 2;
   const headerSize = 4 + nummiptex * 4;
-  const pixels = ((BSP_MIPTEX_WIDTH * BSP_MIPTEX_HEIGHT) / 64) * 85;
+  const pixels = miptexPixelCount(texWidth, texHeight);
+  const skyPixels = miptexPixelCount(BSP_MIPTEX_WIDTH, BSP_MIPTEX_HEIGHT);
   const names = skyName === null ? [name] : [name, skyName];
-  const sizeOf = (i: number): number => (i === 0 && external ? 40 : 40 + pixels);
+  const widthOf = (i: number): number => (skyName !== null && i === 1 ? BSP_MIPTEX_WIDTH : texWidth);
+  const heightOf = (i: number): number => (skyName !== null && i === 1 ? BSP_MIPTEX_HEIGHT : texHeight);
+  const pixelsOf = (i: number): number => (skyName !== null && i === 1 ? skyPixels : pixels);
+  const sizeOf = (i: number): number => (i === 0 && external ? 40 : 40 + pixelsOf(i));
 
   let total = headerSize;
   for (let i = 0; i < nummiptex; i++) total += sizeOf(i);
@@ -378,8 +406,8 @@ function texturesLump(name: string, skyName: string | null, external: boolean): 
   for (let i = 0; i < names.length; i++) {
     const isExternal = i === 0 && external;
     w.chars(names[i], 16);
-    w.u32(BSP_MIPTEX_WIDTH);
-    w.u32(BSP_MIPTEX_HEIGHT);
+    w.u32(widthOf(i));
+    w.u32(heightOf(i));
     if (isExternal) {
       for (let m = 0; m < MIPLEVELS; m++) w.u32(0);
       continue; // no pixel bytes follow
@@ -388,9 +416,10 @@ function texturesLump(name: string, skyName: string | null, external: boolean): 
     let mipofs = 40;
     for (let m = 0; m < MIPLEVELS; m++) {
       w.u32(mipofs);
-      mipofs += (BSP_MIPTEX_WIDTH >> m) * (BSP_MIPTEX_HEIGHT >> m);
+      mipofs += mipDim(widthOf(i), m) * mipDim(heightOf(i), m);
     }
-    for (let j = 0; j < pixels; j++) w.u8(j & 0xff);
+    const px = pixelsOf(i);
+    for (let j = 0; j < px; j++) w.u8(j & 0xff);
   }
   return w.bytes;
 }
@@ -688,7 +717,7 @@ export function buildBsp(options: BspBuildOptions = {}): Uint8Array {
   const lumps: Uint8Array[] = new Array(HEADER_LUMPS);
   lumps[LUMP_ENTITIES] = latin1(entities + "\0");
   lumps[LUMP_PLANES] = planesLump();
-  lumps[LUMP_TEXTURES] = texturesLump(options.miptexName ?? BSP_MIPTEX_NAME, skyFace ? BSP_SKY_MIPTEX_NAME : null, externalMiptex);
+  lumps[LUMP_TEXTURES] = texturesLump(options.miptexName ?? BSP_MIPTEX_NAME, skyFace ? BSP_SKY_MIPTEX_NAME : null, externalMiptex, options.miptexWidth, options.miptexHeight);
   lumps[LUMP_VERTEXES] = vertexesLump(extraVertexes);
   lumps[LUMP_VISIBILITY] = vis;
   lumps[LUMP_NODES] = nodesLump(width);

@@ -112,6 +112,14 @@ class Writer {
 // dmiptexlump_t + miptex_t entries, mirroring bsp_builder.ts's texturesLump
 // but supporting several miptexs (needed for the animation tests) and a
 // missing (dataofs == -1) entry.
+// U14: floor-and-minimum-1 per mip level (model.ts's mipDim), not the
+// classic width*height/64*85 shortcut -- that shortcut is only exact when
+// both dimensions are multiples of 8, which every 16x16 fixture below
+// happens to satisfy, but the non-16-aligned one does not.
+function mipDim(n: number, level: number): number {
+  return Math.max(1, n >> level);
+}
+
 function buildTexturesLump(entries: Array<{ name: string; width: number; height: number; missing?: boolean }>): Uint8Array {
   const n = entries.length;
   const headerSize = 4 + n * 4;
@@ -124,7 +132,8 @@ function buildTexturesLump(entries: Array<{ name: string; width: number; height:
       dataofs.push(-1);
       continue;
     }
-    const pixels = Math.floor((e.width * e.height) / 64) * 85;
+    let pixels = 0;
+    for (let m = 0; m < 4; m++) pixels += mipDim(e.width, m) * mipDim(e.height, m);
     const w = new Writer(40 + pixels);
     w.chars(e.name, 16);
     w.u32(e.width);
@@ -132,7 +141,7 @@ function buildTexturesLump(entries: Array<{ name: string; width: number; height:
     let ofs = 40;
     for (let m = 0; m < 4; m++) {
       w.u32(ofs);
-      ofs += (e.width >> m) * (e.height >> m);
+      ofs += mipDim(e.width, m) * mipDim(e.height, m);
     }
     for (let i = 0; i < pixels; i++) w.u8(i & 0xff);
     dataofs.push(cursor);
@@ -323,11 +332,31 @@ describe("Mod_LoadTextures (direct)", () => {
     for (let i = 0; i < 16 * 16; i++) expect(tx.data[tx.offsets[0] + i]).toBe(i & 0xff);
   });
 
-  test("a non-16-aligned texture is a Sys_Error", () => {
+  // U14: re-release textures are not all multiples of 16 (Ironwail/
+  // QuakeSpasm gl_model.c only warn here, under developer 1, and never
+  // reject the texture -- see src/common/model.ts's Mod_LoadTextures
+  // header). This was "a non-16-aligned texture is a Sys_Error" before U14.
+  test("a non-16-aligned texture loads instead of throwing, with mip sizes rounded per level", () => {
     const bytes = buildTexturesLump([{ name: "odd", width: 15, height: 16 }]);
     const mod = new ModelT();
     loadState.loadname = "test";
-    expect(() => Mod_LoadTextures(mod, bytes, lumpOf(bytes), null)).toThrow(SysError);
+
+    Mod_LoadTextures(mod, bytes, lumpOf(bytes), null);
+
+    const tx = mod.textures?.[0];
+    if (!tx) throw new Error("expected a loaded texture");
+    expect(tx.name).toBe("odd");
+    expect(tx.width).toBe(15);
+    expect(tx.height).toBe(16);
+
+    // mip dims: 15x16, 7x8, 3x4, 1x2 (mipDim floors and clamps to a minimum
+    // of 1, matching src/common/model.ts's own mip generation).
+    expect(tx.data.length).toBe(15 * 16 + 7 * 8 + 3 * 4 + 1 * 2);
+    expect(tx.offsets[0]).toBe(0);
+    expect(tx.offsets[1] - tx.offsets[0]).toBe(15 * 16);
+    expect(tx.offsets[2] - tx.offsets[1]).toBe(7 * 8);
+    expect(tx.offsets[3] - tx.offsets[2]).toBe(3 * 4);
+    expect(tx.data.length - tx.offsets[3]).toBe(1 * 2);
   });
 
   test("an empty lump leaves mod.textures null", () => {
