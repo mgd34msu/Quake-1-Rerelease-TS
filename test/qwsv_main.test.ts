@@ -43,7 +43,7 @@ import { NetadrT, NET_StringToAdr, net_from } from "../src/qw/net_udp";
 import { netchanState, Netchan_Setup } from "../src/qw/net_chan";
 import { EDICT_NUM } from "../src/qw/server/progs";
 import { PR_AllocEdicts, PR_LoadProgs } from "../src/qw/server/pr_edict";
-import { setBuiltins } from "../src/qw/server/pr_exec";
+import { getBuiltins, setBuiltins } from "../src/qw/server/pr_exec";
 import { ClientStateT, ClientT, ServerStateT, sv, svs } from "../src/qw/server/server";
 import { SV_SendServerInfoChange } from "../src/qw/server/sv_ccmds";
 import {
@@ -71,6 +71,7 @@ import {
 } from "../src/qw/server/sv_main";
 import { HAVE_QWPROGS } from "./support/fixture_availability";
 
+let savedQwBuiltins: ReturnType<typeof getBuiltins> | null = null;
 const QWPROGS_DAT = `${process.env.Q1TS_QSRC ?? `${import.meta.dir}/../../qsrc/quake`}/QW/progs/qwprogs.dat`;
 
 const scratchRoot = (process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests");
@@ -239,12 +240,14 @@ beforeAll(() => {
 
   const stubs: Array<() => void> = [];
   for (let i = 0; i < 300; i++) stubs.push(() => {});
+  savedQwBuiltins = getBuiltins();
   setBuiltins(stubs);
 
   netchanState.isClient = false;
 });
 
 afterAll(() => {
+  if (savedQwBuiltins !== null) setBuiltins(savedQwBuiltins);
   sendPacketSpy.mockRestore();
   setCvarInfoHook(savedCvarInfoHook);
 

@@ -40,7 +40,7 @@ import type { ModelT } from "../src/common/model";
 import { DfunctionT, OpT } from "../src/progs/pr_comp";
 import { QW_ENTVARS_SIZE_WORDS, QwGlobalVars } from "../src/qw/server/progdefs";
 import { QwEdictT, qwpr, setEdictTable } from "../src/qw/server/progs";
-import { setBuiltins } from "../src/qw/server/pr_exec";
+import { getBuiltins, setBuiltins } from "../src/qw/server/pr_exec";
 import { SV_ClearWorld } from "../src/qw/server/world";
 import {
   FL_ONGROUND,
@@ -72,6 +72,7 @@ import {
   sv_waterfriction,
 } from "../src/qw/server/sv_phys";
 
+let savedQwBuiltins: ReturnType<typeof getBuiltins> | null = null;
 const scratchRoot = (process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests");
 mkdirSync(scratchRoot, { recursive: true });
 const scratchDir = mkdtempSync(join(scratchRoot, "qwsv-phys-test-"));
@@ -139,6 +140,7 @@ function buildProgsImage(): void {
 
   gi[GFN] = 2; // the builtin's function index, read by OP_CALL0
 
+  savedQwBuiltins = getBuiltins();
   setBuiltins([
     () => {
       throw new Error("builtin 0 called");
@@ -203,6 +205,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  if (savedQwBuiltins !== null) setBuiltins(savedQwBuiltins);
   sysState.nostdout = savedNostdout;
   for (const [c, value, string] of savedCvars) {
     c.value = value;

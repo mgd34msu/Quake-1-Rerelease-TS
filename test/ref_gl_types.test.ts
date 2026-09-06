@@ -57,6 +57,7 @@ import {
   d_lightstylevalue,
   frustum,
   glState,
+  glStateInitial,
   glv,
   modelorg,
   r_avertexnormal_dots,
@@ -83,7 +84,7 @@ import { SysError } from "../src/platform/sys";
 import { CreateGLimp, glimpHolder } from "../src/platform/glimp";
 import { SDL_ResetBackendForTests, SDL_SetBackendEnabled } from "../src/platform/sdl";
 
-const glStateDefaults = { ...glState };
+const glStateDefaults = glStateInitial();
 
 afterAll(() => {
   qglHolder.current = null;

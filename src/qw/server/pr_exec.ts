@@ -142,6 +142,12 @@ export function setBuiltins(table: BuiltinT[]): void {
   pr_builtins = table;
 }
 
+// Read side of the seam, so a suite that installs a stand-in table can put the
+// previous one back in afterAll (same pair as src/progs/pr_exec.ts).
+export function getBuiltins(): BuiltinT[] {
+  return pr_builtins;
+}
+
 export const pr_opnames: readonly string[] = [
   "DONE",
 

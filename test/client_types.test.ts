@@ -34,6 +34,7 @@ import {
   NUM_CSHIFTS,
   SIGNONS,
   ScoreboardT,
+  ClientStaticT,
 } from "../src/client/client";
 import {
   BOTTOM_RANGE,
@@ -167,12 +168,15 @@ describe("client.h constants", () => {
 
 describe("client singletons", () => {
   test("cls starts in ca_dedicated with an empty demo list", () => {
-    expect(cls.state).toBe(CactiveT.ca_dedicated);
-    expect(cls.demos.length).toBe(MAX_DEMOS);
-    expect(cls.demos.every((d) => d === "")).toBe(true);
-    expect(cls.netcon).toBe(null);
-    expect(cls.demofile).toBe(null);
-    expect(cls.message.cursize).toBe(0);
+    // Construction defaults: checked on a fresh instance, because the live
+    // `cls` singleton is mutated by every suite that connects or plays a demo.
+    const fresh = new ClientStaticT();
+    expect(fresh.state).toBe(CactiveT.ca_dedicated);
+    expect(fresh.demos.length).toBe(MAX_DEMOS);
+    expect(fresh.demos.every((d) => d === "")).toBe(true);
+    expect(fresh.netcon).toBe(null);
+    expect(fresh.demofile).toBe(null);
+    expect(fresh.message.cursize).toBe(0);
   });
 
   test("cl's sized fields match the C array bounds", () => {

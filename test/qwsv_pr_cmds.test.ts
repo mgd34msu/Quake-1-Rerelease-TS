@@ -33,7 +33,7 @@ import { MAX_CLIENTS, SvcOpsT } from "../src/qw/protocol";
 import { OFS_PARM0, OFS_PARM1, OFS_PARM2, OFS_PARM3, OFS_RETURN } from "../src/progs/pr_comp";
 import { EDICT_NUM, EDICT_TO_PROG, PR_GetString, PR_SetString, QwEdictT, qwpr } from "../src/qw/server/progs";
 import { ED_FindField, ED_FindFunction, PR_AllocEdicts, PR_LoadProgs } from "../src/qw/server/pr_edict";
-import { PRRunError, PR_ExecuteProgram, prExec } from "../src/qw/server/pr_exec";
+import { PRRunError, PR_ExecuteProgram, prExec, setBuiltins } from "../src/qw/server/pr_exec";
 import { ClientStateT, ServerStateT, SOLID_BBOX, SOLID_BSP, MOVETYPE_PUSH, sv, svs } from "../src/qw/server/server";
 import { SV_ClearWorld } from "../src/qw/server/world";
 import { SV_CalcPHS } from "../src/qw/server/sv_init";
@@ -67,6 +67,7 @@ beforeAll(() => {
 
   setComSearchpaths(null);
   setComModified(false);
+  setBuiltins(pr_builtin); // another suite may have left a stand-in table installed
 
   const popLmp = new Uint8Array(256);
   for (let i = 0; i < 128; i++) {

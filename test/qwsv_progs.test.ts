@@ -53,10 +53,11 @@ import {
   PR_Progs,
   prSpectator,
 } from "../src/qw/server/pr_edict";
-import { PRRunError, PR_ExecuteProgram, prExec, setBuiltins } from "../src/qw/server/pr_exec";
+import { PRRunError, PR_ExecuteProgram, prExec, getBuiltins, setBuiltins } from "../src/qw/server/pr_exec";
 import { svErrorState } from "../src/qw/server/sv_main";
 import { HAVE_QWPROGS } from "./support/fixture_availability";
 
+let savedQwBuiltins: ReturnType<typeof getBuiltins> | null = null;
 const QWPROGS_DAT = `${process.env.Q1TS_QSRC ?? `${import.meta.dir}/../../qsrc/quake`}/QW/progs/qwprogs.dat`;
 
 const scratchRoot = (process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests");
@@ -69,6 +70,7 @@ const savedNetMessageData = net_message.data;
 const savedNetMessageMaxsize = net_message.maxsize;
 
 afterAll(() => {
+  if (savedQwBuiltins !== null) setBuiltins(savedQwBuiltins);
   sysState.nostdout = savedNostdout;
   setComSearchpaths(null);
   setComModified(false);
@@ -136,6 +138,7 @@ beforeAll(() => {
   // fills for the WinQuake track).
   const stubs: Array<() => void> = [];
   for (let i = 0; i < 300; i++) stubs.push(() => {});
+  savedQwBuiltins = getBuiltins();
   setBuiltins(stubs);
 });
 

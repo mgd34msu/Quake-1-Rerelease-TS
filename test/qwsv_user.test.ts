@@ -58,7 +58,7 @@ import type { ModelT } from "../src/common/model";
 import { DfunctionT, OpT } from "../src/progs/pr_comp";
 import { QW_ENTVARS_SIZE_WORDS, QwGlobalVars } from "../src/qw/server/progdefs";
 import { QwEdictT, qwpr, setEdictTable } from "../src/qw/server/progs";
-import { setBuiltins } from "../src/qw/server/pr_exec";
+import { getBuiltins, setBuiltins } from "../src/qw/server/pr_exec";
 import { SV_ClearWorld, SV_LinkEdict } from "../src/qw/server/world";
 import {
   ClientStateT,
@@ -107,6 +107,7 @@ import {
   ucmds,
 } from "../src/qw/server/sv_user";
 
+let savedQwBuiltins: ReturnType<typeof getBuiltins> | null = null;
 const scratchRoot = (process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests");
 mkdirSync(scratchRoot, { recursive: true });
 const scratchDir = mkdtempSync(join(scratchRoot, "qwsv-user-test-"));
@@ -165,6 +166,7 @@ function buildProgsImage(): void {
   qwpr.edict_size = QW_ENTVARS_SIZE_WORDS;
 
   gi[GFN] = 2;
+  savedQwBuiltins = getBuiltins();
   setBuiltins([
     () => {
       throw new Error("builtin 0 called");
@@ -269,6 +271,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  if (savedQwBuiltins !== null) setBuiltins(savedQwBuiltins);
   // put the flood-protection globals back on sv_ccmds.c's own defaults
   Cmd_TokenizeString("floodprot 4 4 10");
   SV_Floodprot_f();

@@ -243,45 +243,49 @@ export type GlStateT = {
   glheight: number;
 };
 
-export const glState: GlStateT = {
-  r_cache_thrash: false,
-  currententity: null,
-  r_visframecount: 0,
-  r_framecount: 0,
-  c_brush_polys: 0,
-  c_alias_polys: 0,
-  envmap: false,
-  currenttexture: -1,
-  particletexture: 0,
-  playertextures: 0,
-  mirrortexturenum: 0,
-  mirror: false,
-  mirror_plane: null,
-  r_viewleaf: null,
-  r_oldviewleaf: null,
-  r_notexture_mip: null,
+export function glStateInitial(): GlStateT {
+  return {
+    r_cache_thrash: false,
+    currententity: null,
+    r_visframecount: 0,
+    r_framecount: 0,
+    c_brush_polys: 0,
+    c_alias_polys: 0,
+    envmap: false,
+    currenttexture: -1,
+    particletexture: 0,
+    playertextures: 0,
+    mirrortexturenum: 0,
+    mirror: false,
+    mirror_plane: null,
+    r_viewleaf: null,
+    r_oldviewleaf: null,
+    r_notexture_mip: null,
 
-  skytexturenum: 0,
-  lightmap_textures: 0,
+    skytexturenum: 0,
+    lightmap_textures: 0,
 
-  oldtarget: TEXTURE0_SGIS,
+    oldtarget: TEXTURE0_SGIS,
 
-  texture_extension_number: 1,
-  // gl_vidlinuxglx.c:86 `int texture_mode = GL_LINEAR;`
-  texture_mode: GL_LINEAR,
-  gldepthmin: 0,
-  gldepthmax: 0,
-  gl_mtexable: false,
-  gl_vendor: "",
-  gl_renderer: "",
-  gl_version: "",
-  gl_extensions: "",
+    texture_extension_number: 1,
+    // gl_vidlinuxglx.c:86 `int texture_mode = GL_LINEAR;`
+    texture_mode: GL_LINEAR,
+    gldepthmin: 0,
+    gldepthmax: 0,
+    gl_mtexable: false,
+    gl_vendor: "",
+    gl_renderer: "",
+    gl_version: "",
+    gl_extensions: "",
 
-  glx: 0,
-  gly: 0,
-  glwidth: 0,
-  glheight: 0,
-};
+    glx: 0,
+    gly: 0,
+    glwidth: 0,
+    glheight: 0,
+  };
+}
+
+export const glState: GlStateT = glStateInitial();
 
 // src/common/model.ts types msurface_t's `glpoly_t *polys` as `unknown`,
 // because glpoly_t is renderer-private and model.ts is shared with the
