@@ -141,8 +141,10 @@ export function Sys_Quit(): never {
 // main() calls this once with the tree's own "quit" body (bare Sys_Quit for
 // the two trees whose hostShutdown hook already runs the right shutdown
 // sequence; qwsv's own SV_Quit_f, which prints "Shutting down." and sends
-// SV_FinalMessage before Sys_Quit, since qwsv never registers a
-// setHostShutdown hook of its own -- see src/qw/main_sv.ts).
+// SV_FinalMessage before Sys_Quit. The QuakeWorld dedicated server's only
+// setHostShutdown hook is NET_Shutdown (SV_Init, F16), so the sockets are
+// released on any fatal exit; SV_Quit_f/SV_Error still run the rest of
+// SV_Shutdown themselves).
 let terminating = false;
 export function installTerminationSignals(quit: () => void): void {
   const handler = (): void => {

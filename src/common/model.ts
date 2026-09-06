@@ -141,6 +141,7 @@ import {
   BSP_WIDTH_29,
   BSP_WIDTH_2PSB,
   BSP_WIDTH_BSP2,
+  DHEADER_T_SIZE,
   DMODEL_T_SIZE,
   DPLANE_T_SIZE,
   DVERTEX_T_SIZE,
@@ -850,6 +851,29 @@ export function Mod_LoadModel(mod: ModelT, crash: boolean): ModelT | null {
     return null;
   }
 
+  // A file with less than a magic number in it is none of the three formats
+  // and falls to the brush branch below, whose own check names it. Read
+  // through a length test rather than straight off the DataView, which is
+  // where an empty .bsp used to abort with nothing but "Out of bounds
+  // access" -- no file name, no reason.
+  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const magic = buf.byteLength >= 4 ? view.getInt32(0, true) : 0;
+
+  if (magic !== IDPOLYHEADER && magic !== IDSPRITEHEADER) {
+    const problem = Mod_BrushModelProblem(buf);
+    if (problem !== null) {
+      // Nothing has been assigned to `mod` yet, so a caller that asked not
+      // to crash gets the same "no model here" answer a missing file gives
+      // it (SV_SpawnServer on both trees refuses the level and leaves the
+      // server running), while `crash` callers get the C's fatal abort.
+      if (!crash) {
+        Con_Printf("Mod_LoadBrushModel: %s %s\n", mod.name, problem);
+        return null;
+      }
+      Sys_Error("Mod_LoadBrushModel: %s %s", mod.name, problem);
+    }
+  }
+
   //
   // allocate a new model
   //
@@ -864,8 +888,7 @@ export function Mod_LoadModel(mod: ModelT, crash: boolean): ModelT | null {
   // call the apropriate loader
   mod.needload = NL_PRESENT;
 
-  const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  switch (view.getInt32(0, true)) {
+  switch (magic) {
     case IDPOLYHEADER:
       Mod_LoadAliasModel(mod, buf);
       break;
@@ -1936,12 +1959,93 @@ function copyModel(dst: ModelT, src: ModelT): void {
 
 /*
 =================
+Mod_BrushModelProblem
+
+A file that is present but not a loadable brush model. WinQuake reads
+dheader_t straight out of the buffer and trusts every offset in it, which on
+an empty or truncated .bsp (a failed client download leaves a zero-byte file
+behind) reads past the end of the data -- in C past the end of the hunk
+allocation, here a RangeError out of the first DataView call, which is what
+every caller below would see instead of a diagnosis. The whole header is
+therefore checked against the real file length before any reader touches it.
+
+`buffer` is the whole loaded file image, which COM_LoadFile hands over one
+byte longer than the file with a terminating zero in the extra byte (the C
+does the same), so a zero-byte file arrives here as a single NUL and the
+bounds below are a byte more generous than the file itself. That one byte is
+why the sizes named in the messages are the header's own numbers and never
+the buffer's length.
+
+Returns null when the file is loadable, otherwise the tail of the
+"Mod_LoadBrushModel: <name> ..." message saying what is wrong with it.
+=================
+*/
+export function Mod_BrushModelProblem(buffer: Uint8Array): string | null {
+  if (buffer.length <= 1) return "is empty";
+  if (buffer.length < DHEADER_T_SIZE) return `is too short for a ${DHEADER_T_SIZE} byte header`;
+
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const header = readDheader(view, 0);
+
+  let width: BspWidthT;
+  switch (header.version) {
+    case BSPVERSION:
+      width = BSP_WIDTH_29;
+      break;
+    case BSP2VERSION_2PSB:
+      width = BSP_WIDTH_2PSB;
+      break;
+    case BSP2VERSION_BSP2:
+      width = BSP_WIDTH_BSP2;
+      break;
+    default:
+      return `has unsupported version number (${header.version})`;
+  }
+
+  for (let i = 0; i < HEADER_LUMPS; i++) {
+    const lump = header.lumps[i];
+    if (lump.fileofs < 0 || lump.filelen < 0 || lump.fileofs + lump.filelen > buffer.length) {
+      return `has lump ${i} out of range (offset ${lump.fileofs}, length ${lump.filelen}, past the end of the file)`;
+    }
+  }
+
+  // The same "funny lump size" test each fixed-stride loader below makes on
+  // its own lump, asked before any of them has allocated anything, so a file
+  // that fails it is refused the way the header failures above are rather
+  // than aborting a load already half done. The loaders keep their own copy:
+  // they are callable in their own right.
+  const strides: Array<readonly [number, number]> = [
+    [LUMP_VERTEXES, DVERTEX_T_SIZE],
+    [LUMP_PLANES, DPLANE_T_SIZE],
+    [LUMP_MODELS, DMODEL_T_SIZE],
+    [LUMP_TEXINFO, TEXINFO_T_SIZE],
+    [LUMP_SURFEDGES, 4],
+    [LUMP_EDGES, dedgeSize(width)],
+    [LUMP_FACES, dfaceSize(width)],
+    [LUMP_NODES, dnodeSize(width)],
+    [LUMP_LEAFS, dleafSize(width)],
+    [LUMP_CLIPNODES, dclipnodeSize(width)],
+    [LUMP_MARKSURFACES, dmarksurfaceSize(width)],
+  ];
+  for (const [lump, stride] of strides) {
+    const filelen = header.lumps[lump].filelen;
+    if (filelen % stride) return `has a funny lump size in lump ${lump} (${filelen} bytes is not a multiple of ${stride})`;
+  }
+
+  return null;
+}
+
+/*
+=================
 Mod_LoadBrushModel
 =================
 */
 export function Mod_LoadBrushModel(mod: ModelT, buffer: Uint8Array): void {
   let model = mod;
   const brushmodel = mod;
+
+  const problem = Mod_BrushModelProblem(buffer);
+  if (problem !== null) Sys_Error("Mod_LoadBrushModel: %s %s", mod.name, problem);
 
   model.type = ModtypeT.mod_brush;
 

@@ -209,7 +209,7 @@ import { Com_sprintf } from "../../common/sprintf";
 import { Hunk_AllocName, Hunk_LowMark, Memory_Init } from "../../common/zone";
 import { Mod_Init } from "../../common/model";
 import type { QuakeParmsT } from "../../common/quakedef";
-import { Sys_ConsoleInput, Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite, Sys_FloatTime } from "../../platform/sys";
+import { Sys_ConsoleInput, Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite, Sys_FloatTime, setHostShutdown } from "../../platform/sys";
 import { serverShutdownHooks } from "../../common/profile";
 import { Sys_Init } from "../sys_sv";
 
@@ -1876,6 +1876,18 @@ export function SV_Init(parms: QuakeParmsT): void {
   Mod_Init();
 
   SV_InitNet();
+
+  // QW/server/sys_unix.c's Sys_Error is a printf and a bare exit(1), which
+  // hands the bound UDP port straight back to the kernel. This process
+  // reaches its own exit through a thrown SysError and src/main.ts's
+  // runHostShutdown instead, and qwsv registers no Host_Shutdown of its
+  // own, so without this the port stays bound for the whole unwind. Just
+  // the sockets: SV_Quit_f and SV_Error each run the rest of SV_Shutdown
+  // themselves, and NET_Shutdown is idempotent, so this adds nothing to
+  // either of their paths. Dedicated boot only -- a QuakeWorld listen
+  // server comes up through SV_InitProfile above and its shutdown hook
+  // belongs to the client's own Host_Shutdown.
+  setHostShutdown(NET_Shutdown);
 
   SV_InitLocal();
   Sys_Init();

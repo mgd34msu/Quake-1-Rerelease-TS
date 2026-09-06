@@ -37,7 +37,7 @@ import { Loc_SetLocaleProbeForTest } from "../src/common/loc_host";
 import { SV_Physics } from "../src/server/sv_phys";
 import { SV_RunClients } from "../src/server/sv_user";
 import { SV_CheckForNewClients, SV_ClientIsBot, SV_SendClientMessages } from "../src/server/sv_main";
-import { vec3 } from "../src/common/mathlib";
+import { vec3, Q_SeedRandom } from "../src/common/mathlib";
 import { HAVE_PROGS106, PROGS106_DAT } from "./support/fixture_availability";
 import { WORLDSPAWN_MODELS } from "./support/dedicated_fixture";
 import {
@@ -84,6 +84,7 @@ const baseDir = join(scratchDir, "quake");
 
 afterAll(() => {
   Cvar_SetValue("sv_randomseed", 0); // the retail suites pin it (F13); sv_main.test asserts the unseeded default
+  Q_SeedRandom(0); // and the generator itself, which SV_SpawnServer seeded from that cvar
   Loc_SetLocaleProbeForTest(null);
   Bot_RemoveAll();
   Bot_ClearNav();

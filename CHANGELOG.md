@@ -132,6 +132,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- A zero-byte, truncated or otherwise malformed `.bsp` is refused by name
+  (`Mod_LoadBrushModel: <map> is empty` / `is too short` / `has unsupported
+  version` / `has lump N out of range`) on both servers, which keep running
+  and fall back to `map start` like they do for a missing map, instead of an
+  "Out of bounds access" abort that left the QuakeWorld server's UDP port
+  bound; a dedicated QuakeWorld server releases its sockets on any remaining
+  fatal exit.
 - `Sys_Error` throws before any shutdown runs (the top-level handler shuts
   the host down once), so a recovered error no longer leaves a torn-down
   host behind a caller that carried on; every writer whose C original

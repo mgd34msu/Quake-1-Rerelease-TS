@@ -505,8 +505,20 @@ export function SV_SpawnServer(server: string): void {
 
   sv.name = server; // redundant with the earlier assignment above -- see file header
   sv.modelname = `maps/${server}.bsp`;
-  const worldmodel = Mod_ForName(sv.modelname, true);
-  if (worldmodel === null) throw new SysError("SV_SpawnServer: Mod_ForName returned null with crash=true");
+  // The C passes crash=true here, so a map file that exists but does not
+  // parse takes the whole server down -- and SV_Map_f's own COM_FOpenFile
+  // check ahead of this call cannot tell an empty or truncated .bsp from a
+  // good one. crash=false instead: src/common/model.ts names the file and
+  // the reason, and the spawn is abandoned with sv.state still ss_dead,
+  // which is the state SV_Init's "map start" fallback and every later `map`
+  // already expect. Matches src/server/sv_main.ts's SV_SpawnServer, whose
+  // Mod_ForName has always been crash=false.
+  const worldmodel = Mod_ForName(sv.modelname, false);
+  if (worldmodel === null) {
+    Con_Printf("Couldn't spawn server %s\n", sv.modelname);
+    sv.state = ServerStateT.ss_dead;
+    return;
+  }
   sv.worldmodel = worldmodel;
   const bspWidth = loadState.bspWidth; // the width Mod_LoadBrushModel just read
   SV_CalcPHS();
