@@ -132,6 +132,19 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- Menus draw their labels through the localization table (`$m_*` keys with
+  the English literal as fallback), so `language` changes the menus; the
+  Options, difficulty, level-select, bots, setup, key-bind, quit and
+  multiplayer screens are covered, and rows without a retail key stay
+  English. `give a` (armour) and the current-ammo fix-up after a give come
+  from Ironwail; `give all` grants every weapon, ammo, keys and armour as a
+  documented addition (the reference engines treat it as armour 0).
+- Saves: `load autosave` and the Load menu find slots in nested autosave
+  directories (vault/, test/); the Load menu shows a KEX save's real
+  comment instead of its game-name line; loading a CTF save no longer kills
+  the player through the team-change path (the `color` command sent during
+  the post-load signon wrote the client's colour over the restored team;
+  it now recovers the colour from the restored team instead).
 - GL renderer: alias models are no longer capped at 1024 vertices (half of
   GLQuake's own limit; mg3's statues and hanging players have up to 1912)
   and the triangle count is checked too, both against a 65536 ceiling with

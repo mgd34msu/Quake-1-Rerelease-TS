@@ -182,7 +182,6 @@ entirely.
   quakec_ctf lands.
 */
 
-import { readdirSync } from "node:fs";
 import { getRenderer, TOP_RANGE, BOTTOM_RANGE } from "./render";
 import type { QpicT } from "../common/wad";
 import { vid, vidMenuHooks, vidBackend } from "./vid";
@@ -206,7 +205,7 @@ import {
 import { cls, cl, CactiveT } from "./client";
 import { CL_NextDemo } from "./cl_main";
 import { host, hostClientHooks } from "../common/host";
-import { Host_Quit_f } from "../common/host_cmd";
+import { Host_Quit_f, Host_NewestAutosave, SAVEGAME_VERSION_KEX } from "../common/host_cmd";
 import {
   NET_Slist_f,
   NET_Poll,
@@ -221,7 +220,7 @@ import { svs, sv } from "../server/server";
 import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv, Cbuf_AddText, Cbuf_InsertText } from "../common/cmd";
 import { Cvar_Set, Cvar_SetValue, Cvar_VariableValue, Cvar_VariableString } from "../common/cvar";
 import { com_gamedir, Q_atoi, registered, rogue, hipnotic } from "../common/common";
-import { Sys_FileOpenRead, Sys_FileRead, Sys_FileClose, Sys_FileTime, Sys_Error } from "../platform/sys";
+import { Sys_FileOpenRead, Sys_FileRead, Sys_FileClose, Sys_Error } from "../platform/sys";
 import { SAVEGAME_COMMENT_LENGTH } from "../common/quakedef";
 import { Com_sprintf } from "../common/sprintf";
 import { Con_ToggleConsole_f } from "./console";
@@ -239,6 +238,7 @@ import {
   LoadContentModel,
   LoadMenuLocalization,
   LocalizedEpisodeName,
+  MenuLoc,
   EpisodeAllowsNightmare,
   ResolveLaunch,
   Content_PerformLaunch,
@@ -460,6 +460,59 @@ export function M_PrintWhite(cx: number, cy: number, str: string): void {
     M_DrawCharacter(x, cy, str.charCodeAt(i));
     x += 8;
   }
+}
+
+/* D7: a menu label the retail localization tables have a key for. `english`
+ * is what draws when they don't -- a classic tree with no localization/
+ * directory at all, or one of the labels listed in this unit's report for
+ * which the shipped tables never shipped a key. */
+function M_Loc(key: string, english: string): string {
+  return MenuLoc(key, english);
+}
+
+/* menu.c right-aligns a column of labels by hand-padding each literal to the
+ * same width; a localized label is a different length, so the padding is
+ * computed here instead of being written into the string. `width` is the
+ * original literal's own length, which keeps the English layout of each row
+ * pixel-identical to the C -- including the rows menu.c itself left one
+ * column short of its neighbours. */
+function M_PrintRight(cx: number, cy: number, width: number, str: string): void {
+  M_Print(cx + Math.max(0, width - str.length) * 8, cy, str);
+}
+
+/* menu.c hand-wraps the multi-line message boxes into fixed-width literals.
+ * The retail tables spell each of those messages as ONE key, so a localized
+ * message is wrapped here to the same column count and padded out to the
+ * same `lines` rows the box was drawn for. */
+/* menu_content.ts's DIFFICULTIES, keyed to the retail table's own four skill
+ * names. The re-release calls the second one "Medium" where this port's own
+ * list says "Normal"; the table wins wherever it has the key. */
+const DIFFICULTY_LOC_KEYS: readonly string[] = ["$m_easy", "$m_medium", "$m_hard", "$m_nightmare"];
+
+function M_DifficultyName(skill: number): string {
+  const key = DIFFICULTY_LOC_KEYS[skill];
+  const english = DIFFICULTIES[skill] ?? "";
+  return key === undefined ? english : M_Loc(key, english);
+}
+
+function M_WrapText(str: string, width: number, lines: number): string[] {
+  const out: string[] = [];
+  let line = "";
+  for (const word of str.split(/\s+/).filter((w) => w.length > 0)) {
+    if (line.length === 0) line = word;
+    else if (line.length + 1 + word.length <= width) line += ` ${word}`;
+    else {
+      out.push(line);
+      line = word;
+    }
+    while (line.length > width) {
+      out.push(line.slice(0, width));
+      line = line.slice(width);
+    }
+  }
+  if (line.length > 0) out.push(line);
+  while (out.length < lines) out.push("");
+  return out.slice(0, lines);
 }
 
 // not a ported C name; see file header's Draw_CachePic deviation note.
@@ -790,7 +843,12 @@ function readSaveComment(path: string): string | null {
   for (let k = 0; k < bytes.length; k++) contents += String.fromCharCode(bytes[k]);
   const scan = new SaveTextScanner(contents);
 
-  scan.scanToken(); // version -- read, exactly as the C's fscanf, and discarded
+  const version = scan.scanToken(); // read, exactly as the C's fscanf
+  // S2: a KEX (version 6) file writes COM_GetGameNames() on its own line
+  // between the version and the comment (host_cmd.ts's Host_WriteSaveFile),
+  // so discarding one token left the Load/Save menu showing the save's
+  // game/mod name where the level name and kill count belong.
+  if (Q_atoi(version) === SAVEGAME_VERSION_KEX) scan.scanToken();
   // strncpy (m_filenames[i], name, sizeof(m_filenames[i])-1)
   let comment = scan.scanToken().slice(0, SAVEGAME_COMMENT_LENGTH);
 
@@ -809,25 +867,10 @@ function scanAutosave(): void {
   autosaveFilename = "--- NO AUTOSAVE ---";
   autosaveLoadable = false;
 
-  const dir = `${com_gamedir}/autosave`;
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return;
-  }
-
-  let best: string | null = null;
-  let bestTime = -1;
-  for (const entry of entries) {
-    if (!entry.toLowerCase().endsWith(".sav")) continue;
-    const full = `${dir}/${entry}`;
-    const t = Sys_FileTime(full);
-    if (t > bestTime) {
-      bestTime = t;
-      best = full;
-    }
-  }
+  // S1: shared with `load autosave` rather than re-derived here, so the row
+  // and the command cannot disagree about which slot is newest -- nested
+  // slots (autosave/vault/tim.sav) included.
+  const best = Host_NewestAutosave();
   if (best === null) return;
 
   const comment = readSaveComment(best);
@@ -1096,9 +1139,13 @@ export function M_QexLevels_Draw(): void {
 
   const diffCount = EpisodeAllowsNightmare(episode.dir, ruleset) ? 4 : 3;
   if (menuState.qexSkill >= diffCount) menuState.qexSkill = diffCount - 1;
-  M_Print(24, 32 + difficultyRow * 8, `Difficulty: ${DIFFICULTIES[menuState.qexSkill]}`);
+  M_Print(
+    24,
+    32 + difficultyRow * 8,
+    `${M_Loc("$m_difficulty", "Difficulty")}: ${M_DifficultyName(menuState.qexSkill)}`,
+  );
 
-  M_Print(24, 32 + startRow * 8, "Start");
+  M_Print(24, 32 + startRow * 8, M_Loc("$m_start", "Start"));
 
   M_DrawCharacter(8, 32 + menuState.qexLevelCursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
 }
@@ -1367,16 +1414,16 @@ export function M_QexBots_Draw(): void {
 
   const model = BuildBotsPageModel(currentOrSelectedMapName());
 
-  M_Print(16, 32, "Bot Count");
+  M_Print(16, 32, M_Loc("$m_num_bots", "Bot Count"));
   M_Print(200, 32, `${model.count}`);
-  M_Print(16, 40, "Bot Skill");
+  M_Print(16, 40, M_Loc("$m_bot_skill", "Bot Skill"));
   M_Print(200, 40, model.skillNames[model.skillIndex] ?? "");
 
   const rowY: number[] = [32, 40];
   let y = 56;
   for (const row of model.roster) {
     M_Print(16, y, row.funName);
-    M_Print(240, y, row.active ? "Kick" : "Add");
+    M_Print(240, y, row.active ? M_Loc("$m_kick", "Kick") : "Add");
     rowY.push(y);
     y += 8;
   }
@@ -1459,9 +1506,9 @@ export const setup_cursor_table = [40, 56, 80, 104, 140];
 
 // U40 addition: two preset shirt/pants colors for CTF's own team-via-color
 // convention (see file header's DEVIATION note on the exact indices).
-const CTF_TEAM_COLORS: ReadonlyArray<{ name: string; color: number }> = [
-  { name: "Red", color: 4 },
-  { name: "Blue", color: 13 },
+const CTF_TEAM_COLORS: ReadonlyArray<{ name: string; locKey: string; color: number }> = [
+  { name: "Red", locKey: "$m_red", color: 4 },
+  { name: "Blue", locKey: "$m_blue", color: 13 },
 ];
 
 // U40 additions: with the "ctf" gamedir mounted, Setup grows a Team row
@@ -1513,14 +1560,18 @@ export function M_Setup_Draw(): void {
   M_DrawTextBox(160, 48, 16, 1);
   M_Print(168, 56, menuState.setup_myname);
 
-  M_Print(64, 80, "Shirt color");
-  M_Print(64, 104, "Pants color");
+  M_Print(64, 80, M_Loc("$m_shirt_color", "Shirt color"));
+  M_Print(64, 104, M_Loc("$m_pants_color", "Pants color"));
 
   // U40 addition: only drawn with the ctf gamedir mounted; Accept Changes'
   // own box/text move down to cursorTable[acceptRow] to make room.
   if (ctfMounted()) {
     M_Print(64, cursorTable[setupTeamRow()]!, "Team");
-    M_Print(168, cursorTable[setupTeamRow()]!, CTF_TEAM_COLORS[menuState.setupTeamIndex]!.name);
+    M_Print(
+      168,
+      cursorTable[setupTeamRow()]!,
+      M_Loc(CTF_TEAM_COLORS[menuState.setupTeamIndex]!.locKey, CTF_TEAM_COLORS[menuState.setupTeamIndex]!.name),
+    );
   }
 
   M_DrawTextBox(64, cursorTable[acceptRow]! - 8, 14, 1);
@@ -1921,8 +1972,8 @@ export function M_DrawSlider(x: number, y: number, range: number): void {
 }
 
 export function M_DrawCheckbox(x: number, y: number, on: boolean): void {
-  if (on) M_Print(x, y, "on");
-  else M_Print(x, y, "off");
+  if (on) M_Print(x, y, M_Loc("$m_on", "on"));
+  else M_Print(x, y, M_Loc("$m_off", "off"));
 }
 
 export function M_Options_Draw(): void {
@@ -1930,66 +1981,70 @@ export function M_Options_Draw(): void {
   const p = cachePic("gfx/p_option.lmp");
   M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
 
-  M_Print(16, 32, "    Customize controls");
-  M_Print(16, 40, "         Go to console");
-  M_Print(16, 48, "     Reset to defaults");
+  M_PrintRight(16, 32, 22, M_Loc("$m_set_binds", "Customize controls"));
+  M_PrintRight(16, 40, 22, "Go to console");
+  M_PrintRight(16, 48, 22, M_Loc("$m_reset_settings", "Reset to defaults"));
 
-  M_Print(16, 56, "           Screen size");
+  M_PrintRight(16, 56, 22, "Screen size");
   let r = (Cvar_VariableValue("viewsize") - 30) / (120 - 30);
   M_DrawSlider(220, 56, r);
 
-  M_Print(16, 64, "            Brightness");
+  M_PrintRight(16, 64, 22, M_Loc("$m_brightness", "Brightness"));
   r = (1.0 - Cvar_VariableValue("gamma")) / 0.5;
   M_DrawSlider(220, 64, r);
 
-  M_Print(16, 72, "           Mouse Speed");
+  M_PrintRight(16, 72, 22, M_Loc("$m_sensitivity", "Mouse Speed"));
   r = (Cvar_VariableValue("sensitivity") - 1) / 10;
   M_DrawSlider(220, 72, r);
 
-  M_Print(16, 80, "       CD Music Volume");
+  M_PrintRight(16, 80, 22, M_Loc("$m_music_volume", "CD Music Volume"));
   r = Cvar_VariableValue("bgmvolume");
   M_DrawSlider(220, 80, r);
 
-  M_Print(16, 88, "          Sound Volume");
+  M_PrintRight(16, 88, 22, M_Loc("$m_sound_volume", "Sound Volume"));
   r = Cvar_VariableValue("volume");
   M_DrawSlider(220, 88, r);
 
-  M_Print(16, 96, "            Always Run");
+  M_PrintRight(16, 96, 22, M_Loc("$m_always_run", "Always Run"));
   M_DrawCheckbox(220, 96, Cvar_VariableValue("cl_forwardspeed") > 200);
 
-  M_Print(16, 104, "          Invert Mouse");
+  M_PrintRight(16, 104, 22, M_Loc("$m_invert_look", "Invert Mouse"));
   M_DrawCheckbox(220, 104, Cvar_VariableValue("m_pitch") < 0);
 
-  M_Print(16, 112, "            Lookspring");
+  M_PrintRight(16, 112, 22, "Lookspring");
   M_DrawCheckbox(220, 112, Cvar_VariableValue("lookspring") !== 0);
 
-  M_Print(16, 120, "            Lookstrafe");
+  M_PrintRight(16, 120, 22, "Lookstrafe");
   M_DrawCheckbox(220, 120, Cvar_VariableValue("lookstrafe") !== 0);
 
-  if (vidMenuHooks.vid_menudrawfn) M_Print(16, 128, "         Video Options");
+  if (vidMenuHooks.vid_menudrawfn) M_PrintRight(16, 128, 22, M_Loc("$m_video_settings", "Video Options"));
 
   // U17 additions -- see OPTIONS_ITEMS' own comment.
-  M_Print(16, 136, "      Colored Lighting");
+  M_PrintRight(16, 136, 22, M_Loc("$m_colorlightmaps", "Colored Lighting"));
   M_DrawCheckbox(220, 136, Cvar_VariableValue("gl_coloredlight") !== 0);
 
-  M_Print(16, 144, "      Sound Frequency");
+  M_PrintRight(16, 144, 21, "Sound Frequency");
   M_Print(220, 144, `${Math.trunc(Cvar_VariableValue("snd_speed")) || 44100}`);
 
-  M_Print(16, 152, "              Autosave");
+  M_PrintRight(16, 152, 22, "Autosave");
   M_DrawCheckbox(220, 152, Cvar_VariableValue("sv_autosave") !== 0);
 
-  M_Print(16, 160, "        Weapon Switch");
-  const weaponSwitchLabels = ["Only New", "Never", "Always"];
+  M_PrintRight(16, 160, 21, M_Loc("$m_change_on_pickup", "Weapon Switch"));
+  const weaponSwitchLabels = [
+    M_Loc("$m_onlynew", "Only New"),
+    M_Loc("$m_never", "Never"),
+    M_Loc("$m_always", "Always"),
+  ];
   const weaponSwitchValue = Math.trunc(Cvar_VariableValue("cl_weaponswitch"));
   M_Print(220, 160, weaponSwitchLabels[weaponSwitchValue] ?? weaponSwitchLabels[0]);
 
-  M_Print(16, 168, "              Language");
+  M_PrintRight(16, 168, 22, M_Loc("$m_language", "Language"));
   M_Print(220, 168, Cvar_VariableString("language") || "english");
 
-  M_Print(16, 176, "      Game Controller");
+  M_PrintRight(16, 176, 21, M_Loc("$m_controller", "Game Controller"));
   M_DrawCheckbox(220, 176, Cvar_VariableValue("joy_enable") !== 0);
 
-  M_Print(16, 184, "                Add-Ons");
+  M_PrintRight(16, 184, 23, M_Loc("$m_addons", "Add-Ons"));
 
   // cursor
   M_DrawCharacter(200, 32 + menuState.options_cursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
@@ -2087,6 +2142,34 @@ export const bindnames: Array<[string, string]> = [
 
 export const NUMCOMMANDS = bindnames.length;
 
+/* The retail tables key the bindable actions by what they DO, not by the
+ * console command, so the mapping is spelled here rather than folded into
+ * `bindnames` (whose tuple shape other modules already read). "+mlook" and
+ * "+klook" have no retail key -- the re-release has no such rows. */
+const BIND_LOC_KEYS: ReadonlyMap<string, string> = new Map([
+  ["+attack", "$m_attack"],
+  ["impulse 10", "$m_next_weapon"],
+  ["+jump", "$m_jump_swim"],
+  ["+forward", "$m_forward"],
+  ["+back", "$m_backpedal"],
+  ["+left", "$m_turn_left"],
+  ["+right", "$m_turn_right"],
+  ["+speed", "$m_run_walk"],
+  ["+moveleft", "$m_step_left"],
+  ["+moveright", "$m_step_right"],
+  ["+strafe", "$m_sidestep"],
+  ["+lookup", "$m_look_up"],
+  ["+lookdown", "$m_look_down"],
+  ["centerview", "$m_center_view"],
+  ["+moveup", "$m_swim_up"],
+  ["+movedown", "$m_swim_down"],
+]);
+
+function M_BindName(command: string, english: string): string {
+  const key = BIND_LOC_KEYS.get(command);
+  return key === undefined ? english : M_Loc(key, english);
+}
+
 export function M_Menu_Keys_f(): void {
   keyState.key_dest = KeydestT.key_menu;
   menuState.m_state = MStateT.m_keys;
@@ -2132,7 +2215,7 @@ export function M_Keys_Draw(): void {
   for (let i = 0; i < NUMCOMMANDS; i++) {
     const y = 48 + 8 * i;
 
-    M_Print(16, y, bindnames[i][1]);
+    M_Print(16, y, M_BindName(bindnames[i][0], bindnames[i][1]));
 
     M_FindKeysForCommand(bindnames[i][0], keys);
 
@@ -2310,6 +2393,17 @@ export const quitMessage: string[] = [
   "                        ",
 ];
 
+/* The retail tables spell each of the eight quit taunts as ONE `m_quit_N`
+ * string; menu.c hand-wraps them into four 24-column literals. A localized
+ * taunt is wrapped to the same box, and the hand-wrapped literals are what
+ * draws when the table has no such key. */
+export function M_QuitMessageLines(msgNumber: number): string[] {
+  const english = [0, 1, 2, 3].map((i) => quitMessage[msgNumber * 4 + i] ?? "");
+  const one = M_Loc(`$m_quit_${msgNumber}`, "");
+  if (one.length === 0) return english;
+  return M_WrapText(one, 24, 4);
+}
+
 // menu.c calls libc rand() directly here, not a QuakeC builtin; mathlib.ts
 // deliberately provides no such wrapper (see its own header). Local
 // Math.random()-backed stand-in, per PORTING.md's rand()->Math.random() idiom
@@ -2367,10 +2461,11 @@ export function M_Quit_Draw(): void {
   }
 
   M_DrawTextBox(56, 76, 24, 4);
-  M_Print(64, 84, quitMessage[menuState.msgNumber * 4 + 0]);
-  M_Print(64, 92, quitMessage[menuState.msgNumber * 4 + 1]);
-  M_Print(64, 100, quitMessage[menuState.msgNumber * 4 + 2]);
-  M_Print(64, 108, quitMessage[menuState.msgNumber * 4 + 3]);
+  const quitLines = M_QuitMessageLines(menuState.msgNumber);
+  M_Print(64, 84, quitLines[0]);
+  M_Print(64, 92, quitLines[1]);
+  M_Print(64, 100, quitLines[2]);
+  M_Print(64, 108, quitLines[3]);
 }
 
 //=============================================================================
@@ -2415,7 +2510,7 @@ export function M_LanConfig_Draw(): void {
   const basex = Math.trunc((320 - p.width) / 2);
   M_DrawPic(basex, 4, p);
 
-  const startJoin = StartingGame() ? "New Game" : "Join Game";
+  const startJoin = StartingGame() ? M_Loc("$m_new_game", "New Game") : "Join Game";
   const protocol = IPXConfig() ? "IPX" : "TCP/IP";
   M_Print(basex, 32, `${startJoin} - ${protocol}`);
   const bx = basex + 8;
@@ -2441,7 +2536,7 @@ export function M_LanConfig_Draw(): void {
     M_Print(bx + 9 * 8, LANCONFIG_PROTOCOL_Y, protocolValue);
   } else {
     M_DrawTextBox(bx, lanConfig_cursor_table[1] - 8, 2, 1);
-    M_Print(bx + 8, lanConfig_cursor_table[1], "OK");
+    M_Print(bx + 8, lanConfig_cursor_table[1], M_Loc("$m_ok", "OK"));
   }
 
   M_DrawCharacter(bx - 8, lanConfigCursorY(menuState.lanConfig_cursor), 12 + (Math.trunc(host.realtime * 4) & 1));
@@ -2814,17 +2909,17 @@ export function M_GameOptions_Draw(): void {
   M_DrawTextBox(152, 32, 10, 1);
   M_Print(160, 40, "begin game");
 
-  M_Print(0, 56, "      Max players");
+  M_PrintRight(0, 56, 17, M_Loc("$m_max_players", "Max players"));
   M_Print(160, 56, `${menuState.maxplayers}`);
 
-  M_Print(0, 64, "        Game Type");
+  M_PrintRight(0, 64, 17, M_Loc("$m_mode", "Game Type"));
   // U40 addition: CTF, only when the ctf gamedir is mounted; with no ctf
   // mount this is the unchanged classic Cooperative/Deathmatch toggle.
-  if (ctfMounted() && menuState.gameoptionsCtf) M_Print(160, 64, "CTF");
-  else if (Cvar_VariableValue("coop")) M_Print(160, 64, "Cooperative");
-  else M_Print(160, 64, "Deathmatch");
+  if (ctfMounted() && menuState.gameoptionsCtf) M_Print(160, 64, M_Loc("$m_ctf", "CTF"));
+  else if (Cvar_VariableValue("coop")) M_Print(160, 64, M_Loc("$m_coop", "Cooperative"));
+  else M_Print(160, 64, M_Loc("$m_deathmatch", "Deathmatch"));
 
-  M_Print(0, 72, "        Teamplay");
+  M_PrintRight(0, 72, 16, M_Loc("$m_teamplay", "Teamplay"));
   const teamplayValue = Math.trunc(Cvar_VariableValue("teamplay"));
   if (rogue) {
     let msg: string;
@@ -2833,13 +2928,13 @@ export function M_GameOptions_Draw(): void {
         msg = "No Friendly Fire";
         break;
       case 2:
-        msg = "Friendly Fire";
+        msg = M_Loc("$m_friendly_fire", "Friendly Fire");
         break;
       case 3:
         msg = "Tag";
         break;
       case 4:
-        msg = "Capture the Flag";
+        msg = M_Loc("$m_ctf", "Capture the Flag");
         break;
       case 5:
         msg = "One Flag CTF";
@@ -2848,7 +2943,7 @@ export function M_GameOptions_Draw(): void {
         msg = "Three Team CTF";
         break;
       default:
-        msg = "Off";
+        msg = M_Loc("$m_off", "Off");
         break;
     }
     M_Print(160, 72, msg);
@@ -2859,28 +2954,28 @@ export function M_GameOptions_Draw(): void {
         msg = "No Friendly Fire";
         break;
       case 2:
-        msg = "Friendly Fire";
+        msg = M_Loc("$m_friendly_fire", "Friendly Fire");
         break;
       default:
-        msg = "Off";
+        msg = M_Loc("$m_off", "Off");
         break;
     }
     M_Print(160, 72, msg);
   }
 
-  M_Print(0, 80, "            Skill");
+  M_PrintRight(0, 80, 17, M_Loc("$m_difficulty", "Skill"));
   const skillValue = Cvar_VariableValue("skill");
-  if (skillValue === 0) M_Print(160, 80, "Easy difficulty");
-  else if (skillValue === 1) M_Print(160, 80, "Normal difficulty");
-  else if (skillValue === 2) M_Print(160, 80, "Hard difficulty");
-  else M_Print(160, 80, "Nightmare difficulty");
+  if (skillValue === 0) M_Print(160, 80, M_Loc("$m_easy", "Easy difficulty"));
+  else if (skillValue === 1) M_Print(160, 80, M_Loc("$m_medium", "Normal difficulty"));
+  else if (skillValue === 2) M_Print(160, 80, M_Loc("$m_hard", "Hard difficulty"));
+  else M_Print(160, 80, M_Loc("$m_nightmare", "Nightmare difficulty"));
 
-  M_Print(0, 88, "       Frag Limit");
+  M_PrintRight(0, 88, 17, M_Loc("$m_fraglimit", "Frag Limit"));
   const fraglimitValue = Cvar_VariableValue("fraglimit");
   if (fraglimitValue === 0) M_Print(160, 88, "none");
   else M_Print(160, 88, `${Math.trunc(fraglimitValue)} frags`);
 
-  M_Print(0, 96, "       Time Limit");
+  M_PrintRight(0, 96, 17, M_Loc("$m_timelimit", "Time Limit"));
   const timelimitValue = Cvar_VariableValue("timelimit");
   if (timelimitValue === 0) M_Print(160, 96, "none");
   else M_Print(160, 96, `${Math.trunc(timelimitValue)} minutes`);
@@ -2889,7 +2984,7 @@ export function M_GameOptions_Draw(): void {
   // is mounted for the current Game Type; the exact classic per-build
   // lookups (unchanged) otherwise -- see gameOptionsEpisodeName/
   // resolveGameOptionsMap's own comments above.
-  M_Print(0, 112, "         Episode");
+  M_PrintRight(0, 112, 16, M_Loc("$m_episode", "Episode"));
   M_Print(160, 112, gameOptionsEpisodeName());
 
   M_Print(0, 120, "           Level");
@@ -2904,10 +2999,10 @@ export function M_GameOptions_Draw(): void {
   M_Print(0, 144, "        Protocol");
   M_Print(160, 144, SV_PROTOCOLS[menuState.gameoptionsProtocolIndex]!);
 
-  M_Print(0, 152, "       Bot Count");
+  M_PrintRight(0, 152, 16, M_Loc("$m_num_bots", "Bot Count"));
   M_Print(160, 152, `${menuState.gameoptionsBotCount}`);
 
-  M_Print(0, 160, "       Bot Skill");
+  M_PrintRight(0, 160, 16, M_Loc("$m_bot_skill", "Bot Skill"));
   M_Print(160, 160, AvailableBotSkillNames()[menuState.gameoptionsBotSkillIndex] ?? "medium");
 
   // line cursor

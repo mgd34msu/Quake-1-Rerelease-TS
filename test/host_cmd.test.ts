@@ -9,7 +9,7 @@ Every process-wide flag Host_Init installs is captured before and restored in
 afterAll (`bun test` runs every file in one process).
 */
 
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { describe, expect, test, beforeAll, beforeEach, afterAll } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { COM_GetGameNames, COM_InitArgv, com_gamedir, com_searchpaths, pop, setComGamedir, setComSearchpaths } from "../src/common/common";
@@ -18,7 +18,26 @@ import { buildBsp, buildMdl, buildSpr, ensureDir, writeGameFile } from "./suppor
 import { Cbuf_AddText, Cbuf_Execute, Cmd_ExecuteString, Cmd_TokenizeString, CmdSourceT, cmdHost, cmdState } from "../src/common/cmd";
 import { Cvar_Set, Cvar_VariableString, Cvar_VariableValue, setCvarServerHooks } from "../src/common/cvar";
 import { LUMPINFO_T_SIZE, WADINFO_T_SIZE } from "../src/common/wad";
-import { IT_SHOTGUN, MAX_LIGHTSTYLES, QuakeParmsT, SAVEGAME_COMMENT_LENGTH, STAT_MONSTERS, STAT_TOTALMONSTERS } from "../src/common/quakedef";
+import {
+  IT_ARMOR1,
+  IT_ARMOR2,
+  IT_ARMOR3,
+  IT_AXE,
+  IT_GRENADE_LAUNCHER,
+  IT_KEY1,
+  IT_KEY2,
+  IT_LIGHTNING,
+  IT_NAILGUN,
+  IT_ROCKET_LAUNCHER,
+  IT_SHOTGUN,
+  IT_SUPER_NAILGUN,
+  IT_SUPER_SHOTGUN,
+  MAX_LIGHTSTYLES,
+  QuakeParmsT,
+  SAVEGAME_COMMENT_LENGTH,
+  STAT_MONSTERS,
+  STAT_TOTALMONSTERS,
+} from "../src/common/quakedef";
 import { SvcOpsT } from "../src/common/protocol";
 import type { SizeBuf } from "../src/common/sizebuf";
 import { SZ_Clear } from "../src/common/sizebuf";
@@ -26,7 +45,7 @@ import { setHostShutdown, sysState } from "../src/platform/sys";
 import { QsocketT } from "../src/common/net";
 import { getNetHostHooks, net_activeconnections, net_time, setNetActiveConnections, setNetHostHooks } from "../src/common/net_main";
 import { ClientT, sv, svState, svs } from "../src/server/server";
-import { EDICT_NUM } from "../src/progs/progs";
+import { EDICT_NUM, type EdictT } from "../src/progs/progs";
 import { pr_builtin } from "../src/progs/pr_cmds";
 import { setBuiltins } from "../src/progs/pr_exec";
 import { Host_Init, host, hostClientHooks } from "../src/common/host";
@@ -382,6 +401,18 @@ describe.skipIf(!HAVE_PROGS106)("Host_Name_f", () => {
 });
 
 describe.skipIf(!HAVE_PROGS106)("Host_Color_f", () => {
+  // The `load` round-trip earlier in this file leaves sv.loadgame true (the
+  // engine only clears it at the next SV_SpawnServer), and Host_Color_f's
+  // S3 branch reads it -- so which path each test below wants is pinned
+  // here rather than inherited from whatever ran before.
+  const savedLoadgame = sv.loadgame;
+  beforeEach(() => {
+    sv.loadgame = false;
+  });
+  afterAll(() => {
+    sv.loadgame = savedLoadgame;
+  });
+
   test("masks to 4 bits, clamps to 13 and packs top*16+bottom", () => {
     withClients(1, (clients) => {
       const c = clients[0];
@@ -409,6 +440,47 @@ describe.skipIf(!HAVE_PROGS106)("Host_Color_f", () => {
       runCommand("color 4", CmdSourceT.src_client, Host_Color_f);
 
       expect(c.colors).toBe(4 * 16 + 4);
+    });
+  });
+
+  // S3: the `color` the reconnecting client sends during a load signon must
+  // not overwrite the team the save restored -- quakec_ctf's TeamCheckLock
+  // reads a changed `team` as a mid-game team change and kills the player.
+  test("a load signon recovers the bottom colour from the restored team", () => {
+    withClients(1, (clients) => {
+      const c = clients[0];
+      c.active = true;
+      c.spawned = false;
+      c.colors = 0;
+      c.edict = EDICT_NUM(1);
+      c.edict.v.team = 14; // blue, as the save file restored it
+      svState.host_client = c;
+      SZ_Clear(sv.reliable_datagram);
+      sv.loadgame = true;
+
+      runCommand("color 0 0", CmdSourceT.src_client, Host_Color_f);
+
+      expect(c.edict.v.team).toBe(14);
+      expect(c.colors).toBe(13);
+      expect(bytesOf(sv.reliable_datagram)).toEqual([SvcOpsT.svc_updatecolors, 0, 13]);
+    });
+  });
+
+  test("a normal in-game `color` still writes the team, loadgame or not", () => {
+    withClients(1, (clients) => {
+      const c = clients[0];
+      c.active = true;
+      c.spawned = true; // already in the game: an ordinary team change
+      c.edict = EDICT_NUM(1);
+      c.edict.v.team = 14;
+      svState.host_client = c;
+      SZ_Clear(sv.reliable_datagram);
+      sv.loadgame = true;
+
+      runCommand("color 0 3", CmdSourceT.src_client, Host_Color_f);
+
+      expect(c.edict.v.team).toBe(4);
+      expect(c.colors).toBe(3);
     });
   });
 });
@@ -505,6 +577,105 @@ describe.skipIf(!HAVE_PROGS106)("Host_Give_f", () => {
 
       expect(player.v.health).toBe(75);
     });
+  });
+
+  // D1: johnfitz's `give a` (Ironwail host_cmd.c:3447-3471) plus the
+  // currentammo fix-up that follows every give.
+  function givePlayer(text: string, prepare: (player: EdictT) => void): EdictT {
+    return withClients(1, (clients) => {
+      const c = clients[0];
+      c.active = true;
+      svState.host_client = c;
+      const player = EDICT_NUM(1);
+      player.v.items = 0;
+      player.v.armortype = 0;
+      player.v.armorvalue = 0;
+      player.v.weapon = 0;
+      player.v.currentammo = 0;
+      player.v.ammo_shells = 0;
+      player.v.ammo_nails = 0;
+      player.v.ammo_rockets = 0;
+      player.v.ammo_cells = 0;
+      svState.sv_player = player;
+      prepare(player);
+      runCommand(text, CmdSourceT.src_client, Host_Give_f);
+      return player;
+    });
+  }
+
+  test("`give a 250` is red armour: armortype 0.8, IT_ARMOR3", () => {
+    const player = givePlayer("give a 250", () => {});
+    expect(player.v.armortype).toBeCloseTo(0.8, 5);
+    expect(player.v.armorvalue).toBe(250);
+    expect(player.v.items | 0).toBe(IT_ARMOR3);
+  });
+
+  test("`give a 120` is yellow armour: armortype 0.6, IT_ARMOR2", () => {
+    const player = givePlayer("give a 120", () => {});
+    expect(player.v.armortype).toBeCloseTo(0.6, 5);
+    expect(player.v.armorvalue).toBe(120);
+    expect(player.v.items | 0).toBe(IT_ARMOR2);
+  });
+
+  test("`give a 50` is green armour and replaces the shell already worn", () => {
+    const player = givePlayer("give a 50", (p) => {
+      p.v.items = IT_ARMOR3;
+    });
+    expect(player.v.armortype).toBeCloseTo(0.3, 5);
+    expect(player.v.armorvalue).toBe(50);
+    expect(player.v.items | 0).toBe(IT_ARMOR1);
+  });
+
+  test("`give a 0` is armour 0, not a no-op -- the reference engines' `give all`", () => {
+    const player = givePlayer("give a 0", () => {});
+    expect(player.v.armorvalue).toBe(0);
+    expect(player.v.items | 0).toBe(IT_ARMOR1);
+  });
+
+  test("the currentammo fix-up follows a shell give while the shotgun is out", () => {
+    const player = givePlayer("give s 42", (p) => {
+      p.v.weapon = IT_SHOTGUN;
+    });
+    expect(player.v.ammo_shells).toBe(42);
+    expect(player.v.currentammo).toBe(42);
+  });
+
+  test("the currentammo fix-up follows a rocket give while the launcher is out", () => {
+    const player = givePlayer("give r 17", (p) => {
+      p.v.weapon = IT_ROCKET_LAUNCHER;
+    });
+    expect(player.v.ammo_rockets).toBe(17);
+    expect(player.v.currentammo).toBe(17);
+  });
+
+  test("the currentammo fix-up leaves a weapon with no matching ammo alone", () => {
+    const player = givePlayer("give s 42", (p) => {
+      p.v.weapon = IT_AXE;
+      p.v.currentammo = 7;
+    });
+    expect(player.v.currentammo).toBe(7);
+  });
+
+  // DEVIATION (QoL addition, documented in Host_GiveAll): the reference
+  // engines reach the armour case through "all"'s leading 'a' and grant
+  // armour 0. See src/common/host_cmd.ts.
+  test("`give all` grants every weapon, full ammo, both keys and 200 armour", () => {
+    const player = givePlayer("give all", (p) => {
+      p.v.weapon = IT_LIGHTNING;
+    });
+    const weapons =
+      IT_AXE | IT_SHOTGUN | IT_SUPER_SHOTGUN | IT_NAILGUN | IT_SUPER_NAILGUN | IT_GRENADE_LAUNCHER | IT_ROCKET_LAUNCHER | IT_LIGHTNING;
+    expect((player.v.items | 0) & weapons).toBe(weapons);
+    expect((player.v.items | 0) & (IT_KEY1 | IT_KEY2)).toBe(IT_KEY1 | IT_KEY2);
+    expect(player.v.ammo_shells).toBe(100);
+    expect(player.v.ammo_nails).toBe(200);
+    expect(player.v.ammo_rockets).toBe(100);
+    expect(player.v.ammo_cells).toBe(100);
+    expect(player.v.armorvalue).toBe(200);
+    expect(player.v.armortype).toBeCloseTo(0.8, 5);
+    expect((player.v.items | 0) & IT_ARMOR3).toBe(IT_ARMOR3);
+    // the fix-up runs after the QoL grant too
+    expect(player.v.currentammo).toBe(100);
   });
 });
 

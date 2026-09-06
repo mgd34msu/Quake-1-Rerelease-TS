@@ -185,9 +185,24 @@ import {
   HIT_LASER_CANNON,
   HIT_MJOLNIR,
   HIT_PROXIMITY_GUN,
+  IT_ARMOR1,
+  IT_ARMOR2,
+  IT_ARMOR3,
+  IT_AXE,
   IT_GRENADE_LAUNCHER,
+  IT_KEY1,
+  IT_KEY2,
   IT_LIGHTNING,
+  IT_NAILGUN,
+  IT_ROCKET_LAUNCHER,
   IT_SHOTGUN,
+  IT_SUPER_NAILGUN,
+  IT_SUPER_SHOTGUN,
+  RIT_LAVA_NAILGUN,
+  RIT_LAVA_SUPER_NAILGUN,
+  RIT_MULTI_GRENADE,
+  RIT_MULTI_ROCKET,
+  RIT_PLASMA_GUN,
   MAX_LIGHTSTYLES,
   SAVEGAME_COMMENT_LENGTH,
   STAT_MONSTERS,
@@ -241,7 +256,7 @@ import {
 // walk, host_cmd.c:1420's SaveList_Init) is ported. Following common.ts's own
 // listZipFilesInDir (same try/catch-on-ENOENT shape) rather than adding a
 // third confinement site silently.
-import { readdirSync } from "node:fs";
+import { readdirSync, type Dirent } from "node:fs";
 
 // client.h -- see the file header
 const MAX_DEMOS = 8;
@@ -843,20 +858,10 @@ function Host_AutosaveDir(): string {
 // import's own note. Newest mtime among `<gamedir>/autosave/*.sav`, or null
 // if the directory doesn't exist or holds no `.sav` file. This port's own
 // addition backing `load autosave` -- see the file header.
-function Host_NewestAutosave(): string | null {
-  const dir = Host_AutosaveDir();
-  let entries: string[];
-  try {
-    entries = readdirSync(dir);
-  } catch {
-    return null;
-  }
-
+export function Host_NewestAutosave(): string | null {
   let best: string | null = null;
   let bestTime = -1;
-  for (const entry of entries) {
-    if (!entry.toLowerCase().endsWith(".sav")) continue;
-    const full = `${dir}/${entry}`;
+  for (const full of Host_ListAutosaves()) {
     const t = Sys_FileTime(full);
     if (t > bestTime) {
       bestTime = t;
@@ -864,6 +869,41 @@ function Host_NewestAutosave(): string | null {
     }
   }
   return best;
+}
+
+/* S1: Host_WriteAutosave names the slot after `sv.name`, and a re-release
+ * map name carries its own subdirectory ("vault/tim", "test/..."), so
+ * COM_CreatePath writes `<gamedir>/autosave/vault/tim.sav`. A flat readdir
+ * sees only the directory entry "vault", which fails the ".sav" test, so
+ * every nested slot was invisible both to `load autosave` and to the Load
+ * menu's Autosave row. The walk now follows the writer down; the depth cap
+ * is a guard on a directory the user owns, not a format limit. */
+const AUTOSAVE_SCAN_DEPTH = 4;
+
+function Host_CollectAutosaves(dir: string, depth: number, out: string[]): void {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const full = `${dir}/${entry.name}`;
+    if (entry.isDirectory()) {
+      if (depth > 0) Host_CollectAutosaves(full, depth - 1, out);
+    } else if (entry.name.toLowerCase().endsWith(".sav")) {
+      out.push(full);
+    }
+  }
+}
+
+/** Every `.sav` under `<gamedir>/autosave`, nested slots included. Shared
+ * with src/client/menu.ts's Autosave row so the menu and `load autosave`
+ * cannot disagree about which slots exist. */
+export function Host_ListAutosaves(): string[] {
+  const out: string[] = [];
+  Host_CollectAutosaves(Host_AutosaveDir(), AUTOSAVE_SCAN_DEPTH, out);
+  return out;
 }
 
 // Ironwail host_cmd.c:2690's `sv.autosave.time = time;` (Host_Loadgame_f) is
@@ -1321,7 +1361,7 @@ export function Host_Color_f(): void {
   bottom &= 15;
   if (bottom > 13) bottom = 13;
 
-  const playercolor = top * 16 + bottom;
+  let playercolor = top * 16 + bottom;
 
   if (cmdState.source === CmdSourceT.src_command) {
     Cvar_SetValue("_cl_color", playercolor);
@@ -1330,9 +1370,28 @@ export function Host_Color_f(): void {
   }
 
   const host_client = requireHostClient();
-  host_client.colors = playercolor;
   if (host_client.edict === null) Sys_Error("Host_Color_f: client has no edict");
-  host_client.edict.v.team = bottom + 1;
+
+  /* S3: the save file carries the player edict's `team`, but not the
+   * client's colours, and CL_SignonReply sends `color` BEFORE `spawn` -- so
+   * on a load this ran with the reconnecting client's own (zeroed) colours
+   * and wrote `team` back down to 1. quakec_ctf's TeamCheckLock
+   * (teamplay.qc) reads that as a mid-game team change and kills the player
+   * with T_Damage(1000), and combat.qc skips godmode while team differs from
+   * lastteam, so a CTF save could not round-trip. During a load signon the
+   * restored team is the authority: the bottom colour is recovered from it
+   * instead of being written over it. WinQuake and Ironwail carry the same
+   * latent bug (no shipped classic progs reads `team` this way); the KEX
+   * engine does round-trip CTF saves, which is the behaviour matched here. */
+  const restoredTeam = host_client.edict.v.team | 0;
+  if (sv.loadgame && !host_client.spawned && restoredTeam > 0) {
+    bottom = (restoredTeam - 1) & 15;
+    if (bottom > 13) bottom = 13;
+    playercolor = top * 16 + bottom;
+  } else {
+    host_client.edict.v.team = bottom + 1;
+  }
+  host_client.colors = playercolor;
 
   // send notification to all clients
   MSG_WriteByte(sv.reliable_datagram, SvcOpsT.svc_updatecolors);
@@ -1623,6 +1682,66 @@ DEBUGGING TOOLS
 ===============================================================================
 */
 
+const GIVE_ARMOR_BITS = IT_ARMOR1 | IT_ARMOR2 | IT_ARMOR3;
+
+/* johnfitz's `give a`: replace whichever armour shell the player wears with
+ * the one the value asks for. `items` can hold bits above 2^31 under the
+ * rogue item set, where a 32-bit mask would wrap the value, so the old bits
+ * come off arithmetically the way the C original writes it. */
+function SV_GiveArmor(sv_player: EdictT, armortype: number, armorvalue: number, bit: number): void {
+  sv_player.v.armortype = armortype;
+  sv_player.v.armorvalue = armorvalue;
+  sv_player.v.items = sv_player.v.items - (Math.trunc(sv_player.v.items) & GIVE_ARMOR_BITS) + bit;
+}
+
+/*
+==================
+Host_GiveAll
+
+`give all`: every weapon, full ammo, both keys and 200 armour.
+
+DEVIATION (documented QoL addition, per the project charter): the reference
+engines have no "all" argument at all -- `give all` reaches johnfitz's armour
+case through its leading 'a' and grants armour 0. What the KEX engine does
+with the word is unknown (the engine is closed and the shipped loc table's
+cheat rows only name `m_impulse9`/`m_give_c`/`m_give_n`/`m_give_r`/`m_give_s`/
+`m_give_h`), so this engine spells the obvious meaning instead of the
+accidental one. `give a 0` still reaches the armour-0 behaviour explicitly.
+==================
+*/
+function Host_GiveAll(sv_player: EdictT): void {
+  let weapons =
+    IT_AXE | IT_SHOTGUN | IT_SUPER_SHOTGUN | IT_NAILGUN | IT_SUPER_NAILGUN | IT_GRENADE_LAUNCHER | IT_ROCKET_LAUNCHER | IT_LIGHTNING;
+  if (hipnotic) weapons |= HIT_PROXIMITY_GUN | HIT_MJOLNIR | HIT_LASER_CANNON;
+  if (rogue) weapons |= RIT_LAVA_NAILGUN | RIT_LAVA_SUPER_NAILGUN | RIT_MULTI_GRENADE | RIT_MULTI_ROCKET | RIT_PLASMA_GUN;
+
+  sv_player.v.items = sv_player.v.items - (Math.trunc(sv_player.v.items) & weapons) + weapons;
+  sv_player.v.items = sv_player.v.items - (Math.trunc(sv_player.v.items) & (IT_KEY1 | IT_KEY2)) + (IT_KEY1 | IT_KEY2);
+
+  sv_player.v.ammo_shells = 100;
+  sv_player.v.ammo_nails = 200;
+  sv_player.v.ammo_rockets = 100;
+  sv_player.v.ammo_cells = 100;
+
+  if (rogue) {
+    const alt: ReadonlyArray<readonly [string, number]> = [
+      ["ammo_shells1", 100],
+      ["ammo_nails1", 200],
+      ["ammo_lava_nails", 200],
+      ["ammo_rockets1", 100],
+      ["ammo_multi_rockets", 100],
+      ["ammo_cells1", 100],
+      ["ammo_plasma", 100],
+    ];
+    for (const [name, amount] of alt) {
+      const val = GetEdictFieldValue(sv_player, name);
+      if (val !== -1) sv_player.fields.f[val] = amount;
+    }
+  }
+
+  SV_GiveArmor(sv_player, 0.8, 200, IT_ARMOR3);
+}
+
 /*
 ==================
 Host_Give_f
@@ -1639,6 +1758,12 @@ export function Host_Give_f(): void {
   const t = Cmd_Argv(1);
   const v = Q_atoi(Cmd_Argv(2));
   const sv_player = requireSvPlayer();
+
+  if (t.toLowerCase() === "all") {
+    Host_GiveAll(sv_player);
+    Host_GiveFixCurrentAmmo(sv_player);
+    return;
+  }
 
   switch (t[0]) {
     case "0":
@@ -1742,6 +1867,49 @@ export function Host_Give_f(): void {
       }
       break;
     }
+
+    //johnfitz -- give armour
+    case "a":
+      if (v > 150) SV_GiveArmor(sv_player, 0.8, v, IT_ARMOR3);
+      else if (v > 100) SV_GiveArmor(sv_player, 0.6, v, IT_ARMOR2);
+      else if (v >= 0) SV_GiveArmor(sv_player, 0.3, v, IT_ARMOR1);
+      break;
+      //johnfitz
+  }
+
+  Host_GiveFixCurrentAmmo(sv_player);
+}
+
+/* johnfitz -- update currentammo to match new ammo (so statusbar updates correctly) */
+function Host_GiveFixCurrentAmmo(sv_player: EdictT): void {
+  switch (sv_player.v.weapon | 0) {
+    case IT_SHOTGUN:
+    case IT_SUPER_SHOTGUN:
+      sv_player.v.currentammo = sv_player.v.ammo_shells;
+      break;
+    case IT_NAILGUN:
+    case IT_SUPER_NAILGUN:
+    case RIT_LAVA_SUPER_NAILGUN:
+      sv_player.v.currentammo = sv_player.v.ammo_nails;
+      break;
+    case IT_GRENADE_LAUNCHER:
+    case IT_ROCKET_LAUNCHER:
+    case RIT_MULTI_GRENADE:
+    case RIT_MULTI_ROCKET:
+      sv_player.v.currentammo = sv_player.v.ammo_rockets;
+      break;
+    case IT_LIGHTNING:
+    case HIT_LASER_CANNON:
+    case HIT_MJOLNIR:
+      sv_player.v.currentammo = sv_player.v.ammo_cells;
+      break;
+    case RIT_LAVA_NAILGUN: //same as IT_AXE
+      if (rogue) sv_player.v.currentammo = sv_player.v.ammo_nails;
+      break;
+    case RIT_PLASMA_GUN: //same as HIT_PROXIMITY_GUN
+      if (rogue) sv_player.v.currentammo = sv_player.v.ammo_cells;
+      if (hipnotic) sv_player.v.currentammo = sv_player.v.ammo_rockets;
+      break;
   }
 }
 

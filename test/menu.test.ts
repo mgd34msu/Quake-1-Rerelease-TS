@@ -36,7 +36,7 @@
 // afterAll for the compensating final COM_InitFilesystem reset).
 
 import { afterAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { ModelLoaderHooks } from "../src/common/model";
@@ -93,6 +93,8 @@ import { gl_coloredlight } from "../src/ref_gl/glquake";
 import { language, sv_ruleset, campaign } from "../src/progs/ext/ruleset";
 import { sv_protocol } from "../src/server/sv_main";
 import { Bot_ForgetKnowledge, Bot_ForgetMapdb, bot_count, bot_skill } from "../src/bots";
+import type { ContentFsSeam } from "../src/client/menu_content";
+import { LoadMenuLocalization, test_ResetMenuLocCache } from "../src/client/menu_content";
 import * as menu from "../src/client/menu";
 
 // cmd_text (cmd.ts's command buffer) is unallocated until Cbuf_Init runs;
@@ -974,7 +976,10 @@ describe("M_Load_Key / M_Save_Key: Autosave row", () => {
     const dir = mkdtempSync(join(scratchRoot, "menu-autosave-"));
     try {
       mkdirSync(join(dir, "autosave"), { recursive: true });
-      writeFileSync(join(dir, "autosave", "e1m1.sav"), "6\nAutosaved_Game\n");
+      // S2: a version-6 file writes COM_GetGameNames() between the version
+      // and the comment (host_cmd.ts's Host_WriteSaveFile), so the fixture
+      // carries that line too -- without it this is not a KEX save at all.
+      writeFileSync(join(dir, "autosave", "e1m1.sav"), "6\nid1\nAutosaved_Game\n");
 
       // See M_ScanSaves above: the autosave lives in the scratch gamedir, so
       // this mounts with the home write tier off.
@@ -1570,5 +1575,233 @@ describe("U40: classic screens byte-identical with no re-release data mounted", 
     } finally {
       rmSync(plainRoot, { recursive: true, force: true });
     }
+  });
+});
+
+//=============================================================================
+// D7: every menu label with a retail `m_*` key draws through the loaded loc
+// table, so `language russian` changes the visible labels; a label the
+// tables never keyed stays English.
+
+describe("localized menu labels", () => {
+  // menu.ts's M_Loc goes through menu_content.ts's MenuLoc, whose default
+  // ContentFsSeam is the real filesystem -- LoadMenuLocalization(seam) with
+  // a synthetic seam both installs the table and pins the cache to this
+  // language, so no draw below reaches a real localization/ directory.
+  function fakeLocSeam(files: Readonly<Record<string, string>>): ContentFsSeam {
+    return {
+      directoryExists: () => false,
+      loadTempFile: (path: string) => {
+        const text = files[path];
+        if (text === undefined) return null;
+        const bytes = new TextEncoder().encode(text);
+        const out = new Uint8Array(bytes.length + 1);
+        out.set(bytes, 0);
+        return out;
+      },
+      loadAllFiles: () => [],
+    };
+  }
+
+  const ENGLISH =
+    'm_set_binds = "Customize Bindings..."\n' +
+    'm_always_run = "Always Run"\n' +
+    'm_language = "Language"\n' +
+    'm_on = "On"\n' +
+    'm_off = "Off"\n';
+  const RUSSIAN =
+    'm_set_binds = "Nastroyka klavish"\n' + 'm_always_run = "Vsegda bezhat"\n' + 'm_language = "Yazyk"\n' + 'm_on = "Vkl"\n' + 'm_off = "Vykl"\n';
+
+  const LOC_FILES = {
+    "localization/loc_english.txt": ENGLISH,
+    "localization/loc_russian.txt": RUSSIAN,
+  };
+
+  function useLanguage(lang: string, files: Readonly<Record<string, string>> = LOC_FILES): void {
+    Cvar_Set("language", lang);
+    test_ResetMenuLocCache();
+    LoadMenuLocalization(fakeLocSeam(files));
+  }
+
+  /** Every row M_Print drew, as text keyed by its y coordinate. M_Print
+   * draws each character as `charCode + 128` (menu.c's brown text). */
+  function drawnRows(maxX = Number.POSITIVE_INFINITY): Map<number, string> {
+    const rows = new Map<number, string>();
+    for (const c of drawCalls) {
+      if (c.fn !== "Draw_Character") continue;
+      const [x, y, num] = c.args;
+      if (typeof x !== "number" || typeof y !== "number" || typeof num !== "number") continue;
+      if (x >= maxX) continue; // the slider/checkbox/value column at x=220
+      if (num < 128 || num > 255) continue; // the blinking cursor char, drawn white
+      rows.set(y, (rows.get(y) ?? "") + String.fromCharCode(num - 128));
+    }
+    return rows;
+  }
+
+  function optionsText(lang: string): Map<number, string> {
+    useLanguage(lang);
+    drawCalls.length = 0;
+    menu.M_Options_Draw();
+    return drawnRows(200);
+  }
+
+  afterAll(() => {
+    Cvar_Set("language", savedLanguage.string);
+    test_ResetMenuLocCache();
+  });
+
+  test("a retail key resolves to the table's own English text", () => {
+    const rows = optionsText("english");
+    expect(rows.get(32)?.trim()).toBe("Customize Bindings...");
+    expect(rows.get(96)?.trim()).toBe("Always Run");
+  });
+
+  test("switching the language changes the drawn labels", () => {
+    const english = optionsText("english");
+    const russian = optionsText("russian");
+    expect(russian.get(32)?.trim()).toBe("Nastroyka klavish");
+    expect(russian.get(96)?.trim()).toBe("Vsegda bezhat");
+    expect([...english.values()].join("\n")).not.toBe([...russian.values()].join("\n"));
+  });
+
+  test("a label with no retail key stays English in every language", () => {
+    // "Go to console" and "Lookspring" are not in any shipped loc_*.txt --
+    // see this unit's report for the full list.
+    expect(optionsText("english").get(40)?.trim()).toBe("Go to console");
+    expect(optionsText("russian").get(40)?.trim()).toBe("Go to console");
+    expect(optionsText("russian").get(112)?.trim()).toBe("Lookspring");
+  });
+
+  test("with no loc file mounted at all every label is its English fallback", () => {
+    Cvar_Set("language", "english");
+    test_ResetMenuLocCache();
+    LoadMenuLocalization(fakeLocSeam({}));
+    drawCalls.length = 0;
+    menu.M_Options_Draw();
+    const rows = drawnRows(200);
+    expect(rows.get(32)?.trim()).toBe("Customize controls");
+    expect(rows.get(96)?.trim()).toBe("Always Run");
+  });
+
+  test("right-aligning a localized label keeps the English column exactly where menu.c put it", () => {
+    Cvar_Set("language", "english");
+    test_ResetMenuLocCache();
+    LoadMenuLocalization(fakeLocSeam({}));
+    drawCalls.length = 0;
+    menu.M_Options_Draw();
+    // "    Customize controls" -- 4 columns of padding at x=16, so the first
+    // non-space character lands at x=48, exactly as the C literal did.
+    const firstLetter = drawCalls.find(
+      (c) => c.fn === "Draw_Character" && c.args[1] === 32 && c.args[2] === "C".charCodeAt(0) + 128,
+    );
+    expect(firstLetter?.args[0]).toBe(48);
+  });
+
+  test("the checkbox reads the retail m_on/m_off keys", () => {
+    useLanguage("russian");
+    drawCalls.length = 0;
+    menu.M_DrawCheckbox(220, 0, true);
+    expect(drawnRows().get(0)).toBe("Vkl");
+    drawCalls.length = 0;
+    menu.M_DrawCheckbox(220, 0, false);
+    expect(drawnRows().get(0)).toBe("Vykl");
+  });
+
+  test("a quit taunt is one retail key, wrapped back into the 24-column box", () => {
+    useLanguage("english", {
+      "localization/loc_english.txt": 'm_quit_0 = "Are you gonna quit this game just like everything else?"\n',
+    });
+    const lines = menu.M_QuitMessageLines(0);
+    expect(lines).toHaveLength(4);
+    for (const l of lines) expect(l.length).toBeLessThanOrEqual(24);
+    expect(lines.join(" ").replace(/\s+/g, " ").trim()).toBe("Are you gonna quit this game just like everything else?");
+  });
+
+  test("a quit taunt with no retail key keeps menu.c's own hand-wrapped literals", () => {
+    useLanguage("english", {});
+    expect(menu.M_QuitMessageLines(0)).toEqual([
+      "  Are you gonna quit    ",
+      "  this game just like   ",
+      "   everything else?     ",
+      "                        ",
+    ]);
+  });
+});
+
+//=============================================================================
+// S1/S2: the Load/Save menu's save comments and the Autosave row.
+
+describe("M_ScanSaves: KEX comments and nested autosave slots", () => {
+  const savedGamedir = com_gamedir;
+  afterAll(() => {
+    setComGamedir(savedGamedir);
+  });
+
+  function withSaveDir(body: (dir: string) => void): void {
+    const dir = mkdtempSync(join(scratchRoot, "menu-scansaves-"));
+    try {
+      setComGamedir(dir);
+      body(dir);
+    } finally {
+      setComGamedir(savedGamedir);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // S2: host_cmd.ts's Host_WriteSaveFile puts COM_GetGameNames() on its own
+  // line between the version and the comment for a KEX (version 6) save.
+  test("a KEX save's comment is the level line, not the game name", () => {
+    withSaveDir((dir) => {
+      writeFileSync(join(dir, "s0.sav"), "6\nid1;ctf\nTHE_SLIPGATE_COMPLEX_kills\n0\n", "latin1");
+      menu.M_ScanSaves();
+      expect(menu.m_filenames[0]).toBe("THE SLIPGATE COMPLEX kills");
+    });
+  });
+
+  test("a classic version 5 save still reads its second line", () => {
+    withSaveDir((dir) => {
+      writeFileSync(join(dir, "s0.sav"), "5\nTHE_SLIPGATE_COMPLEX_kills\n0\n", "latin1");
+      menu.M_ScanSaves();
+      expect(menu.m_filenames[0]).toBe("THE SLIPGATE COMPLEX kills");
+    });
+  });
+
+  // S1: Host_WriteAutosave names the slot after sv.name, and a re-release map
+  // name carries its own subdirectory ("vault/tim").
+  test("the Autosave row finds a nested slot and picks it when it is the newest", () => {
+    withSaveDir((dir) => {
+      mkdirSync(join(dir, "autosave", "vault"), { recursive: true });
+      writeFileSync(join(dir, "autosave", "e1m1.sav"), "6\nid1\nSLIPGATE_COMPLEX\n0\n", "latin1");
+      writeFileSync(join(dir, "autosave", "vault", "tim.sav"), "6\nid1\nTIM_TIMS_TOWER\n0\n", "latin1");
+      // Sys_FileTime is whole seconds, so the two mtimes are set explicitly
+      // rather than left to whichever second the writes landed in.
+      utimesSync(join(dir, "autosave", "e1m1.sav"), 1_000_000, 1_000_000);
+      utimesSync(join(dir, "autosave", "vault", "tim.sav"), 2_000_000, 2_000_000);
+
+      menu.M_ScanSaves();
+      expect(menu.autosaveLoadable).toBe(true);
+      expect(menu.autosaveFilename).toBe("TIM TIMS TOWER");
+    });
+  });
+
+  test("a flat slot still wins when it is the newer of the two", () => {
+    withSaveDir((dir) => {
+      mkdirSync(join(dir, "autosave", "vault"), { recursive: true });
+      writeFileSync(join(dir, "autosave", "e1m1.sav"), "6\nid1\nSLIPGATE_COMPLEX\n0\n", "latin1");
+      writeFileSync(join(dir, "autosave", "vault", "tim.sav"), "6\nid1\nTIM_TIMS_TOWER\n0\n", "latin1");
+      utimesSync(join(dir, "autosave", "e1m1.sav"), 3_000_000, 3_000_000);
+      utimesSync(join(dir, "autosave", "vault", "tim.sav"), 2_000_000, 2_000_000);
+
+      menu.M_ScanSaves();
+      expect(menu.autosaveFilename).toBe("SLIPGATE COMPLEX");
+    });
+  });
+
+  test("no autosave directory leaves the placeholder row", () => {
+    withSaveDir(() => {
+      menu.M_ScanSaves();
+      expect(menu.autosaveLoadable).toBe(false);
+      expect(menu.autosaveFilename).toBe("--- NO AUTOSAVE ---");
+    });
   });
 });

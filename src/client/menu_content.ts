@@ -55,8 +55,8 @@
 
 import { statSync } from "node:fs";
 import { parseMapdb, type Mapdb, type MapdbMap } from "../lib/mapdb";
-import { Loc_Localize } from "../lib/loc";
-import { Loc_LoadOrderedForCurrentLanguage } from "../common/loc_host";
+import { Loc_Localize, Loc_TableSize } from "../lib/loc";
+import { Loc_LoadOrderedForCurrentLanguage, Loc_ResolveLanguage } from "../common/loc_host";
 import { Cvar_Set, Cvar_VariableValue } from "../common/cvar";
 import { Cbuf_AddText } from "../common/cmd";
 import { COM_ClassicDir, COM_LoadAllFiles, COM_LoadTempFile, COM_RereleaseDir, COM_IsRereleaseRoot } from "../common/common";
@@ -290,7 +290,53 @@ export function AvailableLanguages(seam: ContentFsSeam = realContentFsSeam): Loc
  * base file, so a mod that renames an episode is honoured on the New Game
  * screen and not just in the server's own $key prints. */
 export function LoadMenuLocalization(seam: ContentFsSeam = realContentFsSeam): number {
-  return Loc_LoadOrderedForCurrentLanguage(seam);
+  menuLocLanguage = Loc_ResolveLanguage();
+  menuLocKeys = Loc_LoadOrderedForCurrentLanguage(seam);
+  return menuLocKeys;
+}
+
+let menuLocLanguage: string | null = null;
+let menuLocKeys = 0;
+
+/** Test seam: forget which language the menu last loaded, so the next
+ * MenuLoc reloads from the current `language` cvar through whatever
+ * ContentFsSeam it is handed. */
+export function test_ResetMenuLocCache(): void {
+  menuLocLanguage = null;
+  menuLocKeys = 0;
+}
+
+/* The `language` cvar can change between two draws (the Options screen's own
+ * language row changes it), and src/progs/ext/ruleset.ts's
+ * QEX_LoadLocalization writes and CLEARS the same shared src/lib/loc.ts
+ * table when a map spawns under the classic ruleset -- so a table that has
+ * gone empty under a language we did load keys for is reloaded too. A
+ * language whose files yielded nothing is not retried, or every label of
+ * every frame would hit the filesystem on a tree with no localization. */
+function ensureMenuLocTable(seam: ContentFsSeam): void {
+  const lang = Loc_ResolveLanguage();
+  if (lang === menuLocLanguage && (menuLocKeys === 0 || Loc_TableSize() > 0)) return;
+  menuLocLanguage = lang;
+  menuLocKeys = Loc_LoadOrderedForCurrentLanguage(seam);
+}
+
+/*
+================
+MenuLoc
+
+One menu label: the retail `$m_*` key resolved through the loaded loc table,
+or `english` when the table has no such key. Loc_Localize's own miss path
+returns the key text WITHOUT its leading '$' (src/lib/loc.ts), which is what
+distinguishes a miss from a hit here -- no shipped loc_*.txt translates an
+`m_*` key to its own key text, and a caller that wants the raw key back can
+pass it as `english` too.
+================
+*/
+export function MenuLoc(key: string, english: string, seam: ContentFsSeam = realContentFsSeam): string {
+  if (key.length === 0 || key.charAt(0) !== "$") return key;
+  ensureMenuLocTable(seam);
+  const resolved = Loc_Localize(key, false, null, 0);
+  return resolved === key.slice(1) ? english : resolved;
 }
 
 /** `locLoaded` is whether LoadMenuLocalization returned > 0 (the brief's

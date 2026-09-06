@@ -40,11 +40,13 @@ import {
   LoadMapdb,
   LoadMenuLocalization,
   LocalizedEpisodeName,
+  MenuLoc,
   MountedContentDirs,
   realContentFsSeam,
   ResolveLaunch,
   RULESETS,
   SV_PROTOCOLS,
+  test_ResetMenuLocCache,
 } from "../src/client/menu_content";
 import * as cmdModule from "../src/common/cmd";
 import { Cbuf_Init } from "../src/common/cmd";
@@ -439,6 +441,77 @@ describe("LoadMenuLocalization", () => {
     } finally {
       Loc_SetLocaleProbeForTest(null);
     }
+  });
+});
+
+// D7: every menu label with a retail `m_*` key draws through this resolver.
+describe("MenuLoc", () => {
+  afterAll(() => {
+    Loc_Unload();
+    test_ResetMenuLocCache();
+    Cvar_Set("language", savedLanguageString);
+  });
+
+  const RETAIL_ENGLISH = 'm_options = "Options"\nm_always_run = "Always Run"\nm_on = "On"\n';
+  const RETAIL_RUSSIAN = 'm_options = "Настройки"\nm_always_run = "Всегда бежать"\n';
+
+  function withLanguage(lang: string, files: Readonly<Record<string, string>>): ContentFsSeam {
+    Cvar_Set("language", lang);
+    test_ResetMenuLocCache();
+    return fakeSeam(files, []);
+  }
+
+  test("a key the table has resolves to the table's text", () => {
+    const seam = withLanguage("english", { "localization/loc_english.txt": RETAIL_ENGLISH });
+    expect(MenuLoc("$m_always_run", "Always Run", seam)).toBe("Always Run");
+    expect(MenuLoc("$m_on", "on", seam)).toBe("On");
+  });
+
+  test("a key the table does NOT have draws the English fallback, not the bare key", () => {
+    const seam = withLanguage("english", { "localization/loc_english.txt": RETAIL_ENGLISH });
+    expect(MenuLoc("$m_lookspring", "Lookspring", seam)).toBe("Lookspring");
+  });
+
+  test("no loc file at all draws every English fallback", () => {
+    const seam = withLanguage("english", {});
+    expect(MenuLoc("$m_options", "Options", seam)).toBe("Options");
+    expect(MenuLoc("$m_always_run", "Always Run", seam)).toBe("Always Run");
+  });
+
+  test("a string with no key is returned unchanged", () => {
+    const seam = withLanguage("english", { "localization/loc_english.txt": RETAIL_ENGLISH });
+    expect(MenuLoc("Go to console", "Go to console", seam)).toBe("Go to console");
+  });
+
+  // The Options screen's own language row changes the cvar mid-session; the
+  // next label draw must reload rather than keep serving the old language.
+  test("changing the language cvar changes what the next label resolves to", () => {
+    const files = {
+      "localization/loc_english.txt": RETAIL_ENGLISH,
+      "localization/loc_russian.txt": RETAIL_RUSSIAN,
+    };
+    const seam = withLanguage("english", files);
+    expect(MenuLoc("$m_options", "Options", seam)).toBe("Options");
+
+    Cvar_Set("language", "russian");
+    expect(MenuLoc("$m_options", "Options", seam)).toBe("Настройки");
+    // Loc_LoadOrdered swaps the WHOLE tier rather than patching keys in from
+    // two languages at once, so a key the Russian file omits is a plain miss
+    // here -- and a miss is exactly what the caller's English text is for.
+    expect(MenuLoc("$m_on", "on", seam)).toBe("on");
+
+    Cvar_Set("language", "english");
+    expect(MenuLoc("$m_options", "Options", seam)).toBe("Options");
+  });
+
+  test("LoadMenuLocalization's explicit load is what the next MenuLoc uses", () => {
+    Cvar_Set("language", "english");
+    test_ResetMenuLocCache();
+    const seam = fakeSeam({ "localization/loc_english.txt": 'm_options = "Preferences"\n' }, []);
+    LoadMenuLocalization(seam);
+    // no seam passed: the cached load above is honoured rather than a
+    // reload through the real filesystem
+    expect(MenuLoc("$m_options", "Options")).toBe("Preferences");
   });
 });
 
