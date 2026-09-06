@@ -57,8 +57,21 @@ Deviations from PORTING.md / the C source:
   "not connected" fallback that runs until this module installs the real one.
 */
 
-import { Q_strcasecmp, va } from "../common/common";
-import { Cbuf_InsertText, Cmd_AddCommand, Cmd_Args, Cmd_Argc, Cmd_Argv, setForwardToServerHandler } from "../common/cmd";
+import { COM_LoadTempFile, Q_atoi, Q_strcasecmp, va } from "../common/common";
+import { parseWwheel, type WwheelSlot } from "../lib/wwheel";
+import { PEF_CHANGENEVER, PEF_CHANGEONLYNEW } from "../progs/ext/constants";
+import {
+  IT_AXE,
+  IT_GRENADE_LAUNCHER,
+  IT_LIGHTNING,
+  IT_NAILGUN,
+  IT_ROCKET_LAUNCHER,
+  IT_SHOTGUN,
+  IT_SUPER_NAILGUN,
+  IT_SUPER_SHOTGUN,
+  STAT_ACTIVEWEAPON,
+} from "../common/quakedef";
+import { Cbuf_AddText, Cbuf_InsertText, Cmd_AddCommand, Cmd_Args, Cmd_Argc, Cmd_Argv, setForwardToServerHandler } from "../common/cmd";
 import { CvarT, Cvar_RegisterVariable } from "../common/cvar";
 import type { Vec3 } from "../common/mathlib";
 import { AngleVectors, VectorCopy, VectorMA, anglemod, vec3 } from "../common/mathlib";
@@ -114,6 +127,11 @@ import {
   cl_yawspeed,
 } from "./cl_input";
 import { S_StopAllSounds } from "./snd_dma";
+// U22: the `vibrate` client command handler itself lives in
+// src/platform/haptics.ts (this unit's SCOPE keeps this file's own edit to
+// the single Cmd_AddCommand registration below, next to the other client
+// commands CL_Init already registers).
+import { Haptics_Vibrate_f } from "../platform/haptics";
 
 // we need to declare some mouse variables here, because the menu system
 // references them even when on a unix system.
@@ -123,6 +141,20 @@ export const cl_name = new CvarT("_cl_name", "player", true);
 export const cl_color = new CvarT("_cl_color", "0", true);
 
 export const cl_shownet = new CvarT("cl_shownet", "0"); // can be 0, 1, or 2
+
+/*
+U9 (an addition). The 2021 re-release's weapon auto-switch preference, which
+the QuakeC asks the engine for through `ex_CheckPlayerEXFlags`
+(quakec/weapons.qc:862-876's W_WantsToChangeWeapon). NetQuake has no userinfo,
+so the value travels as an `ex_flags <bits>` string command, sent from
+CL_SignonReply beside `name` and `color`:
+
+  0  switch to a weapon only when it is one the player did not already have
+     (PEF_CHANGEONLYNEW -- the re-release's own default)
+  1  never switch on pickup (PEF_CHANGENEVER)
+  2  always switch on pickup (no flags)
+*/
+export const cl_weaponswitch = new CvarT("cl_weaponswitch", "0", true);
 export const cl_nolerp = new CvarT("cl_nolerp", "0");
 
 export const lookspring = new CvarT("lookspring", "0", true);
@@ -264,6 +296,103 @@ CL_SignonReply
 An svc_signonnum has been received, perform a client side setup
 =====================
 */
+/*
+=====================
+CL_ExFlags
+
+`cl_weaponswitch` as the PEF_* bit word `ex_CheckPlayerEXFlags` answers with
+(quakec/defs.qc:444-445).
+=====================
+*/
+export function CL_ExFlags(): number {
+  switch (cl_weaponswitch.value | 0) {
+    case 1:
+      return PEF_CHANGENEVER;
+    case 2:
+      return 0;
+    default:
+      return PEF_CHANGEONLYNEW;
+  }
+}
+
+/*
+=====================
+CL_SwitchWeapon_f
+
+`switchweapon <slotA> <slotB>` -- the re-release's quickswitch command. Its own
+quake.rc binds it four times:
+
+  alias quickswitch_up    "switchweapon 0 1"
+  alias quickswitch_right "switchweapon 2 3"
+  alias quickswitch_down  "switchweapon 4 5"
+  alias quickswitch_left  "switchweapon 6 7"
+
+The arguments are weapon-wheel SLOT indices, not impulses: wwheel.txt gives
+each slot both an `impulse` and a `weaponnum` (the IT_ bit), so slot 0 is the
+single-barrelled shotgun on impulse 2, slot 7 is the axe on impulse 1, and so
+on. The re-release QuakeC has no `switchweapon` entry point at all -- weapon
+changes are still plain impulses through ImpulseCommands -- so this is entirely
+engine-side: pick the first of the two slots the player is not already holding
+and owns, and send that slot's impulse.
+
+wwheel.txt is read through src/lib/wwheel.ts when the gamedir has one (id1's
+has 8 slots, hipnotic's 9, ctf's 9); a tree without one falls back to id1's
+layout, which is what the classic games have always used.
+=====================
+*/
+let wwheelSlots: WwheelSlot[] | null = null;
+
+const WWHEEL_DEFAULT: ReadonlyArray<{ impulse: number; weaponnum: number }> = [
+  { impulse: 2, weaponnum: IT_SHOTGUN },
+  { impulse: 3, weaponnum: IT_SUPER_SHOTGUN },
+  { impulse: 4, weaponnum: IT_NAILGUN },
+  { impulse: 5, weaponnum: IT_SUPER_NAILGUN },
+  { impulse: 6, weaponnum: IT_GRENADE_LAUNCHER },
+  { impulse: 7, weaponnum: IT_ROCKET_LAUNCHER },
+  { impulse: 8, weaponnum: IT_LIGHTNING },
+  { impulse: 1, weaponnum: IT_AXE },
+];
+
+function wheelSlot(slot: number): { impulse: number; weaponnum: number } | null {
+  if (wwheelSlots === null) {
+    const bytes = COM_LoadTempFile("wwheel.txt");
+    if (bytes === null) wwheelSlots = [];
+    else {
+      let text = "";
+      for (let i = 0; i < bytes.length; i++) text += String.fromCharCode(bytes[i]);
+      wwheelSlots = parseWwheel(text).slots;
+    }
+  }
+  for (const s of wwheelSlots) {
+    if (s.slot === slot && s.impulse !== undefined) return { impulse: s.impulse, weaponnum: s.weaponnum ?? 0 };
+  }
+  const fallback = WWHEEL_DEFAULT[slot];
+  return fallback === undefined ? null : fallback;
+}
+
+export function CL_SwitchWeapon_f(): void {
+  if (Cmd_Argc() !== 3) {
+    Con_Printf("switchweapon <slot> <slot> : quick-switch between two weapon wheel slots\n");
+    return;
+  }
+
+  const first = wheelSlot(Q_atoi(Cmd_Argv(1)));
+  const second = wheelSlot(Q_atoi(Cmd_Argv(2)));
+  if (first === null && second === null) return;
+
+  const active = cl.stats[STAT_ACTIVEWEAPON];
+  const owns = (w: { weaponnum: number } | null): boolean => w !== null && (w.weaponnum === 0 || (cl.items & w.weaponnum) !== 0);
+
+  // the slot the player is already holding hands over to the other one
+  let pick = first;
+  if (first !== null && first.weaponnum !== 0 && active === first.weaponnum) pick = second;
+  else if (!owns(first)) pick = second;
+  if (pick === null || !owns(pick)) pick = owns(first) ? first : second;
+  if (pick === null) return;
+
+  Cbuf_AddText(`impulse ${pick.impulse}\n`);
+}
+
 export function CL_SignonReply(): void {
   Con_DPrintf("CL_SignonReply: %i\n", cls.signon);
 
@@ -279,6 +408,9 @@ export function CL_SignonReply(): void {
 
       MSG_WriteByte(cls.message, ClcOpsT.clc_stringcmd);
       MSG_WriteString(cls.message, va("color %i %i\n", (cl_color.value | 0) >> 4, (cl_color.value | 0) & 15));
+
+      MSG_WriteByte(cls.message, ClcOpsT.clc_stringcmd);
+      MSG_WriteString(cls.message, va("ex_flags %i\n", CL_ExFlags()));
 
       MSG_WriteByte(cls.message, ClcOpsT.clc_stringcmd);
       MSG_WriteString(cls.message, va("spawn %s", cls.spawnparms));
@@ -678,6 +810,7 @@ export function CL_Init(): void {
   Cvar_RegisterVariable(cl_pitchspeed);
   Cvar_RegisterVariable(cl_anglespeedkey);
   Cvar_RegisterVariable(cl_shownet);
+  Cvar_RegisterVariable(cl_weaponswitch);
   Cvar_RegisterVariable(cl_nolerp);
   Cvar_RegisterVariable(lookspring);
   Cvar_RegisterVariable(lookstrafe);
@@ -691,11 +824,13 @@ export function CL_Init(): void {
   //	Cvar_RegisterVariable (&cl_autofire);
 
   Cmd_AddCommand("entities", CL_PrintEntities_f);
+  Cmd_AddCommand("switchweapon", CL_SwitchWeapon_f);
   Cmd_AddCommand("disconnect", CL_Disconnect_f);
   Cmd_AddCommand("record", CL_Record_f);
   Cmd_AddCommand("stop", CL_Stop_f);
   Cmd_AddCommand("playdemo", CL_PlayDemo_f);
   Cmd_AddCommand("timedemo", CL_TimeDemo_f);
+  Cmd_AddCommand("vibrate", Haptics_Vibrate_f);
 }
 
 //=============================================================================

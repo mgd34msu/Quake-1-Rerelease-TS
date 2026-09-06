@@ -43,7 +43,7 @@ offsetof program; they are ABI-stable across SDL2's lifetime because SDL2
 freezes its public struct layouts.
 */
 
-import { dlopen, type Pointer } from "bun:ffi";
+import { dlopen, type Pointer, CString } from "bun:ffi";
 import { currentLibrarySearch, openLibrary } from "./libs";
 import { VID_CalcBlitRect } from "./vid_scale";
 import { setKeyEventPump, Sys_Quit } from "./sys";
@@ -52,14 +52,28 @@ import { Con_Printf, Con_DPrintf } from "../client/console";
 import type { UsercmdT } from "../server/server";
 import type { QwUsercmdT } from "../qw/protocol";
 import { PITCH, YAW, qw } from "../common/quakedef";
-import { COM_CheckParm } from "../common/common";
+import { COM_CheckParm, COM_LoadTempFile } from "../common/common";
 import { noclip_anglehack } from "../common/host_cmd";
 import { cl } from "../client/client";
-import { in_strafe, in_mlook } from "../client/cl_input";
+import { host } from "../common/host";
+import { in_strafe, in_mlook, cl_forwardspeed, cl_sidespeed } from "../client/cl_input";
 import { lookstrafe, sensitivity, m_pitch, m_yaw, m_forward, m_side } from "../client/cl_main";
 import { V_StopPitchDrift } from "../client/view";
 import { hostClientHooks } from "../common/host";
 import { inputBackend, qwInputHooks, type InputBackend, type QwInputRefs } from "../client/input";
+import { ParseGameControllerDbMappings, IN_ApplyDeadzone, IN_ApplyEasing, type AxisValueT } from "../lib/gamepad_map";
+import {
+  MAX_LOCAL_PLAYERS,
+  ResolvePadAssignments,
+  DeviceOrdinals,
+  FormatDeviceSpec,
+  RegisterPlayerCvars,
+  PlayerDevicePrefs,
+  PlayerTuning,
+  SeatsDrivable,
+  type PadDeviceT,
+} from "./gamepad_assign";
+import { Haptics_Init, Haptics_Frame, HAPTICS_SetRumbleBackend } from "./haptics";
 import {
   Key_Event,
   K_ALT,
@@ -97,6 +111,20 @@ import {
   K_SHIFT,
   K_TAB,
   K_UPARROW,
+  K_ABUTTON,
+  K_BBUTTON,
+  K_XBUTTON,
+  K_YBUTTON,
+  K_LSHOULDER,
+  K_RSHOULDER,
+  K_LTRIGGER,
+  K_RTRIGGER,
+  K_LTHUMB,
+  K_RTHUMB,
+  K_DPAD_UP,
+  K_DPAD_DOWN,
+  K_DPAD_LEFT,
+  K_DPAD_RIGHT,
 } from "../client/keys";
 
 //=============================================================================
@@ -105,6 +133,7 @@ import {
 
 const SDL_INIT_AUDIO = 0x00000010;
 const SDL_INIT_VIDEO = 0x00000020;
+const SDL_INIT_GAMECONTROLLER = 0x00002000;
 const SDL_INIT_NOPARACHUTE = 0x00100000;
 
 const SDL_WINDOWPOS_CENTERED = 0x2fff0000;
@@ -149,6 +178,16 @@ const SDL_MOUSEBUTTONDOWN = 0x401;
 const SDL_MOUSEBUTTONUP = 0x402;
 const SDL_MOUSEWHEEL = 0x403;
 
+// SDL_events.h's "Game controller events" block (verified against
+// /usr/include/SDL2/SDL_events.h on this host, same as quake-2-re-ts's own
+// sdl.ts header note on this same constant run): SDL_CONTROLLERAXISMOTION
+// starts at 0x650, the rest increment from there.
+const SDL_CONTROLLERAXISMOTION = 0x650;
+const SDL_CONTROLLERBUTTONDOWN = 0x651;
+const SDL_CONTROLLERBUTTONUP = 0x652;
+const SDL_CONTROLLERDEVICEADDED = 0x653;
+const SDL_CONTROLLERDEVICEREMOVED = 0x654;
+
 // SDL_WINDOWEVENT_RESIZED (5) is sent only for a resize the application did
 // not itself request; SDL_WINDOWEVENT_SIZE_CHANGED (6) is sent for EVERY size
 // change, including the one that follows a compositor-side resize on Wayland,
@@ -186,6 +225,17 @@ const WHEELEVENT_Y = 20;
 const WINDOWEVENT_EVENT = 12;
 const WINDOWEVENT_DATA1 = 16;
 const WINDOWEVENT_DATA2 = 20;
+// SDL_ControllerAxisEvent: which(Sint32) 8, axis(Uint8) 12, value(Sint16) 16.
+const CAXISEVENT_WHICH = 8;
+const CAXISEVENT_AXIS = 12;
+const CAXISEVENT_VALUE = 16;
+// SDL_ControllerButtonEvent: which(Sint32) 8, button(Uint8) 12, state(Uint8) 13.
+const CBUTTONEVENT_WHICH = 8;
+const CBUTTONEVENT_BUTTON = 12;
+const CBUTTONEVENT_STATE = 13;
+// SDL_ControllerDeviceEvent: which(Sint32) 8 -- device index for ADDED,
+// instance id for REMOVED.
+const CDEVICEEVENT_WHICH = 8;
 
 // SDL_AudioSpec: freq 0, format 4, channels 6, silence 7, samples 8,
 // padding 10, size 12, callback 16, userdata 24 (32 bytes total).
@@ -238,6 +288,37 @@ const symbols = {
   SDL_GetRelativeMouseState: { args: ["ptr", "ptr"], returns: "u32" },
   SDL_SetRelativeMouseMode: { args: ["i32"], returns: "i32" },
   SDL_ShowCursor: { args: ["i32"], returns: "i32" },
+
+  // SDL_GameController hotplug (SDL_gamecontroller.h) -- opens/closes one
+  // controller per player (gamepad_assign.ts's own MAX_LOCAL_PLAYERS cap) in
+  // response to SDL_CONTROLLERDEVICEADDED/REMOVED events read off the same
+  // SDL_PollEvent loop that already pumps keyboard/mouse below.
+  SDL_GameControllerAddMapping: { args: ["cstring"], returns: "i32" },
+  SDL_IsGameController: { args: ["i32"], returns: "i32" },
+  SDL_GameControllerOpen: { args: ["i32"], returns: "ptr" },
+  SDL_GameControllerClose: { args: ["ptr"], returns: "void" },
+  SDL_GameControllerGetJoystick: { args: ["ptr"], returns: "ptr" },
+  SDL_JoystickInstanceID: { args: ["ptr"], returns: "i32" },
+
+  // Device IDENTITY, for the per-player controller assignment model
+  // (gamepad_assign.ts). SDL's own GUID accessors
+  // (SDL_JoystickGetGUID/SDL_JoystickGetGUIDString) pass and return the
+  // 16-byte SDL_JoystickGUID struct BY VALUE, which bun:ffi cannot express --
+  // it handles primitives and pointers only. SDL_GameControllerMapping is the
+  // way around that: its returned mapping string BEGINS with the device's
+  // GUID as hex text, which comes back as an ordinary char* the FFI can
+  // carry. The buffer is malloc'd by SDL and is ours to release, hence
+  // SDL_free below.
+  SDL_GameControllerName: { args: ["ptr"], returns: "cstring" },
+  SDL_GameControllerMapping: { args: ["ptr"], returns: "ptr" },
+  SDL_GameControllerGetVendor: { args: ["ptr"], returns: "u16" },
+  SDL_GameControllerGetProduct: { args: ["ptr"], returns: "u16" },
+  SDL_GameControllerGetProductVersion: { args: ["ptr"], returns: "u16" },
+  SDL_free: { args: ["ptr"], returns: "void" },
+
+  // Rumble -- platform/haptics.ts's only calls into the native layer (this
+  // port's "one native layer" ruling; see that file's own header).
+  SDL_GameControllerRumble: { args: ["ptr", "u16", "u16", "u32"], returns: "i32" },
 
   SDL_OpenAudioDevice: { args: ["cstring", "i32", "ptr", "ptr", "i32"], returns: "u32" },
   SDL_CloseAudioDevice: { args: ["u32"], returns: "void" },
@@ -795,6 +876,414 @@ export function SDL_SetFullscreenHint(fullscreen: boolean): void {
   currentlyFullscreen = fullscreen;
 }
 
+//=============================================================================
+// GAMEPAD -- SDL_GameController hotplug, `gamecontrollerdb.txt` mapping
+// loading, button/trigger events -> Key_Event, and left/right stick axes fed
+// into the same cmd/viewangles fields IN_Move already writes for the mouse.
+// U22 (this unit): WinQuake/QW have no equivalent (in_win.c's IN_JoyMove
+// targeted a physical DirectInput joystick this port does not carry), so
+// this whole section is new engine behavior, spec'd from Ironwail's
+// Quake/in_sdl.c (GPLv2, ../qsrc/ironwail, this repo's own reference list)
+// -- cvar names/defaults and the deadzone/easing math are that file's,
+// ported via src/lib/gamepad_map.ts's pure IN_ApplyDeadzone/IN_ApplyEasing;
+// the per-device hotplug/assignment shell below is adapted from
+// ../quake-2-re-ts/src/platform/sdl.ts (HEAD 7e88015) onto
+// gamepad_assign.ts's per-player model, with the splitscreen seats (players
+// 2..4) resolved the same way but not yet read anywhere in this codebase --
+// see this unit's own report for that follow-up.
+
+const SDL_CONTROLLER_BUTTON_A = 0;
+const SDL_CONTROLLER_BUTTON_B = 1;
+const SDL_CONTROLLER_BUTTON_X = 2;
+const SDL_CONTROLLER_BUTTON_Y = 3;
+const SDL_CONTROLLER_BUTTON_BACK = 4;
+const SDL_CONTROLLER_BUTTON_START = 6;
+const SDL_CONTROLLER_BUTTON_LEFTSTICK = 7;
+const SDL_CONTROLLER_BUTTON_RIGHTSTICK = 8;
+const SDL_CONTROLLER_BUTTON_LEFTSHOULDER = 9;
+const SDL_CONTROLLER_BUTTON_RIGHTSHOULDER = 10;
+const SDL_CONTROLLER_BUTTON_DPAD_UP = 11;
+const SDL_CONTROLLER_BUTTON_DPAD_DOWN = 12;
+const SDL_CONTROLLER_BUTTON_DPAD_LEFT = 13;
+const SDL_CONTROLLER_BUTTON_DPAD_RIGHT = 14;
+
+const SDL_CONTROLLER_AXIS_LEFTX = 0;
+const SDL_CONTROLLER_AXIS_LEFTY = 1;
+const SDL_CONTROLLER_AXIS_RIGHTX = 2;
+const SDL_CONTROLLER_AXIS_RIGHTY = 3;
+const SDL_CONTROLLER_AXIS_TRIGGERLEFT = 4;
+const SDL_CONTROLLER_AXIS_TRIGGERRIGHT = 5;
+
+/*
+IN_KeyForControllerButton -- Ironwail in_sdl.c:860. BACK and START have no
+keynum of their own: "back and start are always mapped to TAB/ESC, the
+player cannot rebind them" (that file's own comment). Every other button not
+listed here (GUIDE, MISC1, the four Xbox Elite paddles, a PS4/5 touchpad
+click) has no SDL_GameControllerButton case in Ironwail's own table either
+and is dropped the same way -- 0 means "no keynum", the same convention
+SDL_KeyToQuake already uses for an unmapped SDLK_*.
+*/
+function SDL_GamepadButtonToKeynum(button: number): number {
+  switch (button) {
+    case SDL_CONTROLLER_BUTTON_A:
+      return K_ABUTTON;
+    case SDL_CONTROLLER_BUTTON_B:
+      return K_BBUTTON;
+    case SDL_CONTROLLER_BUTTON_X:
+      return K_XBUTTON;
+    case SDL_CONTROLLER_BUTTON_Y:
+      return K_YBUTTON;
+    case SDL_CONTROLLER_BUTTON_BACK:
+      return K_TAB;
+    case SDL_CONTROLLER_BUTTON_START:
+      return K_ESCAPE;
+    case SDL_CONTROLLER_BUTTON_LEFTSTICK:
+      return K_LTHUMB;
+    case SDL_CONTROLLER_BUTTON_RIGHTSTICK:
+      return K_RTHUMB;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+      return K_LSHOULDER;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+      return K_RSHOULDER;
+    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+      return K_DPAD_UP;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+      return K_DPAD_DOWN;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+      return K_DPAD_LEFT;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+      return K_DPAD_RIGHT;
+    default:
+      return 0;
+  }
+}
+
+/*
+DEVICES AND PLAYERS. Every controller SDL opens goes into one table,
+`gpDevices`, in plug order; which player each device drives is a separate
+question, answered by gamepad_assign.ts's ResolvePadAssignments against the
+four in_playerN_device cvars and recomputed whenever a device arrives or
+leaves. Only PLAYER 1's pad (index 0 -- this port's only wired seat, see
+this section's own header) turns buttons into Key_Event and feeds
+IN_JoyMove; every other open pad is latched only, matching
+../quake-2-re-ts/src/platform/sdl.ts's own precedent for its
+not-yet-relevant seats.
+*/
+const MAX_GAMEPAD_DEVICES = MAX_LOCAL_PLAYERS;
+
+class GamepadDeviceT {
+  handle: Pointer | bigint | null = null;
+  instanceId = -1;
+  /** SDL joystick GUID text -- stable across replug and reboot. */
+  guid = "";
+  /** Human-readable controller name, for a future Controllers menu. */
+  name = "";
+  leftX = 0;
+  leftY = 0;
+  rightX = 0;
+  rightY = 0;
+
+  clearState(): void {
+    this.leftX = 0;
+    this.leftY = 0;
+    this.rightX = 0;
+    this.rightY = 0;
+  }
+}
+
+/** Open controllers, in plug order. */
+const gpDevices: GamepadDeviceT[] = [];
+
+/** Index into gpDevices for each player (0 = player 1), or -1. Recomputed by
+ *  gpResolve; never written anywhere else. */
+let gpPlayerDevice: number[] = new Array(MAX_LOCAL_PLAYERS).fill(-1);
+
+/** Bumped on every device arrival/departure -- a future Controllers menu
+ *  polls it to rebuild its rows. */
+let gpDeviceGeneration = 0;
+
+// Trigger axes on the PLAYER 1 pad are converted to a press/release
+// Key_Event pair, using joy_deadzone_trigger as the threshold (Ironwail
+// in_sdl.c:969's own `triggerthreshold`) -- these are the latched button
+// states the edge-detection needs.
+let gpLeftTriggerDown = false;
+let gpRightTriggerDown = false;
+
+function gpDeviceByInstance(which: number): GamepadDeviceT | null {
+  for (const dev of gpDevices) if (dev.instanceId === which) return dev;
+  const only = gpDevices.length === 1 ? gpDevices[0] : null;
+  return only && only.instanceId < 0 ? only : null;
+}
+
+/** The device driving a player (0 = player 1), or null. */
+function gpDeviceForPlayer(player: number): GamepadDeviceT | null {
+  const idx = gpPlayerDevice[player];
+  if (idx === undefined || idx < 0) return null;
+  return gpDevices[idx] ?? null;
+}
+
+/*
+==================
+gpResolve
+
+Re-run the assignment rule over the current device table. Called on every
+hotplug event, so the routing the event pump uses is never stale. Changing
+which pad is player 1's invalidates the trigger hysteresis latches above --
+they describe a button state on a device that is no longer the one
+producing key events -- so they are released.
+==================
+*/
+function gpResolve(): void {
+  const before = gpDeviceForPlayer(0);
+  const devices: PadDeviceT[] = gpDevices.map((d) => ({ instanceId: d.instanceId, guid: d.guid, name: d.name }));
+  gpPlayerDevice = ResolvePadAssignments(devices, PlayerDevicePrefs()).players;
+  const after = gpDeviceForPlayer(0);
+  if (before !== after) {
+    gpLeftTriggerDown = false;
+    gpRightTriggerDown = false;
+  }
+}
+
+/** Recompute routing after something outside this file changed an
+ *  in_playerN_device cvar (a future Controllers menu, or a console `set`). */
+export function SDL_GamepadRefreshAssignments(): void {
+  gpResolve();
+}
+
+/** One row of a future Controllers menu's "detected controllers" list. */
+export interface GamepadDeviceInfoT {
+  guid: string;
+  /** The value an in_playerN_device cvar needs to name THIS pad. */
+  spec: string;
+  name: string;
+  instanceId: number;
+  /** 0-based player this pad currently drives, or -1 when it is idle. */
+  player: number;
+}
+
+/** Every open controller, in plug order, with the cvar value that names it
+ *  and the player it currently drives. */
+export function SDL_GamepadDevices(): GamepadDeviceInfoT[] {
+  const ordinals = DeviceOrdinals(gpDevices.map((d) => ({ instanceId: d.instanceId, guid: d.guid, name: d.name })));
+  return gpDevices.map((dev, i) => ({
+    guid: dev.guid,
+    spec: FormatDeviceSpec(dev.guid, ordinals[i] ?? 0),
+    name: dev.name,
+    instanceId: dev.instanceId,
+    player: gpPlayerDevice.indexOf(i),
+  }));
+}
+
+/** Bumped whenever a controller arrives or leaves. */
+export function SDL_GamepadDeviceGeneration(): number {
+  return gpDeviceGeneration;
+}
+
+/** How many splitscreen seats past seat 0 could be driven right now, if this
+ *  port had any -- exposed for the follow-up that wires players 2..4, not
+ *  read anywhere in this codebase yet. */
+export function SDL_GamepadSeatCount(): number {
+  return SeatsDrivable({ players: gpPlayerDevice, idle: [] }) - 1;
+}
+
+/*
+Shared controller handle: platform/haptics.ts's SDL_RumbleActiveController/
+SDL_StopActiveControllerRumble (below) are its only calls into this file, so
+rumble always targets PLAYER 1's pad specifically -- the player holding this
+client's own view -- never some other, not-yet-wired seat's.
+*/
+function gpActiveControllerHandle(): Pointer | bigint | null {
+  const dev = gpDeviceForPlayer(0);
+  return dev ? dev.handle : null;
+}
+
+export function SDL_RumbleActiveController(low: number, high: number, durationMs: number): void {
+  const l = lib();
+  const handle = gpActiveControllerHandle();
+  if (!l || !handle) return;
+  const lowMag = Math.round(Math.max(0, Math.min(1, low)) * 0xffff);
+  const highMag = Math.round(Math.max(0, Math.min(1, high)) * 0xffff);
+  l.symbols.SDL_GameControllerRumble(handle, lowMag, highMag, Math.max(0, Math.round(durationMs)));
+}
+
+export function SDL_StopActiveControllerRumble(): void {
+  const l = lib();
+  const handle = gpActiveControllerHandle();
+  if (!l || !handle) return;
+  l.symbols.SDL_GameControllerRumble(handle, 0, 0, 0);
+}
+
+function gpCloseDevice(l: SdlLib, dev: GamepadDeviceT): void {
+  if (dev.handle) l.symbols.SDL_GameControllerClose(dev.handle);
+  dev.handle = null;
+  dev.clearState();
+}
+
+/*
+Device IDENTITY for an open controller: SDL's GUID as text, plus the
+human-readable name. SDL_GameControllerMapping's return value begins with
+the GUID hex followed by a comma (see the symbol table's own note on why the
+by-value SDL_JoystickGetGUIDString cannot be used through bun:ffi). The
+buffer is malloc'd by SDL, so it is read into a JS string and released
+immediately.
+
+Fallbacks, in order: a pad with no mapping string gets a synthesized
+identity from the same vendor/product/version fields SDL folds into a real
+GUID (equally stable across replugs), and a pad reporting none of those gets
+"unknown" -- an unknown identity simply cannot be assigned by name, but is
+still usable by "auto".
+*/
+function gpReadIdentity(l: SdlLib, handle: Pointer | bigint): { guid: string; name: string } {
+  let name = "";
+  try {
+    name = l.symbols.SDL_GameControllerName(handle) ?? "";
+  } catch {
+    name = "";
+  }
+
+  let guid = "";
+  try {
+    const mapping = l.symbols.SDL_GameControllerMapping(handle);
+    if (mapping) {
+      const text = new CString(mapping).toString();
+      l.symbols.SDL_free(mapping);
+      const comma = text.indexOf(",");
+      const head = (comma < 0 ? text : text.slice(0, comma)).trim();
+      if (/^[0-9a-fA-F]{8,32}$/.test(head)) guid = head.toLowerCase();
+      if (!name) {
+        const rest = comma < 0 ? "" : text.slice(comma + 1);
+        const second = rest.indexOf(",");
+        name = (second < 0 ? rest : rest.slice(0, second)).trim();
+      }
+    }
+  } catch {
+    guid = "";
+  }
+
+  if (!guid) {
+    try {
+      const vendor = l.symbols.SDL_GameControllerGetVendor(handle);
+      const product = l.symbols.SDL_GameControllerGetProduct(handle);
+      const version = l.symbols.SDL_GameControllerGetProductVersion(handle);
+      if (vendor || product) {
+        const hex = (v: number): string => (v & 0xffff).toString(16).padStart(4, "0");
+        guid = `vpv:${hex(vendor)}:${hex(product)}:${hex(version)}`;
+      }
+    } catch {
+      guid = "";
+    }
+  }
+
+  if (!guid) guid = "unknown";
+  if (!name) name = "controller";
+  return { guid, name };
+}
+
+/*
+Open a newly-arrived controller into the device table. A pad SDL reports
+twice (or whose instance id could not be read while other pads are already
+open) would alias onto an existing entry's event routing, so it is refused
+rather than allowed to corrupt a working device. The table is capped at one
+pad per player -- a fifth controller has no player to drive.
+*/
+function gpOpenDevice(l: SdlLib, deviceIndex: number): void {
+  if (!l.symbols.SDL_IsGameController(deviceIndex)) return;
+  if (gpDevices.length >= MAX_GAMEPAD_DEVICES) return;
+
+  const handle = l.symbols.SDL_GameControllerOpen(deviceIndex);
+  if (!handle) return;
+
+  const joystick = l.symbols.SDL_GameControllerGetJoystick(handle);
+  const instanceId = joystick ? l.symbols.SDL_JoystickInstanceID(joystick) : -1;
+  if (gpDeviceByInstance(instanceId) || (instanceId < 0 && gpDevices.length > 0)) {
+    l.symbols.SDL_GameControllerClose(handle);
+    return;
+  }
+
+  const dev = new GamepadDeviceT();
+  dev.handle = handle;
+  dev.instanceId = instanceId;
+  const identity = gpReadIdentity(l, handle);
+  dev.guid = identity.guid;
+  dev.name = identity.name;
+  gpDevices.push(dev);
+  gpDeviceGeneration++;
+  gpResolve();
+  Con_DPrintf("gamepad: %s (%s) connected\n", dev.name, dev.guid);
+}
+
+/*
+SDL_CONTROLLERDEVICEADDED/REMOVED: `which` is a DEVICE INDEX for ADDED, an
+INSTANCE ID for REMOVED -- two different namespaces sharing one struct
+field, per SDL_ControllerDeviceEvent's own doc comment. A REMOVED event only
+closes a handle whose instance id we actually opened, so unplugging some
+other, never-opened controller cannot drop an active one.
+*/
+function gpHandleDeviceEvent(l: SdlLib, added: boolean, which: number): void {
+  if (added) {
+    gpOpenDevice(l, which);
+    return;
+  }
+  for (let i = 0; i < gpDevices.length; i++) {
+    const dev = gpDevices[i];
+    if (!dev || dev.instanceId !== which) continue;
+    gpCloseDevice(l, dev);
+    gpDevices.splice(i, 1);
+    gpDeviceGeneration++;
+    gpResolve();
+    return;
+  }
+}
+
+// Ironwail in_sdl.c:60-70 (GPLv2) -- the exact cvar names/defaults this
+// section's axis math is spec'd from. `joy_enable` is not in Ironwail (its
+// gamepad layer has no master on/off switch of its own); it is vkquake's
+// Quake/in_sdl.c:43 (also GPLv2, this repo's own reference list) name,
+// carried over here per this unit's brief.
+export const joy_enable = new CvarT("joy_enable", "1", true);
+export const joy_deadzone_look = new CvarT("joy_deadzone_look", "0.175", true);
+export const joy_deadzone_move = new CvarT("joy_deadzone_move", "0.175", true);
+export const joy_outer_threshold_look = new CvarT("joy_outer_threshold_look", "0.02", true);
+export const joy_outer_threshold_move = new CvarT("joy_outer_threshold_move", "0.02", true);
+export const joy_deadzone_trigger = new CvarT("joy_deadzone_trigger", "0.2", true);
+export const joy_sensitivity_yaw = new CvarT("joy_sensitivity_yaw", "240", true);
+export const joy_sensitivity_pitch = new CvarT("joy_sensitivity_pitch", "130", true);
+export const joy_invert = new CvarT("joy_invert", "0", true);
+export const joy_exponent = new CvarT("joy_exponent", "2", true);
+export const joy_exponent_move = new CvarT("joy_exponent_move", "2", true);
+export const joy_swapmovelook = new CvarT("joy_swapmovelook", "0", true);
+
+let gamepadMappingsLoaded = false;
+
+/*
+Loads `gamecontrollerdb.txt` (mounted from QuakeEX.kpf when the rerelease
+content is active, per this unit's brief) through COM_LoadFile and feeds it
+one mapping line at a time to SDL_GameControllerAddMapping via
+gamepad_map.ts's pure ParseGameControllerDbMappings. When the file is not
+present (classic id1/hipnotic/rogue with no kpf mounted, or a filesystem
+unit that has not landed the kpf zip-mount yet), this is a silent no-op and
+SDL's own bundled default mapping database still applies -- exactly the
+"else SDL's built-in mappings" half of this unit's brief.
+*/
+function loadGameControllerDb(l: SdlLib): void {
+  if (gamepadMappingsLoaded) return;
+  gamepadMappingsLoaded = true;
+
+  const bytes = COM_LoadTempFile("gamecontrollerdb.txt");
+  if (!bytes) return;
+
+  // COM_LoadFile always appends a trailing NUL byte; strip it (and any
+  // other trailing NULs) before decoding so ParseGameControllerDbMappings
+  // never has to special-case one.
+  let end = bytes.length;
+  while (end > 0 && bytes[end - 1] === 0) end--;
+  const text = new TextDecoder().decode(bytes.subarray(0, end));
+
+  for (const line of ParseGameControllerDbMappings(text)) {
+    l.symbols.SDL_GameControllerAddMapping(cstr(line));
+  }
+}
+
 /*
 IN_Init -- vid_x.c:1132. `-nomouse` disables the mouse outright, same as the
 C (IN_Init still registers the two cvars either way, matching the C's own
@@ -811,6 +1300,49 @@ export function IN_Init(): void {
   Cvar_RegisterVariable(_windowed_mouse);
   Cvar_RegisterVariable(m_filter);
 
+  // Gamepad/haptics registration is unconditional -- `-nomouse` (below) is
+  // a mouse-only parm in the C this port is faithful to (vid_x.c's IN_Init
+  // never reads it for anything but the mouse), and a controller is a
+  // perfectly usable input device on a `-nomouse` dedicated-input setup.
+  Cvar_RegisterVariable(joy_enable);
+  Cvar_RegisterVariable(joy_deadzone_look);
+  Cvar_RegisterVariable(joy_deadzone_move);
+  Cvar_RegisterVariable(joy_outer_threshold_look);
+  Cvar_RegisterVariable(joy_outer_threshold_move);
+  Cvar_RegisterVariable(joy_deadzone_trigger);
+  Cvar_RegisterVariable(joy_sensitivity_yaw);
+  Cvar_RegisterVariable(joy_sensitivity_pitch);
+  Cvar_RegisterVariable(joy_invert);
+  Cvar_RegisterVariable(joy_exponent);
+  Cvar_RegisterVariable(joy_exponent_move);
+  Cvar_RegisterVariable(joy_swapmovelook);
+  // Per-player device assignment and stick tuning (gamepad_assign.ts).
+  // Registered right after the globals above, so each per-player tuning
+  // cvar's default is the live global value -- see that file's own header.
+  RegisterPlayerCvars({
+    yawsensitivity: joy_sensitivity_yaw.string,
+    pitchsensitivity: joy_sensitivity_pitch.string,
+    deadzone: joy_deadzone_look.string,
+    invert: joy_invert.string,
+  });
+  Haptics_Init();
+  // Injected, not a static import back into haptics.ts -- see that file's
+  // own header comment on the cl_main.ts/haptics.ts/sdl.ts ESM cycle this
+  // avoids.
+  HAPTICS_SetRumbleBackend({ rumble: SDL_RumbleActiveController, stop: SDL_StopActiveControllerRumble });
+
+  gpLeftTriggerDown = false;
+  gpRightTriggerDown = false;
+  for (const dev of gpDevices) dev.clearState();
+  gpResolve();
+  {
+    const gl = lib();
+    if (gl) {
+      initSubsystem(gl, SDL_INIT_GAMECONTROLLER);
+      loadGameControllerDb(gl);
+    }
+  }
+
   setKeyEventPump(SDL_PumpInput);
 
   if (COM_CheckParm("-nomouse")) return;
@@ -824,6 +1356,11 @@ export function IN_Init(): void {
 export function IN_Shutdown(): void {
   IN_DeactivateMouse();
   mouse_avail = false;
+  const l = lib();
+  if (l) for (const dev of gpDevices) gpCloseDevice(l, dev);
+  gpDevices.length = 0;
+  gpDeviceGeneration++;
+  gpResolve();
   setKeyEventPump(null);
 }
 
@@ -841,6 +1378,13 @@ explicit enable/disable call, which host.c's per-frame `IN_Commands` is the
 only interface entry point left to make it from).
 */
 export function IN_Commands(): void {
+  // Haptics_Frame drives platform/haptics.ts's rumble scheduler; called
+  // unconditionally here, the one place in this file's own interface that
+  // already runs once per client frame regardless of mouse_avail (mirrors
+  // this same function's own doc comment on why IN_Commands is what an
+  // added per-frame hook lands in, absent a dedicated one).
+  Haptics_Frame(host.realtime * 1000);
+
   if (!mouse_avail) return;
   if (wantMouseCapture(currentlyFullscreen)) IN_ActivateMouse();
   else IN_DeactivateMouse();
@@ -885,7 +1429,76 @@ export function IN_MoveQw(cmd: QwUsercmdT): void {
   IN_Move_(cmd);
 }
 
+/*
+IN_JoyMove_ -- Ironwail in_sdl.c's IN_JoyMove, adapted onto this port's
+InMoveCmd/cl.viewangles shape and gamepad_map.ts's pure axis-math functions.
+Left stick feeds forward/side movement (the same cmd fields CL_BaseMove's
+own WASD handling writes before IN_Move runs); right stick feeds yaw/pitch
+(the same cl.viewangles fields the mouse path above and CL_AdjustAngles's
+arrow-key turn handling both write), scaled by cl_sidespeed/cl_forwardspeed
+(this port's own movement-speed cvars, standing in for Ironwail's
+sv_maxspeed-aware run-speed calculation, which this port's simpler WinQuake
+1.09 CL_BaseMove has no equivalent of -- reported simplification: a stick
+push always drives at cl_forwardspeed/cl_sidespeed, with no separate
+"running" state to blend with, matching how the keyboard's own
+CL_KeyState-scaled movement already works in this port) and
+joy_sensitivity_yaw/joy_sensitivity_pitch times host.frametime (this port's
+own per-frame delta, standing in for Ironwail's host_rawframetime -- see
+cl_input.ts's CL_AdjustAngles for the same "degrees per second times
+frametime" idiom this already follows for the arrow keys). joy_swapmovelook
+exchanges which stick drives which, exactly as Ironwail's IN_GetLookAxis/
+IN_GetMoveAxis do.
+
+Gated on joy_enable and (mirroring wantMouseCapture's own gate above)
+hostClientHooks.keyDestIsGame -- a pad left plugged in but sitting in a menu
+or the console should never fight keyboard/mouse input there, the same
+reasoning IN_Frame-equivalent mouse-capture logic already applies.
+
+Look-axis deadzone/sensitivity/invert come from gamepad_assign.ts's
+PlayerTuning(0) -- player 1's own in_player1_yawsensitivity/
+in_player1_pitchsensitivity/in_player1_invertpitch/in_player1_deadzone
+cvars, defaulted from the live joy_sensitivity_yaw/joy_sensitivity_pitch/
+joy_invert/joy_deadzone_look globals at registration (see that file's
+header) -- rather than reading those globals directly, so that a future
+Controllers screen's per-seat sliders take effect for seat 0 exactly the way
+they will for seats 1..3 once those are wired, with zero special-casing.
+Move-axis deadzone and forward/side speed have no per-player override in
+this port (gamepad_assign.ts's own header) and stay global
+(joy_deadzone_move/cl_forwardspeed/cl_sidespeed).
+*/
+function IN_JoyMove_(cmd: InMoveCmd): void {
+  if (!joy_enable.value) return;
+  if (!(hostClientHooks.keyDestIsGame?.() ?? true)) return;
+
+  const pad = gpDeviceForPlayer(0);
+  if (!pad) return;
+
+  const tuning = PlayerTuning(0);
+
+  const swap = joy_swapmovelook.value !== 0;
+  const moveRaw: AxisValueT = swap ? { x: pad.rightX, y: pad.rightY } : { x: pad.leftX, y: pad.leftY };
+  const lookRaw: AxisValueT = swap ? { x: pad.leftX, y: pad.leftY } : { x: pad.rightX, y: pad.rightY };
+
+  const moveDeadzone = IN_ApplyDeadzone(moveRaw, joy_deadzone_move.value, joy_outer_threshold_move.value);
+  const lookDeadzone = IN_ApplyDeadzone(lookRaw, tuning.deadzone, joy_outer_threshold_look.value);
+  const moveEased = IN_ApplyEasing(moveDeadzone, joy_exponent_move.value);
+  const lookEased = IN_ApplyEasing(lookDeadzone, joy_exponent.value);
+
+  cmd.sidemove += cl_sidespeed.value * moveEased.x;
+  cmd.forwardmove -= cl_forwardspeed.value * moveEased.y;
+
+  if (lookEased.x !== 0 || lookEased.y !== 0) {
+    cl.viewangles[YAW] -= lookEased.x * tuning.yawsensitivity * host.frametime;
+    cl.viewangles[PITCH] += lookEased.y * tuning.pitchsensitivity * tuning.pitchsign * host.frametime;
+    V_StopPitchDrift();
+    if (cl.viewangles[PITCH] > 80) cl.viewangles[PITCH] = 80;
+    if (cl.viewangles[PITCH] < -70) cl.viewangles[PITCH] = -70;
+  }
+}
+
 function IN_Move_(cmd: InMoveCmd): void {
+  IN_JoyMove_(cmd);
+
   const l = lib();
   if (!l || !mouse_active) return;
 
@@ -1035,6 +1648,64 @@ export function SDL_PumpInput(): void {
         }
         break;
       }
+      case SDL_CONTROLLERBUTTONDOWN:
+      case SDL_CONTROLLERBUTTONUP: {
+        const down = type === SDL_CONTROLLERBUTTONDOWN;
+        const button = eventBuf[CBUTTONEVENT_BUTTON];
+        // Route by instance id to the device that sent it, then by ROLE:
+        // only PLAYER 1's pad turns buttons into Key_Event -- see this
+        // section's own header. An event from a device we never opened is
+        // dropped rather than treated as player 1's.
+        const dev = gpDeviceByInstance(eventView.getInt32(CBUTTONEVENT_WHICH, true));
+        if (!dev || dev !== gpDeviceForPlayer(0)) break;
+        const key = SDL_GamepadButtonToKeynum(button);
+        if (key !== 0) Key_Event(key, down);
+        break;
+      }
+      case SDL_CONTROLLERAXISMOTION: {
+        const axis = eventBuf[CAXISEVENT_AXIS];
+        const value = eventView.getInt16(CAXISEVENT_VALUE, true);
+        const dev = gpDeviceByInstance(eventView.getInt32(CAXISEVENT_WHICH, true));
+        if (!dev) break;
+
+        // Sticks are latched on the device NORMALIZED to +-1 (Ironwail
+        // in_sdl.c:988's own `/ 32768.0f` divisor -- not 32767, see that
+        // file's own IN_Commands), regardless of which player the device
+        // drives -- IN_JoyMove_ reads player 1's copy only (see this
+        // section's own header).
+        const normalizedStick = value / 32768.0;
+        if (axis === SDL_CONTROLLER_AXIS_LEFTX) dev.leftX = normalizedStick;
+        else if (axis === SDL_CONTROLLER_AXIS_LEFTY) dev.leftY = normalizedStick;
+        else if (axis === SDL_CONTROLLER_AXIS_RIGHTX) dev.rightX = normalizedStick;
+        else if (axis === SDL_CONTROLLER_AXIS_RIGHTY) dev.rightY = normalizedStick;
+        else if (dev === gpDeviceForPlayer(0) && (axis === SDL_CONTROLLER_AXIS_TRIGGERLEFT || axis === SDL_CONTROLLER_AXIS_TRIGGERRIGHT)) {
+          // Player 1's trigger axes: edge-triggered Key_Event using
+          // joy_deadzone_trigger as the threshold (Ironwail in_sdl.c:969's
+          // own `triggerthreshold`), strictly-greater-than on both edges --
+          // matching that file's own `> triggerthreshold` comparison used
+          // for both the old and new state.
+          const normalized = value / 32768.0;
+          const isDown = normalized > joy_deadzone_trigger.value;
+          if (axis === SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
+            if (isDown !== gpLeftTriggerDown) {
+              gpLeftTriggerDown = isDown;
+              Key_Event(K_LTRIGGER, isDown);
+            }
+          } else {
+            if (isDown !== gpRightTriggerDown) {
+              gpRightTriggerDown = isDown;
+              Key_Event(K_RTRIGGER, isDown);
+            }
+          }
+        }
+        break;
+      }
+      case SDL_CONTROLLERDEVICEADDED:
+        gpHandleDeviceEvent(l, true, eventView.getInt32(CDEVICEEVENT_WHICH, true));
+        break;
+      case SDL_CONTROLLERDEVICEREMOVED:
+        gpHandleDeviceEvent(l, false, eventView.getInt32(CDEVICEEVENT_WHICH, true));
+        break;
       case SDL_QUIT:
         // vid_x.c has no window-close event at all (X11's WM_DELETE_WINDOW
         // handling is a whole separate Atom dance the reference engine never
@@ -1226,6 +1897,13 @@ export function SDL_ResetBackendForTests(): void {
   SDLGL_Shutdown();
   SDLVID_Shutdown();
   const l = library;
+  if (l) for (const dev of gpDevices) gpCloseDevice(l, dev);
+  gpDevices.length = 0;
+  gpPlayerDevice = new Array(MAX_LOCAL_PLAYERS).fill(-1);
+  gpDeviceGeneration = 0;
+  gpLeftTriggerDown = false;
+  gpRightTriggerDown = false;
+  gamepadMappingsLoaded = false;
   if (l && subsystems !== 0) {
     l.symbols.SDL_Quit();
     subsystems = 0;
@@ -1278,6 +1956,29 @@ export const SDL_TEST_WINDOWEVENT_SIZE_CHANGED = SDL_WINDOWEVENT_SIZE_CHANGED;
 export const SDL_TEST_WINDOWEVENT_FOCUS_GAINED = SDL_WINDOWEVENT_FOCUS_GAINED;
 export const SDL_TEST_WINDOWEVENT_FOCUS_LOST = SDL_WINDOWEVENT_FOCUS_LOST;
 export const SDL_TEST_WINDOWEVENT_CLOSE = SDL_WINDOWEVENT_CLOSE;
+
+// SDL_GameControllerButton/Axis ids, re-exported for test/gamepad.test.ts so
+// it never has to hardcode SDL's own enum numbers a second time.
+export const SDL_TEST_CONTROLLER_BUTTON_A = SDL_CONTROLLER_BUTTON_A;
+export const SDL_TEST_CONTROLLER_BUTTON_B = SDL_CONTROLLER_BUTTON_B;
+export const SDL_TEST_CONTROLLER_BUTTON_X = SDL_CONTROLLER_BUTTON_X;
+export const SDL_TEST_CONTROLLER_BUTTON_Y = SDL_CONTROLLER_BUTTON_Y;
+export const SDL_TEST_CONTROLLER_BUTTON_BACK = SDL_CONTROLLER_BUTTON_BACK;
+export const SDL_TEST_CONTROLLER_BUTTON_START = SDL_CONTROLLER_BUTTON_START;
+export const SDL_TEST_CONTROLLER_BUTTON_LEFTSTICK = SDL_CONTROLLER_BUTTON_LEFTSTICK;
+export const SDL_TEST_CONTROLLER_BUTTON_RIGHTSTICK = SDL_CONTROLLER_BUTTON_RIGHTSTICK;
+export const SDL_TEST_CONTROLLER_BUTTON_LEFTSHOULDER = SDL_CONTROLLER_BUTTON_LEFTSHOULDER;
+export const SDL_TEST_CONTROLLER_BUTTON_RIGHTSHOULDER = SDL_CONTROLLER_BUTTON_RIGHTSHOULDER;
+export const SDL_TEST_CONTROLLER_BUTTON_DPAD_UP = SDL_CONTROLLER_BUTTON_DPAD_UP;
+export const SDL_TEST_CONTROLLER_BUTTON_DPAD_DOWN = SDL_CONTROLLER_BUTTON_DPAD_DOWN;
+export const SDL_TEST_CONTROLLER_BUTTON_DPAD_LEFT = SDL_CONTROLLER_BUTTON_DPAD_LEFT;
+export const SDL_TEST_CONTROLLER_BUTTON_DPAD_RIGHT = SDL_CONTROLLER_BUTTON_DPAD_RIGHT;
+export const SDL_TEST_CONTROLLER_AXIS_LEFTX = SDL_CONTROLLER_AXIS_LEFTX;
+export const SDL_TEST_CONTROLLER_AXIS_LEFTY = SDL_CONTROLLER_AXIS_LEFTY;
+export const SDL_TEST_CONTROLLER_AXIS_RIGHTX = SDL_CONTROLLER_AXIS_RIGHTX;
+export const SDL_TEST_CONTROLLER_AXIS_RIGHTY = SDL_CONTROLLER_AXIS_RIGHTY;
+export const SDL_TEST_CONTROLLER_AXIS_TRIGGERLEFT = SDL_CONTROLLER_AXIS_TRIGGERLEFT;
+export const SDL_TEST_CONTROLLER_AXIS_TRIGGERRIGHT = SDL_CONTROLLER_AXIS_TRIGGERRIGHT;
 
 function newEvent(type: number): { bytes: Uint8Array; view: DataView } {
   const bytes = new Uint8Array(SDL_EVENT_SIZE);
@@ -1347,6 +2048,82 @@ export function SDL_MakeWindowSizeChangedEvent(width: number, height: number): U
 
 export function SDL_MakeQuitEvent(): Uint8Array {
   return newEvent(SDL_QUIT).bytes;
+}
+
+/* SDL_ControllerButtonEvent. `which` is the SDL joystick INSTANCE id (not a
+   device index) -- see SDL_InjectFakeGamepadForTests's own doc comment on
+   why a test drives this by instance id rather than a real device open. */
+export function SDL_MakeControllerButtonEvent(which: number, button: number, down: boolean): Uint8Array {
+  const { bytes, view } = newEvent(down ? SDL_CONTROLLERBUTTONDOWN : SDL_CONTROLLERBUTTONUP);
+  view.setInt32(CBUTTONEVENT_WHICH, which, true);
+  bytes[CBUTTONEVENT_BUTTON] = button;
+  bytes[CBUTTONEVENT_STATE] = down ? 1 : 0;
+  return bytes;
+}
+
+/* SDL_ControllerAxisEvent. `value` is the raw Sint16 SDL reports
+   (-32768..32767); SDL_PumpInput normalizes it the same way Ironwail's own
+   IN_Commands does (see that switch case's own comment). */
+export function SDL_MakeControllerAxisEvent(which: number, axis: number, value: number): Uint8Array {
+  const { bytes, view } = newEvent(SDL_CONTROLLERAXISMOTION);
+  view.setInt32(CAXISEVENT_WHICH, which, true);
+  bytes[CAXISEVENT_AXIS] = axis;
+  view.setInt16(CAXISEVENT_VALUE, value, true);
+  return bytes;
+}
+
+/*
+Not a real hotplug: gpOpenDevice's own real path calls SDL_IsGameController/
+SDL_GameControllerOpen, which have nothing to report under a headless
+SDL_VIDEODRIVER=dummy run with no controller actually attached to the host
+running the suite -- pushing a real SDL_CONTROLLERDEVICEADDED event through
+SDL_PushEvent therefore cannot exercise gpOpenDevice's device-table
+maintenance the way test/sdl_input.test.ts's pushed keyboard/mouse events
+exercise theirs (SDL_PushEvent never validates a keyboard/mouse event
+against real hardware, but SDL_IsGameController really does query SDL's own
+joystick subsystem for that device index). This seam injects a
+GamepadDeviceT with a null native handle directly into gpDevices and runs
+the same gpResolve the real gpOpenDevice calls, so a test can drive
+SDL_CONTROLLERBUTTONDOWN/UP and SDL_CONTROLLERAXISMOTION events (pushed for
+real through SDL_PushEvent, `which` set to this device's instance id) through
+the REAL SDL_PumpInput routing code -- gpDeviceByInstance, gpDeviceForPlayer,
+SDL_GamepadButtonToKeynum, the trigger hysteresis -- with only the native
+open/close/rumble calls (which no test can reach without real hardware)
+stood in for. A null handle makes SDL_RumbleActiveController/
+SDL_StopActiveControllerRumble/gpCloseDevice's own `if (dev.handle)` guards
+silent no-ops, exactly as they already are for a genuinely rumble-incapable
+device.
+*/
+export function SDL_InjectFakeGamepadForTests(instanceId: number, guid: string, name: string): void {
+  const dev = new GamepadDeviceT();
+  dev.instanceId = instanceId;
+  dev.guid = guid;
+  dev.name = name;
+  gpDevices.push(dev);
+  gpDeviceGeneration++;
+  gpResolve();
+}
+
+/** Undoes SDL_InjectFakeGamepadForTests -- removes the fake device and
+ *  re-resolves assignments, mirroring a real SDL_CONTROLLERDEVICEREMOVED. */
+export function SDL_RemoveFakeGamepadForTests(instanceId: number): void {
+  for (let i = 0; i < gpDevices.length; i++) {
+    const dev = gpDevices[i];
+    if (!dev || dev.instanceId !== instanceId) continue;
+    gpDevices.splice(i, 1);
+    gpDeviceGeneration++;
+    gpResolve();
+    return;
+  }
+}
+
+/** Player 1's own latched stick state, for a test to assert against without
+ *  going through IN_Move's cmd/viewangles side effects. Null when no
+ *  device currently drives player 1. */
+export function SDL_GamepadAxisStateForTests(): { leftX: number; leftY: number; rightX: number; rightY: number } | null {
+  const dev = gpDeviceForPlayer(0);
+  if (!dev) return null;
+  return { leftX: dev.leftX, leftY: dev.leftY, rightX: dev.rightX, rightY: dev.rightY };
 }
 
 /* SDL_PushEvent returns 1 on success, 0 if a filter dropped it, <0 on error. */

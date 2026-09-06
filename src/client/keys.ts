@@ -129,7 +129,7 @@ import { Con_Printf } from "./console";
 import { Cbuf_AddText, Cmd_Argc, Cmd_Argv, Cmd_AddCommand, Cmd_CompleteCommand } from "../common/cmd";
 import { Cvar_CompleteVariable } from "../common/cvar";
 import { Q_strcasecmp } from "../common/common";
-import { cls, CactiveT } from "./client";
+import { cl, cls, CactiveT } from "./client";
 import { hostClientHooks } from "../common/host";
 import { qw } from "../common/quakedef";
 import { vid } from "./vid";
@@ -260,6 +260,40 @@ export const K_AUX32 = 238;
 export const K_MWHEELUP = 239;
 export const K_MWHEELDOWN = 240;
 
+//
+// SDL_GameController keynums (U22, this port's own addition -- WinQuake
+// 1.09/QW 2.33 predate SDL_GameController entirely, and the 2021
+// re-release's own KEX engine is closed). Named and numbered per Ironwail's
+// Quake/keys.h GAMEPAD_KEY_LIST + keys.c's own bind-name table (GPLv2,
+// ../qsrc/ironwail, this repo's own reference list) -- K_ABUTTON..K_RTRIGGER
+// there, though not at these numeric values: Ironwail renumbers the whole
+// keycode_t enum from scratch (mouse buttons move to 200-206, gamepad to
+// 207+), where this port keeps WinQuake's own numbering (K_MOUSE1..K_AUX32,
+// K_MWHEELUP/DOWN at 239/240) unchanged and fills the fourteen still-unused
+// slots between K_MWHEELDOWN (240) and K_PAUSE (255) instead -- config.cfg
+// round-trips by NAME (Key_KeynumToString/Key_StringToKeynum), never by the
+// raw number, so matching Ironwail's numbering has no observable benefit and
+// would have meant renumbering K_PAUSE and every AUX/JOY slot to make room.
+//
+// SDL_CONTROLLER_BUTTON_START and _BACK have no keynum of their own, per
+// Ironwail's in_sdl.c IN_KeyForControllerButton: "back and start are always
+// mapped to TAB/ESC, the player cannot rebind them" -- src/platform/sdl.ts's
+// button table remaps them the same way rather than adding two more keynums.
+export const K_ABUTTON = 241;
+export const K_BBUTTON = 242;
+export const K_XBUTTON = 243;
+export const K_YBUTTON = 244;
+export const K_LSHOULDER = 245;
+export const K_RSHOULDER = 246;
+export const K_LTRIGGER = 247;
+export const K_RTRIGGER = 248;
+export const K_LTHUMB = 249;
+export const K_RTHUMB = 250;
+export const K_DPAD_UP = 251;
+export const K_DPAD_DOWN = 252;
+export const K_DPAD_LEFT = 253;
+export const K_DPAD_RIGHT = 254;
+
 export enum KeydestT {
   key_game,
   key_console,
@@ -379,6 +413,23 @@ const keynames: KeynameT[] = [
 
   { name: "MWHEELUP", keynum: K_MWHEELUP },
   { name: "MWHEELDOWN", keynum: K_MWHEELDOWN },
+
+  // SDL_GameController keynums (U22) -- bind names per Ironwail's keys.c
+  // (GPLv2, ../qsrc/ironwail), see this file's own citation above K_ABUTTON.
+  { name: "ABUTTON", keynum: K_ABUTTON },
+  { name: "BBUTTON", keynum: K_BBUTTON },
+  { name: "XBUTTON", keynum: K_XBUTTON },
+  { name: "YBUTTON", keynum: K_YBUTTON },
+  { name: "LSHOULDER", keynum: K_LSHOULDER },
+  { name: "RSHOULDER", keynum: K_RSHOULDER },
+  { name: "LTRIGGER", keynum: K_LTRIGGER },
+  { name: "RTRIGGER", keynum: K_RTRIGGER },
+  { name: "LTHUMB", keynum: K_LTHUMB },
+  { name: "RTHUMB", keynum: K_RTHUMB },
+  { name: "DPAD_UP", keynum: K_DPAD_UP },
+  { name: "DPAD_DOWN", keynum: K_DPAD_DOWN },
+  { name: "DPAD_LEFT", keynum: K_DPAD_LEFT },
+  { name: "DPAD_RIGHT", keynum: K_DPAD_RIGHT },
 
   { name: "SEMICOLON", keynum: ";".charCodeAt(0) }, // because a raw semicolon seperates commands
 ];
@@ -850,6 +901,24 @@ export function Key_Event(key: number, down: boolean): void {
         Sys_Error("Bad key_dest");
     }
     return;
+  }
+
+  //
+  // U9: an svc_prompt menu is up (src/client/cl_parse.ts's CL_ParsePrompt).
+  // Its digit keys pick a choice and send that choice's impulse, ahead of
+  // whatever those keys are bound to, and escape dismisses it -- the QuakeC
+  // clears its own copy when it sees the impulse
+  // (quakec_ctf/observ.qc:148-163).
+  //
+  if (down && keyState.key_dest === KeydestT.key_game && cl.promptText !== "" && cl.promptChoices.length > 0) {
+    const choice = key - 0x31; // '1'
+    if (choice >= 0 && choice < cl.promptChoices.length && choice < 9) {
+      Cbuf_AddText(`impulse ${cl.promptChoices[choice].impulse}\n`);
+      cl.promptText = "";
+      cl.promptWanted = 0;
+      cl.promptChoices = [];
+      return;
+    }
   }
 
   //
