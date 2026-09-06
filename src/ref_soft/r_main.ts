@@ -99,6 +99,15 @@ QuakeWorld fold (PORTING.md's "QuakeWorld track", `qw.active`; see
 import { Cmd_AddCommand } from "../common/cmd";
 import { CvarT, Cvar_RegisterVariable, Cvar_SetValue } from "../common/cvar";
 import { Con_Printf } from "../client/console";
+import { COM_LoadTempFile, COM_Parse, type ParseState } from "../common/common";
+import { decodeTGA } from "../lib/tga";
+import { decodePNG } from "../lib/png";
+import { Fog_Init, Fog_ParseServerMessage, Fog_ParseWorldspawn, Fog_PostPass } from "./r_fog";
+// re-exported so ref_soft.ts's seam wiring (fogParseServerMessage/
+// fogParseWorldspawn/skyLoadSkyBox -- see this file's SoftSky_LoadSkyBox
+// below) can import all three renderer.ts Renderer members it needs from
+// this one module, the same way it already imports R_NewMap/R_RenderView/...
+export { Fog_ParseServerMessage, Fog_ParseWorldspawn };
 // cvars gl_rmain.c also registers under the same name (render.ts's shared
 // block); imported, not redefined, so a Cvar_Set reaches both renderers'
 // objects because there is only one object. Re-exported below so existing
@@ -238,6 +247,120 @@ function qwRPartMod(): typeof QwRPartModule {
 }
 
 /*
+=============================================================================
+
+SOFTWARE SKYBOX LOADING (U27 addition, no WinQuake original)
+
+render.ts's `Renderer.skyLoadSkyBox` is a re-release-era QoL feature
+(src/ref_gl/gl_sky.ts's Sky_LoadSkyBox/Sky_NewMap: an external
+gfx/env/<name>{rt,bk,lf,ft,up,dn}.tga|png cube around the viewer). The
+software renderer already draws the classic two-layer scrolling-cloud warp
+over the BSP's own SURF_DRAWSKY faces (r_sky.ts/d_sky.ts, ported from
+WinQuake's r_sky.c/d_sky.c, unmodified by this unit) for every map, skybox
+key or not. gl_sky.c's own clipped-cube-map rasterizer (Sky_ProcessTextureChains
+et al.) is a substantial standalone piece gl_sky.ts's own header says this
+port's effort budget did not cover even for the GL renderer, which at least
+already has a per-fragment shader stage (fixed-function texture units) to
+hang six cube faces on; the software rasterizer's span-based sky drawer
+(d_sky.ts's D_DrawSkyScans8, U_ and T_ mapped through one scrolling texture)
+has no such stage at all, and wiring a second, cube-mapped sky path through
+it is a materially larger lift than this unit's fog deliverable. Per the
+unit brief's own fallback ("implement the seam member as 'load and keep,
+draw the classic sky'"), `SoftSky_LoadSkyBox` therefore decodes and KEEPS the
+six faces (so `skyLoadSkyBox`/the worldspawn "sky"/"skyname" key are real,
+observable seam members -- `softSkyBoxState.name`/`.faces` -- rather than a
+silent no-op) without drawing them: the classic warped sky is what actually
+appears, exactly as it did before this unit. Follow-up: a cube-mapped
+software sky span drawer in d_sky.ts.
+=============================================================================
+*/
+
+const SOFT_SKY_SUF = ["rt", "bk", "lf", "ft", "up", "dn"] as const;
+
+export type SoftSkyBoxFaceT = { width: number; height: number; pixels: Uint8Array };
+
+// kept, not drawn -- see this section's header.
+export const softSkyBoxState: { name: string; faces: (SoftSkyBoxFaceT | null)[] } = {
+  name: "",
+  faces: [null, null, null, null, null, null],
+};
+
+function loadSoftSkyFace(name: string, suf: string): SoftSkyBoxFaceT | null {
+  const tga = COM_LoadTempFile(`gfx/env/${name}${suf}.tga`);
+  if (tga) {
+    const decoded = decodeTGA(tga.subarray(0, tga.length - 1));
+    if (decoded.ok) return { width: decoded.image.width, height: decoded.image.height, pixels: decoded.image.pixels };
+  }
+
+  const png = COM_LoadTempFile(`gfx/env/${name}${suf}.png`);
+  if (png) {
+    const decoded = decodePNG(png.subarray(0, png.length - 1));
+    if (decoded.ok) return { width: decoded.image.width, height: decoded.image.height, pixels: decoded.image.pixels };
+  }
+
+  return null;
+}
+
+/*
+=================
+SoftSky_LoadSkyBox
+
+render.ts's Renderer.skyLoadSkyBox. See this section's header.
+=================
+*/
+export function SoftSky_LoadSkyBox(name: string): void {
+  if (softSkyBoxState.name === name) return; // no change
+
+  softSkyBoxState.name = "";
+  softSkyBoxState.faces = [null, null, null, null, null, null];
+
+  if (name.length === 0) return;
+
+  let anyFound = false;
+  const faces: (SoftSkyBoxFaceT | null)[] = [null, null, null, null, null, null];
+
+  for (let i = 0; i < 6; i++) {
+    const face = loadSoftSkyFace(name, SOFT_SKY_SUF[i]);
+    if (!face) continue;
+    faces[i] = face;
+    anyFound = true;
+  }
+
+  if (!anyFound) return; // stays cleared, matching gl_sky.ts's "nonefound" disable
+
+  softSkyBoxState.name = name;
+  softSkyBoxState.faces = faces;
+}
+
+/*
+=================
+SoftSky_NewMap
+
+called at map load: worldspawn's "sky"/"skyname" key, mirroring
+gl_sky.ts's Sky_NewMap.
+=================
+*/
+export function SoftSky_NewMap(entities: string): void {
+  let name = "";
+
+  const ps: ParseState = { data: entities, index: 0 };
+  let tok = COM_Parse(ps);
+  if (tok !== null && tok[0] === "{") {
+    for (;;) {
+      tok = COM_Parse(ps);
+      if (tok === null) break;
+      if (tok[0] === "}") break;
+      const key = (tok[0] === "_" ? tok.slice(1) : tok).replace(/ +$/, "");
+      const value = COM_Parse(ps);
+      if (value === null) break;
+      if (key === "sky" || key === "skyname") name = value;
+    }
+  }
+
+  SoftSky_LoadSkyBox(name);
+}
+
+/*
 ===============
 R_Init
 ===============
@@ -272,6 +395,10 @@ export function R_Init(): void {
   // U25: this port's own cvar, the software mirror of ref_gl's
   // gl_coloredlight (src/ref_soft/r_coloredlight.ts)
   Cvar_RegisterVariable(r_coloredlight);
+  // U27: registers r_fog/r_skyfog, mirroring gl_rmisc.ts's own Fog_Init()
+  // call. Does not register a 'fog' console command -- see r_fog.ts's
+  // header ("THE 'fog' CONSOLE COMMAND") for why.
+  Fog_Init();
 
   // QW r_main.c registers these two unconditionally; WinQuake's R_Init has no
   // such call, so the registration itself is gated to keep WinQuake behavior
@@ -327,6 +454,14 @@ export function R_NewMap(): void {
   rState.r_viewleaf = null;
   if (qw.active) qwRPartMod().R_ClearParticles();
   else R_ClearParticles();
+
+  // U27 additions: no WinQuake counterparts (see gl_rmisc.ts's own R_NewMap
+  // for the GL twin). Fog_ParseWorldspawn resets to the map's "fog" key (or
+  // the no-fog default when it has none); SoftSky_NewMap resets/loads the
+  // map's "sky"/"skyname" key (see this file's SOFTWARE SKYBOX LOADING
+  // section above) -- both read the raw entity-lump text directly.
+  Fog_ParseWorldspawn(worldmodel.entities ?? "");
+  SoftSky_NewMap(worldmodel.entities ?? "");
 
   rState.r_cnumsurfs = r_maxsurfs.value | 0;
 
@@ -1032,6 +1167,12 @@ export function R_RenderView_(): void {
   else R_DrawParticles();
 
   if (r_dspeeds.value) rState.dp_time2 = Sys_FloatTime();
+
+  // U27: the depth post-pass (ARCHITECTURE.md's "Renderers" section), over
+  // the 3D scene just drawn (world/entities/view model/particles) and before
+  // D_WarpScreen's underwater distortion -- see r_fog.ts's header for why
+  // this order keeps the z-buffer and the pixels it indexes aligned.
+  Fog_PostPass();
 
   if (rState.r_dowarp) D_WarpScreen();
 

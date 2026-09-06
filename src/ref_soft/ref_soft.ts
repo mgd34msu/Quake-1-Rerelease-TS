@@ -64,6 +64,14 @@ Renderer member -> implementation, in interface order:
                                                        renderer -- see
                                                        render.ts's header)
   SCR_ScreenShot_f         HERE                        screen.c:613 + WritePCXfile
+  fogParseServerMessage    Fog_ParseServerMessage      r_fog.ts (U27, no
+                                                       WinQuake original)
+  fogParseWorldspawn       Fog_ParseWorldspawn         r_fog.ts (U27)
+  skyLoadSkyBox            SoftSky_LoadSkyBox          r_main.ts (U27; keeps
+                                                       the six faces, draws
+                                                       the classic sky -- see
+                                                       r_main.ts's SOFTWARE
+                                                       SKYBOX LOADING section)
 
 Deviations from PORTING.md / the C source:
 - `r_cache_thrash` and `draw_disc` are plain `qboolean` / `qpic_t *` globals in
@@ -132,7 +140,7 @@ import { qw } from "../common/quakedef";
 
 import { registerRenderer } from "../platform/vid";
 import { dState } from "./d_local";
-import { R_Init, R_NewMap, R_RenderView, R_SetVrect, R_ViewChanged } from "./r_main";
+import { Fog_ParseServerMessage, Fog_ParseWorldspawn, R_Init, R_NewMap, R_RenderView, R_SetVrect, R_ViewChanged, SoftSky_LoadSkyBox } from "./r_main";
 // siblings, each imported by its C name from the module its .c file maps to
 import { R_InitTextures, softModelHooks } from "./model";
 import { D_DisableBackBufferAccess, D_EnableBackBufferAccess, D_UpdateRects } from "./d_init";
@@ -556,6 +564,14 @@ export const softRenderer: Renderer = {
   SCR_ScreenShot_f,
 
   isGL: false,
+
+  // U27 additions: render.ts's Renderer.fogParseServerMessage/
+  // fogParseWorldspawn/skyLoadSkyBox -- plain passthroughs to r_fog.ts/
+  // r_main.ts's SoftSky_LoadSkyBox (see r_main.ts's SOFTWARE SKYBOX LOADING
+  // section for why skyLoadSkyBox keeps the faces without drawing them).
+  fogParseServerMessage: Fog_ParseServerMessage,
+  fogParseWorldspawn: Fog_ParseWorldspawn,
+  skyLoadSkyBox: SoftSky_LoadSkyBox,
 };
 
 registerRenderer("soft", () => softRenderer);
