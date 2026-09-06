@@ -17,12 +17,13 @@ Deviations from PORTING.md / the C source:
   is lost keeping them off module scope.
 - `r_apverts` (`trivertx_t *`) and `r_anumverts`/`aliastransform` (all
   non-static externs) ARE read across functions here (R_AliasSetupFrame
-  writes `r_apverts`, R_AliasPreparePoints reads it; R_AliasSetUpTransform
-  writes `aliastransform`, R_AliasTransformFinalVert reads it) and are not
-  in r_shared.ts's `RStateT` ownership list for r_alias.c, so they stay
-  module-private `let`/`const` state here, exported (read-only from outside)
-  since their C declarations have external linkage and a `r_aclip.ts`
-  (U063) sibling may need to read `aliastransform`.
+  writes `r_apverts` -- U39 below replaces this single pointer with
+  `r_apverts1`/`r_apverts2`/`r_aliasblend`; R_AliasPreparePoints reads it;
+  R_AliasSetUpTransform writes `aliastransform`, R_AliasTransformFinalVert
+  reads it) and are not in r_shared.ts's `RStateT` ownership list for
+  r_alias.c, so they stay module-private `let`/`const` state here, exported
+  (read-only from outside) since their C declarations have external linkage
+  and a `r_aclip.ts` (U063) sibling may need to read `aliastransform`.
 - `tmatrix`/`viewmatrix` inside R_AliasSetUpTransform are C function-local
   `static` arrays, but every element either gets written every call or is
   never written at all (and is relied on to read back as the zero its
@@ -67,15 +68,120 @@ Deviations from PORTING.md / the C source:
   portable `#else` fallback is the only one ported, matching the file's own
   `#if !id386` guard around it) and the `D_Aff8Patch` call in
   R_AliasDrawModel's `#if id386` branch.
+
+U39 (interpolation, mirroring the GL renderer's U16/U29 -- gl_rmain.ts's
+R_SetupAliasFrame / R_SetupEntityTransform):
+- Pose lerp. `r_apverts` (a single selected pose) is replaced by
+  `r_apverts1`/`r_apverts2` (the two poses to blend) and `r_aliasblend` (the
+  blend fraction), filled in by R_AliasSetupFrame using the exact same
+  r_lerpmodels/r_nolerp_list/LERP_* rules gl_rmain.ts's R_SetupAliasFrame
+  applies to its own `lerpdata_t`. The frame/subframe SELECTED each call
+  (single frame vs. an ALIAS_GROUP subframe by cl.time) is untouched from
+  before this unit -- WinQuake's own variable-per-subframe-interval search,
+  needed so r_lerpmodels 0 stays byte-identical to the pre-U39 output --
+  only what happens AFTER selecting a pose is new.
+- No flat posedata array to index a numeric pose number back into (unlike
+  gl_model.ts's aliashdr_t, this port's own model_types.ts keeps every
+  ALIAS_SINGLE/ALIAS_GROUP subframe as its own TrivertxT[] reference -- see
+  that file's header). `ent.previouspose`/`currentpose` (src/client/render.ts,
+  shared with the GL renderer's own numbering) still get a `number` this
+  renderer invents consistently for itself (`frame * ALIAS_POSE_STRIDE +
+  subframe`, this port's own encoding, meaningful only to whichever renderer
+  is `re.current` at the time -- see ALIAS_POSE_STRIDE's own comment); the
+  ACTUAL TrivertxT[] array each of those numbers denotes is tracked in
+  `aliasPoseCache`, a WeakMap<EntityT, ...> side table keyed by entity
+  identity, updated at the exact same branch points R_AliasSetupFrame updates
+  the numeric fields at -- the same "EntityT has no field for this" pattern
+  src/client/client.ts's EntityExtT side tables already use (render.ts's own
+  header note), needed here because this SCOPE does not include
+  src/client/render.ts to add a real field.
+- Blended vertex source: a float (x,y,z) scratch triple blended from pose1's
+  and pose2's raw TrivertxT bytes, fed through the SAME transform-matrix
+  multiply R_AliasTransformFinalVert/R_AliasTransformAndProjectFinalVerts
+  already used (the brief's "float scratch fed to the transform" option) --
+  not a re-quantized Uint8Array, so a mid-blend vertex is not rounded to the
+  nearest byte before being transformed. Both callers keep their ORIGINAL,
+  untouched single-pose code path whenever pose1 === pose2 (r_lerpmodels 0,
+  a paused animation, or a nolerp-flagged model), rather than relying on
+  blend-of-0-or-1 float exactness alone, so r_lerpmodels 0 output is byte
+  identical to the pre-U39 code by construction, not by floating-point luck
+  (though that luck holds too: multiplying a 0..255 byte by exactly 1.0 or
+  0.0 and adding 0.0 is exact in IEEE754, so the blended path would produce
+  the same bits at blend 0/1 regardless).
+- Per-vertex lighting blends the two poses' own fully-computed light values
+  (each pose's own lightnormalindex dotted with r_plightvec, ambient/shade
+  combined and clamped, exactly `aliasVertLight` below -- the existing
+  formula, only extracted to a helper) rather than GL's shadedots-style
+  blend-then-shade (blend the raw per-normal dot product, THEN multiply by
+  a shared color): GL's per-vertex output is a floating RGB color with
+  ambient/shade folded in earlier and outside the vertex loop, while this
+  renderer's output is a single 8-bit colormap-row index computed per vertex
+  from ITS OWN normal; blending the two poses' fully-resolved index values is
+  the direct translation of "each pose lights itself, then the two answers
+  blend," matching GL's STRUCTURE without copying algebra that assumes a
+  color pipeline this renderer doesn't have.
+- e.lerptime for an ALIAS_GROUP pose: gl_model.ts's own Mod_LoadAliasGroup
+  reads only the FIRST subframe's interval and applies it as a CONSTANT
+  blend-rate for the whole group (that file's header note); this port's own
+  model loader (out of this unit's SCOPE) keeps every subframe's real
+  interval for SELECTION (needed for r_lerpmodels 0 byte-identical output,
+  above), but the blend-RATE constant mirrors GL's simplification exactly
+  (`group.intervals[0]`, the group's cumulative-interval array's first entry,
+  which for index 0 is exactly the first subframe's own duration) so the two
+  renderers' interpolation SPEED agrees even though their pose SELECTION
+  algorithms differ for the reason just given.
+- `r_nolerp_list` (QuakeSpasm's MOD_NOLERP name-list) lives in
+  src/ref_gl/glquake.ts, declared there back when only the GL renderer read
+  it (that file's own U16 header note); this SCOPE does not include
+  src/client/render.ts (where r_lerpmodels/r_lerpmove already live
+  specifically so a second renderer could read them without depending on
+  GL) to relocate it, so this file imports the single existing CvarT object
+  directly (read-only: `.string`, never `.value`, so this works whether or
+  not anything ever registers it -- CvarT's own header note: `.value` stays
+  0 until Cvar_RegisterVariable/Cvar_Set runs, but `.string` is set at
+  construction). Flagged as a follow-up: r_nolerp_list belongs beside
+  r_lerpmodels/r_lerpmove in src/client/render.ts, and nothing in this
+  software renderer's own R_Init (src/ref_soft/r_main.ts, another unit's
+  SCOPE) registers r_lerpmodels/r_lerpmove/r_nolerp_list at all yet, so a
+  software-only session cannot toggle any of the three from the console
+  until that file's owner adds the three Cvar_RegisterVariable calls
+  gl_rmisc.ts's own R_Init already makes.
+- Move lerp: R_AliasSetUpTransform folds in the same MOVETYPE_STEP
+  origin/angles blend gl_rmain.ts's R_SetupEntityTransform computes, without
+  an output-parameter twin of that function, because this file's caller
+  (r_main.ts, another unit's SCOPE) computes `modelorg`/`r_entorigin` from
+  the entity's RAW origin before R_AliasSetUpTransform ever runs, and cannot
+  be changed to plumb a lerped `r_entorigin` through instead. The blended
+  origin reaches the transform algebraically: t2matrix's translation column
+  is normally `-modelorg` (= `-(r_origin - ent.origin)`); this port instead
+  writes `-modelorg + (lerpOrigin - ent.origin)`, which equals
+  `-(r_origin - lerpOrigin)` (exactly what a lerped `modelorg` would have
+  been) without R_main.ts needing to know lerping exists. When move lerp is
+  off (r_lerpmove 0, not a LERP_MOVESTEP entity, or cl.viewent, which this
+  never lerps) `lerpOrigin === ent.origin` exactly, so the correction is the
+  zero vector and this reduces to the original `-modelorg` bit for bit.
+  Blended angles replace `ent.angles` outright in the ROLL/PITCH/YAW setup
+  below (no correction needed there: R_AliasSetUpTransform builds
+  alias_forward/right/up from angles directly, unlike the origin's
+  modelorg-relative math). Sprites (r_sprite.ts) and brush models (r_bsp.ts)
+  are NOT move-lerped here, matching GL: gl_rmain.ts's own header note says
+  R_DrawBrushModel/R_DrawSpriteModel always pass the entity's raw
+  origin/angles, never R_SetupEntityTransform's lerped output -- both files
+  are outside this unit's SCOPE regardless, so there is nothing to change
+  there either way.
 */
 
-import { AngleVectors, DotProduct, R_ConcatTransforms, VectorCopy, VectorInverse, type Mat3x4, type Vec3, vec3 } from "../common/mathlib";
+import { AngleVectors, DotProduct, R_ConcatTransforms, VectorCompare, VectorCopy, VectorInverse, VectorSubtract, type Mat3x4, type Vec3, vec3 } from "../common/mathlib";
 import { PITCH, ROLL, YAW } from "../common/quakedef";
-import { AliasframetypeT, AliasskintypeT, type StvertT, type TrivertxT } from "../common/modelgen";
+import { AliasframetypeT, AliasskintypeT, type MdlT, type StvertT, type TrivertxT } from "../common/modelgen";
 import { Mod_Extradata } from "../common/model";
 import { Con_DPrintf } from "../client/console";
 import { Sys_Error } from "../platform/sys";
 import { cl } from "../client/client";
+import type { EntityT } from "../client/render";
+// U39: r_nolerp_list is a GL-only cvar today -- see this file's header note
+// on why this reaches into ref_gl rather than a renderer-agnostic home.
+import { r_nolerp_list } from "../ref_gl/glquake";
 import type * as SkinModule from "../qw/client/skin";
 
 // QW skin.c reaches the whole QuakeWorld client (skin.c -> cl_parse.c ->
@@ -101,11 +207,18 @@ import {
   type AlightT,
   type AuxvertT,
   FinalvertT,
+  LERP_FINISH,
+  LERP_MOVESTEP,
+  LERP_RESETANIM,
+  LERP_RESETANIM2,
+  LERP_RESETMOVE,
   MAXALIASVERTS,
   allocAuxverts,
   allocFinalverts,
   modelorg,
   r_avertexnormals,
+  r_lerpmodels,
+  r_lerpmove,
   r_plightvec,
   r_refdef,
   rState,
@@ -127,7 +240,13 @@ function mat3x4(): Mat3x4 {
 }
 
 // TODO: these probably will go away with optimized rasterization
-export let r_apverts: TrivertxT[] | null = null;
+// U39: the single selected pose (`r_apverts`) is now the two poses to blend
+// plus the blend fraction R_AliasSetupFrame resolved -- see this file's
+// header note. `r_apverts1 === r_apverts2` is this file's own "not lerping"
+// test (mirrors GL_DrawAliasFrame's `pose1 !== pose2`).
+export let r_apverts1: TrivertxT[] | null = null;
+export let r_apverts2: TrivertxT[] | null = null;
+export let r_aliasblend = 1;
 export let r_anumverts = 0;
 export const aliastransform: Mat3x4 = mat3x4();
 
@@ -136,6 +255,78 @@ const alias_right: Vec3 = vec3();
 const alias_up: Vec3 = vec3();
 
 let ziscale = 0;
+
+// U39: this port's own encoding for EntityT.previouspose/currentpose (see
+// this file's header note) -- big enough that no real .mdl's own frame count
+// collides with another frame's subframe index.
+const ALIAS_POSE_STRIDE = 65536;
+
+// U39 addition, no WinQuake counterpart: decodes a previouspose/currentpose
+// number (this file's own ALIAS_POSE_STRIDE encoding, above) back to the
+// .mdl frame number it was built from. Exported for r_md5.ts's own U39
+// addition -- an attached MD5 replacement's "equal frame count" case reuses
+// this file's own pose-change/blend bookkeeping (ent.previouspose/
+// currentpose/r_aliasblend) rather than duplicating a second timer, and
+// needs the plain .mdl frame number back to map onto its own frame index
+// (see r_md5.ts's own header note).
+export function aliasPoseFrame(posenum: number): number {
+  return Math.floor(posenum / ALIAS_POSE_STRIDE);
+}
+
+// U39 addition, no WinQuake counterpart: resolves a previouspose/currentpose
+// number back to the actual TrivertxT[] array it denotes, decoding this
+// file's own ALIAS_POSE_STRIDE encoding against the CURRENT model. Used only
+// to seed aliasPoseCache the first time R_AliasSetupFrame sees a given
+// entity: a brand-new EntityT's previouspose/currentpose default to 0 (frame
+// 0, subframe 0), which -- unlike a numeric index into GL's own flat
+// posedata array -- this renderer cannot otherwise turn back into real
+// vertex data without looking the frame back up. Returns null (the caller
+// falls back to `selectedVerts`, i.e. no lerp) for a number that came from a
+// DIFFERENT renderer's own encoding, or a frame/subframe this model no
+// longer has -- both are safe degenerations, not errors.
+function resolvePoseVerts(pahdr: AliashdrT, pmdl: MdlT, posenum: number): TrivertxT[] | null {
+  const frame = Math.floor(posenum / ALIAS_POSE_STRIDE);
+  const subframe = posenum % ALIAS_POSE_STRIDE;
+  if (frame < 0 || frame >= pmdl.numframes) return null;
+  const framedesc = pahdr.frames[frame];
+  if (framedesc === undefined) return null;
+  if (framedesc.type === AliasframetypeT.ALIAS_SINGLE) return Array.isArray(framedesc.frame) ? framedesc.frame : null;
+  const group = framedesc.frame;
+  if (!(group instanceof MaliasgroupT)) return null;
+  const groupframe = group.frames[subframe];
+  return groupframe ? groupframe.frame : null;
+}
+
+// U39: per-entity cache of which TrivertxT[] array `previouspose`/
+// `currentpose`'s numbers actually denote -- see this file's header note.
+interface AliasPoseCacheT {
+  previousVerts: TrivertxT[];
+  currentVerts: TrivertxT[];
+}
+const aliasPoseCache = new WeakMap<EntityT, AliasPoseCacheT>();
+
+// U39 addition, no WinQuake counterpart: the C's `CLAMP(_minval,_number,_maxval)`
+// macro (Ironwail/QuakeSpasm's own quakedef.h, ported already for
+// gl_rmain.ts's own R_SetupAliasFrame/R_SetupEntityTransform); duplicated
+// here as its own tiny local helper rather than shared, matching gl_rmain.ts's
+// own choice to keep this file-private rather than promote it to a shared
+// utility module.
+function CLAMP(minv: number, v: number, maxv: number): number {
+  return v < minv ? minv : v > maxv ? maxv : v;
+}
+
+// U39 addition, no WinQuake counterpart: gl_rmain.ts's own nameInList
+// (MOD_NOLERP by name at draw time instead of a load-time model flag --
+// that file's header note), duplicated here for the same file-private
+// reason CLAMP above is.
+function nameInList(list: string, name: string): boolean {
+  return list.split(",").includes(name);
+}
+
+const lerpVertScratch: Vec3 = vec3();
+const lerpEntityOrigin: Vec3 = vec3();
+const lerpEntityAngles: Vec3 = vec3();
+const moveLerpDelta: Vec3 = vec3();
 
 const finalvertsPool: FinalvertT[] = allocFinalverts(MAXALIASVERTS);
 const auxvertsPool: AuxvertT[] = allocAuxverts(MAXALIASVERTS);
@@ -311,7 +502,7 @@ export function R_AliasPreparePoints(): void {
   const pahdr = rState.paliashdr;
   const pmdl = rState.pmdl;
   if (pahdr === null || pmdl === null) Sys_Error("R_AliasPreparePoints: not set up");
-  if (r_apverts === null) Sys_Error("R_AliasPreparePoints: no frame verts");
+  if (r_apverts1 === null || r_apverts2 === null) Sys_Error("R_AliasPreparePoints: no frame verts");
   const fv = rState.pfinalverts;
   const av = rState.pauxverts;
   if (fv === null || av === null) Sys_Error("R_AliasPreparePoints: no vertex pools");
@@ -319,8 +510,17 @@ export function R_AliasPreparePoints(): void {
   const pstverts = pahdr.stverts;
   r_anumverts = pmdl.numverts;
 
+  // U39: pose1 === pose2 (r_lerpmodels 0, a paused animation, or a
+  // nolerp-flagged model) keeps the exact pre-U39 call, byte for byte -- see
+  // this file's header note.
+  const lerping = r_apverts1 !== r_apverts2;
+  const pverts1 = r_apverts1;
+  const pverts2 = r_apverts2;
+  const blend = r_aliasblend;
+
   for (let i = 0; i < r_anumverts; i++) {
-    R_AliasTransformFinalVert(fv[i], av[i], r_apverts[i], pstverts[i]);
+    if (lerping) R_AliasTransformFinalVertLerp(fv[i], av[i], pverts1[i], pverts2[i], blend, pstverts[i]);
+    else R_AliasTransformFinalVert(fv[i], av[i], pverts2[i], pstverts[i]);
     if (av[i].fv[2] < ALIAS_Z_CLIP_PLANE) {
       fv[i].flags |= ALIAS_Z_CLIP;
     } else {
@@ -371,13 +571,61 @@ export function R_AliasSetUpTransform(trivial_accept: number): void {
   const pmdl = rState.pmdl;
   if (pmdl === null) Sys_Error("R_AliasSetUpTransform: no mdl");
 
+  // U39: move-lerp bookkeeping + blended origin/angles for a MOVETYPE_STEP
+  // entity under r_lerpmove, mirroring gl_rmain.ts's R_SetupEntityTransform
+  // exactly -- see this file's header note on why the lerped origin is
+  // folded into t2matrix's own translation below instead of this function
+  // taking a lerpdata_t-style output parameter.
+  if (ent.lerpflags & LERP_RESETMOVE) {
+    // kill any lerps in progress
+    ent.movelerpstart = 0;
+    VectorCopy(ent.origin, ent.previousorigin);
+    VectorCopy(ent.origin, ent.currentorigin);
+    VectorCopy(ent.angles, ent.previousangles);
+    VectorCopy(ent.angles, ent.currentangles);
+    ent.lerpflags &= ~LERP_RESETMOVE;
+  } else if (!VectorCompare(ent.origin, ent.currentorigin) || !VectorCompare(ent.angles, ent.currentangles)) {
+    // origin/angles changed, start a new lerp
+    ent.movelerpstart = cl.time;
+    VectorCopy(ent.currentorigin, ent.previousorigin);
+    VectorCopy(ent.origin, ent.currentorigin);
+    VectorCopy(ent.currentangles, ent.previousangles);
+    VectorCopy(ent.angles, ent.currentangles);
+  }
+
+  if (r_lerpmove.value && ent !== cl.viewent && ent.lerpflags & LERP_MOVESTEP) {
+    let blend: number;
+    if (ent.lerpflags & LERP_FINISH) blend = CLAMP(0.0, (cl.time - ent.movelerpstart) / (ent.lerpfinish - ent.movelerpstart), 1.0);
+    else blend = CLAMP(0.0, (cl.time - ent.movelerpstart) / 0.1, 1.0);
+
+    // translation
+    VectorSubtract(ent.currentorigin, ent.previousorigin, moveLerpDelta);
+    lerpEntityOrigin[0] = ent.previousorigin[0] + moveLerpDelta[0] * blend;
+    lerpEntityOrigin[1] = ent.previousorigin[1] + moveLerpDelta[1] * blend;
+    lerpEntityOrigin[2] = ent.previousorigin[2] + moveLerpDelta[2] * blend;
+
+    // rotation
+    VectorSubtract(ent.currentangles, ent.previousangles, moveLerpDelta);
+    for (let i = 0; i < 3; i++) {
+      if (moveLerpDelta[i] > 180) moveLerpDelta[i] -= 360;
+      if (moveLerpDelta[i] < -180) moveLerpDelta[i] += 360;
+    }
+    lerpEntityAngles[0] = ent.previousangles[0] + moveLerpDelta[0] * blend;
+    lerpEntityAngles[1] = ent.previousangles[1] + moveLerpDelta[1] * blend;
+    lerpEntityAngles[2] = ent.previousangles[2] + moveLerpDelta[2] * blend;
+  } else {
+    // don't lerp
+    VectorCopy(ent.origin, lerpEntityOrigin);
+    VectorCopy(ent.angles, lerpEntityAngles);
+  }
+
   // TODO: should really be stored with the entity instead of being reconstructed
   // TODO: should use a look-up table
   // TODO: could cache lazily, stored in the entity
   const angles: Vec3 = vec3();
-  angles[ROLL] = ent.angles[ROLL];
-  angles[PITCH] = -ent.angles[PITCH];
-  angles[YAW] = ent.angles[YAW];
+  angles[ROLL] = lerpEntityAngles[ROLL];
+  angles[PITCH] = -lerpEntityAngles[PITCH];
+  angles[YAW] = lerpEntityAngles[YAW];
   AngleVectors(angles, alias_forward, alias_right, alias_up);
 
   const tmatrix = mat3x4();
@@ -397,9 +645,13 @@ export function R_AliasSetUpTransform(trivial_accept: number): void {
     t2matrix[i][2] = alias_up[i];
   }
 
-  t2matrix[0][3] = -modelorg[0];
-  t2matrix[1][3] = -modelorg[1];
-  t2matrix[2][3] = -modelorg[2];
+  // U39: modelorg was computed by this file's caller (r_main.ts) from the
+  // entity's RAW origin, before this function ran -- see this file's header
+  // note for the algebra behind this correction.
+  VectorSubtract(lerpEntityOrigin, ent.origin, moveLerpDelta);
+  t2matrix[0][3] = -modelorg[0] + moveLerpDelta[0];
+  t2matrix[1][3] = -modelorg[1] + moveLerpDelta[1];
+  t2matrix[2][3] = -modelorg[2] + moveLerpDelta[2];
 
   // FIXME: can do more efficiently than full concatenation
   const rotationmatrix = mat3x4();
@@ -432,24 +684,15 @@ export function R_AliasSetUpTransform(trivial_accept: number): void {
   }
 }
 
-/*
-================
-R_AliasTransformFinalVert
-================
-*/
-export function R_AliasTransformFinalVert(fv: FinalvertT, av: AuxvertT, pverts: TrivertxT, pstverts: StvertT): void {
-  const v = pverts.v;
-  av.fv[0] = v[0] * aliastransform[0][0] + v[1] * aliastransform[0][1] + v[2] * aliastransform[0][2] + aliastransform[0][3];
-  av.fv[1] = v[0] * aliastransform[1][0] + v[1] * aliastransform[1][1] + v[2] * aliastransform[1][2] + aliastransform[1][3];
-  av.fv[2] = v[0] * aliastransform[2][0] + v[1] * aliastransform[2][1] + v[2] * aliastransform[2][2] + aliastransform[2][3];
-
-  fv.v[2] = pstverts.s;
-  fv.v[3] = pstverts.t;
-
-  fv.flags = pstverts.onseam;
-
-  // lighting
-  const ni = pverts.lightnormalindex * 3;
+// U39 addition, no WinQuake counterpart: R_AliasTransformFinalVert's/
+// R_AliasTransformAndProjectFinalVerts's own lighting formula, extracted so
+// R_AliasTransformFinalVertLerp (below) can compute each pose's own light
+// value from its own normal, then blend the two -- see this file's header
+// note on why this blends the RESOLVED light value rather than GL's
+// blend-then-shade dot product. Identical arithmetic to what both functions
+// already did inline; a pure refactor.
+function aliasVertLight(lightnormalindex: number): number {
+  const ni = lightnormalindex * 3;
   const nx = r_avertexnormals[ni];
   const ny = r_avertexnormals[ni + 1];
   const nz = r_avertexnormals[ni + 2];
@@ -464,26 +707,97 @@ export function R_AliasTransformFinalVert(fv: FinalvertT, av: AuxvertT, pverts: 
     if (temp < 0) temp = 0;
   }
 
-  fv.v[4] = temp;
+  return temp;
+}
+
+/*
+================
+R_AliasTransformFinalVert
+
+Single-pose case: r_lerpmodels 0, a paused animation, or a nolerp-flagged
+model (pose1 === pose2) -- untouched by U39, kept byte-identical.
+================
+*/
+export function R_AliasTransformFinalVert(fv: FinalvertT, av: AuxvertT, pverts: TrivertxT, pstverts: StvertT): void {
+  const v = pverts.v;
+  av.fv[0] = v[0] * aliastransform[0][0] + v[1] * aliastransform[0][1] + v[2] * aliastransform[0][2] + aliastransform[0][3];
+  av.fv[1] = v[0] * aliastransform[1][0] + v[1] * aliastransform[1][1] + v[2] * aliastransform[1][2] + aliastransform[1][3];
+  av.fv[2] = v[0] * aliastransform[2][0] + v[1] * aliastransform[2][1] + v[2] * aliastransform[2][2] + aliastransform[2][3];
+
+  fv.v[2] = pstverts.s;
+  fv.v[3] = pstverts.t;
+
+  fv.flags = pstverts.onseam;
+
+  fv.v[4] = aliasVertLight(pverts.lightnormalindex);
+}
+
+/*
+================
+R_AliasTransformFinalVertLerp -- U39, no WinQuake counterpart: the two-pose
+blended twin of R_AliasTransformFinalVert above, used only when pose1 !==
+pose2 -- see this file's header note on the blended-vertex representation.
+================
+*/
+export function R_AliasTransformFinalVertLerp(fv: FinalvertT, av: AuxvertT, pverts1: TrivertxT, pverts2: TrivertxT, blend: number, pstverts: StvertT): void {
+  const iblend = 1.0 - blend;
+  const v1 = pverts1.v;
+  const v2 = pverts2.v;
+  lerpVertScratch[0] = v1[0] * iblend + v2[0] * blend;
+  lerpVertScratch[1] = v1[1] * iblend + v2[1] * blend;
+  lerpVertScratch[2] = v1[2] * iblend + v2[2] * blend;
+
+  av.fv[0] = lerpVertScratch[0] * aliastransform[0][0] + lerpVertScratch[1] * aliastransform[0][1] + lerpVertScratch[2] * aliastransform[0][2] + aliastransform[0][3];
+  av.fv[1] = lerpVertScratch[0] * aliastransform[1][0] + lerpVertScratch[1] * aliastransform[1][1] + lerpVertScratch[2] * aliastransform[1][2] + aliastransform[1][3];
+  av.fv[2] = lerpVertScratch[0] * aliastransform[2][0] + lerpVertScratch[1] * aliastransform[2][1] + lerpVertScratch[2] * aliastransform[2][2] + aliastransform[2][3];
+
+  fv.v[2] = pstverts.s;
+  fv.v[3] = pstverts.t;
+
+  fv.flags = pstverts.onseam;
+
+  fv.v[4] = aliasVertLight(pverts1.lightnormalindex) * iblend + aliasVertLight(pverts2.lightnormalindex) * blend;
 }
 
 /*
 ================
 R_AliasTransformAndProjectFinalVerts
 
-Portable (non-id386-asm) C fallback only -- see file header comment.
+Portable (non-id386-asm) C fallback only -- see file header comment. U39:
+takes the two poses + blend directly (this function is module-private, its
+only caller is R_AliasPrepareUnclippedPoints below) instead of reading
+r_apverts itself; the non-lerping branch is the exact original arithmetic.
 ================
 */
-function R_AliasTransformAndProjectFinalVerts(fv: FinalvertT[], pstverts: StvertT[]): void {
-  if (r_apverts === null) Sys_Error("R_AliasTransformAndProjectFinalVerts: no frame verts");
-  const pverts = r_apverts;
+function R_AliasTransformAndProjectFinalVerts(fv: FinalvertT[], pstverts: StvertT[], pverts1: TrivertxT[], pverts2: TrivertxT[], blend: number): void {
+  const lerping = pverts1 !== pverts2;
+  const iblend = 1.0 - blend;
 
   for (let i = 0; i < r_anumverts; i++) {
-    const p = pverts[i];
-    const v = p.v;
+    const p2 = pverts2[i];
+    const v2 = p2.v;
+
+    let vx: number;
+    let vy: number;
+    let vz: number;
+    let lightTemp: number;
+
+    if (lerping) {
+      const p1 = pverts1[i];
+      const v1 = p1.v;
+      vx = v1[0] * iblend + v2[0] * blend;
+      vy = v1[1] * iblend + v2[1] * blend;
+      vz = v1[2] * iblend + v2[2] * blend;
+      lightTemp = aliasVertLight(p1.lightnormalindex) * iblend + aliasVertLight(p2.lightnormalindex) * blend;
+    } else {
+      vx = v2[0];
+      vy = v2[1];
+      vz = v2[2];
+      lightTemp = aliasVertLight(p2.lightnormalindex);
+    }
 
     // transform and project
-    const zi = 1.0 / (v[0] * aliastransform[2][0] + v[1] * aliastransform[2][1] + v[2] * aliastransform[2][2] + aliastransform[2][3]);
+    const zi = 1.0 / (vx * aliastransform[2][0] + vy * aliastransform[2][1] + vz * aliastransform[2][2] + aliastransform[2][3]);
 
     // x, y, and z are scaled down by 1/2**31 in the transform, so 1/z is
     // scaled up by 1/2**31, and the scaling cancels out for x and y in the
@@ -491,30 +805,14 @@ function R_AliasTransformAndProjectFinalVerts(fv: FinalvertT[], pstverts: Stvert
     const f = fv[i];
     f.v[5] = zi;
 
-    f.v[0] = (v[0] * aliastransform[0][0] + v[1] * aliastransform[0][1] + v[2] * aliastransform[0][2] + aliastransform[0][3]) * zi + rState.aliasxcenter;
-    f.v[1] = (v[0] * aliastransform[1][0] + v[1] * aliastransform[1][1] + v[2] * aliastransform[1][2] + aliastransform[1][3]) * zi + rState.aliasycenter;
+    f.v[0] = (vx * aliastransform[0][0] + vy * aliastransform[0][1] + vz * aliastransform[0][2] + aliastransform[0][3]) * zi + rState.aliasxcenter;
+    f.v[1] = (vx * aliastransform[1][0] + vy * aliastransform[1][1] + vz * aliastransform[1][2] + aliastransform[1][3]) * zi + rState.aliasycenter;
 
     f.v[2] = pstverts[i].s;
     f.v[3] = pstverts[i].t;
     f.flags = pstverts[i].onseam;
 
-    // lighting
-    const ni = p.lightnormalindex * 3;
-    const nx = r_avertexnormals[ni];
-    const ny = r_avertexnormals[ni + 1];
-    const nz = r_avertexnormals[ni + 2];
-    const lightcos = nx * r_plightvec[0] + ny * r_plightvec[1] + nz * r_plightvec[2];
-    let temp = rState.r_ambientlight;
-
-    if (lightcos < 0) {
-      temp += (rState.r_shadelight * lightcos) | 0;
-
-      // clamp; because we limited the minimum ambient and shading light, we
-      // don't have to clamp low light, just bright
-      if (temp < 0) temp = 0;
-    }
-
-    f.v[4] = temp;
+    f.v[4] = lightTemp;
   }
 }
 
@@ -542,13 +840,14 @@ export function R_AliasPrepareUnclippedPoints(): void {
   const pahdr = rState.paliashdr;
   const pmdl = rState.pmdl;
   if (pahdr === null || pmdl === null) Sys_Error("R_AliasPrepareUnclippedPoints: not set up");
+  if (r_apverts1 === null || r_apverts2 === null) Sys_Error("R_AliasPrepareUnclippedPoints: no frame verts");
   const fv = rState.pfinalverts;
   if (fv === null) Sys_Error("R_AliasPrepareUnclippedPoints: no finalverts");
 
   const pstverts = pahdr.stverts;
   r_anumverts = pmdl.numverts;
 
-  R_AliasTransformAndProjectFinalVerts(fv, pstverts);
+  R_AliasTransformAndProjectFinalVerts(fv, pstverts, r_apverts1, r_apverts2, r_aliasblend);
 
   if (r_affinetridesc.drawtype) {
     D_PolysetDrawFinalVerts(fv, r_anumverts);
@@ -662,7 +961,7 @@ export function R_AliasSetupLighting(plighting: AlightT): void {
 =================
 R_AliasSetupFrame
 
-set r_apverts
+sets r_apverts1/r_apverts2/r_aliasblend -- U39, see this file's header note
 =================
 */
 export function R_AliasSetupFrame(): void {
@@ -680,33 +979,104 @@ export function R_AliasSetupFrame(): void {
 
   const framedesc = pahdr.frames[frame];
 
+  // U39: pose SELECTION is unchanged from before this unit (see this file's
+  // header note on why) -- only what happens after `selectedVerts` is new.
+  let selectedVerts: TrivertxT[];
+  let groupNumPoses = 1;
+  let subframe = 0;
+
   if (framedesc.type === AliasframetypeT.ALIAS_SINGLE) {
     if (!Array.isArray(framedesc.frame)) Sys_Error("R_AliasSetupFrame: bad single frame");
-    r_apverts = framedesc.frame;
-    return;
+    selectedVerts = framedesc.frame;
+    ent.lerptime = 0.1;
+  } else {
+    const paliasgroup = framedesc.frame;
+    if (!(paliasgroup instanceof MaliasgroupT)) Sys_Error("R_AliasSetupFrame: bad frame group");
+
+    const pintervals = paliasgroup.intervals;
+    const numframes = paliasgroup.numframes;
+    const fullinterval = pintervals[numframes - 1];
+
+    const time = cl.time + ent.syncbase;
+
+    //
+    // when loading in Mod_LoadAliasGroup, we guaranteed all interval values
+    // are positive, so we don't have to worry about division by 0
+    //
+    const targettime = time - ((time / fullinterval) | 0) * fullinterval;
+
+    let i = 0;
+    for (; i < numframes - 1; i++) {
+      if (pintervals[i] > targettime) break;
+    }
+
+    selectedVerts = paliasgroup.frames[i].frame;
+    groupNumPoses = numframes;
+    subframe = i;
+    // GL parity for the blend RATE only -- see this file's header note.
+    ent.lerptime = pintervals[0];
+  }
+  const posenum = frame * ALIAS_POSE_STRIDE + subframe;
+
+  // johnfitz -- lerping: mirrors gl_rmain.ts's R_SetupAliasFrame exactly.
+  let cache = aliasPoseCache.get(ent);
+  if (!cache) {
+    // Cold start: resolve whatever previouspose/currentpose already hold
+    // (0/0 for a brand-new EntityT -- frame 0, subframe 0) back to real
+    // vertex data instead of assuming they mean "this call's own pose" --
+    // see resolvePoseVerts's own header note.
+    cache = {
+      previousVerts: resolvePoseVerts(pahdr, pmdl, ent.previouspose) ?? selectedVerts,
+      currentVerts: resolvePoseVerts(pahdr, pmdl, ent.currentpose) ?? selectedVerts,
+    };
+    aliasPoseCache.set(ent, cache);
   }
 
-  const paliasgroup = framedesc.frame;
-  if (!(paliasgroup instanceof MaliasgroupT)) Sys_Error("R_AliasSetupFrame: bad frame group");
-
-  const pintervals = paliasgroup.intervals;
-  const numframes = paliasgroup.numframes;
-  const fullinterval = pintervals[numframes - 1];
-
-  const time = cl.time + ent.syncbase;
-
-  //
-  // when loading in Mod_LoadAliasGroup, we guaranteed all interval values
-  // are positive, so we don't have to worry about division by 0
-  //
-  const targettime = time - ((time / fullinterval) | 0) * fullinterval;
-
-  let i = 0;
-  for (; i < numframes - 1; i++) {
-    if (pintervals[i] > targettime) break;
+  if (ent.lerpflags & LERP_RESETANIM) {
+    // kill any lerp in progress
+    ent.lerpstart = 0;
+    ent.previouspose = posenum;
+    ent.currentpose = posenum;
+    cache.previousVerts = selectedVerts;
+    cache.currentVerts = selectedVerts;
+    ent.lerpflags &= ~LERP_RESETANIM;
+  } else if (ent.currentpose !== posenum) {
+    // pose changed, start a new lerp
+    if (ent.lerpflags & LERP_RESETANIM2) {
+      // defer lerping one more time
+      ent.lerpstart = 0;
+      ent.previouspose = posenum;
+      ent.currentpose = posenum;
+      cache.previousVerts = selectedVerts;
+      cache.currentVerts = selectedVerts;
+      ent.lerpflags &= ~LERP_RESETANIM2;
+    } else {
+      ent.lerpstart = cl.time;
+      ent.previouspose = ent.currentpose;
+      ent.currentpose = posenum;
+      cache.previousVerts = cache.currentVerts;
+      cache.currentVerts = selectedVerts;
+    }
   }
 
-  r_apverts = paliasgroup.frames[i].frame;
+  const noLerpModel = ent.model !== null && nameInList(r_nolerp_list.string, ent.model.name);
+
+  if (r_lerpmodels.value && !(noLerpModel && r_lerpmodels.value !== 2)) {
+    if (ent.lerpflags & LERP_FINISH && groupNumPoses === 1) r_aliasblend = CLAMP(0.0, (cl.time - ent.lerpstart) / (ent.lerpfinish - ent.lerpstart), 1.0);
+    else r_aliasblend = CLAMP(0.0, (cl.time - ent.lerpstart) / ent.lerptime, 1.0);
+    if (r_aliasblend === 1.0) {
+      ent.previouspose = ent.currentpose;
+      cache.previousVerts = cache.currentVerts;
+    }
+    r_apverts1 = cache.previousVerts;
+    r_apverts2 = cache.currentVerts;
+  } else {
+    // poses the same means either 1. the entity has paused its animation, or
+    // 2. r_lerpmodels is disabled
+    r_aliasblend = 1;
+    r_apverts1 = cache.currentVerts;
+    r_apverts2 = cache.currentVerts;
+  }
 }
 
 /*
@@ -757,7 +1127,8 @@ export function R_AliasDrawModel(plighting: AlightT): void {
   // that state differs for its own vertex source (aliastransform, the skin
   // fields on r_affinetridesc) before drawing. See r_md5.ts's header for why
   // this can't just be R_AliasPrepareUnclippedPoints/R_AliasPreparePoints
-  // fed MD5 verts directly (r_apverts/pstverts are TrivertxT/StvertT-shaped).
+  // fed MD5 verts directly (r_apverts1/r_apverts2/pstverts are
+  // TrivertxT/StvertT-shaped).
   const md5Payload = r_enhancedmodels.value ? getMd5Payload(data) : null;
   if (md5Payload) {
     R_MD5DrawModel(md5Payload, plighting);

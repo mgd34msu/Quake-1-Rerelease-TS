@@ -54,7 +54,7 @@ import { setDeveloper } from "../src/client/console";
 import { sysState } from "../src/platform/sys";
 import { qw } from "../src/common/quakedef";
 import { cl, cl_entities, cl_lightstyle, clState, cl_visedicts } from "../src/client/client";
-import { EntityT, r_refdef, re } from "../src/client/render";
+import { EntityT, r_lerpmodels, r_refdef, re } from "../src/client/render";
 import { vid, vidBackend, type VidBackend, VrectT } from "../src/client/vid";
 import { scrState } from "../src/client/screen_types";
 import { CalcFov, scr_fov, scr_viewsize } from "../src/client/screen";
@@ -224,6 +224,8 @@ const savedComGamedir = com_gamedir;
 const savedComModified = com_modified;
 const savedStaticRegistered = static_registered;
 const savedEnhanced = { string: r_enhancedmodels.string, value: r_enhancedmodels.value };
+// U39 addition: this suite's own MD5 blend test drives r_lerpmodels.
+const savedLerpmodels = { string: r_lerpmodels.string, value: r_lerpmodels.value };
 const savedDeveloper = { string: developer.string, value: developer.value };
 const savedNumVisedicts = clState.cl_numvisedicts;
 const savedViewentity = cl.viewentity;
@@ -361,6 +363,8 @@ function commonTeardown(scratchDir: string): void {
   setStaticRegistered(savedStaticRegistered);
   r_enhancedmodels.string = savedEnhanced.string;
   r_enhancedmodels.value = savedEnhanced.value;
+  r_lerpmodels.string = savedLerpmodels.string;
+  r_lerpmodels.value = savedLerpmodels.value;
   developer.string = savedDeveloper.string;
   developer.value = savedDeveloper.value;
   rmSync(scratchDir, { recursive: true, force: true });
@@ -542,6 +546,244 @@ describe("U26: MD5 replacement models (software renderer, synthetic)", () => {
       setDeveloper(null);
       sysState.nostdout = savedNostdout;
     }
+  });
+});
+
+//============================================================================
+// U39: MD5 pose blend (R_MD5DrawModel passing the two poses + blend to
+// buildFramePose, for the "equal frame count" case -- md5FrameBlendForEntity's
+// own header note in src/ref_soft/r_md5.ts). Self-contained setup (its own
+// scratchDir/pak, not commonSetup's) so this suite's own model/anim files
+// don't have to be threaded into the fixed pak commonSetup's other tests
+// share.
+
+// A 2-frame md5anim animating the one joint's Y position (hierarchy flags 2
+// == bit 1 == Ty, matching src/lib/md5_model.ts's component order
+// pos.x/y/z,quat.x/y/z): frame 0 leaves the joint at Y 0, frame 1 moves it to
+// `deltaY`. md5MeshText's own triangle sits astride the joint on Y/Z (see
+// this file's header), so this rigidly translates the whole rendered mesh by
+// `deltaY` between the two frames -- an easy, direction-known screen-space
+// shift to assert a blend midpoint against.
+function md5AnimTextYTranslate(deltaY: number): string {
+  return `MD5Version 10
+commandline ""
+
+numFrames 2
+numJoints 1
+frameRate 24
+numAnimatedComponents 1
+
+hierarchy {
+  "joint0" -1 2 0
+}
+
+bounds {
+  ( -60.0 -60.0 -60.0 ) ( 60.0 60.0 60.0 )
+  ( -60.0 -60.0 -60.0 ) ( 60.0 60.0 60.0 )
+}
+
+baseframe {
+  ( 0.0 0.0 0.0 ) ( 0.0 0.0 0.0 )
+}
+
+frame 0 {
+  0.0
+}
+
+frame 1 {
+  ${deltaY.toFixed(1)}
+}
+`;
+}
+
+describe("U39: MD5 pose blend (software renderer, synthetic)", () => {
+  let scratchDir: string;
+  let blendMod: ModelT | null = null;
+
+  beforeAll(() => {
+    scratchDir = mkdtempSync(join(scratchRoot, "ref-soft-md5-blend-test-"));
+    const baseDir = join(scratchDir, "quake");
+    ensureDir(join(baseDir, "id1"));
+
+    const popLmp = new Uint8Array(256);
+    for (let i = 0; i < 128; i++) {
+      popLmp[i * 2] = (pop[i] >> 8) & 0xff;
+      popLmp[i * 2 + 1] = pop[i] & 0xff;
+    }
+
+    writePakToDisk(join(baseDir, "id1", "pak0.pak"), [
+      { name: "gfx/pop.lmp", data: popLmp },
+      { name: "maps/refsoftmd5.bsp", data: buildBsp() },
+      // mdlNumFrames (2) === md5NumFrames (2): md5FrameBlendForEntity's
+      // "equal" case, driven by ent.frame directly.
+      { name: "progs/blend.mdl", data: buildMdl({ numframes: 2 }) },
+      { name: "progs/blend.md5mesh", data: new TextEncoder().encode(md5MeshText("blend")) },
+      { name: "progs/blend.md5anim", data: new TextEncoder().encode(md5AnimTextYTranslate(80)) },
+      { name: "progs/blend_00_00.lmp", data: buildLmp(4, 4, 200) },
+    ]);
+
+    COM_InitArgv(["quake", "-basedir", baseDir]);
+    COM_InitFilesystem();
+    COM_CheckRegistered();
+    Mod_Init();
+
+    scrState.block_drawing = true;
+    setCvar(scr_viewsize, 100);
+    setCvar(scr_fov, 90);
+    setCvar(lcd_x, 0);
+
+    vidBackend.current = fakeVid;
+    registerRenderer("soft", () => softRenderer);
+    re.current = softRenderer;
+    setModelLoaderHooks(softRenderer.modelHooks);
+
+    R_Init();
+    setCvar(r_ambient, 0);
+    setCvar(r_fullbright, 0);
+    setCvar(r_drawflat, 0);
+    setCvar(r_drawentities, 1);
+    setCvar(r_drawviewmodel, 0);
+    setCvar(r_enhancedmodels, 1);
+    setCvar(r_lerpmodels, 1);
+
+    cl_lightstyle[0].length = 0;
+    cl_lightstyle[0].map = "";
+
+    setMode320x200();
+
+    const worldMod = Mod_ForName("maps/refsoftmd5.bsp", true);
+    expect(worldMod).not.toBeNull();
+    cl.worldmodel = worldMod;
+    cl_entities[0].model = worldMod;
+    cl.viewentity = 0;
+    cl.maxclients = 1;
+    cl.intermission = 0;
+    clState.cl_numvisedicts = 0;
+    R_NewMap();
+
+    blendMod = Mod_ForName("progs/blend.mdl", true);
+  });
+
+  afterAll(() => {
+    commonTeardown(scratchDir);
+  });
+
+  test("blend 0.5 lands the rendered mesh strictly between the blend-0 and blend-1 positions", () => {
+    expect(blendMod).not.toBeNull();
+    if (!blendMod) return;
+
+    // One persistent entity, driven across three sequential draws -- see
+    // R_AliasSetupFrame's own pose-lerp bookkeeping (r_alias.ts): reusing
+    // the SAME entity object (never `new EntityT()` mid-sequence) is what
+    // lets ent.previouspose/currentpose/lerpstart/lerptime carry the
+    // in-progress lerp from one draw to the next, exactly as CL_RelinkEntities
+    // -> R_DrawEntitiesOnList would across real frames.
+    const ent = new EntityT();
+    ent.model = blendMod;
+    ent.origin[0] = 150;
+    ent.origin[1] = 0;
+    ent.origin[2] = 0;
+    ent.angles[0] = 0;
+    ent.angles[1] = 0;
+    ent.angles[2] = 0;
+    ent.skinnum = 0;
+    ent.syncbase = 0;
+
+    function render(frame: number, time: number): Uint8Array {
+      ent.frame = frame;
+      cl.time = time;
+      vid.colormap = identityColormap();
+      vid.fullbright = 256;
+      setCvar(r_clearcolor, CLEARCOLOR);
+
+      softRenderer.D_FlushCaches();
+      rState.d_pzbuffer = new Int16Array(vid.width * vid.height);
+      const cacheSize = softRenderer.D_SurfaceCacheForRes(vid.width, vid.height);
+      softRenderer.D_InitCaches(new Uint8Array(cacheSize), cacheSize);
+
+      ent.colormap = vid.colormap;
+      cl_visedicts[0] = ent;
+      clState.cl_numvisedicts = 1;
+
+      const vrectin = new VrectT();
+      vrectin.width = vid.width;
+      vrectin.height = vid.height;
+      r_refdef.fov_x = 90;
+      r_refdef.fov_y = CalcFov(90, vid.width, vid.height);
+      scrState.sb_lines = 0;
+      R_ViewChanged(vrectin, scrState.sb_lines, vid.aspect);
+
+      r_refdef.vieworg[0] = 0;
+      r_refdef.vieworg[1] = 0;
+      r_refdef.vieworg[2] = 0;
+      r_refdef.viewangles[0] = 0;
+      r_refdef.viewangles[1] = 0;
+      r_refdef.viewangles[2] = 0;
+
+      const buffer = vid.buffer;
+      if (!buffer) return new Uint8Array(0);
+      buffer.fill(0);
+      R_RenderView();
+      clState.cl_numvisedicts = 0;
+
+      const vrect = r_refdef.vrect;
+      const out = new Uint8Array(vrect.width * vrect.height);
+      for (let row = 0; row < vrect.height; row++) {
+        const src = (vrect.y + row) * vid.rowbytes + vrect.x;
+        out.set(buffer.subarray(src, src + vrect.width), row * vrect.width);
+      }
+      return out;
+    }
+
+    function centroidX(pixels: Uint8Array, width: number, height: number, background: number): number | null {
+      let sum = 0;
+      let count = 0;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          if (pixels[y * width + x] === background) continue;
+          sum += x;
+          count++;
+        }
+      }
+      return count > 0 ? sum / count : null;
+    }
+
+    // frame 0: establishes ent.previouspose/currentpose at frame 0's own
+    // pose number, with nothing yet to lerp from (matches R_AliasSetupFrame's
+    // own "first time this entity is seen" cold start).
+    const p0 = render(0, 0);
+    // frame 1 at the SAME instant the pose changes: blend 0 -- the pose
+    // lerp has just started, so this still reads as frame 0's own position.
+    const pStart = render(1, 0);
+    // halfway through the 0.1s ALIAS_SINGLE lerptime.
+    const pMid = render(1, 0.05);
+    // lerp finished: blend 1, frame 1's own position.
+    const pEnd = render(1, 0.1);
+
+    const w = r_refdef.vrect.width;
+    const h = r_refdef.vrect.height;
+    const xStart = centroidX(pStart, w, h, CLEARCOLOR);
+    const xMid = centroidX(pMid, w, h, CLEARCOLOR);
+    const xEnd = centroidX(pEnd, w, h, CLEARCOLOR);
+
+    expect(xStart).not.toBeNull();
+    expect(xMid).not.toBeNull();
+    expect(xEnd).not.toBeNull();
+    if (xStart === null || xMid === null || xEnd === null) return;
+
+    // frame 0 and the pose-change instant (blend 0) read at the same
+    // position: nothing has visibly moved yet.
+    const p0X = centroidX(p0, w, h, CLEARCOLOR);
+    expect(p0X).not.toBeNull();
+    if (p0X !== null) expect(xStart).toBeCloseTo(p0X, 0);
+
+    // the 80-unit Y translation must actually be visible on screen, and the
+    // midpoint blend must land strictly between the two endpoints.
+    expect(Math.abs(xEnd - xStart)).toBeGreaterThan(1);
+    const lo = Math.min(xStart, xEnd);
+    const hi = Math.max(xStart, xEnd);
+    expect(xMid).toBeGreaterThan(lo + 0.5);
+    expect(xMid).toBeLessThan(hi - 0.5);
   });
 });
 

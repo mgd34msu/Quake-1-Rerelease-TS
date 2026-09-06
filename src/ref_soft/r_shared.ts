@@ -72,7 +72,7 @@ Deviations from PORTING.md / the C source:
 import { type Vec3, vec3 } from "../common/mathlib";
 import type { MedgeT, MsurfaceT, MvertexT } from "../common/model";
 import type { EntityT } from "../client/render";
-import { r_origin, r_refdef, vpn, vright, vup } from "../client/render";
+import { LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, LERP_RESETANIM2, LERP_RESETMOVE, r_lerpmodels, r_lerpmove, r_origin, r_refdef, vpn, vright, vup } from "../client/render";
 import { r_avertexnormals } from "../client/r_part";
 import { CYCLE } from "./d_iface";
 import { FinalvertT, allocFinalverts } from "./d_iface";
@@ -86,6 +86,13 @@ import type { MnodeT, MleafT } from "../common/model";
 
 export { r_origin, r_refdef, vpn, vright, vup };
 export { r_avertexnormals };
+// U39 addition: r_lerpmodels/r_lerpmove and the LERP_* entity flags are the
+// GL renderer's own U16 additions (src/client/render.ts's header note --
+// declared there, not in gl_rmain.ts, specifically so a second renderer
+// could read them without depending on GL), re-exported here the same way
+// r_origin/vpn/vright/vup above are, for r_alias.ts's own pose/move lerp
+// (mirroring gl_rmain.ts's R_SetupAliasFrame/R_SetupEntityTransform).
+export { LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, LERP_RESETANIM2, LERP_RESETMOVE, r_lerpmodels, r_lerpmove };
 // finalvert_t is declared in d_iface.h; r_shared.h's ALIAS_*_CLIP flags are
 // its `flags` bits, so it is re-exported here alongside them.
 export { FinalvertT, allocFinalverts };

@@ -111,6 +111,9 @@ import {
   allocAuxverts,
   allocFinalverts,
   modelorg,
+  // U39: read-only, matches r_alias.ts's own use of it -- see that file's
+  // header note on why it lives in src/client/render.ts.
+  r_lerpmodels,
   r_plightvec,
   r_refdef,
   rState,
@@ -121,7 +124,7 @@ import {
 import { r_affinetridesc } from "./d_iface";
 import { D_PolysetDraw, D_PolysetDrawFinalVerts, D_PolysetUpdateTables } from "./d_polyse";
 import { R_AliasClipTriangle } from "./r_aclip";
-import { R_AliasProjectFinalVert, aliastransform } from "./r_alias";
+import { R_AliasProjectFinalVert, aliasPoseFrame, aliastransform, r_aliasblend } from "./r_alias";
 
 // Ironwail's own name and default ("1" -- enabled), per this unit's brief.
 export { r_enhancedmodels }; // lives in src/common/render_cvars.ts, shared with the GL renderer
@@ -267,16 +270,47 @@ export function attachMd5ReplacementIfAny(mod: ModelT, header: AliashdrT, mdl: M
 //============================================================================
 // frame selection
 
-function md5FrameForEntity(mdlNumFrames: number, md5NumFrames: number, ent: EntityT): number {
+// U39 addition, no WinQuake counterpart (MD5 itself has none -- see this
+// file's own header): the two frames + blend fraction R_MD5DrawModel hands
+// buildFramePose, mirroring r_alias.c's own pose lerp (r_alias.ts's
+// R_AliasSetupFrame) for the "equal frame count" case, and a small
+// real-time-driven lerp of its own for the ST_FRAMETIME pickup case (which
+// has no .mdl-side pose-change event to hang a lerp off of at all).
+interface Md5FrameBlendT {
+  prevFrame: number;
+  frame: number;
+  blend: number;
+}
+
+function md5FrameBlendForEntity(mdlNumFrames: number, md5NumFrames: number, ent: EntityT): Md5FrameBlendT {
   if (mdlNumFrames === md5NumFrames) {
     let frame = ent.frame;
     if (frame < 0 || frame >= md5NumFrames) frame = 0;
-    return frame;
+
+    // Reuses r_alias.ts's own pose-change/blend bookkeeping (already run
+    // this draw by R_AliasSetupFrame, unconditionally, before this file's
+    // caller ever checks for an MD5 payload) instead of a second timer:
+    // ent.frame maps 1:1 onto both the .mdl frame number AND the md5anim
+    // frame index in this branch (this file's own header, mapping rule 3's
+    // "equal" case), so the .mdl's own previouspose/currentpose/blend ARE
+    // the md5 frame lerp, once previouspose is decoded back to a plain
+    // frame number.
+    if (!r_lerpmodels.value) return { prevFrame: frame, frame, blend: 1 };
+    const prevFrame = aliasPoseFrame(ent.previouspose);
+    return { prevFrame: prevFrame < 0 || prevFrame >= md5NumFrames ? frame : prevFrame, frame, blend: r_aliasblend };
   }
 
-  // ST_FRAMETIME pickups -- see this file's header.
+  // ST_FRAMETIME pickups -- see this file's header. cl.time-driven cycling,
+  // blended between the two integer frames straddling the current time
+  // (this port's own choice, same shape as r_alias.c's own ALIAS_GROUP
+  // interpolation) rather than snapping, unless r_lerpmodels is off.
   const t = cl.time + ent.syncbase;
-  return Math.floor(t * PICKUP_FRAME_HZ) % md5NumFrames;
+  const raw = t * PICKUP_FRAME_HZ;
+  const flo = Math.floor(raw);
+  const frame = ((flo % md5NumFrames) + md5NumFrames) % md5NumFrames;
+  if (!r_lerpmodels.value) return { prevFrame: frame, frame, blend: 1 };
+  const prevFrame = (((flo - 1) % md5NumFrames) + md5NumFrames) % md5NumFrames;
+  return { prevFrame, frame, blend: raw - flo };
 }
 
 //============================================================================
@@ -504,8 +538,13 @@ export function R_MD5DrawModel(payload: Md5SoftAliasT, plighting: AlightT): void
 
   R_AliasSetUpTransformMd5(ent.trivial_accept);
 
-  const frame = md5FrameForEntity(mdl.numframes, payload.model.numFrames, ent);
-  buildFramePose(payload.model, frame, frame, 1, 0, payload.jointPose);
+  // U39: the two poses + blend, mirroring r_alias.c's own pose lerp -- see
+  // md5FrameBlendForEntity's own header note. backlerp weights prevFrame,
+  // frontlerp weights frame, matching buildFramePose's own naming
+  // (src/lib/md5_model.ts); blend === 1 (no lerp) collapses prevFrame ===
+  // frame, taking buildFramePose's same-frame fast path unchanged.
+  const { prevFrame, frame, blend } = md5FrameBlendForEntity(mdl.numframes, payload.model.numFrames, ent);
+  buildFramePose(payload.model, prevFrame, frame, 1 - blend, blend, payload.jointPose);
 
   for (let m = 0; m < payload.model.meshes.length; m++) {
     drawMd5Mesh(payload.model.meshes[m], m, payload, ent, skin);
