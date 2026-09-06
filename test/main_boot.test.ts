@@ -116,7 +116,7 @@ describe("Sys_Main_Init + runFrames -- a real dedicated boot", () => {
     const fixture = buildDedicatedFixture("main-boot-map-");
     builtFixtures.push(fixture);
 
-    bootDedicated(["q1ts", "-dedicated", "1", "-basedir", fixture.baseDir, "+map", "world"]);
+    bootDedicated(["q1ts", "-dedicated", "1", "-port", "26997", "-basedir", fixture.baseDir, "+map", "world"]);
 
     expect(host.initialized).toBe(true);
     expect(sysState.isDedicated).toBe(true);
@@ -149,7 +149,7 @@ describe("Sys_Main_Init + runFrames -- a real dedicated boot", () => {
     const fixture = buildDedicatedFixture("main-boot-nostdout-");
     builtFixtures.push(fixture);
 
-    bootDedicated(["q1ts", "-nostdout", "-dedicated", "1", "-basedir", fixture.baseDir]);
+    bootDedicated(["q1ts", "-nostdout", "-dedicated", "1", "-port", "26997", "-basedir", fixture.baseDir]);
 
     expect(sysState.nostdout).toBe(1);
 
@@ -172,7 +172,7 @@ describe("the sound and CD backends src/main.ts links", () => {
     const fixture = buildDedicatedFixture("main-boot-snd-");
     builtFixtures.push(fixture);
 
-    bootDedicated(["q1ts", "-dedicated", "1", "-nosound", "-basedir", fixture.baseDir]);
+    bootDedicated(["q1ts", "-dedicated", "1", "-port", "26997", "-nosound", "-basedir", fixture.baseDir]);
 
     expect(host.initialized).toBe(true);
     expect(sndDma.current).not.toBeNull();
