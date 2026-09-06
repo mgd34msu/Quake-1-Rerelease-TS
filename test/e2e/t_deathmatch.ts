@@ -43,19 +43,14 @@ import {
 } from "./t_lib";
 
 /*
-KNOWN BLOCKER on a single host: two NetQuake clients from the SAME IP address
-cannot both hold a slot on one server. net_dgrm.ts's
-_Datagram_CheckNewConnections walks the active sockets and treats
-`AddrCompare(clientaddr, s.addr) >= 0` as "somebody coming back in from a
-crash/disconnect", closing the incumbent -- and net_udp.ts's UDP_AddrCompare
-returns 1 (not -1) when the ADDRESS matches and only the PORT differs, which
-is exactly two clients on 127.0.0.1. UDP_OpenSocket binds INADDR_ANY, and
-`-ip` only changes the address the engine reports for itself, so the two
-clients cannot be given distinct source addresses either. The server log shows
-"NET_GetMessage: disconnected socket / SV_ReadClientMessage: NET_GetMessage
-failed / Client <first> removed" immediately before the second player enters.
-The assertions below are the behaviour the charter asks for and stay red until
-that comparison stops matching two different clients; see this unit's report.
+Same-address clients: until F19 (2026-09-06) two NetQuake clients from the
+SAME IP address could not both hold a slot -- _Datagram_CheckNewConnections
+treated a same-host/different-port request as the first player coming back
+from a crash and closed the incumbent. A second player on one machine now
+gets its own slot; the identical address:port keeps WinQuake's reconnect
+handling. The clients here are still started one at a time (harmless);
+whether two connects landing in the same instant both survive signon is a
+separate, untested question.
 */
 
 const mode = argValue("mode", "dm");
@@ -94,13 +89,7 @@ check(
 check("server ruleset matches the content tree", serverRuleset(readLog(sv)) === c.ruleset, `expected ${c.ruleset}, got ${serverRuleset(readLog(sv)) ?? "nothing"}`);
 
 /*
-The two clients are started one at a time, not together. Two NetQuake clients
-whose CCREQ_CONNECT lands on the server in the same instant do not both make
-it through the signon here -- the first is dropped with "NET_GetMessage:
-disconnected socket / SV_ReadClientMessage: NET_GetMessage failed / Client
-unconnected removed" while the second joins normally (see this unit's report).
-Staggering them is a harness workaround, not a claim that simultaneous
-connects are supposed to fail.
+The two clients are started one at a time; see the same-address note above.
 */
 const clA = startPolledClient(`t_dm_${slug}_a`, `e2e_t_${slug}_a`, [...baseArgs(c, `e2e_t_${slug}_a`), "-port", port], [
   "cl_shownet 0",
