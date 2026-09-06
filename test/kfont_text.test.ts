@@ -1,0 +1,453 @@
+// Force headless SDL before ANY import can reach the FFI layer (the GL
+// section below installs a real QGLRecording, matching test/ref_gl_draw.test.ts's
+// own precedent).
+process.env.SDL_VIDEODRIVER = "dummy";
+process.env.SDL_AUDIODRIVER = "dummy";
+Bun.env.SDL_VIDEODRIVER = "dummy";
+Bun.env.SDL_AUDIODRIVER = "dummy";
+
+/*
+Self-sufficient tests for U19's src/client/kfont_text.ts: the glyph provider
+(classic/kfont/ttf resolution via `con_font`/`scr_usekfont`), Text_Width/
+Text_Draw, and CL_LocalizeKey.
+
+Two fixture tiers, per the unit brief:
+- A synthetic fonts/qfont.kfont + fonts/qfont.png built by this file (no
+  game data), covering glyph parsing, width computation, UTF-8/codepoint
+  mapping and fallback, and con_font switching. Text_Draw is observed
+  through a spy on src/ref_soft/draw.ts's own Draw_GlyphAtlas (isGL: false
+  in the fake Renderer below), never a `mock.module` (standing order 15).
+- A guarded real-data section against the retail QuakeEX.kpf
+  (test/fs_rerelease.test.ts's own Q1TS_REAL_DATA/COM_InitArgv+
+  COM_InitFilesystem recipe), proving the real fonts/qfont.kfont's ASCII
+  glyphs resolve and that Text_Draw emits one real GL atlas quad per
+  character through a QGLRecording fake (test/ref_gl_draw.test.ts's own
+  vid/glState/qgl fixture recipe).
+
+Per standing order 13: every shared singleton this file mutates (vid.width/
+height, glState, qglHolder.current, re.current, com_searchpaths/com_gamedir,
+the kfont_text.ts cvars) is saved before and restored in afterAll.
+*/
+
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { deflateSync } from "node:zlib";
+
+import { COM_AddGameDirectory, COM_InitArgv, COM_InitFilesystem, com_gamedir, com_searchpaths, setComGamedir, setComSearchpaths } from "../src/common/common";
+import { re, type Renderer } from "../src/client/render";
+import { TextureT } from "../src/common/model";
+import { vid } from "../src/client/vid";
+import { glState } from "../src/ref_gl/glquake";
+import { GL_QUADS, GL_TEXTURE_2D, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
+import * as softDrawModule from "../src/ref_soft/draw";
+import {
+  CL_LocalizeKey,
+  con_font,
+  scr_usekfont,
+  Text_Draw,
+  Text_Width,
+  test_ResetClLocCache,
+  test_ResetGlyphCache,
+} from "../src/client/kfont_text";
+
+// ---------------------------------------------------------------------------
+// Fake Renderer -- console.test.ts's own makeFakeRenderer() shape, reused
+// here (self-sufficient per standing order 13, so re-declared rather than
+// imported from another test file) with an `isGL` toggle: kfont_text.ts's
+// Text_Draw dispatches to src/ref_soft/draw.ts or src/ref_gl/gl_draw.ts
+// based on exactly this flag.
+// ---------------------------------------------------------------------------
+function makeFakeRenderer(isGL: boolean): { renderer: Renderer; draws: Array<{ x: number; y: number; num: number }> } {
+  const draws: Array<{ x: number; y: number; num: number }> = [];
+  const renderer: Renderer = {
+    modelHooks: {
+      notexture: new TextureT(),
+      textureLoaded: () => {},
+      Mod_LoadLighting: () => {},
+      Mod_LoadAliasModel: () => {},
+      Mod_LoadSpriteModel: () => {},
+    },
+    R_Init: () => {},
+    R_InitTextures: () => {},
+    R_InitEfrags: () => {},
+    R_RenderView: () => {},
+    R_ViewChanged: () => {},
+    R_InitSky: () => {},
+    R_AddEfrags: () => {},
+    R_RemoveEfrags: () => {},
+    R_NewMap: () => {},
+    R_PushDlights: () => {},
+    r_cache_thrash: false,
+    D_SurfaceCacheForRes: () => 0,
+    D_FlushCaches: () => {},
+    D_DeleteSurfaceCache: () => {},
+    D_InitCaches: () => {},
+    R_SetVrect: () => {},
+    draw_disc: null,
+    Draw_Init: () => {},
+    Draw_Character: (x: number, y: number, num: number) => {
+      draws.push({ x, y, num });
+    },
+    Draw_DebugChar: () => {},
+    Draw_Pic: () => {},
+    Draw_TransPic: () => {},
+    Draw_TransPicTranslate: () => {},
+    Draw_ConsoleBackground: () => {},
+    Draw_BeginDisc: () => {},
+    Draw_EndDisc: () => {},
+    Draw_TileClear: () => {},
+    Draw_Fill: () => {},
+    Draw_FadeScreen: () => {},
+    Draw_String: () => {},
+    Draw_PicFromWad: () => null,
+    Draw_CachePic: () => null,
+    D_StartParticles: () => {},
+    D_DrawParticle: () => {},
+    D_EndParticles: () => {},
+    V_CalcBlend: () => {},
+    V_UpdatePalette: () => {},
+    V_DrawCrosshair: () => {},
+    R_TranslatePlayerSkin: () => {},
+    SCR_CalcRefdef: () => {},
+    BeginFrame: () => {},
+    EndFrame: () => {},
+    D_EnableBackBufferAccess: () => {},
+    D_DisableBackBufferAccess: () => {},
+    D_UpdateRects: () => {},
+    GL_Set2D: () => {},
+    SCR_TileClear: () => {},
+    SCR_SoftwareTileClear: () => {},
+    SCR_DrawCrosshair: () => {},
+    Draw_SubPic: () => {},
+    Draw_Alt_String: () => {},
+    isGL,
+    SCR_ScreenShot_f: () => {},
+  };
+  return { renderer, draws };
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic fonts/qfont.kfont + fonts/qfont.png fixture.
+// ---------------------------------------------------------------------------
+
+// Glyph rects (x, y, w, h) inside a 32x8 RGBA atlas -- 'A'/'B'/'?' are 8px
+// wide, space is a distinct 4px width (proves Text_Width reads REAL
+// per-glyph advances, not a fixed classic 8px assumption).
+const GLYPH_A = { x: 0, y: 0, w: 8, h: 8 };
+const GLYPH_B = { x: 8, y: 0, w: 8, h: 8 };
+const GLYPH_QMARK = { x: 16, y: 0, w: 8, h: 8 };
+const GLYPH_SPACE = { x: 24, y: 0, w: 4, h: 8 };
+const ATLAS_W = 32;
+const ATLAS_H = 8;
+
+function buildFixtureKfontText(): string {
+  return [
+    'texture "fonts/qfont.png"',
+    "unicode",
+    "mapchar",
+    "{",
+    `\t${"A".charCodeAt(0)} ${GLYPH_A.x} ${GLYPH_A.y} ${GLYPH_A.w} ${GLYPH_A.h} 0`,
+    `\t${"B".charCodeAt(0)} ${GLYPH_B.x} ${GLYPH_B.y} ${GLYPH_B.w} ${GLYPH_B.h} 0`,
+    `\t${"?".charCodeAt(0)} ${GLYPH_QMARK.x} ${GLYPH_QMARK.y} ${GLYPH_QMARK.w} ${GLYPH_QMARK.h} 0`,
+    `\t32 ${GLYPH_SPACE.x} ${GLYPH_SPACE.y} ${GLYPH_SPACE.w} ${GLYPH_SPACE.h} 0`,
+    "}",
+    "",
+  ].join("\n");
+}
+
+// A hand-built colortype-6 (RGBA8) PNG, matching test/lib_png.test.ts's own
+// buildPng recipe (this file's own copy, per standing order 13's
+// self-sufficiency rule) -- every pixel inside the four glyph rects above is
+// opaque white; everything else is fully transparent.
+function buildFixtureAtlasPng(): Uint8Array {
+  const SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+  function chunk(type: string, data: Uint8Array): Uint8Array {
+    const out = new Uint8Array(8 + data.length + 4);
+    const view = new DataView(out.buffer);
+    view.setUint32(0, data.length, false);
+    for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+    out.set(data, 8);
+    return out;
+  }
+  function concat(parts: Uint8Array[]): Uint8Array {
+    const total = parts.reduce((s, p) => s + p.length, 0);
+    const out = new Uint8Array(total);
+    let o = 0;
+    for (const p of parts) {
+      out.set(p, o);
+      o += p.length;
+    }
+    return out;
+  }
+
+  const inGlyph = (x: number, y: number): boolean =>
+    [GLYPH_A, GLYPH_B, GLYPH_QMARK, GLYPH_SPACE].some((g) => x >= g.x && x < g.x + g.w && y >= g.y && y < g.y + g.h);
+
+  const rowBytes = ATLAS_W * 4;
+  const raw = new Uint8Array((rowBytes + 1) * ATLAS_H);
+  let o = 0;
+  for (let y = 0; y < ATLAS_H; y++) {
+    raw[o++] = 0; // filter: None
+    for (let x = 0; x < ATLAS_W; x++) {
+      const opaque = inGlyph(x, y);
+      raw[o++] = 255;
+      raw[o++] = 255;
+      raw[o++] = 255;
+      raw[o++] = opaque ? 255 : 0;
+    }
+  }
+  const compressed = new Uint8Array(deflateSync(raw));
+
+  const ihdr = new Uint8Array(13);
+  const iv = new DataView(ihdr.buffer);
+  iv.setUint32(0, ATLAS_W, false);
+  iv.setUint32(4, ATLAS_H, false);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 6; // color type: RGBA
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0; // no interlace
+
+  return concat([new Uint8Array(SIGNATURE), chunk("IHDR", ihdr), chunk("IDAT", compressed), chunk("IEND", new Uint8Array(0))]);
+}
+
+const scratchRoot = process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests";
+mkdirSync(scratchRoot, { recursive: true });
+const scratchDir = mkdtempSync(join(scratchRoot, "kfont-text-test-"));
+
+const savedSearchpaths = com_searchpaths;
+const savedGamedir = com_gamedir;
+const savedConFont = con_font.string;
+const savedUsekfont = scr_usekfont.value;
+
+beforeAll(() => {
+  mkdirSync(join(scratchDir, "fonts"), { recursive: true });
+  writeFileSync(join(scratchDir, "fonts", "qfont.kfont"), buildFixtureKfontText(), "latin1");
+  writeFileSync(join(scratchDir, "fonts", "qfont.png"), buildFixtureAtlasPng());
+  COM_AddGameDirectory(scratchDir);
+});
+
+afterAll(() => {
+  setComSearchpaths(savedSearchpaths);
+  setComGamedir(savedGamedir);
+  con_font.string = savedConFont;
+  con_font.value = 0;
+  scr_usekfont.value = savedUsekfont;
+  scr_usekfont.string = String(savedUsekfont);
+});
+
+beforeEach(() => {
+  re.current = null;
+  test_ResetGlyphCache();
+  test_ResetClLocCache();
+});
+
+describe("kfont_text.ts -- con_font/scr_usekfont resolution", () => {
+  test("scr_usekfont=0 (the default) falls back to classic regardless of con_font", () => {
+    scr_usekfont.value = 0;
+    con_font.string = "kfont";
+    const { renderer, draws } = makeFakeRenderer(false);
+    re.current = renderer;
+
+    Text_Draw(0, 0, "AB");
+    expect(draws.map((d) => d.num)).toEqual(["A".charCodeAt(0), "B".charCodeAt(0)]);
+  });
+
+  test("con_font=classic forces classic even when scr_usekfont=1", () => {
+    scr_usekfont.value = 1;
+    con_font.string = "classic";
+    const { renderer, draws } = makeFakeRenderer(false);
+    re.current = renderer;
+
+    Text_Draw(0, 0, "A");
+    expect(draws).toEqual([{ x: 0, y: 0, num: "A".charCodeAt(0) }]);
+  });
+
+  test("con_font=ttf:<missing-file> falls back to classic (no such fonts/*.ttf/.otf on this search path)", () => {
+    scr_usekfont.value = 1;
+    con_font.string = "ttf:does-not-exist";
+    const { renderer, draws } = makeFakeRenderer(false);
+    re.current = renderer;
+
+    Text_Draw(0, 0, "A");
+    expect(draws).toEqual([{ x: 0, y: 0, num: "A".charCodeAt(0) }]);
+  });
+
+  test("scr_usekfont=1, con_font=kfont resolves the synthetic fonts/qfont.kfont atlas (routes through Draw_GlyphAtlas, not Draw_Character)", () => {
+    scr_usekfont.value = 1;
+    con_font.string = "kfont";
+    const { renderer, draws } = makeFakeRenderer(false);
+    re.current = renderer;
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      Text_Draw(0, 0, "A");
+      expect(draws).toEqual([]); // classic Draw_Character path NOT taken
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("kfont_text.ts -- Text_Width (synthetic kfont atlas)", () => {
+  beforeEach(() => {
+    scr_usekfont.value = 1;
+    con_font.string = "kfont";
+  });
+
+  test("sums real per-glyph advances, not a fixed 8px classic assumption", () => {
+    expect(Text_Width("AB")).toBe(GLYPH_A.w + GLYPH_B.w); // 16
+    expect(Text_Width("A B")).toBe(GLYPH_A.w + GLYPH_SPACE.w + GLYPH_B.w); // 8 + 4 + 8 = 20
+  });
+
+  test("scale multiplies every glyph's advance", () => {
+    expect(Text_Width("AB", 2)).toBe((GLYPH_A.w + GLYPH_B.w) * 2);
+  });
+
+  test("an unmapped codepoint (UTF-8/accented text the fixture atlas has no glyph for) falls back to '?'", () => {
+    // U+00F6 (ö, 'ö') -- kfont.ts's own KFONT_ASCII_MIN/MAX (32-126)
+    // bound means any codepoint above 126 can never resolve through
+    // SCR_KFontLookup regardless of what the real fonts/qfont.kfont
+    // contains (see this unit's report); this fixture doesn't even try to
+    // map it, so the fallback exercised here is the general "glyph() found
+    // nothing" path, not that specific bound.
+    expect(Text_Width("ö")).toBe(GLYPH_QMARK.w);
+  });
+
+  test("classic (scr_usekfont=0) still assumes a fixed 8px advance per character", () => {
+    scr_usekfont.value = 0;
+    expect(Text_Width("AB")).toBe(16);
+    expect(Text_Width("AB", 2)).toBe(32);
+  });
+});
+
+describe("kfont_text.ts -- Text_Draw glyph rects (synthetic kfont atlas, software dispatch)", () => {
+  beforeEach(() => {
+    scr_usekfont.value = 1;
+    con_font.string = "kfont";
+    re.current = makeFakeRenderer(false).renderer;
+  });
+
+  test("one Draw_GlyphAtlas call per resolvable character, with the fixture's exact src rect and a real-pixel dst rect", () => {
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      Text_Draw(10, 20, "AB");
+      expect(spy).toHaveBeenCalledTimes(2);
+
+      const [dstX1, dstY1, dstW1, dstH1, source1, srcX1, srcY1, srcW1, srcH1, tint1] = spy.mock.calls[0]!;
+      expect([dstX1, dstY1, dstW1, dstH1]).toEqual([10, 20, GLYPH_A.w, GLYPH_A.h]);
+      expect(source1).toMatchObject({ kind: "custom", width: ATLAS_W, height: ATLAS_H });
+      expect([srcX1, srcY1, srcW1, srcH1]).toEqual([GLYPH_A.x, GLYPH_A.y, GLYPH_A.w, GLYPH_A.h]);
+      expect(tint1).toBeNull();
+
+      // second glyph starts where the first one's advance ended (x=10+8=18)
+      const [dstX2] = spy.mock.calls[1]!;
+      expect(dstX2).toBe(10 + GLYPH_A.w);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("alt requests a golden tint under kfont (no baked alt charset region to select instead)", () => {
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      Text_Draw(0, 0, "A", true);
+      const tint = spy.mock.calls[0]![9];
+      expect(tint).not.toBeNull();
+      expect(Array.isArray(tint)).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("scale multiplies the destination rect but not the source rect", () => {
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      Text_Draw(0, 0, "A", false, 3);
+      const [dstX, dstY, dstW, dstH, , srcX, srcY, srcW, srcH] = spy.mock.calls[0]!;
+      expect([dstX, dstY, dstW, dstH]).toEqual([0, 0, GLYPH_A.w * 3, GLYPH_A.h * 3]);
+      expect([srcX, srcY, srcW, srcH]).toEqual([GLYPH_A.x, GLYPH_A.y, GLYPH_A.w, GLYPH_A.h]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
+describe("kfont_text.ts -- CL_LocalizeKey", () => {
+  test("a string not starting with '$' is returned unchanged", () => {
+    expect(CL_LocalizeKey("plain text")).toBe("plain text");
+    expect(CL_LocalizeKey("")).toBe("");
+  });
+
+  test("a '$key' with no loc table reachable (no localization/loc_*.txt on this search path) falls back to the key text without its leading '$'", () => {
+    expect(CL_LocalizeKey("$some_unknown_key")).toBe("some_unknown_key");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Guarded real-data section: the retail Q1 install (classic + nested
+// rerelease/, QuakeEX.kpf mounted) this repo's tests share.
+// test/fs_rerelease.test.ts's own COM_InitArgv/COM_InitFilesystem recipe.
+// ---------------------------------------------------------------------------
+
+const REAL_Q1_DIR = process.env.Q1TS_REAL_DATA ?? "/home/buzzkill/Projects/qfiles/q1";
+const HAVE_REAL_Q1 = existsSync(join(REAL_Q1_DIR, "id1")) && existsSync(join(REAL_Q1_DIR, "rerelease"));
+
+describe.skipIf(!HAVE_REAL_Q1)("kfont_text.ts -- real QuakeEX.kpf fonts/qfont.kfont (guarded)", () => {
+  const savedWidth = vid.width;
+  const savedHeight = vid.height;
+  const glStateDefaults = { ...glState };
+  const savedQgl = qglHolder.current;
+  let rec = new QGLRecording();
+
+  beforeAll(() => {
+    COM_InitArgv(["q1ts", "-basedir", REAL_Q1_DIR]);
+    COM_InitFilesystem();
+
+    vid.width = 320;
+    vid.height = 200;
+    Object.assign(glState, glStateDefaults);
+    glState.texture_extension_number = 1;
+    glState.currenttexture = -1;
+
+    rec = new QGLRecording();
+    SetQGL(rec);
+
+    re.current = makeFakeRenderer(true).renderer;
+    scr_usekfont.value = 1;
+    con_font.string = "kfont";
+    test_ResetGlyphCache();
+  });
+
+  afterAll(() => {
+    vid.width = savedWidth;
+    vid.height = savedHeight;
+    Object.assign(glState, glStateDefaults);
+    SetQGL(savedQgl);
+  });
+
+  // The file-level beforeEach (above) unconditionally nulls re.current for
+  // every other describe block's isolation; re-installed here so it survives
+  // into this block's own tests.
+  beforeEach(() => {
+    re.current = makeFakeRenderer(true).renderer;
+  });
+
+  test("fonts/qfont.kfont's real ASCII glyph metrics resolve through Text_Width (codepoint 56 '8' is 22px wide, spot-checked against the extracted file)", () => {
+    expect(Text_Width("8")).toBe(22);
+  });
+
+  test("Text_Draw emits one real GL atlas quad (qglBegin(GL_QUADS)...qglEnd()) per character", () => {
+    rec.calls.length = 0;
+    Text_Draw(0, 0, "AB");
+
+    const quadStarts = rec.calls.filter((c) => c.name === "qglBegin" && c.args[0] === GL_QUADS);
+    const quadEnds = rec.calls.filter((c) => c.name === "qglEnd");
+    expect(quadStarts.length).toBe(2);
+    expect(quadEnds.length).toBe(2);
+
+    const binds = rec.calls.filter((c) => c.name === "qglBindTexture" && c.args[0] === GL_TEXTURE_2D);
+    expect(binds.length).toBeGreaterThanOrEqual(1); // the atlas texture, registered once and reused
+  });
+});

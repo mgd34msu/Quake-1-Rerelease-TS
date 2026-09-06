@@ -154,6 +154,9 @@ import { scrState, scr_vrect } from "./screen_types";
 import { S_ClearBuffer, S_StopAllSounds } from "./snd_dma";
 import { V_RenderView, V_UpdatePalette, lcd_x } from "./view";
 import { VrectT, vid, vidBackend } from "./vid";
+// U19: a plain static import is safe here -- kfont_text.ts never statically
+// imports this file back (see that file's header).
+import { CL_LocalizeKey, KfontText_RegisterCvars, Text_Draw, Text_Width } from "./kfont_text";
 
 let oldscreensize = 0;
 let oldfov = 0;
@@ -209,14 +212,19 @@ for a few moments
 ==============
 */
 export function SCR_CenterPrint(str: string): void {
-  scr_centerstring = str.slice(0, 1023); // strncpy (..., sizeof(scr_centerstring)-1)
+  // U19: svc_centerprint's text can arrive as a raw "$key" without having
+  // gone through the server's own QEX_VarString/Loc_Localize pass -- see
+  // kfont_text.ts's CL_LocalizeKey doc comment. A no-op for anything not
+  // starting with '$' (every classic-ruleset centerprint).
+  const localized = CL_LocalizeKey(str);
+  scr_centerstring = localized.slice(0, 1023); // strncpy (..., sizeof(scr_centerstring)-1)
   scr_centertime_off = scr_centertime.value;
   scr_centertime_start = cl.time;
 
   // count the number of lines for centering
   scr_center_lines = 1;
-  for (let i = 0; i < str.length; i++) {
-    if (str.charCodeAt(i) === 10) scr_center_lines++;
+  for (let i = 0; i < localized.length; i++) {
+    if (localized.charCodeAt(i) === 10) scr_center_lines++;
   }
 }
 
@@ -251,17 +259,24 @@ export function SCR_DrawCenterString(): void {
   if (scr_center_lines <= 4) y = (vid.height * 0.35) | 0;
   else y = 48;
 
-  const re = getRenderer();
-
+  // U19: routed through kfont_text.ts's Text_Draw/Text_Width (con_font's
+  // classic/kfont/ttf choice applies here too), still character-by-character
+  // so the intermission "typewriter" `remaining` budget decrements exactly
+  // as before. Unscaled (scale 1) -- centerprint uses QuakeSpasm's own
+  // CANVAS_MENU (`scr_menuscale`), and menu.ts's canvas is out of this
+  // unit's SCOPE; see this unit's report.
   for (;;) {
     // scan the width of the line
     for (l = 0; l < 40; l++) {
       const c = strAt(scr_centerstring, start + l);
       if (c === 10 || c === 0) break;
     }
-    x = ((vid.width - l * 8) / 2) | 0;
-    for (let j = 0; j < l; j++, x += 8) {
-      re.Draw_Character(x, y, strAt(scr_centerstring, start + j));
+    const line = scr_centerstring.slice(start, start + l);
+    x = ((vid.width - Text_Width(line)) / 2) | 0;
+    for (let j = 0; j < l; j++) {
+      const ch = String.fromCharCode(strAt(scr_centerstring, start + j));
+      Text_Draw(x, y, ch, false, 1);
+      x += Text_Width(ch);
       if (remaining-- === 0) return;
     }
 
@@ -297,14 +312,16 @@ export function SCR_DrawPrompt(): void {
   }
   if (lines.length === 0) return;
 
-  const re = getRenderer();
+  // U19: routed through kfont_text.ts's Text_Draw/Text_Width, unscaled --
+  // see SCR_DrawCenterString's own note on why the prompt overlay stays
+  // scale 1 in this unit.
   let y = ((vid.height - lines.length * 8) / 2) | 0;
   if (y < 0) y = 0;
 
   for (const line of lines) {
-    const width = Math.min(line.length, 40);
-    let x = ((vid.width - width * 8) / 2) | 0;
-    for (let j = 0; j < width; j++, x += 8) re.Draw_Character(x, y, line.charCodeAt(j));
+    const truncated = line.slice(0, 40);
+    const x = ((vid.width - Text_Width(truncated)) / 2) | 0;
+    Text_Draw(x, y, truncated, false, 1);
     y += 8;
   }
 }
@@ -383,6 +400,7 @@ export function SCR_Init(): void {
   Cvar_RegisterVariable(scr_showpause);
   Cvar_RegisterVariable(scr_centertime);
   Cvar_RegisterVariable(scr_printspeed);
+  KfontText_RegisterCvars(); // U19: scr_usekfont, con_font, scr_conscale, scr_sbarscale, scr_crosshairscale
 
   //
   // register our commands
@@ -610,16 +628,18 @@ export function SCR_DrawNotifyString(): void {
 
   y = (vid.height * 0.35) | 0;
 
-  const re = getRenderer();
-
+  // U19: routed through kfont_text.ts's Text_Draw/Text_Width, unscaled --
+  // see SCR_DrawCenterString's own note on why this modal-message overlay
+  // stays scale 1 in this unit.
   for (;;) {
     // scan the width of the line
     for (l = 0; l < 40; l++) {
       const c = strAt(scr_notifystring, start + l);
       if (c === 10 || c === 0) break;
     }
-    x = ((vid.width - l * 8) / 2) | 0;
-    for (let j = 0; j < l; j++, x += 8) re.Draw_Character(x, y, strAt(scr_notifystring, start + j));
+    const line = scr_notifystring.slice(start, start + l);
+    x = ((vid.width - Text_Width(line)) / 2) | 0;
+    Text_Draw(x, y, line, false, 1);
 
     y += 8;
 

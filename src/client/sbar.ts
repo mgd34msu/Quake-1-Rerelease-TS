@@ -103,6 +103,11 @@ import { GAME_DEATHMATCH } from "../common/protocol";
 import { Cmd_AddCommand } from "../common/cmd";
 import { Com_sprintf } from "../common/sprintf";
 import type { QpicT } from "../common/wad";
+// U19: a plain static import is safe here -- kfont_text.ts never statically
+// imports this file back (its own dispatch to src/ref_gl/gl_draw.ts and
+// src/ref_soft/draw.ts, both of which DO statically import this file, goes
+// through a lazy require() there; see that file's header).
+import { CL_LocalizeKey, SbarScale, Text_Draw, Text_Width } from "./kfont_text";
 
 export const SBAR_HEIGHT = 24;
 
@@ -371,10 +376,17 @@ Draws one solid graphics character
 ================
 */
 export function Sbar_DrawCharacter(x: number, y: number, num: number): void {
-  const r = getRenderer();
-  if (cl.gametype === GAME_DEATHMATCH)
-    r.Draw_Character(x /*+ ((vid.width - 320)>>1) */ + 4, y + vid.height - SBAR_HEIGHT, num);
-  else r.Draw_Character(x + ((vid.width - 320) >> 1) + 4, y + vid.height - SBAR_HEIGHT, num);
+  // U19: routed through kfont_text.ts's Text_Draw and scaled by
+  // `scr_sbarscale` (SbarScale()) around the SAME anchor point
+  // (`(vid.width-320)>>1`/`vid.height-SBAR_HEIGHT`, or (0, that) in
+  // deathmatch) the pre-U19 renderer.Draw_Character call used -- at
+  // SbarScale()'s default (1) this is byte-identical to that formula. See
+  // this unit's report for why the status bar's PIC-based elements
+  // (Sbar_DrawPic/Sbar_DrawTransPic, sb_nums) are NOT scaled by this unit.
+  const s = SbarScale();
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? 0 : (vid.width - 320) >> 1;
+  const anchorY = vid.height - SBAR_HEIGHT;
+  Text_Draw(anchorX + (x + 4) * s, anchorY + y * s, String.fromCharCode(num & 0xff), false, s);
 }
 
 /*
@@ -383,9 +395,11 @@ Sbar_DrawString
 ================
 */
 export function Sbar_DrawString(x: number, y: number, str: string): void {
-  const r = getRenderer();
-  if (cl.gametype === GAME_DEATHMATCH) r.Draw_String(x /*+ ((vid.width - 320)>>1)*/, y + vid.height - SBAR_HEIGHT, str);
-  else r.Draw_String(x + ((vid.width - 320) >> 1), y + vid.height - SBAR_HEIGHT, str);
+  // U19: see Sbar_DrawCharacter's own note just above.
+  const s = SbarScale();
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? 0 : (vid.width - 320) >> 1;
+  const anchorY = vid.height - SBAR_HEIGHT;
+  Text_Draw(anchorX + x * s, anchorY + y * s, str, false, s);
 }
 
 /*
@@ -519,9 +533,16 @@ export function Sbar_SoloScoreboard(): void {
   str = Com_sprintf("Time :%3i:%i%i", minutes, tens, units);
   Sbar_DrawString(184, 4, str);
 
-  // draw level name
-  const l = cl.levelname.length;
-  Sbar_DrawString(232 - l * 4, 12, cl.levelname);
+  // draw level name -- U19: cl.levelname is the signon message straight off
+  // the wire (cl_parse.ts's CL_ParseServerInfo), never localized by the
+  // server for anything OTHER than QuakeC print builtins, so a raw "$key"
+  // level title is resolved here (see kfont_text.ts's CL_LocalizeKey doc
+  // comment). Centered by Text_Width instead of the classic-only `l*4`
+  // (half of the assumed-8px-per-character width) so kfont/ttf's
+  // variable-width glyphs center correctly too; identical at scale 1
+  // classic (Text_Width(s) === s.length*8, so Text_Width(s)/2 === l*4).
+  const levelname = CL_LocalizeKey(cl.levelname);
+  Sbar_DrawString(232 - Text_Width(levelname) / 2, 12, levelname);
 }
 
 /*

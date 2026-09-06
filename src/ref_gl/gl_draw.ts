@@ -216,6 +216,10 @@ import {
   qgl,
 } from "./qgl";
 import { d_15to8table, VID_Is8bit } from "./gl_vid";
+// U19: type-only, erased at compile time -- no runtime import-cycle risk
+// (see src/client/kfont_text.ts's own header for why the runtime call goes
+// through a lazy require() there instead of a static import of this file).
+import type { GlyphAtlasSourceT } from "../client/kfont_text";
 
 // cvar_t gl_nobind = {"gl_nobind", "0"}; etc.
 export const gl_nobind = new CvarT("gl_nobind", "0");
@@ -792,6 +796,96 @@ export function Draw_SubPic(x: number, y: number, pic: QpicT, srcx: number, srcy
   q.qglTexCoord2f(newsl, newth);
   q.qglVertex2f(x, y + height);
   q.qglEnd();
+}
+
+/*
+================
+Draw_GlyphAtlas
+
+U19 addition -- NOT from gl_draw.c. The one new cross-renderer text-drawing
+primitive src/client/kfont_text.ts's Text_Draw dispatches to (see that
+file's header for the Renderer-seam deviation this is, and the proposed
+`interface Renderer` member the coordinator should add in its place).
+`source.kind === "classic"` reuses `char_texture` (already loaded by
+Draw_Init, the same 128x128/8x8-cell layout Draw_Character indexes) --
+kfont_text.ts computes srcX/srcY as `col*8`/`row*8` for that case, so a
+scaled classic-charset draw shares this same primitive instead of a second
+scaling mechanism. `source.kind === "custom"` is an RGBA8 atlas (a decoded
+fonts/qfont.png, or a rasterized TTF atlas from src/lib/ttf.ts's
+buildFontAtlas) registered once per `source.id` via GL_RegisterGlyphAtlas
+below and cached exactly like GL_LoadTexture's own identifier cache.
+`tint`, when non-null, multiplies the glyph's color (kfont_text.ts's own
+golden "alt" approximation for kfont/ttf glyphs, since neither atlas format
+bakes a second golden charset the way conchars does -- see that file's
+ALT_TINT comment); null draws untinted (ordinary white text, or a COLR/CPAL
+color glyph that must not be tinted at all).
+================
+*/
+const glyphAtlasCache = new Map<string, { texnum: number; width: number; height: number }>();
+
+export function GL_RegisterGlyphAtlas(id: string, width: number, height: number, pixels: Uint8Array): number {
+  const cached = glyphAtlasCache.get(id);
+  if (cached && cached.width === width && cached.height === height) return cached.texnum;
+
+  const texnum = glState.texture_extension_number++;
+  GL_Bind(texnum);
+  const rgba32 = new Uint32Array(pixels.buffer, pixels.byteOffset, pixels.byteLength >>> 2);
+  GL_Upload32(rgba32, width, height, false, true);
+  // crisp pixel-art/rasterized-glyph look, no mip/linear blur -- matches
+  // Draw_Init's own override for gfx/conback.lmp's texture just above this
+  // function (GL_TEXTURE_MIN_FILTER/MAG_FILTER -> GL_NEAREST).
+  const q = qgl();
+  q.qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+  q.qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+  glyphAtlasCache.set(id, { texnum, width, height });
+  return texnum;
+}
+
+export function Draw_GlyphAtlas(
+  dstX: number,
+  dstY: number,
+  dstW: number,
+  dstH: number,
+  source: GlyphAtlasSourceT,
+  srcX: number,
+  srcY: number,
+  srcW: number,
+  srcH: number,
+  tint: readonly [number, number, number] | null,
+): void {
+  let texnum: number;
+  let atlasW: number;
+  let atlasH: number;
+  if (source.kind === "classic") {
+    texnum = char_texture;
+    atlasW = 128;
+    atlasH = 128;
+  } else {
+    texnum = GL_RegisterGlyphAtlas(source.id, source.width, source.height, source.pixels);
+    atlasW = source.width;
+    atlasH = source.height;
+  }
+
+  const sl = srcX / atlasW;
+  const sh = (srcX + srcW) / atlasW;
+  const tl = srcY / atlasH;
+  const th = (srcY + srcH) / atlasH;
+
+  const q = qgl();
+  GL_Bind(texnum);
+  if (tint) q.qglColor3f(tint[0], tint[1], tint[2]);
+  q.qglBegin(GL_QUADS);
+  q.qglTexCoord2f(sl, tl);
+  q.qglVertex2f(dstX, dstY);
+  q.qglTexCoord2f(sh, tl);
+  q.qglVertex2f(dstX + dstW, dstY);
+  q.qglTexCoord2f(sh, th);
+  q.qglVertex2f(dstX + dstW, dstY + dstH);
+  q.qglTexCoord2f(sl, th);
+  q.qglVertex2f(dstX, dstY + dstH);
+  q.qglEnd();
+  if (tint) q.qglColor3f(1, 1, 1); // restore ambient white -- matches Draw_SubPic's own reset-to-white convention above
 }
 
 /*

@@ -141,6 +141,10 @@ import { scr_vrect } from "../client/screen_types";
 // view.ts (Q023b) adds `export const crosshaircolor = new CvarT(...)`.
 import { cl_crossx, cl_crossy, crosshair, crosshaircolor } from "../client/view";
 import { Con_Printf } from "../client/console";
+// U19: type-only, erased at compile time -- no runtime import-cycle risk
+// (see src/client/kfont_text.ts's own header for why the runtime call goes
+// through a lazy require() there instead of a static import of this file).
+import type { GlyphAtlasSourceT } from "../client/kfont_text";
 
 /*
 U25 (no C original): the 2D overlay -- console, HUD, menus -- draws 8-bit
@@ -462,6 +466,152 @@ export function Draw_Pic(x: number, y: number, pic: QpicT): void {
     if (out32 !== null) overlayRun32(out32, source, sourceOfs, destOfs, pic.width);
     destOfs += vid.rowbytes;
     sourceOfs += pic.width;
+  }
+}
+
+/*
+================
+Draw_GlyphAtlas
+
+U19 addition -- NOT from draw.c. The software half of the one new
+cross-renderer text-drawing primitive src/client/kfont_text.ts's Text_Draw
+dispatches to (see that file's header for the Renderer-seam deviation this
+is, and gl_draw.ts's own Draw_GlyphAtlas for the GL half). Unlike GL (a
+textured quad the GPU stretches for free), this does an explicit
+nearest-neighbour stretch blit from the source atlas rect into
+`vid.buffer`/`vid.buffer32` -- "software: integer-scaled glyph/pic blits,
+nearest-neighbour" per the unit brief -- since dstX/dstY/dstW/dstH already
+arrive in real screen pixels (kfont_text.ts computes the scale multiply
+itself; there is no ambient canvas/viewport transform in this renderer).
+
+Two source kinds:
+- "classic" reuses `draw_chars` (the same 128-wide 8-bit conchars grid
+  Draw_Character already indexes by `row*8`/`col*8`; kfont_text.ts computes
+  srcX/srcY the same way for a scaled classic-charset draw, so this shares
+  the one primitive instead of a second scaling mechanism). Palette index 0
+  is transparent, matching Draw_Character.
+- "custom" is an RGBA8 atlas (a decoded fonts/qfont.png, or a rasterized TTF
+  atlas). This renderer's primary buffer is 8-bit paletted with no alpha
+  channel, so an arbitrary RGBA glyph is drawn two ways: into the true-color
+  overlay (`vid.buffer32`, U25) as its real per-pixel RGB, alpha-thresholded
+  (no source in this renderer's glyph drawing does real alpha blending
+  either -- Draw_Character's own "0 is transparent" is itself a hard
+  threshold); into the 8-bit buffer as ONE nearest-palette-matched index for
+  the whole glyph (from its first opaque pixel's color), a documented,
+  bounded-cost simplification -- Quake's fixed 256-color palette cannot
+  represent an arbitrary truecolor glyph faithfully per-pixel regardless,
+  and a per-pixel 256-entry nearest search on every text draw would be a
+  real cost the true-color overlay (the path an enhanced kfont/ttf font is
+  actually meant to be seen through) does not need.
+================
+*/
+const paletteMatchCache = new Map<number, number>();
+
+function nearestPaletteIndex(r: number, g: number, b: number): number {
+  const key = (r << 16) | (g << 8) | b;
+  const cached = paletteMatchCache.get(key);
+  if (cached !== undefined) return cached;
+
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < 256; i++) {
+    const c = d_8to24table[i];
+    const cr = c & 0xff;
+    const cg = (c >> 8) & 0xff;
+    const cb = (c >> 16) & 0xff;
+    const dr = cr - r;
+    const dg = cg - g;
+    const db = cb - b;
+    const dist = dr * dr + dg * dg + db * db;
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = i;
+    }
+  }
+  paletteMatchCache.set(key, best);
+  return best;
+}
+
+function tintedByte(c: number, t: number): number {
+  const v = Math.round(c * t);
+  return v < 0 ? 0 : v > 255 ? 255 : v;
+}
+
+export function Draw_GlyphAtlas(
+  dstX: number,
+  dstY: number,
+  dstW: number,
+  dstH: number,
+  source: GlyphAtlasSourceT,
+  srcX: number,
+  srcY: number,
+  srcW: number,
+  srcH: number,
+  tint: readonly [number, number, number] | null,
+): void {
+  const buffer = vid.buffer;
+  if (!buffer || srcW <= 0 || srcH <= 0) return;
+
+  const dx0 = Math.round(dstX);
+  const dy0 = Math.round(dstY);
+  const dw = Math.max(1, Math.round(dstW));
+  const dh = Math.max(1, Math.round(dstH));
+  const out32 = overlay32();
+
+  if (source.kind === "classic") {
+    const chars = draw_chars;
+    if (!chars) return;
+
+    for (let py = 0; py < dh; py++) {
+      const dy = dy0 + py;
+      if (dy < 0 || dy >= vid.height) continue;
+      const sy = srcY + Math.floor((py * srcH) / dh);
+      const srcRowOfs = sy * 128;
+      let destOfs = dy * vid.rowbytes + dx0;
+      for (let px = 0; px < dw; px++, destOfs++) {
+        const dx = dx0 + px;
+        if (dx < 0 || dx >= vid.width) continue;
+        const sx = srcX + Math.floor((px * srcW) / dw);
+        const c = chars[srcRowOfs + sx];
+        if (!c) continue;
+        buffer[destOfs] = c;
+        if (out32 !== null) out32[destOfs] = d_8to24table[c];
+      }
+    }
+    return;
+  }
+
+  const pixels = source.pixels;
+  const atlasW = source.width;
+  let paletteIndex = -1; // resolved from this glyph's first opaque pixel -- see this function's own header comment
+
+  for (let py = 0; py < dh; py++) {
+    const dy = dy0 + py;
+    if (dy < 0 || dy >= vid.height) continue;
+    const sy = srcY + Math.floor((py * srcH) / dh);
+    let destOfs = dy * vid.rowbytes + dx0;
+    for (let px = 0; px < dw; px++, destOfs++) {
+      const dx = dx0 + px;
+      if (dx < 0 || dx >= vid.width) continue;
+      const sx = srcX + Math.floor((px * srcW) / dw);
+      const p = (sy * atlasW + sx) * 4;
+      const a = pixels[p + 3];
+      if (a < 128) continue;
+
+      let r = pixels[p];
+      let g = pixels[p + 1];
+      let b = pixels[p + 2];
+      if (tint) {
+        r = tintedByte(r, tint[0]);
+        g = tintedByte(g, tint[1]);
+        b = tintedByte(b, tint[2]);
+      }
+
+      if (out32 !== null) out32[destOfs] = (255 << 24) | (b << 16) | (g << 8) | r;
+
+      if (paletteIndex < 0) paletteIndex = nearestPaletteIndex(r, g, b);
+      buffer[destOfs] = paletteIndex;
+    }
   }
 }
 

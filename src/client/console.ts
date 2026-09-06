@@ -154,6 +154,7 @@ import { vid } from "./vid";
 import type * as KeysModule from "./keys";
 import type * as MenuModule from "./menu";
 import type * as SndDmaModule from "./snd_dma";
+import type * as KfontTextModule from "./kfont_text";
 
 // see the file header's import-cycle note
 function cvarMod(): typeof CvarModule {
@@ -185,6 +186,14 @@ function menuMod(): typeof MenuModule {
 }
 function sndDmaMod(): typeof SndDmaModule {
   return require("./snd_dma");
+}
+// U19: this file is imported by src/ref_gl/gl_draw.ts (Con_Printf) and
+// src/ref_soft/draw.ts (Con_Printf), and kfont_text.ts's own Text_Draw
+// reaches both renderer modules -- a static import of kfont_text.ts here
+// would close that cycle, so it goes through the same lazy require()
+// pattern as every other module this file needs (see this file's header).
+function kfontTextMod(): typeof KfontTextModule {
+  return require("./kfont_text");
 }
 
 export const CON_TEXTSIZE = 16384;
@@ -331,7 +340,14 @@ If the line width has changed, reformat the buffer.
 ================
 */
 export function Con_CheckResize(): void {
-  const width = (vid.width >> 3) - 2;
+  // U19: QuakeSpasm's own one-line change for `scr_conscale` (console.c:
+  // "use vid.conwidth instead of vid.width") -- ConsoleVirtualWidth() is
+  // this port's equivalent of vid.conwidth (see kfont_text.ts's header),
+  // vid.width itself when scr_conscale is 1 (the default). ConsoleVirtualWidth()
+  // always clamps to >= 320, so `vid.width < 1` (video not yet initialized)
+  // is checked directly first to keep reaching the "video hasn't been
+  // initialized yet" branch below exactly as before this unit.
+  const width = vid.width < 1 ? (vid.width >> 3) - 2 : (kfontTextMod().ConsoleVirtualWidth() >> 3) - 2;
 
   if (width === conState.con_linewidth) return;
 
@@ -524,7 +540,15 @@ export function Con_Printf(fmt: string, ...args: Array<string | number>): void {
   const qwcl = qwConsoleHooks.Con_Printf; // see qwConsoleHooks
   if (qwcl) return qwcl(fmt, ...args);
 
-  const msg = Com_sprintf(fmt, ...args);
+  const formatted = Com_sprintf(fmt, ...args);
+  // U19: a bare "$key" reaching the client without having gone through the
+  // server's own QEX_VarString/Loc_Localize pass (svc_print's `Con_Printf("%s",
+  // MSG_ReadString())` in cl_parse.ts is the one call site this matters for --
+  // see kfont_text.ts's CL_LocalizeKey doc comment) is resolved here, at the
+  // print entry point every Con_Printf call already funnels through. Every
+  // other Con_Printf call site's own format string is a plain engine message
+  // that never starts with '$', so this guard is a no-op for them.
+  const msg = formatted.charAt(0) === "$" ? kfontTextMod().CL_LocalizeKey(formatted) : formatted;
 
   // also echo to debugging console
   Sys_Printf("%s", msg);
@@ -656,9 +680,17 @@ export function Con_DrawInput(): void {
   let base = 0;
   if (linepos >= conState.con_linewidth) base = 1 + linepos - conState.con_linewidth;
 
-  // draw it
-  const renderer = renderMod().getRenderer();
-  for (let i = 0; i < conState.con_linewidth; i++) renderer.Draw_Character((i + 1) << 3, conState.con_vislines - 16, scratch[base + i] ?? 0);
+  // draw it -- U19: routed through kfont_text.ts's Text_Draw (one call per
+  // character, matching Draw_Character's own per-character contract) so
+  // classic/kfont/ttf and `scr_conscale` all apply the same way console
+  // text does everywhere else in this file; see this file's header note on
+  // this unit's changes.
+  const kt = kfontTextMod();
+  const scale = kt.ConsoleScale();
+  const y = conState.con_vislines - 16 * scale; // con_vislines is already real-pixel (see Con_DrawConsole); only the reserved 2-row offset scales
+  for (let i = 0; i < conState.con_linewidth; i++) {
+    kt.Text_Draw((i + 1) * 8 * scale, y, String.fromCharCode(scratch[base + i] ?? 0), false, scale);
+  }
 
   // remove cursor -- nothing to restore: `scratch` is a local drawing
   // buffer, never written back into key_lines.
@@ -674,8 +706,14 @@ Draws the last few lines of output transparently over the game top
 export function Con_DrawNotify(): void {
   let v = 0;
 
+  // U19: routed through kfont_text.ts's Text_Draw -- see Con_DrawInput's
+  // own note just above. `scale` multiplies every 8px unit (glyph size and
+  // line pitch alike), so at scr_conscale's default (1) this is
+  // byte-identical to the pre-U19 per-character Draw_Character loop.
+  const kt = kfontTextMod();
+  const scale = kt.ConsoleScale();
+
   if (con_text !== null) {
-    const renderer = renderMod().getRenderer();
     const host = hostMod().host;
     for (let i = conState.con_current - NUM_CON_TIMES + 1; i <= conState.con_current; i++) {
       if (i < 0) continue;
@@ -689,9 +727,11 @@ export function Con_DrawNotify(): void {
       scrState.clearnotify = 0;
       scrState.scr_copytop = 1;
 
-      for (let x = 0; x < conState.con_linewidth; x++) renderer.Draw_Character((x + 1) << 3, v, con_text[lineOffset + x]);
+      for (let x = 0; x < conState.con_linewidth; x++) {
+        kt.Text_Draw((x + 1) * 8 * scale, v, String.fromCharCode(con_text[lineOffset + x]), false, scale);
+      }
 
-      v += 8;
+      v += 8 * scale;
     }
   }
 
@@ -700,17 +740,16 @@ export function Con_DrawNotify(): void {
     scrState.clearnotify = 0;
     scrState.scr_copytop = 1;
 
-    const renderer = renderMod().getRenderer();
-    renderer.Draw_String(8, v, "say:");
+    kt.Text_Draw(8 * scale, v, "say:", false, scale);
 
     let x = 0;
     const chat = keys.keyState.chat_buffer;
     while (x < chat.length && chat.charCodeAt(x) !== 0) {
-      renderer.Draw_Character((x + 5) << 3, v, chat.charCodeAt(x));
+      kt.Text_Draw((x + 5) * 8 * scale, v, chat.charAt(x), false, scale);
       x++;
     }
-    renderer.Draw_Character((x + 5) << 3, v, 10 + (Math.trunc(hostMod().host.realtime * CON_CURSORSPEED) & 1));
-    v += 8;
+    kt.Text_Draw((x + 5) * 8 * scale, v, String.fromCharCode(10 + (Math.trunc(hostMod().host.realtime * CON_CURSORSPEED) & 1)), false, scale);
+    v += 8 * scale;
   }
 
   if (v > conState.con_notifylines) conState.con_notifylines = v;
@@ -735,17 +774,30 @@ export function Con_DrawConsole(lines: number, drawinput: boolean): void {
   // draw the text
   conState.con_vislines = lines;
 
-  const rows = (lines - 16) >> 3; // rows of text to draw
-  let y = lines - 16 - (rows << 3); // may start slightly negative
+  // U19: every "8" (one classic glyph cell) below is `8 * scale`, so text
+  // grows with `scr_conscale` while `lines` (the console's real-pixel slide
+  // height, driven by screen.ts independently of text scale) is untouched
+  // -- a bigger scale means fewer, bigger rows fit in the same slide
+  // height, matching QuakeSpasm's own virtual-space row math translated
+  // into this file's real-pixel-throughout convention (see this unit's
+  // report). Byte-identical to the pre-U19 formula at scale 1.
+  const kt = kfontTextMod();
+  const scale = kt.ConsoleScale();
+  const cell = 8 * scale;
+
+  const rows = Math.floor((lines - 2 * cell) / cell); // rows of text to draw
+  let y = lines - 2 * cell - rows * cell; // may start slightly negative
 
   if (con_text !== null) {
     const text = con_text;
-    for (let i = conState.con_current - rows + 1; i <= conState.con_current; i++, y += 8) {
+    for (let i = conState.con_current - rows + 1; i <= conState.con_current; i++, y += cell) {
       let j = i - conState.con_backscroll;
       if (j < 0) j = 0;
       const lineOffset = (j % conState.con_totallines) * conState.con_linewidth;
 
-      for (let x = 0; x < conState.con_linewidth; x++) renderer.Draw_Character((x + 1) << 3, y, text[lineOffset + x]);
+      for (let x = 0; x < conState.con_linewidth; x++) {
+        kt.Text_Draw((x + 1) * cell, y, String.fromCharCode(text[lineOffset + x]), false, scale);
+      }
     }
   }
 
