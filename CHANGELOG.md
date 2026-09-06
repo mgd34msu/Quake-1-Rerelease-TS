@@ -33,12 +33,49 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `ARCHITECTURE.md`: the design contract and phase plan for the re-release
   engine, with the four open rulings.
 - `.orch/preferences.md`: standing orders for agent briefs (local, untracked).
+- Bot AI and navigation: NAV2 pathing, `ex_walkpathtogoal` (falls back to
+  `movetogoal` on a map with no `.nav`), a game-agnostic bot brain,
+  `addbot`/`bot_count`/`bot_skill`.
+- Entity `alpha`/`scale`/`lerpfinish` on the wire; `r_lerpmodels`/
+  `r_lerpmove` model and movement interpolation; GL lightstyle lerp.
+- Client-side kfont/TTF text rendered from `QuakeEX.kpf` behind
+  `scr_usekfont`/`con_font`; `scr_conscale`/`scr_sbarscale`; `$key`
+  localized strings reach the client.
+- MD5 replacement models drawn by the software renderer.
+- Fog as a depth post-pass in the software renderer.
+- `loc_<lang>_mod.txt` localization merge; `language auto` resolved from
+  the system locale.
+- MD5 replacement models in the OpenGL renderer, with pose lerp.
+- A Unicode glyph table read from `qfont.kfont` (the retail font is not
+  ASCII-only) and UTF-8 text mapping.
+- `sv_tickrate`: a fixed-step server clock under the `rerelease` ruleset,
+  with the renderer free-running and interpolating.
+- Cube-mapped skybox spans in the software renderer.
+- Shadow projection for MD5-replaced models in the OpenGL renderer.
+- Pose and movement lerp in the software renderer, including MD5 models.
 
 ### Changed
 - Repository seeded from Quake-1-TS v1.0.0 (86c6867) as commit 1; package
   renamed `quake-1-re-ts`.
 - Three suites made order-independent (construction defaults checked on
   fresh instances; the QuakeWorld builtin table saved and restored).
+- QuakeWorld protocol 28 extracted into the codec seam alongside 15/666/999,
+  plus this engine's own wide QuakeWorld protocol 29 (`sv_qwprotocol`);
+  `qwsv`/`qwcl` stayed green through the move.
+- Per-profile `cmd`/`cvar`/console runtime: one client binary speaks
+  NetQuake and QuakeWorld per connection instead of two processes (unified
+  client, phase 5 part 1).
+- NAV2 decoded field names cleaned up (`type`, `traversal`, `entityLinks`)
+  to match how `nav_graph.ts` actually uses them.
+- The server side of the same unification: one process hosts both the
+  NetQuake and QuakeWorld server profiles, dispatching console commands by
+  the console's own profile (unified server, phase 5 part 2).
+- The unified binary is the only build target: `package.json`'s `build`
+  produces `q1rets` from `src/main.ts`; `scripts/release-build.sh` builds
+  the same one binary for all four release targets, with `q1ts`/`qwsv`/
+  `qwcl` available only as optional `--aliases` copies of it;
+  `src/qw/main_cl.ts` and `src/qw/main_sv.ts` are now thin wrappers that
+  insert `-qw` / `-dedicated -qw` (ARCHITECTURE.md ruling R4).
 
 ## Quake-1-TS [1.0.0] - 2026-09-05 (the seed)
 

@@ -1,8 +1,13 @@
 # Platforms
 
-The three binaries -- `q1ts` (Quake: single player and NetQuake multiplayer),
-`qwsv` (QuakeWorld dedicated server) and `qwcl` (QuakeWorld client) -- are
-built with `bun build --compile` for four targets:
+The one binary -- `q1rets` (single player, NetQuake and QuakeWorld
+multiplayer, and NetQuake or QuakeWorld dedicated server, all in the same
+executable, selected by command-line flags -- see the README's "Running"
+section) -- is built with `bun build --compile` for four targets. A release
+archive can optionally also carry `q1ts`, `qwsv` and `qwcl` as copies of that
+same binary under their old per-role names (`scripts/release-build.sh
+--aliases`); they are not separate builds, and each still needs the same
+flags as `q1rets` to pick a profile.
 
 | Target | `bun build --target=` | Built here | Run here |
 | --- | --- | --- | --- |
@@ -34,8 +39,9 @@ libvorbisfile are opened from the host at run time, the same three
 dependencies the original C linked against (Xlib/DGA, libGL, and a CD-ROM
 device, respectively).
 
-None of the three is needed by `qwsv`, or by `q1ts -dedicated`: a dedicated
-server never opens a window, so it never loads SDL2 or GL.
+None of the three is needed by `q1rets -dedicated` (NetQuake or, with `-qw`,
+QuakeWorld): a dedicated server never opens a window, so it never loads
+SDL2 or GL.
 
 ### Linux
 
@@ -90,8 +96,10 @@ will refuse to run them after a download ("cannot be opened because the
 developer cannot be verified"). Clear the quarantine attribute:
 
 ```
-xattr -d com.apple.quarantine q1ts qwsv qwcl
+xattr -d com.apple.quarantine q1rets
 ```
+
+(or `q1rets q1ts qwsv qwcl` if the archive was built with `--aliases`.)
 
 macOS deprecated OpenGL in 10.14 and it still works; it is capped at a
 compatibility profile, which is what GLQuake wants anyway. The software
@@ -111,7 +119,7 @@ default list does not look:
 | `Q1TS_LIBC_LIB` | the socket library (libc / libSystem / ws2_32) |
 
 ```
-Q1TS_SDL2_LIB=/opt/sdl2/lib/libSDL2-2.0.so.0 ./q1ts
+Q1TS_SDL2_LIB=/opt/sdl2/lib/libSDL2-2.0.so.0 ./q1rets
 ```
 
 An override replaces the list rather than heading it, so a wrong path produces
@@ -121,7 +129,7 @@ an error naming that path instead of silently falling back to a system copy.
 
 | Missing | Effect |
 | --- | --- |
-| SDL2 | `qwsv` and `q1ts -dedicated` keep running normally -- they never open a window, so they never need it. A **client** (`q1ts` without `-dedicated`, or `qwcl`) prints the search error and then exits with `Couldn't fall back to software refresh!`, because there is no other way to draw: both renderers put their pixels on screen through SDL. The message names every path tried. |
+| SDL2 | `q1rets -dedicated` (NetQuake or, with `-qw`, QuakeWorld) keeps running normally -- it never opens a window, so it never needs SDL2. A **client** (`q1rets` without `-dedicated`, either profile) prints the search error and then exits with `Couldn't fall back to software refresh!`, because there is no other way to draw: both renderers put their pixels on screen through SDL. The message names every path tried. |
 | OpenGL | `vid_ref gl` fails and falls back to the software renderer, the same path a rejected video mode takes. The default renderer is `soft`, so a machine with no usable GL is unaffected until it asks for GL. |
 | libvorbisfile | No CD audio (the music tracks). Everything else works. This is deliberate: the C's `cd_linux.c` behaves the same way when it cannot open `/dev/cdrom`. |
 | the socket library | `UDP_Init` returns -1, exactly as `-noudp` does, and the engine runs with the loopback driver only: single player works, network play does not. |
@@ -175,8 +183,10 @@ Include:
    Set Q1TS_SDL2_LIB to the full path of the library to override this list.
    ```
 
-3. The exact command line, and whether it was `q1ts`, `qwsv` or `qwcl`.
+3. The exact command line, including which of `-dedicated`/`-qw` were
+   passed, and whether the binary was `q1rets` or one of its `--aliases`
+   copies (`q1ts`/`qwsv`/`qwcl`).
 4. For a graphics problem: the value of `vid_ref` (`soft` or `gl`), and
    whether the other one works.
-5. For a network problem: whether `q1ts -dedicated +map start` on the same
-   machine starts and prints `UDP Initialized`.
+5. For a network problem: whether `q1rets -dedicated +map start` on the
+   same machine starts and prints `UDP Initialized`.

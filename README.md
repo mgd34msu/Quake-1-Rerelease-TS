@@ -5,52 +5,245 @@ A TypeScript engine for the 2021 Quake re-release, running on
 mission packs, and every re-release campaign (Dimension of the Past,
 Dimension of the Machine, Dawn of the Machine, the re-release CTF) with
 any content under any ruleset, over NetQuake protocols 15/666/999 and
-QuakeWorld 28, with both a software and an OpenGL renderer.
+QuakeWorld 28 (plus this engine's own wide QuakeWorld extension,
+protocol 29), with both a software and an OpenGL renderer. It builds to
+one binary, `q1rets`: NetQuake and QuakeWorld, client and dedicated
+server, are chosen per connection and per command line, not by which
+executable you launched.
 
-**Status: phase 2 in progress (2026-09-06).** Seeded from the faithful
-[Quake-1-TS](https://github.com/mgd34msu/Quake-1-TS) v1.0.0 port and
-transformed in place; `ARCHITECTURE.md` is the design contract and phase
-plan, `PORTING.md` carries the inherited C-to-TypeScript conventions,
-`CHANGELOG.md` records what each release changed. Landed so far:
+Seeded from the faithful [Quake-1-TS](https://github.com/mgd34msu/Quake-1-TS)
+v1.0.0 port and transformed in place; `ARCHITECTURE.md` is the design
+contract and phase plan, `PORTING.md` carries the inherited C-to-TypeScript
+conventions, `CHANGELOG.md` records what each release changed.
+
+## Status
+
+Landed (2026-09-06):
 
 - One QuakeC VM with NetQuake and QuakeWorld host profiles; the re-release
   progs run with all 18 name-bound `ex_*` builtins, `checkextension`,
   localized prints, `MOVETYPE_GIB`, `SOLID_CORPSE`, the QEX opcodes, prompts,
   `setcolor`, and a `sv_ruleset classic|rerelease|auto` behaviour profile.
 - Protocols 15, 666 and 999 behind a codec seam (protocol 15 byte-identical
-  to the seed), wide limits (`max_edicts` up to 32000, 8192 models, 2048
-  sounds), BSP2 and 2PSB maps, `.lit` colored lighting, BSPX directory,
-  external `.ent` files and texture wads, textures of any size.
+  to the seed), plus QuakeWorld 28 and this engine's own wide QuakeWorld
+  extension, protocol 29 (`sv_qwprotocol`). Wide limits (`max_edicts` up to
+  32000, 8192 models, 2048 sounds), BSP2 and 2PSB maps, `.lit` colored
+  lighting, BSPX directory, external `.ent` files and texture wads, textures
+  of any size.
 - Re-release roots detected (nested `rerelease/` or direct), `QuakeEX.kpf`
   mounted, `-mg1 -mg3 -dopa -ctf`, a runtime `game` command, `-homedir`.
-- OpenGL: colored lightmaps and entity lighting, fog, skyboxes, water and
-  entity alpha, anisotropy. Sound at 44.1 kHz. KEX-format savegames and
-  autosave. SDL game controllers with the re-release's mappings and
-  `.bnvib` haptics. Parsers for `mapdb.json`, `wwheel.txt`, the bot
-  knowledge files and NAV2 navmeshes; MD5 model loader; TTF and kfont
-  rasterizers; a compat spawn table so re-release maps load under classic
-  progs.
+- The unified client and server: one binary speaks NetQuake and QuakeWorld,
+  and hosts either server profile, chosen per connection and per command
+  line instead of per process. `-dedicated -qw` is a QuakeWorld dedicated
+  server; a plain `-dedicated` is NetQuake; `-qw` alone is a QuakeWorld
+  client; anything else is NetQuake client/listen server.
+- Bots and navigation: NAV2 pathing, `ex_walkpathtogoal` (falling back to
+  `movetogoal` on a map with no `.nav`), a game-agnostic bot brain shared
+  with quake-2-re-ts's binding work, `addbot`/`bot_count`/`bot_skill`.
+- A fixed-step server clock (`sv_tickrate`, default 72) under the
+  `rerelease` ruleset, with the renderer free-running and interpolating
+  model pose, movement and lightstyle (`r_lerpmodels`/`r_lerpmove`) in both
+  renderers.
+- MD5 skeletal replacement models (`r_enhancedmodels`) drawn by both
+  renderers, with pose lerp and (GL) shadow projection.
+- Fog and skyboxes in both renderers (GL: real geometry and blending;
+  software: fog as a depth post-pass, skyboxes as cube-mapped spans);
+  colored lightmaps and entity lighting in both (`r_coloredlight` /
+  `gl_coloredlight`), water/lava/slime/tele alpha, anisotropy (GL).
+- Client-side text: kfont/TTF rendering from `QuakeEX.kpf`
+  (`scr_usekfont`, `con_font`), a Unicode glyph table (not ASCII-only, to
+  match the retail `qfont.kfont`), independent console/status-bar/crosshair
+  scale, `$key` localized strings on the client, `language auto` resolved
+  from the system locale.
+- KEX-format savegames and autosave, SDL game controllers with the
+  re-release's own mappings and `.bnvib` haptics, menus driven by
+  `mapdb.json` (New Game, episodes, Content x Ruleset, add-ons), a compat
+  spawn table so re-release maps and entity keys load under classic progs.
+- Parsers for `mapdb.json`, `wwheel.txt`, the bot knowledge files and NAV2
+  navmeshes.
 
-In flight: menus driven by `mapdb.json`, software-renderer colored
-lighting, the protocol-999 fix for messages outside the codec. Next: bots
-and navmesh pathing, client-side lerp, localization on the client with
-TTF text, the unified client and server binary, splitscreen.
+In flight: a Multiplayer menu (bots page, start-server, join by NetQuake or
+QuakeWorld address, CTF teams), the QuakeWorld listen server socket split,
+local splitscreen, and render-seam cleanup (a shared `fog` command,
+`Draw_GlyphAtlas` on the renderer interface). Not started: the software
+renderer's own colored-lighting/MD5/lerp/skybox/fog work above already
+landed ahead of the phase-7 regate; the qcc union-progs compiler (R1) and
+the final byte-vector regate (phase 8) are still open.
 
-### Running (today, the seed)
+## Running
 
-    bun install
-    bun src/main.ts -basedir /path/to/quake            # software renderer
-    bun src/main.ts -basedir /path/to/quake -vid_ref gl
+```sh
+bun install
+bun src/main.ts -basedir /path/to/quake                          # NetQuake, software renderer
+bun src/main.ts -basedir /path/to/quake -vid_ref gl               # OpenGL renderer
+bun src/main.ts -basedir /path/to/quake -dedicated 8 +map e1m1    # NetQuake dedicated server
+bun src/main.ts -basedir /path/to/quake -qw                       # QuakeWorld client
+bun src/main.ts -basedir /path/to/quake -dedicated -qw +map start # QuakeWorld dedicated server
+```
 
-The base directory is a classic Quake install (`id1/`, optional
-`hipnotic/`, `rogue/`, `qw/`). Re-release data support (`rerelease/`
-nested inside it, or pointed at directly) lands in the phases described
-in `ARCHITECTURE.md`.
+`bun run start:qwcl` and `bun run start:qwsv` are exactly the last two
+commands above (`bun run src/main.ts -qw` / `-dedicated -qw`), kept as
+conveniences for old habits. `bun run build` produces the one compiled
+binary, `q1rets`; see [Building from source](#building-from-source) below.
 
-### Gates
+### Content and rulesets
+
+- `-basedir <dir>` — the root holding `id1/` (and optionally `hipnotic/`,
+  `rogue/`, `qw/`, `rerelease/`). Defaults to the current directory.
+- `-rerelease <dir>` / `-classic <dir>` — point directly at the re-release
+  (KEX) or classic content root instead of auto-detecting a nested
+  `rerelease/` subdirectory inside `-basedir`.
+- `-norerelease` — mount the classic tree only, even when a `rerelease/`
+  subdirectory is present.
+- `-homedir <dir>` — a per-user directory mounted above the base search
+  path for configs, saves and replacement assets. No WinQuake equivalent;
+  a re-release-style addition.
+- `-game <dir>` — an arbitrary override game directory, as the original.
+  `-hipnotic`, `-rogue`, `-mg1`, `-mg3`, `-dopa`, `-ctf` each add the
+  matching mission-pack or re-release campaign directory.
+- `sv_ruleset classic|rerelease|auto` (default `auto`) — the behaviour
+  profile. `auto` detects `rerelease` from the loaded `progs.dat`
+  (`ex_centerprint` present, `centerprint` absent); `classic` and
+  `rerelease` force it.
+
+### Client and server
+
+- `-dedicated [n]` — headless server, `n` client slots (default 8).
+- `-qw` — boot the QuakeWorld tree instead of NetQuake: the QuakeWorld
+  client alone, or, combined with `-dedicated`, the QuakeWorld dedicated
+  server.
+- `-vid_ref soft|gl` — pick the renderer at startup (also the `vid_ref`
+  cvar, default `soft`).
+- `+connect <host>` (NetQuake, port from `-port`/`net_hostport`) vs.
+  `+connect <host>:<port>` (QuakeWorld, port in the address) — the same
+  syntax id shipped for each. An explicit port in the address means
+  QuakeWorld, no port means NetQuake; `cl_protocol nq|qw|auto` (default
+  `auto`) overrides the guess outright.
+- `sv_protocol 15|666|999|auto` (default `auto`) — the NetQuake wire
+  protocol; `auto` picks 999 when a map needs the extra width, else 666,
+  and never 15 unless asked.
+- `sv_qwprotocol 28|29|auto` (default `auto`) — the QuakeWorld wire
+  protocol; 29 is this engine's own wide extension (16-bit entity numbers,
+  `U_MODEL2`/`U_FRAME2`, 999-style coords), negotiated when the client
+  sends the `*wide 1` userinfo key.
+
+### Bots
+
+- `addbot [name] [skill]` — add one bot immediately.
+- `bot_count <n>` (default `0`) — auto-fill bots to this count on a
+  bots-flagged deathmatch map at load.
+- `bot_skill practice|easy|medium|hard|expert|nightmare` (default
+  `medium`).
+
+### Simulation rate
+
+- `sv_tickrate <n>` (default `72`) — the fixed-step server clock the
+  `rerelease` ruleset runs on; the `classic` ruleset stays frame-coupled,
+  as WinQuake always was.
+
+### Text, scale and language
+
+- `language <code>` (default `auto`, resolved from the system locale) —
+  `$key` string and menu localization.
+- `con_font kfont|...` (default `kfont`), `scr_usekfont 0|1` (default
+  `0`) — where console/HUD glyphs come from; the retail `quake.rc` sets
+  `scr_usekfont 1` to use the re-release's own bitmap font.
+- `scr_conscale`, `scr_sbarscale`, `scr_crosshairscale` (default `1`
+  each) — independent console, status bar and crosshair scale.
+
+### Rendering
+
+- `r_coloredlight` (software renderer, default `1`) / `gl_coloredlight`
+  (OpenGL renderer, default `1`) — colored lightmap and dynamic-light data
+  from `.lit` files and BSPX `RGBLIGHTING`, per renderer.
+- `r_enhancedmodels` (default `1`) — load an MD5 replacement model
+  (re-release content) alongside its classic `.mdl`, in either renderer.
+
+### Input
+
+- `joy_enable` (default `1`) plus `joy_deadzone_move`/`joy_deadzone_look`/
+  `joy_deadzone_trigger`, `joy_outer_threshold_move`/
+  `joy_outer_threshold_look`, `joy_sensitivity_yaw`/`joy_sensitivity_pitch`,
+  `joy_invert`, `joy_exponent`/`joy_exponent_move`, `joy_swapmovelook`,
+  `joy_rumble`/`joy_rumble_scale` — SDL GameController axis curves and
+  `.bnvib` haptics, read from the re-release's `gamecontrollerdb.txt`.
+
+Everything the seed documented still applies unchanged: `-width`/
+`-height`, `-port <n>`, `-condebug`, `-nosound`, `-window`, `-safe`,
+`-listen <n>`, `vid_restart`, and the rest of the classic parm and cvar
+set. See `PORTING.md` and the source for the full list.
+
+## Gates
 
     bun run check    # tsc --noEmit plus the zero-`any` grep
     bun test         # unit suite; needs no game data
+
+## Building from source
+
+```sh
+bun install
+bun run build             # ./q1rets, this platform
+bun run build:linux-x64   # cross-compile into dist/linux-x64/
+bun run build:release     # all four release targets, each zipped
+```
+
+`q1rets` is the only binary `bun build --compile` produces; `q1ts`,
+`qwsv` and `qwcl` are gone as separate build targets (ARCHITECTURE.md
+ruling R4). A release archive can still include copies of the compiled
+binary under those old names for launch scripts that expect them:
+
+```sh
+bash scripts/release-build.sh --aliases linux-x64
+```
+
+`--aliases` copies the one `q1rets` binary to `q1ts`/`qwsv`/`qwcl` in the
+output directory; it does not build anything different; each name still
+needs `-dedicated`/`-qw` on the command line to pick a profile, the same
+as `q1rets` does.
+
+## Faithfulness notes
+
+Behaviour that looks like a gap but is a deliberate, documented choice:
+
+- The `b_*.bsp` icon-preview maps (weapon and powerup pickups rendered on
+  the loading/New Game screens) have no `info_player_start` in any
+  engine, including the retail one; the map-by-progs sweep accepts that
+  as an expected residual rather than a bug.
+- Menus are keyboard-only; the re-release's mouse-driven menu navigation
+  (`ui_scale`/`ui_mouse`) has not landed yet, so a mouse click on a menu
+  item does nothing.
+- Where the open reference engines (Ironwail, vkQuake, QuakeSpasm)
+  disagree with the re-release QuakeC's own stated intent, the QuakeC
+  wins: for example `MOVETYPE_GIB` uses the re-release comment's
+  "adjustable gravity, like MOVETYPE_BOUNCE" behaviour, not the fixed
+  backoff of 1 the three open engines actually ship.
+- `sv_protocol auto` widens to 999 based on a map's entity count and
+  extents, not on its BSP version alone; a small BSP29 map with a very
+  large entity count still gets the wide protocol even though it could
+  fit in BSP29.
+- QuakeWorld protocol 29 (`sv_qwprotocol`) has no reference implementation
+  anywhere else; it is this engine's own specification, negotiated only
+  with a client that opts in via `*wide 1`, so it never surprises a
+  vanilla QuakeWorld client.
+
+## Known limitations
+
+- No QuakeWorld listen server yet: `-qw` without `-dedicated` is a
+  QuakeWorld client only. Hosting a playable QuakeWorld game currently
+  needs a separate `-dedicated -qw` process; the socket split that lets
+  one process do both is in flight (see Status).
+- No local splitscreen yet: the QEX `svc_setviews` opcode and per-seat
+  plumbing exist on the wire, but the client-side multi-viewport, per-seat
+  input and per-seat HUD work has not landed.
+- The software renderer's colored lighting is a true-color present path
+  behind `r_coloredlight`; the classic 8-bit paletted path is kept for
+  `sv_ruleset classic` rather than removed.
+- Connecting to a real 2021 re-release (KEX) server is out of scope: KEX's
+  own netcode is undocumented, and the interop target is this engine's
+  own binary in both seats, plus byte-vector tests against the three
+  GPLv2 open engines.
+- Windows and macOS builds are cross-compiled but **untested** on real
+  hardware; see `docs/PLATFORMS.md`.
 
 ## Lineage and attribution
 

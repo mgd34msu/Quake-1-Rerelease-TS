@@ -7,6 +7,7 @@ node_modules/
 .claude/
 
 # Compiled engine binaries (bun build --compile) and release output
+q1rets
 q1ts
 qwsv
 qwcl
