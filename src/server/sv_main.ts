@@ -161,13 +161,32 @@ export const localmodels: string[] = new Array<string>(MAX_MODELS).fill("");
 // see file header: host.c's function, registered here once host.ts (U035)
 // lands it. scrCenterTimeOff is screen.c's (not yet landed) `scr_centertime_off
 // = 0` poke -- a silent no-op hook, unlike dropClient's Sys_Error fallback.
+// `isBot`/`botThink`/`spawnServer` are src/bots's three registration points
+// (U20). A bot is a client_t whose `netconnection` is null: SV_SendClientMessages
+// below would hand that null socket to NET_SendUnreliableMessage, which answers
+// -1 and drops the client, so it has to skip bots outright; SV_RunClients
+// (sv_user.ts) has the mirror-image problem with NET_GetMessage and calls
+// `botThink` where it would have read the wire. `spawnServer` is one call at the
+// end of SV_SpawnServer, where the map's nav file is loaded and every bot is
+// put back into the new level.
 export const svMainHooks: {
   dropClient: ((crash: boolean) => void) | null;
   scrCenterTimeOff: (() => void) | null;
+  isBot: ((client: ClientT) => boolean) | null;
+  botThink: ((client: ClientT) => void) | null;
+  spawnServer: ((mapname: string) => void) | null;
 } = {
   dropClient: null,
   scrCenterTimeOff: null,
+  isBot: null,
+  botThink: null,
+  spawnServer: null,
 };
+
+/** True when this client slot is an engine-driven bot rather than a socket. */
+export function SV_ClientIsBot(client: ClientT): boolean {
+  return svMainHooks.isBot !== null && svMainHooks.isBot(client);
+}
 
 function SV_DropClient(crash: boolean): void {
   if (svMainHooks.dropClient === null) Sys_Error("SV_DropClient not registered");
@@ -943,6 +962,11 @@ export function SV_SendClientMessages(): void {
 
     if (!host_client.active) continue;
 
+    // A bot has no socket to send to, and every send below would answer -1
+    // and drop it. Nothing it needs is on the wire: its view is produced
+    // inside the process.
+    if (SV_ClientIsBot(host_client)) continue;
+
     if (host_client.spawned) {
       if (!SV_SendClientDatagram(host_client)) continue;
     } else {
@@ -1314,6 +1338,11 @@ export function SV_SpawnServer(server: string): void {
     svState.host_client = host_client;
     if (host_client.active) SV_SendServerinfo(host_client);
   }
+
+  // U20: src/bots loads bots/navigation/<map>.nav and re-seats every bot in
+  // the level that just spawned. Registered, not called directly, so a build
+  // with no bot support links without it.
+  if (svMainHooks.spawnServer !== null) svMainHooks.spawnServer(server);
 
   Con_DPrintf("Server spawned.\n");
 }

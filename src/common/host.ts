@@ -408,9 +408,22 @@ import type * as QwClMainModule from "../qw/client/cl_main";
 // (src/server/compat_spawn.ts); the composition root pulls it in so every
 // NetQuake host, listen or dedicated, resolves re-release classnames.
 import "../server/compat_spawn";
+// The Quake 1 bot binding (ARCHITECTURE.md, "Bots and navigation") registers
+// its sv_main hooks, the three re-release navigation builtins and the
+// addbot/kickbot commands on import. Unlike compat_spawn it reaches back into
+// the server and the VM, and pr_exec.ts's `class PRRunError extends
+// HostError` is a load-time reference to a class declared in THIS file, so a
+// static import here would evaluate src/bots before `HostError` exists. It
+// goes through the same lazy `require()` this file already uses for every
+// other module in its own cycle, called once from Host_Init.
+import type * as BotsModule from "../bots";
 
 function qwClMainMod(): typeof QwClMainModule {
   return require("../qw/client/cl_main");
+}
+
+function botsMod(): typeof BotsModule {
+  return require("../bots");
 }
 
 export function hostBasepal(): Uint8Array | null {
@@ -1144,6 +1157,7 @@ export function Host_Init(parms: QuakeParmsT): void {
   // Host_Init, the earliest point every module in the cycle exists.
   setHostShutdown(Host_Shutdown);
   svMainMod().svMainHooks.dropClient = SV_DropClient;
+  botsMod(); // src/bots registers its hooks, builtins and commands on import
   setCvarServerHooks({ active: () => sv.active, broadcastPrintf: SV_BroadcastPrintf });
   setNetHostHooks({
     svActive: () => sv.active,

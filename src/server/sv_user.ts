@@ -83,7 +83,7 @@ import { Q_strncasecmp } from "../common/common";
 import { Con_DPrintf } from "../client/console";
 import { Sys_Printf, Sys_Error, SysError } from "../platform/sys";
 import { sv_friction, sv_stopspeed } from "./sv_phys";
-import { svMainHooks } from "./sv_main";
+import { SV_ClientIsBot, svMainHooks } from "./sv_main";
 
 //============================================================================
 // key_dest == key_game (keys.c, U048, not landed) -- see file header.
@@ -613,7 +613,15 @@ export function SV_RunClients(): void {
     svState.host_client = host_client;
     svState.sv_player = host_client.edict;
 
-    if (!SV_ReadClientMessage()) {
+    // U20: a bot is a client slot with no netconnection, so there is no
+    // message to read -- NET_GetMessage answers -1 for a null socket and
+    // SV_ReadClientMessage would report the bot as misbehaving. src/bots
+    // fills the usercmd here instead, and the SV_ClientThink below is the
+    // same one a human player gets.
+    const isBot = SV_ClientIsBot(host_client);
+    if (isBot) {
+      if (host_client.spawned && svMainHooks.botThink !== null) svMainHooks.botThink(host_client);
+    } else if (!SV_ReadClientMessage()) {
       if (svMainHooks.dropClient) svMainHooks.dropClient(false); // client misbehaved...
       else Sys_Error("SV_RunClients: SV_DropClient unavailable (sv_main.ts not loaded)");
       continue;
