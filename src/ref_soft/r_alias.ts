@@ -116,6 +116,8 @@ import {
 } from "./r_local";
 import { R_AliasClipTriangle } from "./r_aclip";
 import { D_PolysetDraw, D_PolysetDrawFinalVerts, D_PolysetUpdateTables } from "./d_polyse";
+// U26: re-release MD5 replacement models -- see r_md5.ts's own header.
+import { R_MD5DrawModel, getMd5Payload, r_enhancedmodels } from "./r_md5";
 
 const LIGHT_MIN = 5; // lowest light value we'll allow, to avoid the
 //  need for inner-loop light clamping
@@ -748,6 +750,19 @@ export function R_AliasDrawModel(plighting: AlightT): void {
 
   if (ent !== cl.viewent) ziscale = 0x8000 * 0x10000;
   else ziscale = 0x8000 * 0x10000 * 3.0;
+
+  // U26: an attached MD5 replacement takes over drawing entirely once the
+  // classic setup above (transform/lighting/skin/frame selection state,
+  // ziscale, drawtype) is in place; R_MD5DrawModel overwrites whichever of
+  // that state differs for its own vertex source (aliastransform, the skin
+  // fields on r_affinetridesc) before drawing. See r_md5.ts's header for why
+  // this can't just be R_AliasPrepareUnclippedPoints/R_AliasPreparePoints
+  // fed MD5 verts directly (r_apverts/pstverts are TrivertxT/StvertT-shaped).
+  const md5Payload = r_enhancedmodels.value ? getMd5Payload(data) : null;
+  if (md5Payload) {
+    R_MD5DrawModel(md5Payload, plighting);
+    return;
+  }
 
   if (ent.trivial_accept) R_AliasPrepareUnclippedPoints();
   else R_AliasPreparePoints();

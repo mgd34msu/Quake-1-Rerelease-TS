@@ -177,6 +177,9 @@ import {
 } from "./model_types";
 // r_sky.c, U064, concurrent with this unit: see the header note above.
 import { R_InitSky } from "./r_sky";
+// U26: re-release MD5 replacement models (progs/<name>.md5mesh beside the
+// .mdl); see r_md5.ts's own header for the loading/tier rules.
+import { attachMd5ReplacementIfAny } from "./r_md5";
 // QuakeWorld track: model.c's player.mdl/eyes.mdl CRC -> cls.qw.userinfo fold.
 import { qw } from "../common/quakedef";
 import { cls, CactiveT } from "../client/client";
@@ -554,6 +557,12 @@ export function Mod_LoadAliasModel(mod: ModelT, buffer: Uint8Array): void {
     frames.push(fd);
   }
   pheader.frames = frames;
+
+  // U26: attach a re-release MD5 replacement, if r_enhancedmodels allows one
+  // at this model's own search-path tier or higher. The .mdl data built
+  // above (flags, mins/maxs, frame/skin counts) stays authoritative either
+  // way -- see r_md5.ts's header.
+  attachMd5ReplacementIfAny(mod, pheader, pmodel);
 
   mod.type = ModtypeT.mod_alias;
 
