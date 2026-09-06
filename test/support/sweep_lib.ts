@@ -179,15 +179,17 @@ export interface GamedirConfigT {
 
 /** Classic id1 only -- test/sweep_maps.test.ts's own default scope. */
 export function classicId1Configs(basedir: string): readonly GamedirConfigT[] {
-  return [{ label: "id1", basedir, pakSubdir: "id1", extraArgs: [] }];
+  return [{ label: "id1", basedir, pakSubdir: "id1", extraArgs: ["-norerelease"] }];
 }
 
 /** Classic id1 + hipnotic + rogue -- scripts/sweep.sh's own default scope. */
 export function classicAllConfigs(basedir: string): readonly GamedirConfigT[] {
   return [
-    { label: "id1", basedir, pakSubdir: "id1", extraArgs: [] },
-    { label: "hipnotic", basedir, pakSubdir: "hipnotic", extraArgs: ["-hipnotic"] },
-    { label: "rogue", basedir, pakSubdir: "rogue", extraArgs: ["-rogue"] },
+    // -norerelease keeps a nested rerelease/ tree out of the classic rows, so
+    // they really exercise the 1999 progs and maps.
+    { label: "id1", basedir, pakSubdir: "id1", extraArgs: ["-norerelease"] },
+    { label: "hipnotic", basedir, pakSubdir: "hipnotic", extraArgs: ["-hipnotic", "-norerelease"] },
+    { label: "rogue", basedir, pakSubdir: "rogue", extraArgs: ["-rogue", "-norerelease"] },
   ];
 }
 

@@ -49,6 +49,7 @@ import {
   setStandardQuake,
   standard_quake,
 } from "../src/common/common";
+import { setComSearchpaths } from "../src/common/common";
 import { Cbuf_Init, Cmd_TokenizeString } from "../src/common/cmd";
 import { Host_Game_f } from "../src/common/host_cmd";
 import { hostClientHooks } from "../src/common/host";
@@ -287,6 +288,30 @@ describe("nested rerelease/ subdirectory: mounts both, rerelease above classic",
 });
 
 //============================================================================
+
+describe("-norerelease: a classic root with a nested rerelease/ mounts the classic tree alone", () => {
+  test("re-release content is not mounted and the classic copies resolve", () => {
+    const root = join(scratchDir, "nested-root-nore");
+    ensureDir(join(root, "id1"));
+    ensureDir(join(root, "rerelease", "id1"));
+    writePakToDisk(join(root, "id1", "pak0.pak"), [
+      { name: "progs.dat", data: latin1Bytes("CLASSIC_PROGS") },
+    ]);
+    writePakToDisk(join(root, "rerelease", "id1", "pak0.pak"), [
+      { name: "progs.dat", data: latin1Bytes("RERELEASE_PROGS") },
+      { name: "mapdb.json", data: latin1Bytes("{}") },
+      { name: "rronly.txt", data: latin1Bytes("RR_ONLY") },
+    ]);
+
+    setComSearchpaths(null); // earlier tests' mounts would otherwise still resolve a re-release-only name
+    COM_InitArgv(["q1ts", "-basedir", root, "-norerelease"]);
+    COM_InitFilesystem();
+
+    expect(COM_IsRereleaseRoot()).toBe(false);
+    expect(loadText("progs.dat")).toBe("CLASSIC_PROGS");
+    expect(COM_LoadTempFile("rronly.txt")).toBeNull();
+  });
+});
 
 describe("mission-pack-style episode flags: -mg1/-mg3/-dopa/-ctf", () => {
   test("-mg1 sets mg1=true, standard_quake=false, and mounts <root>/mg1", () => {

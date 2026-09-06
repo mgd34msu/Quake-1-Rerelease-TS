@@ -1624,6 +1624,11 @@ export function COM_InitFilesystem(): void {
   i = COM_CheckParm("-rerelease");
   let rereleaseRoot: string | null = i && i < com_argc - 1 ? com_argv[i + 1] : null;
 
+  // -norerelease (re-release addition): mount the classic tree alone even when
+  // a rerelease/ subdirectory exists -- the sweep's classic rows and anyone
+  // who wants the 1999 content untouched by the re-release overlay.
+  const noRerelease = COM_CheckParm("-norerelease") !== 0;
+
   if (classicRoot === null && rereleaseRoot === null) {
     // Auto-detect from basedir: either basedir itself is a re-release root
     // (e.g. -basedir pointing directly at a "rerelease" install), or it's a
@@ -1634,12 +1639,12 @@ export function COM_InitFilesystem(): void {
     } else {
       classicRoot = basedir;
       const nested = `${basedir}/rerelease`;
-      if (COM_IsRereleaseRootDir(nested)) rereleaseRoot = nested;
+      if (!noRerelease && COM_IsRereleaseRootDir(nested)) rereleaseRoot = nested;
     }
   } else if (classicRoot !== null && rereleaseRoot === null) {
     // Only -classic given: still auto-detect a nested rerelease/ under it.
     const nested = `${classicRoot}/rerelease`;
-    if (COM_IsRereleaseRootDir(nested)) rereleaseRoot = nested;
+    if (!noRerelease && COM_IsRereleaseRootDir(nested)) rereleaseRoot = nested;
   }
   // Only -rerelease given (with or without -classic): trust it as-is, no
   // further auto-detection.
