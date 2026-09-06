@@ -155,7 +155,7 @@ beforeAll(() => {
 
   // -dedicated 1: one player slot, so `save`/`load` (svs.maxclients != 1
   // refuses) are reachable.
-  const argv = ["quake", "-basedir", baseDir, "-dedicated", "1"];
+  const argv = ["quake", "-basedir", baseDir, "-dedicated", "1", "-nohomedir"];
   COM_InitArgv(argv);
   cmdHost.initialized = false; // a previous suite in this process may have set it
 

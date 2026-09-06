@@ -80,7 +80,7 @@ describe("COM_InitFilesystem resolves id Software's own mixed-case distribution 
     ensureDir(join(baseDir, "Id1"));
     writePakToDisk(join(baseDir, "Id1", "PAK0.PAK"), [{ name: "gfx/pop.lmp", data: new Uint8Array([1, 2, 3, 4]) }]);
 
-    COM_InitArgv(["quake", "-basedir", baseDir]);
+    COM_InitArgv(["quake", "-nohomedir", "-basedir", baseDir]);
     COM_InitFilesystem();
 
     expect(com_gamedir).toBe(join(baseDir, "Id1"));

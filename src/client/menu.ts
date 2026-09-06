@@ -218,7 +218,7 @@ import {
   DEFAULTnet_hostport,
 } from "../common/net_main";
 import { svs, sv } from "../server/server";
-import { Cmd_AddCommand, Cbuf_AddText, Cbuf_InsertText } from "../common/cmd";
+import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv, Cbuf_AddText, Cbuf_InsertText } from "../common/cmd";
 import { Cvar_Set, Cvar_SetValue, Cvar_VariableValue, Cvar_VariableString } from "../common/cvar";
 import { com_gamedir, Q_atoi, registered, rogue, hipnotic } from "../common/common";
 import { Sys_FileOpenRead, Sys_FileRead, Sys_FileClose, Sys_FileTime, Sys_Error } from "../platform/sys";
@@ -980,6 +980,32 @@ export function M_Menu_QexEpisodes_f(): void {
   if (menuState.qexEpisodeCursor < 0 || menuState.qexEpisodeCursor >= count) menuState.qexEpisodeCursor = 0;
 }
 
+/*
+The `menu_episodes` console command (F3 addition). Unlike M_Menu_QexEpisodes_f
+above -- which every in-menu caller reaches with qexContentModel already
+refreshed for the mounts in force -- this entry point is queued into the
+command buffer BEHIND a `game <dir>` line, so the mounted gamedirs change
+between the queueing and the run: it has to reload the content model itself.
+An optional argument names the gamedir whose episode the cursor should land
+on, which is what makes the Add-Ons screen open that add-on's own New Game
+screen. With nothing mounted that has sp maps at all (a classic-only install,
+or an add-on with no mapdb episode of its own) there is no episode picker to
+show, so it falls back to the Add-Ons list it was reached from.
+*/
+export function M_Menu_QexEpisodes_Cmd_f(): void {
+  qexContentModel = LoadContentModel();
+  if (qexModel().episodes.length === 0) {
+    M_Menu_QexAddons_f();
+    return;
+  }
+  if (Cmd_Argc() > 1) {
+    const wanted = Cmd_Argv(1);
+    const index = qexModel().episodes.findIndex((e) => e.dir === wanted);
+    if (index >= 0) menuState.qexEpisodeCursor = index;
+  }
+  M_Menu_QexEpisodes_f();
+}
+
 export function M_QexEpisodes_Draw(): void {
   M_DrawTransPic(16, 4, cachePic("gfx/qplaque.lmp"));
   const p = cachePic("gfx/ttl_sgl.lmp");
@@ -1213,6 +1239,11 @@ export function M_QexAddons_Key(key: number): void {
       const dirs = qexModel().addonDirs;
       const target = menuState.qexAddonsCursor === 0 ? "id1" : dirs[menuState.qexAddonsCursor - 1];
       Cbuf_AddText(`game ${target}\n`);
+      // F3: land on the chosen add-on's OWN New Game screen once the switch
+      // (and the quake.rc re-exec Host_Game_f inserts ahead of this line) has
+      // run -- the add-on's mapdb episodes are not mounted until then, which
+      // is why this is queued behind `game` rather than called here.
+      Cbuf_AddText(`menu_episodes ${target}\n`);
       break;
     }
   }
@@ -3044,18 +3075,33 @@ export function M_GameOptions_Key(key: number): void {
       S_LocalSound("misc/menu2.wav");
       if (menuState.gameoptions_cursor === 0) {
         // U40: the classic prefix (disconnect/listen 0/maxplayers) is
-        // unchanged; sv_ruleset/sv_protocol/game/teamplay/bot_count/
+        // unchanged; game/sv_ruleset/sv_protocol/teamplay/bot_count/
         // bot_skill are new, queued in that order, before the classic
         // `map <bsp>` suffix -- see file header.
+        //
+        // F3: `game <dir>` comes BEFORE the cvars. It re-execs quake.rc, so
+        // the newly mounted gamedir's archived config.cfg sets sv_ruleset
+        // and sv_protocol from that content's last clean shutdown; anything
+        // this screen chose has to be queued after that to survive. See
+        // src/client/menu_content.ts's Content_PerformLaunch for the same
+        // ordering on the single-player side.
         if (sv.active) Cbuf_AddText("disconnect\n");
         Cbuf_AddText("listen 0\n"); // so host_netport will be re-examined
-        Cbuf_AddText(`maxplayers ${menuState.maxplayers}\n`);
-
-        Cbuf_AddText(`sv_ruleset ${RULESETS[menuState.gameoptionsRulesetIndex]!.id}\n`);
-        Cbuf_AddText(`sv_protocol ${SV_PROTOCOLS[menuState.gameoptionsProtocolIndex]}\n`);
 
         const dir = gameOptionsDirArg();
         if (dir !== "") Cbuf_AddText(`game ${dir}\n`);
+
+        // `maxplayers` is what sets `deathmatch` (net_main.ts's MaxPlayers_f:
+        // 1 -> 0, more -> 1), so it has to run after the switch too and
+        // `deathmatch` is deliberately NOT re-queued from the stale
+        // pre-launch value here. `coop`/`skill` were set synchronously as the
+        // rows were cycled, so they are re-queued after `maxplayers` to
+        // survive a gamedir whose default.cfg touches them.
+        Cbuf_AddText(`maxplayers ${menuState.maxplayers}\n`);
+        Cbuf_AddText(`coop ${Cvar_VariableValue("coop")}\n`);
+        Cbuf_AddText(`skill ${Cvar_VariableValue("skill")}\n`);
+        Cbuf_AddText(`sv_ruleset ${RULESETS[menuState.gameoptionsRulesetIndex]!.id}\n`);
+        Cbuf_AddText(`sv_protocol ${SV_PROTOCOLS[menuState.gameoptionsProtocolIndex]}\n`);
         if (mpGameType() === "ctf") Cbuf_AddText("teamplay 1\n");
 
         Cbuf_AddText(`bot_count ${menuState.gameoptionsBotCount}\n`);
@@ -3216,6 +3262,7 @@ export function M_Init(): void {
   Cmd_AddCommand("help", M_Menu_Help_f, "nq");
   Cmd_AddCommand("menu_quit", M_Menu_Quit_f, "nq");
   Cmd_AddCommand("menu_addons", M_Menu_QexAddons_f); // U17 addition
+  Cmd_AddCommand("menu_episodes", M_Menu_QexEpisodes_Cmd_f); // F3 addition
   Cmd_AddCommand("menu_bots", M_Menu_QexBots_f); // U40 addition
 }
 

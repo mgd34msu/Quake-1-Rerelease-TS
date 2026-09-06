@@ -6,12 +6,15 @@ and server": one binary, everything interoperates). The server side
 (src/progs/ext/ruleset.ts's QEX_LoadLocalization, which is where the
 re-release's own $key prints actually get resolved -- see that file's own
 header on why the server, not the client, owns the loc table) is this
-unit's caller; a client-side loc-file loader (src/client/kfont_text.ts's
-ReloadTable-equivalent and src/client/menu_content.ts's
-ReloadLocalizationTable, both currently reading the `language` cvar
-straight and falling back to loc_english.txt with no "auto" support at
-all) should switch to calling Loc_ResolveLanguage() too -- see this unit's
-report for the exact call sites; src/client/** is out of this unit's SCOPE.
+unit's caller; a client-side loc-file loader should call in here too rather
+than read the `language` cvar straight and fall back to loc_english.txt with
+no "auto" support at all. F3 moved the whole ordered load down here
+(Loc_LoadOrderedForCurrentLanguage at the bottom of this file) and switched
+src/client/menu_content.ts's LoadMenuLocalization onto it, so the menus
+honour `language auto` and `loc_<lang>_mod.txt` overlays the same way the
+server's own prints do; src/client/kfont_text.ts's ReloadTable-equivalent
+and src/progs/ext/ruleset.ts's QEX_LoadLocalization (which still open-codes
+the identical sequence) are the remaining call sites to fold in.
 
 Ironwail's own LOC_Language_f resolves "auto" through LOC_GetSystemLanguage
 exactly once per `language` cvar *change* (a Cvar_SetCallback), not on every
@@ -24,7 +27,7 @@ fresh (only the underlying locale PROBE is memoized).
 
 import { Cvar_VariableString } from "./cvar";
 import { Con_DPrintf } from "../client/console";
-import { Loc_LanguageFromLocale, LOC_KNOWN_LANGUAGES } from "../lib/loc";
+import { Loc_LanguageFromLocale, Loc_LoadOrdered, LOC_KNOWN_LANGUAGES, type LocLoadTier } from "../lib/loc";
 // The locale probe lives in the platform layer, which imports the client
 // (sdl.ts -> cl_main -> ... -> screen.ts -> sv_main). This module is reached
 // from the server's own initialization (sv_main -> ruleset), so a static
@@ -77,4 +80,45 @@ export function Loc_ResolveLanguage(): string {
   const requested = Cvar_VariableString("language").trim().toLowerCase();
   if (requested === "" || requested === "auto") return resolveAutoLanguage();
   return requested;
+}
+
+/** The two file reads one localization tier needs. Kept as a parameter
+ * rather than a direct src/common/common.ts import so this module stays
+ * reachable from the server's own initialization (see the header's note on
+ * the sdl.ts cycle) and so the menu's own ContentFsSeam can drive it with
+ * synthetic files in tests. */
+export interface LocFileLoader {
+  loadTempFile(path: string): Uint8Array | null;
+  loadAllFiles(path: string): readonly Uint8Array[];
+}
+
+export const LOC_FALLBACK_LANGUAGE = "english";
+
+/** A language's base file plus every `loc_<lang>_mod.txt` overlay found
+ * across the whole search path, lowest priority first -- the two pieces
+ * src/lib/loc.ts's Loc_LoadOrdered needs for one tier. */
+export function Loc_LoadTier(load: LocFileLoader, lang: string): LocLoadTier {
+  return {
+    base: load.loadTempFile(`localization/loc_${lang}.txt`),
+    mods: load.loadAllFiles(`localization/loc_${lang}_mod.txt`),
+  };
+}
+
+/*
+================
+Loc_LoadOrderedForCurrentLanguage (F3)
+
+The whole load: resolve `language`, read that language's tier and the English
+fallback tier, hand both to Loc_LoadOrdered. The ONE ordered loader both the
+server side (src/progs/ext/ruleset.ts's QEX_LoadLocalization, which owns the
+in-game $key prints) and the client menus use, so a `_mod.txt` overlay that
+renames an episode wins in the New Game screen exactly as it does in a
+centerprint. Returns the number of distinct keys loaded.
+================
+*/
+export function Loc_LoadOrderedForCurrentLanguage(load: LocFileLoader): number {
+  const lang = Loc_ResolveLanguage();
+  const primary = Loc_LoadTier(load, lang);
+  const fallback = lang === LOC_FALLBACK_LANGUAGE ? primary : Loc_LoadTier(load, LOC_FALLBACK_LANGUAGE);
+  return Loc_LoadOrdered(primary, fallback);
 }

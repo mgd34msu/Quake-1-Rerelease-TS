@@ -410,7 +410,7 @@ describe("D5: SIGINT/SIGTERM", () => {
   test("q1ts non-dedicated: SIGTERM with a non-existent -game dir still prints \"Couldn't write config.cfg.\" and exits 0 within 3s", async () => {
     const fixture = buildQwclFixture("sysexit-q1-badgame-sigterm-");
     try {
-      const child = spawnChild(["bun", "src/main.ts", "-basedir", fixture.baseDir, "-vid_ref", "soft", "-nosound", "-game", "sysexit_missing_gamedir"]);
+      const child = spawnChild(["bun", "src/main.ts", "-basedir", fixture.baseDir, "-vid_ref", "soft", "-nosound", "-game", "sysexit_missing_gamedir", "-nohomedir"]);
       const booted = await waitUntil(
         () => child.out.text.includes("UDP Initialized") || child.err.text.includes("UDP_Listen: Unable to open accept socket"),
         5000,

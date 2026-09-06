@@ -342,7 +342,7 @@ describe("filesystem: synthetic paks", () => {
     setComModified(false);
     setComSearchpaths(null);
     try {
-      COM_InitArgv(["quake", "-basedir", baseDir]);
+      COM_InitArgv(["quake", "-nohomedir", "-basedir", baseDir]);
       COM_InitFilesystem();
 
       expect(() => COM_CheckRegistered()).not.toThrow();
@@ -358,7 +358,7 @@ describe("filesystem: synthetic paks", () => {
     const pakPath = join(scratchDir, "testA.pak");
     writePakToDisk(pakPath, [{ name: "gfx/uniqueA.lmp", data: new Uint8Array([1, 2, 3, 4, 5]) }]);
 
-    COM_InitArgv(["quake", "-path", pakPath]);
+    COM_InitArgv(["quake", "-nohomedir", "-path", pakPath]);
     COM_InitFilesystem();
 
     const data = COM_LoadHunkFile("gfx/uniqueA.lmp");
@@ -374,7 +374,7 @@ describe("filesystem: synthetic paks", () => {
     const pakPath = join(scratchDir, "testB.pak");
     writePakToDisk(pakPath, [{ name: "gfx/onlyone.lmp", data: new Uint8Array([9]) }]);
 
-    COM_InitArgv(["quake", "-path", pakPath]);
+    COM_InitArgv(["quake", "-nohomedir", "-path", pakPath]);
     COM_InitFilesystem();
 
     const { handle, length } = COM_OpenFile("does/not/exist.xyz");
@@ -394,7 +394,7 @@ describe("filesystem: synthetic paks", () => {
     // -path prepends each entry as it's processed, so the LAST argv entry
     // ends up at the head of com_searchpaths and is searched FIRST, exactly
     // as COM_InitFilesystem's C source does.
-    COM_InitArgv(["quake", "-path", looseDir, pakPath]);
+    COM_InitArgv(["quake", "-nohomedir", "-path", looseDir, pakPath]);
     COM_InitFilesystem();
 
     const data = COM_LoadTempFile("data/shadow.txt");
@@ -407,7 +407,7 @@ describe("filesystem: synthetic paks", () => {
     ensureDir(join(baseDir, "id1"));
     writePakToDisk(join(baseDir, "id1", "pak0.pak"), [{ name: "maps/uniqueE.bsp", data: latin1Bytes("BSPDATA") }]);
 
-    COM_InitArgv(["quake", "-basedir", baseDir]);
+    COM_InitArgv(["quake", "-nohomedir", "-basedir", baseDir]);
     COM_InitFilesystem();
 
     const data = COM_LoadTempFile("maps/uniqueE.bsp");
@@ -419,7 +419,7 @@ describe("filesystem: synthetic paks", () => {
     const pakPath = join(scratchDir, "testC.pak");
     writePakToDisk(pakPath, [{ name: "sound/test.wav", data: new Uint8Array([1, 2]) }]);
 
-    COM_InitArgv(["quake", "-path", pakPath]);
+    COM_InitArgv(["quake", "-nohomedir", "-path", pakPath]);
     COM_InitFilesystem();
 
     const { handle } = COM_OpenFile("sound/test.wav");

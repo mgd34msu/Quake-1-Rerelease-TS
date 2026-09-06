@@ -10,7 +10,7 @@
 // touches (src/lib/loc.ts's loc table, src/progs/ext/ruleset.ts's sv_ruleset/
 // campaign CvarT objects) are snapshotted and restored in afterAll.
 
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -46,15 +46,23 @@ import {
   RULESETS,
   SV_PROTOCOLS,
 } from "../src/client/menu_content";
+import * as cmdModule from "../src/common/cmd";
 import { Cbuf_Init } from "../src/common/cmd";
 import { Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue, Cvar_VariableValue, Cvar_VariableString } from "../src/common/cvar";
 import { COM_InitArgv, COM_InitFilesystem, com_gamedir, com_searchpaths, setComGamedir, setComSearchpaths } from "../src/common/common";
 import { Loc_ReloadFile, Loc_Unload } from "../src/lib/loc";
 import type { Mapdb } from "../src/lib/mapdb";
-import { campaign, sv_ruleset } from "../src/progs/ext/ruleset";
+import { campaign, language, sv_ruleset } from "../src/progs/ext/ruleset";
+import { Loc_SetLocaleProbeForTest } from "../src/common/loc_host";
 import { Bot_ForgetKnowledge, Bot_ForgetMapdb, bot_count, bot_skill } from "../src/bots";
 
 Cbuf_Init();
+
+// A bare spyOn (rule 15) recording every Cbuf_AddText call, so the launch
+// ORDER Content_PerformLaunch queues can be asserted without running the
+// commands (which would need a real mounted gamedir and bsp -- see the
+// Content_PerformLaunch describe block's own note below).
+const cbufAddTextSpy = spyOn(cmdModule, "Cbuf_AddText");
 
 const scratchRoot = process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests";
 mkdirSync(scratchRoot, { recursive: true });
@@ -62,6 +70,8 @@ mkdirSync(scratchRoot, { recursive: true });
 const savedSvRulesetString = sv_ruleset.string;
 const savedSvRulesetValue = sv_ruleset.value;
 const savedCampaignString = campaign.string;
+Cvar_RegisterVariable(language); // no-op if already registered (cvar.ts's own guard)
+const savedLanguageString = language.string;
 const savedCampaignValue = campaign.value;
 // U40 additions: bot_count/bot_skill (real objects, registered as a
 // module-load side effect of importing "../src/bots" -- see that module's
@@ -93,20 +103,31 @@ afterAll(() => {
 //=============================================================================
 // A fake ContentFsSeam: no real filesystem access at all.
 
-function fakeSeam(files: Readonly<Record<string, string>>, dirs: readonly string[]): ContentFsSeam {
+function padded(text: string): Uint8Array {
+  // Mirrors COM_LoadFile's trailing NUL (see menu_content.ts's own
+  // decodeTempFileText comment) so the trim path is exercised too.
+  const bytes = new TextEncoder().encode(text);
+  const out = new Uint8Array(bytes.length + 1);
+  out.set(bytes, 0);
+  return out;
+}
+
+/** `overlays` maps a path to every copy of it "found across the search
+ * path", lowest priority first -- COM_LoadAllFiles' own ordering. */
+function fakeSeam(
+  files: Readonly<Record<string, string>>,
+  dirs: readonly string[],
+  overlays: Readonly<Record<string, readonly string[]>> = {},
+): ContentFsSeam {
   const dirSet = new Set(dirs);
   return {
     directoryExists: (path: string) => dirSet.has(path),
     loadTempFile: (path: string) => {
       const text = files[path];
       if (text === undefined) return null;
-      // Mirrors COM_LoadFile's trailing NUL (see menu_content.ts's own
-      // decodeTempFileText comment) so the trim path is exercised too.
-      const bytes = new TextEncoder().encode(text);
-      const padded = new Uint8Array(bytes.length + 1);
-      padded.set(bytes, 0);
-      return padded;
+      return padded(text);
     },
+    loadAllFiles: (path: string) => (overlays[path] ?? []).map(padded),
   };
 }
 
@@ -346,40 +367,163 @@ describe("LocalizedEpisodeName", () => {
 describe("LoadMenuLocalization", () => {
   afterAll(() => {
     Loc_Unload();
+    Cvar_Set("language", savedLanguageString);
   });
 
   test("loads the current language's loc file through the seam", () => {
+    Cvar_Set("language", "english");
     const seam = fakeSeam({ "localization/loc_english.txt": 'm_quake = "Quake"\n' }, []);
     const count = LoadMenuLocalization(seam);
     expect(count).toBeGreaterThan(0);
   });
 
   test("missing loc file -> 0, table cleared", () => {
+    Cvar_Set("language", "english");
     const count = LoadMenuLocalization(fakeSeam({}, []));
     expect(count).toBe(0);
+  });
+
+  // F3: the menu goes through the SAME ordered loader as the server's own
+  // QEX_LoadLocalization (Loc_ResolveLanguage + COM_LoadAllFiles +
+  // Loc_LoadOrdered), so a mod's `loc_<lang>_mod.txt` overlay wins in the
+  // menus too -- highest-priority overlay last.
+  test("_mod.txt overlays are merged over the base file, highest priority last", () => {
+    Cvar_Set("language", "english");
+    const seam = fakeSeam(
+      { "localization/loc_english.txt": 'm_quake = "Quake"\nm_hipnotic = "Scourge of Armagon"\n' },
+      [],
+      { "localization/loc_english_mod.txt": ['m_quake = "Base Mod"\n', 'm_quake = "Top Mod"\nm_extra = "Extra"\n'] },
+    );
+
+    const count = LoadMenuLocalization(seam);
+    expect(count).toBe(3);
+    expect(LocalizedEpisodeName("$m_quake", true)).toBe("Top Mod");
+    expect(LocalizedEpisodeName("$m_hipnotic", true)).toBe("Scourge of Armagon");
+    expect(LocalizedEpisodeName("$m_extra", true)).toBe("Extra");
+  });
+
+  // The whole tier falls back, base file AND overlays, exactly as
+  // Loc_LoadOrdered specifies -- a language with no base file anywhere does
+  // not pick up its own stray overlay.
+  test("a language with no base file falls back to the english tier, overlays included", () => {
+    Cvar_Set("language", "german");
+    const seam = fakeSeam(
+      { "localization/loc_english.txt": 'm_quake = "Quake"\n' },
+      [],
+      {
+        "localization/loc_german_mod.txt": ['m_quake = "Beben"\n'],
+        "localization/loc_english_mod.txt": ['m_quake = "English Mod"\n'],
+      },
+    );
+
+    LoadMenuLocalization(seam);
+    expect(LocalizedEpisodeName("$m_quake", true)).toBe("English Mod");
+  });
+
+  // `language auto` resolves through the system locale the same way the
+  // server side already did -- previously the menu read the cvar straight
+  // and looked for "localization/loc_auto.txt".
+  test("language auto resolves through the locale probe", () => {
+    Cvar_Set("language", "auto");
+    Loc_SetLocaleProbeForTest(() => "fr_FR.UTF-8");
+    try {
+      const seam = fakeSeam(
+        {
+          "localization/loc_french.txt": 'm_quake = "Quake FR"\n',
+          "localization/loc_english.txt": 'm_quake = "Quake EN"\n',
+        },
+        [],
+      );
+      LoadMenuLocalization(seam);
+      expect(LocalizedEpisodeName("$m_quake", true)).toBe("Quake FR");
+    } finally {
+      Loc_SetLocaleProbeForTest(null);
+    }
+  });
+});
+
+// A real temp gamedir on the search path, proving the overlay merge reaches
+// the menus through the REAL seam (COM_LoadTempFile + COM_LoadAllFiles), not
+// only through fakeSeam's records.
+describe("LoadMenuLocalization (real search path, temp gamedir with a _mod overlay)", () => {
+  const root = mkdtempSync(join(scratchRoot, "menu-loc-mod-"));
+
+  afterAll(() => {
+    Loc_Unload();
+    Cvar_Set("language", savedLanguageString);
+    setComSearchpaths(savedComSearchpaths);
+    setComGamedir(savedComGamedir);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a mod gamedir's loc_english_mod.txt overrides id1's base loc file", () => {
+    mkdirSync(join(root, "id1", "localization"), { recursive: true });
+    mkdirSync(join(root, "locmod", "localization"), { recursive: true });
+    writeFileSync(join(root, "id1", "localization", "loc_english.txt"), 'm_quake = "Quake"\nm_rogue = "Dissolution of Eternity"\n');
+    writeFileSync(join(root, "locmod", "localization", "loc_english_mod.txt"), 'm_quake = "Overlaid"\n');
+
+    setComSearchpaths(null);
+    COM_InitArgv(["q1ts", "-basedir", root, "-game", "locmod", "-nohomedir"]);
+    COM_InitFilesystem();
+
+    Cvar_Set("language", "english");
+    const count = LoadMenuLocalization();
+    expect(count).toBe(2);
+    expect(LocalizedEpisodeName("$m_quake", true)).toBe("Overlaid");
+    expect(LocalizedEpisodeName("$m_rogue", true)).toBe("Dissolution of Eternity");
   });
 });
 
 //=============================================================================
-// Content_PerformLaunch -- cvar side effects (no Cbuf_Execute: exercising the
-// queued `game`/`map` commands would need a real mounted gamedir/bsp, which
-// is this file's synthetic-model territory, not this unit's -- see
-// test/menu.test.ts's own key-navigation extension for an end-to-end check).
+// Content_PerformLaunch -- the queued launch script and the `campaign` side
+// effect (no Cbuf_Execute: exercising the queued `game`/`map` commands would
+// need a real mounted gamedir/bsp, which is this file's synthetic-model
+// territory, not this unit's -- see test/menu.test.ts's own key-navigation
+// extension for an end-to-end check).
 
 describe("Content_PerformLaunch", () => {
   Cvar_RegisterVariable(sv_ruleset); // no-op if already registered (cvar.ts's own guard)
   Cvar_RegisterVariable(campaign);
 
-  test("rerelease plan sets sv_ruleset and latches campaign to the episode number", () => {
+  test("rerelease plan queues game first, then the cvars, then map, and latches campaign", () => {
+    cbufAddTextSpy.mockClear();
     Content_PerformLaunch({ gameArgs: ["hipnotic"], ruleset: "rerelease", map: "hip1m1", skill: 1, campaign: true, campaignNumber: 2 });
-    expect(Cvar_VariableString("sv_ruleset")).toBe("rerelease");
+
+    expect(cbufAddTextSpy.mock.calls.map(([s]) => s)).toEqual([
+      "disconnect\n",
+      "game hipnotic\n",
+      "maxplayers 1\n",
+      "sv_ruleset rerelease\n",
+      "skill 1\n",
+      "map hip1m1\n",
+    ]);
     expect(Cvar_VariableValue("campaign")).toBe(2);
   });
 
-  test("classic plan sets sv_ruleset classic and clears campaign", () => {
+  test("classic plan queues sv_ruleset classic after the gamedir switch and clears campaign", () => {
+    cbufAddTextSpy.mockClear();
     Content_PerformLaunch({ gameArgs: ["id1"], ruleset: "classic", map: "e1m1", skill: 0, campaign: false, campaignNumber: 0 });
-    expect(Cvar_VariableString("sv_ruleset")).toBe("classic");
+
+    const calls = cbufAddTextSpy.mock.calls.map(([s]) => s);
+    expect(calls).toEqual(["disconnect\n", "game id1\n", "maxplayers 1\n", "sv_ruleset classic\n", "skill 0\n", "map e1m1\n"]);
     expect(Cvar_VariableValue("campaign")).toBe(0);
+  });
+
+  // The defect this ordering fixes: `game <dir>` re-execs quake.rc, whose
+  // config.cfg carries an archived `sv_ruleset "auto"` for that content. A
+  // ruleset applied BEFORE the switch (or applied synchronously as a cvar
+  // write) is reverted moments after the level spawns; queued after the
+  // `game` line it wins.
+  test("sv_ruleset is queued after game, never before it and never set synchronously", () => {
+    Cvar_Set("sv_ruleset", "auto");
+    cbufAddTextSpy.mockClear();
+    Content_PerformLaunch({ gameArgs: ["rogue"], ruleset: "rerelease", map: "r1m1", skill: 3, campaign: false, campaignNumber: 0 });
+
+    const calls = cbufAddTextSpy.mock.calls.map(([s]) => s);
+    expect(Cvar_VariableString("sv_ruleset")).toBe("auto"); // not touched synchronously
+    expect(calls.indexOf("game rogue\n")).toBeGreaterThanOrEqual(0);
+    expect(calls.indexOf("game rogue\n")).toBeLessThan(calls.indexOf("sv_ruleset rerelease\n"));
+    expect(calls.indexOf("sv_ruleset rerelease\n")).toBeLessThan(calls.indexOf("map r1m1\n"));
   });
 });
 
@@ -402,7 +546,7 @@ describe("LoadContentModel (real filesystem, synthetic -rerelease root)", () => 
     mkdirSync(join(root, "hipnotic"), { recursive: true });
     writeFileSync(join(root, "id1", "mapdb.json"), SYNTHETIC_MAPDB_TEXT);
 
-    COM_InitArgv(["q1ts", "-rerelease", root]);
+    COM_InitArgv(["q1ts", "-rerelease", root, "-nohomedir"]);
     COM_InitFilesystem();
 
     const model = LoadContentModel();
@@ -421,7 +565,7 @@ const HAVE_REAL_Q1 = existsSync(join(REAL_Q1_DIR, "id1")) && existsSync(join(REA
 
 describe.skipIf(!HAVE_REAL_Q1)("real-data: qfiles/q1's retail mapdb.json", () => {
   test("6 episodes, 143 maps total, all six enumerate as content-model episodes", () => {
-    COM_InitArgv(["q1ts", "-basedir", REAL_Q1_DIR]);
+    COM_InitArgv(["q1ts", "-basedir", REAL_Q1_DIR, "-nohomedir"]);
     COM_InitFilesystem();
 
     const { mapdb } = LoadMapdb(realContentFsSeam);
@@ -641,7 +785,7 @@ describe("Bots page model", () => {
 
   test("no bots/ data mounted -> BotsMenuAvailable false, model.available false, no roster", () => {
     setComSearchpaths(null);
-    COM_InitArgv(["q1ts", "-basedir", plainRoot]);
+    COM_InitArgv(["q1ts", "-basedir", plainRoot, "-nohomedir"]);
     COM_InitFilesystem();
     Bot_ForgetKnowledge();
     Bot_ForgetMapdb();
@@ -657,7 +801,7 @@ describe("Bots page model", () => {
 
   test("bots/ data mounted -> available true, roster from characters.txt, skill names from settings_PC.txt", () => {
     setComSearchpaths(null);
-    COM_InitArgv(["q1ts", "-basedir", botsRoot]);
+    COM_InitArgv(["q1ts", "-basedir", botsRoot, "-nohomedir"]);
     COM_InitFilesystem();
     Bot_ForgetKnowledge();
     Bot_ForgetMapdb();
@@ -675,7 +819,7 @@ describe("Bots page model", () => {
 
   test("mapAllowsBots reflects mapdb.json's own per-map bots flag", () => {
     setComSearchpaths(null);
-    COM_InitArgv(["q1ts", "-basedir", botsRoot]);
+    COM_InitArgv(["q1ts", "-basedir", botsRoot, "-nohomedir"]);
     COM_InitFilesystem();
     Bot_ForgetKnowledge();
     Bot_ForgetMapdb();
@@ -694,7 +838,7 @@ describe("Bots page model", () => {
 
   test("count/skillIndex reflect the bot_count/bot_skill cvars", () => {
     setComSearchpaths(null);
-    COM_InitArgv(["q1ts", "-basedir", botsRoot]);
+    COM_InitArgv(["q1ts", "-basedir", botsRoot, "-nohomedir"]);
     COM_InitFilesystem();
     Bot_ForgetKnowledge();
     Bot_ForgetMapdb();

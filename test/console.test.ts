@@ -128,7 +128,7 @@ function makeFakeRenderer(): { renderer: Renderer; draws: DrawCharacterCall[] } 
 
 beforeEach(() => {
   // no "-condebug", so Con_Init's con_debuglog stays deterministically false
-  COM_InitArgv(["quake"]);
+  COM_InitArgv(["quake", "-nohomedir"]);
   sysState.isDedicated = false;
   keyState.key_dest = KeydestT.key_game;
   re.current = null;
@@ -325,7 +325,7 @@ describe("Con_DrawConsole", () => {
 describe("Con_DebugLog (D2: -condebug with a not-yet-existing -game directory)", () => {
   test("a failed qconsole.log open under -condebug is a silent no-op, not a crash", () => {
     vid.width = 320;
-    COM_InitArgv(["quake", "-condebug"]);
+    COM_InitArgv(["quake", "-condebug", "-nohomedir"]);
     setComGamedir("/nonexistent-dir-for-d2-console-test/does-not-exist");
 
     Con_Init();

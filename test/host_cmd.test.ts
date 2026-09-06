@@ -12,11 +12,11 @@ afterAll (`bun test` runs every file in one process).
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { COM_InitArgv, com_gamedir, pop } from "../src/common/common";
+import { COM_GetGameNames, COM_InitArgv, com_gamedir, com_searchpaths, pop, setComGamedir, setComSearchpaths } from "../src/common/common";
 import { writePakToDisk } from "./support/pak_builder";
 import { buildBsp, buildMdl, buildSpr, ensureDir, writeGameFile } from "./support/bsp_builder";
-import { Cmd_ExecuteString, Cmd_TokenizeString, CmdSourceT, cmdHost, cmdState } from "../src/common/cmd";
-import { Cvar_VariableValue, setCvarServerHooks } from "../src/common/cvar";
+import { Cbuf_AddText, Cbuf_Execute, Cmd_ExecuteString, Cmd_TokenizeString, CmdSourceT, cmdHost, cmdState } from "../src/common/cmd";
+import { Cvar_Set, Cvar_VariableString, Cvar_VariableValue, setCvarServerHooks } from "../src/common/cvar";
 import { LUMPINFO_T_SIZE, WADINFO_T_SIZE } from "../src/common/wad";
 import { IT_SHOTGUN, MAX_LIGHTSTYLES, QuakeParmsT, SAVEGAME_COMMENT_LENGTH, STAT_MONSTERS, STAT_TOTALMONSTERS } from "../src/common/quakedef";
 import { SvcOpsT } from "../src/common/protocol";
@@ -162,7 +162,10 @@ beforeAll(() => {
 
   // -dedicated 1: one player slot, so `save`/`load` (svs.maxclients != 1
   // refuses) are reachable.
-  const argv = ["quake", "-basedir", baseDir, "-dedicated", "1"];
+  // -nohomedir: this suite's `save`/`load` round-trips assert paths under
+  // com_gamedir, which F3 makes the per-user home tier by default -- the
+  // scratch basedir is the write target here.
+  const argv = ["quake", "-basedir", baseDir, "-dedicated", "1", "-nohomedir"];
   COM_InitArgv(argv);
   cmdHost.initialized = false; // a previous suite in this process may have set it
 
@@ -531,5 +534,49 @@ describe.skipIf(!HAVE_PROGS106)("Host_Status_f", () => {
       expect(lines[4]).toBe("#1  " + "playername      " + "  " + "  5" + "  " + " 1:01:01" + "\n");
       expect(lines[5]).toBe("   local\n");
     });
+  });
+});
+
+//============================================================================
+// F3: Host_Game_f re-execs quake.rc with Cbuf_InsertText, so the whole
+// default.cfg/config.cfg chain runs BEFORE whatever the caller queued behind
+// the `game` line. The menus queue `game <dir>; sv_ruleset X; ...; map m`;
+// with a tail append the newly mounted gamedir's archived `sv_ruleset "auto"`
+// ran last and silently reverted the player's choice.
+//
+// Placed last in this file: it mounts a mod above the base tier, and puts the
+// search path back in its own afterAll.
+
+describe.skipIf(!HAVE_PROGS106)("Host_Game_f re-execs quake.rc ahead of the rest of the queued script", () => {
+  const savedSearchpaths = com_searchpaths;
+  const savedGamedir = com_gamedir;
+
+  afterAll(() => {
+    setComSearchpaths(savedSearchpaths);
+    setComGamedir(savedGamedir);
+  });
+
+  test("a cvar queued after `game` survives that gamedir's archived config.cfg", () => {
+    // A mod whose quake.rc execs a config.cfg that archives sv_ruleset back
+    // to "auto" -- exactly the shape of the retail rerelease/id1/config.cfg
+    // this defect was found against.
+    writeGameFile(baseDir, "rcmod/quake.rc", new TextEncoder().encode("exec config.cfg\n"));
+    writeGameFile(baseDir, "rcmod/config.cfg", new TextEncoder().encode('sv_ruleset "auto"\n'));
+
+    Cvar_Set("sv_ruleset", "auto");
+    Cbuf_AddText("game rcmod\nsv_ruleset classic\n");
+    Cbuf_Execute();
+
+    expect(COM_GetGameNames()).toBe("rcmod");
+    expect(Cvar_VariableString("sv_ruleset")).toBe("classic");
+  });
+
+  test("the same script with the gamedir's config.cfg absent still lands on the queued value", () => {
+    Cvar_Set("sv_ruleset", "auto");
+    Cbuf_AddText("game id1\nsv_ruleset rerelease\n");
+    Cbuf_Execute();
+
+    expect(COM_GetGameNames()).toBe("id1");
+    expect(Cvar_VariableString("sv_ruleset")).toBe("rerelease");
   });
 });

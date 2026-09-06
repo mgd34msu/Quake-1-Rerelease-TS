@@ -157,7 +157,7 @@ beforeAll(() => {
   }
   writePakToDisk(join(gameDir, "pak0.pak"), [{ name: "gfx/pop.lmp", data: popLmp }]);
 
-  COM_InitArgv(["quake", "-basedir", baseDir]);
+  COM_InitArgv(["quake", "-basedir", baseDir, "-nohomedir"]);
   COM_InitFilesystem();
   COM_CheckRegistered();
   Mod_Init();

@@ -25,6 +25,7 @@ import { join } from "node:path";
 
 import {
   COM_ClassicDir,
+  COM_DefaultHomeDir,
   COM_FindFileTier,
   COM_GetGameNames,
   COM_InitArgv,
@@ -34,6 +35,7 @@ import {
   COM_RereleaseDir,
   COM_WriteFile,
   com_gamedir,
+  com_homedir,
   ctf,
   dopa,
   hipnotic,
@@ -48,6 +50,7 @@ import {
   setRogue,
   setStandardQuake,
   standard_quake,
+  HOMEDIR_APPNAME,
   com_searchpaths, setComGamedir, setComSearchpaths,
 } from "../src/common/common";
 import { Cbuf_Init, Cmd_TokenizeString } from "../src/common/cmd";
@@ -118,7 +121,7 @@ describe("zip search-path node: lookup, tier, and case-insensitive entries", () 
       { name: "onlykpf.txt", data: latin1Bytes("KPF_ONLY") },
     ]);
 
-    COM_InitArgv(["q1ts", "-basedir", baseDir]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", baseDir]);
     COM_InitFilesystem();
 
     expect(loadText("shared.txt")).toBe("KPF"); // kpf mounted after the pak -> higher priority
@@ -135,7 +138,7 @@ describe("zip search-path node: lookup, tier, and case-insensitive entries", () 
     ensureDir(join(baseDir, "id1"));
     writeZipToDisk(join(baseDir, "id1", "content.kpf"), [{ name: "fonts/qfont.kfont", data: latin1Bytes("FONTDATA") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", baseDir]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", baseDir]);
     COM_InitFilesystem();
 
     expect(loadText("FONTS/QFONT.KFONT")).toBe("FONTDATA");
@@ -149,7 +152,7 @@ describe("zip search-path node: lookup, tier, and case-insensitive entries", () 
     writeZipToDisk(join(baseDir, "id1", "a_mod.kpf"), [{ name: "dup.txt", data: latin1Bytes("A") }]);
     writeZipToDisk(join(baseDir, "id1", "z_mod.pk3"), [{ name: "dup.txt", data: latin1Bytes("Z") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", baseDir]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", baseDir]);
     COM_InitFilesystem();
 
     // "z_mod.pk3" sorts after "a_mod.kpf" -> mounted later -> higher priority
@@ -166,7 +169,7 @@ describe("re-release root detection", () => {
     writeZipToDisk(join(root, "QuakeEX.kpf"), [{ name: "onlykpf.txt", data: latin1Bytes("KPF_ONLY") }]);
     writePakToDisk(join(root, "id1", "pak0.pak"), [{ name: "progs.dat", data: latin1Bytes("PROGS") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", root]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root]);
     COM_InitFilesystem();
 
     expect(COM_IsRereleaseRoot()).toBe(true);
@@ -191,7 +194,7 @@ describe("re-release root detection", () => {
       { name: "maps/rrb.bsp", data: latin1Bytes("BSPDATA") },
     ]);
 
-    COM_InitArgv(["q1ts", "-basedir", root]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root]);
     COM_InitFilesystem();
 
     expect(COM_IsRereleaseRoot()).toBe(true);
@@ -204,7 +207,7 @@ describe("re-release root detection", () => {
     ensureDir(join(root, "id1"));
     writePakToDisk(join(root, "id1", "pak0.pak"), [{ name: "progs.dat", data: latin1Bytes("CLASSIC") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", root]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root]);
     COM_InitFilesystem();
 
     expect(COM_IsRereleaseRoot()).toBe(false);
@@ -221,7 +224,7 @@ describe("re-release root detection", () => {
     writePakToDisk(join(classicDir, "id1", "pak0.pak"), [{ name: "classiconly.txt", data: latin1Bytes("C") }]);
     writePakToDisk(join(rereleaseDir, "id1", "pak0.pak"), [{ name: "rronly.txt", data: latin1Bytes("R") }]);
 
-    COM_InitArgv(["q1ts", "-classic", classicDir, "-rerelease", rereleaseDir]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-classic", classicDir, "-rerelease", rereleaseDir]);
     COM_InitFilesystem();
 
     expect(COM_ClassicDir()).toBe(classicDir);
@@ -253,7 +256,7 @@ describe("nested rerelease/ subdirectory: mounts both, rerelease above classic",
     ]);
     writeZipToDisk(join(root, "rerelease", "QuakeEX.kpf"), [{ name: "onlykpf2.txt", data: latin1Bytes("KPF2") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", root]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root]);
     COM_InitFilesystem();
 
     expect(COM_IsRereleaseRoot()).toBe(true);
@@ -308,7 +311,7 @@ describe("-norerelease: a classic root with a nested rerelease/ mounts the class
     ]);
 
     setComSearchpaths(null); // earlier tests' mounts would otherwise still resolve a re-release-only name
-    COM_InitArgv(["q1ts", "-basedir", root, "-norerelease"]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root, "-norerelease"]);
     COM_InitFilesystem();
 
     expect(COM_IsRereleaseRoot()).toBe(false);
@@ -325,7 +328,7 @@ describe("mission-pack-style episode flags: -mg1/-mg3/-dopa/-ctf", () => {
     writePakToDisk(join(root, "id1", "pak0.pak"), [{ name: "progs.dat", data: latin1Bytes("BASE") }]);
     writePakToDisk(join(root, "mg1", "pak0.pak"), [{ name: "maps/mge1m1.bsp", data: latin1Bytes("MG1_MAP") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", root, "-mg1"]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root, "-mg1"]);
     COM_InitFilesystem();
 
     expect(mg1).toBe(true);
@@ -340,7 +343,7 @@ describe("mission-pack-style episode flags: -mg1/-mg3/-dopa/-ctf", () => {
       ensureDir(join(root, flag));
       writePakToDisk(join(root, flag, "pak0.pak"), [{ name: `${flag}only.txt`, data: latin1Bytes(flag.toUpperCase()) }]);
 
-      COM_InitArgv(["q1ts", "-basedir", root, `-${flag}`]);
+      COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root, `-${flag}`]);
       COM_InitFilesystem();
 
       expect(standard_quake).toBe(false);
@@ -359,7 +362,7 @@ describe("mission-pack-style episode flags: -mg1/-mg3/-dopa/-ctf", () => {
     writePakToDisk(join(root, "id1", "pak0.pak"), [{ name: "progs.dat", data: latin1Bytes("BASE") }]);
     writePakToDisk(join(root, "hipnotic", "pak0.pak"), [{ name: "hiprr.txt", data: latin1Bytes("HIP_RERELEASE") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", root, "-hipnotic"]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root, "-hipnotic"]);
     COM_InitFilesystem();
 
     expect(COM_IsRereleaseRoot()).toBe(true);
@@ -393,7 +396,7 @@ describe('runtime "game" command (Host_Game_f)', () => {
     writePakToDisk(join(root, "hipnotic", "pak0.pak"), [{ name: "hip.txt", data: latin1Bytes("HIP") }]);
     writePakToDisk(join(root, "extramod", "pak0.pak"), [{ name: "mod.txt", data: latin1Bytes("MOD") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", root]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root]);
     COM_InitFilesystem();
     sv.active = false;
 
@@ -425,7 +428,7 @@ describe('runtime "game" command (Host_Game_f)', () => {
     writePakToDisk(join(root, "id1", "pak0.pak"), [{ name: "progs.dat", data: latin1Bytes("BASE") }]);
     writePakToDisk(join(root, "hipnotic", "pak0.pak"), [{ name: "hip2.txt", data: latin1Bytes("HIP2") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", root]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root]);
     COM_InitFilesystem();
 
     sv.active = true;
@@ -465,7 +468,7 @@ describe('runtime "game" command (Host_Game_f)', () => {
     ensureDir(join(root, "id1"));
     writePakToDisk(join(root, "id1", "pak0.pak"), [{ name: "progs.dat", data: latin1Bytes("BASE") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", root]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root]);
     COM_InitFilesystem();
     sv.active = false;
 
@@ -501,7 +504,7 @@ describe("-game <dir> and the \"game\" command resolve against the re-release ro
     const root = join(scratchDir, "game-parm-nested-mg1");
     buildNestedWithMg1(root, "maps/mge1m1_a.bsp");
 
-    COM_InitArgv(["q1ts", "-basedir", root, "-game", "mg1"]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root, "-game", "mg1"]);
     COM_InitFilesystem();
 
     expect(COM_IsRereleaseRoot()).toBe(true);
@@ -512,7 +515,7 @@ describe("-game <dir> and the \"game\" command resolve against the re-release ro
     const root = join(scratchDir, "game-cmd-nested-mg1");
     buildNestedWithMg1(root, "maps/mge1m1_b.bsp");
 
-    COM_InitArgv(["q1ts", "-basedir", root]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root]);
     COM_InitFilesystem();
     sv.active = false;
 
@@ -540,7 +543,7 @@ describe("-game <dir> and the \"game\" command resolve against the re-release ro
     // a nonexistent rerelease/classiconlymod (or nothing at all).
     writePakToDisk(join(root, "classiconlymod", "pak0.pak"), [{ name: "modonly.txt", data: latin1Bytes("CLASSIC_MOD") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", root, "-game", "classiconlymod"]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", root, "-game", "classiconlymod"]);
     COM_InitFilesystem();
 
     expect(COM_IsRereleaseRoot()).toBe(true);
@@ -550,7 +553,7 @@ describe("-game <dir> and the \"game\" command resolve against the re-release ro
 
 //============================================================================
 
-describe("home directory tier (-homedir)", () => {
+describe("home directory tier (-homedir / -nohomedir / the default)", () => {
   test("com_gamedir points at <homedir>/<gamedir>, which is searched FIRST and is the write target", () => {
     const baseDir = join(scratchDir, "homedir-base");
     const homeDir = join(scratchDir, "homedir-home");
@@ -574,18 +577,115 @@ describe("home directory tier (-homedir)", () => {
     expect(bytesToLatin1(readFileSync(join(homeDir, "id1", "written.cfg")))).toBe("HELLO");
   });
 
-  test("without -homedir, com_gamedir is the gamedir itself and writes land there (unchanged behaviour)", () => {
+  test("-nohomedir puts com_gamedir back on the gamedir itself and writes land there (WinQuake behaviour)", () => {
     const baseDir = join(scratchDir, "nohomedir-base");
     ensureDir(join(baseDir, "id1"));
     writePakToDisk(join(baseDir, "id1", "pak0.pak"), [{ name: "progs.dat", data: latin1Bytes("BASE") }]);
 
-    COM_InitArgv(["q1ts", "-basedir", baseDir]);
+    COM_InitArgv(["q1ts", "-basedir", baseDir, "-nohomedir"]);
     COM_InitFilesystem();
 
+    expect(com_homedir).toBe("");
     expect(com_gamedir).toBe(join(baseDir, "id1"));
 
     COM_WriteFile("plain.cfg", latin1Bytes("PLAIN"));
     expect(existsSync(join(baseDir, "id1", "plain.cfg"))).toBe(true);
+  });
+
+  // F3: with NEITHER parameter given the engine writes under the user's own
+  // data directory instead of the (often read-only, always shared) retail
+  // install -- $XDG_DATA_HOME/q1rets, mirrored per gamedir.
+  describe("the default with neither parameter", () => {
+    const savedXdg = process.env.XDG_DATA_HOME;
+    const savedHome = process.env.HOME;
+
+    afterAll(() => {
+      if (savedXdg === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = savedXdg;
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+    });
+
+    test("COM_DefaultHomeDir prefers $XDG_DATA_HOME, then $HOME/.local/share, else \"\"", () => {
+      process.env.XDG_DATA_HOME = "/xdg/data";
+      process.env.HOME = "/home/someone";
+      expect(COM_DefaultHomeDir()).toBe(`/xdg/data/${HOMEDIR_APPNAME}`);
+
+      process.env.XDG_DATA_HOME = "/xdg/data/"; // a trailing slash is trimmed
+      expect(COM_DefaultHomeDir()).toBe(`/xdg/data/${HOMEDIR_APPNAME}`);
+
+      delete process.env.XDG_DATA_HOME;
+      expect(COM_DefaultHomeDir()).toBe(`/home/someone/.local/share/${HOMEDIR_APPNAME}`);
+
+      delete process.env.HOME;
+      expect(COM_DefaultHomeDir()).toBe("");
+    });
+
+    test("com_gamedir lands under $XDG_DATA_HOME/q1rets/<gamedir>, searched first, and every mounted gamedir gets its own", () => {
+      const baseDir = join(scratchDir, "defaulthome-base");
+      const xdgDir = join(scratchDir, "defaulthome-xdg");
+      ensureDir(join(baseDir, "id1"));
+      ensureDir(join(baseDir, "mymod"));
+      writePakToDisk(join(baseDir, "id1", "pak0.pak"), [{ name: "progs.dat", data: latin1Bytes("BASE") }]);
+      writeFileSync(join(baseDir, "mymod", "pref.txt"), latin1Bytes("FROM_BASE"));
+
+      process.env.XDG_DATA_HOME = xdgDir;
+      delete process.env.HOME;
+
+      COM_InitArgv(["q1ts", "-basedir", baseDir, "-game", "mymod"]);
+      COM_InitFilesystem();
+
+      expect(com_homedir).toBe(join(xdgDir, HOMEDIR_APPNAME));
+      expect(com_gamedir).toBe(join(xdgDir, HOMEDIR_APPNAME, "mymod"));
+
+      // The tier is created on demand, per gamedir, for id1 as well as the
+      // -game dir.
+      expect(existsSync(join(xdgDir, HOMEDIR_APPNAME, "id1"))).toBe(true);
+      expect(existsSync(join(xdgDir, HOMEDIR_APPNAME, "mymod"))).toBe(true);
+
+      // Writes go to the home tier; the retail install is untouched.
+      COM_WriteFile("config.cfg", latin1Bytes("ARCHIVED"));
+      expect(existsSync(join(xdgDir, HOMEDIR_APPNAME, "mymod", "config.cfg"))).toBe(true);
+      expect(existsSync(join(baseDir, "mymod", "config.cfg"))).toBe(false);
+
+      // The basedir gamedir is still readable underneath...
+      expect(loadText("pref.txt")).toBe("FROM_BASE");
+      expect(loadText("progs.dat")).toBe("BASE");
+
+      // ...and the home tier outranks it once a file exists in both.
+      writeFileSync(join(xdgDir, HOMEDIR_APPNAME, "mymod", "pref.txt"), latin1Bytes("FROM_HOME"));
+      expect(loadText("pref.txt")).toBe("FROM_HOME");
+    });
+
+    test("$HOME with no $XDG_DATA_HOME lands under ~/.local/share/q1rets", () => {
+      const baseDir = join(scratchDir, "defaulthome-home-base");
+      const fakeHome = join(scratchDir, "defaulthome-home");
+      ensureDir(join(baseDir, "id1"));
+      writePakToDisk(join(baseDir, "id1", "pak0.pak"), [{ name: "progs.dat", data: latin1Bytes("BASE") }]);
+
+      delete process.env.XDG_DATA_HOME;
+      process.env.HOME = fakeHome;
+
+      COM_InitArgv(["q1ts", "-basedir", baseDir]);
+      COM_InitFilesystem();
+
+      expect(com_gamedir).toBe(join(fakeHome, ".local", "share", HOMEDIR_APPNAME, "id1"));
+    });
+
+    test("-homedir still overrides the default", () => {
+      const baseDir = join(scratchDir, "override-base");
+      const homeDir = join(scratchDir, "override-home");
+      ensureDir(join(baseDir, "id1"));
+      writePakToDisk(join(baseDir, "id1", "pak0.pak"), [{ name: "progs.dat", data: latin1Bytes("BASE") }]);
+
+      process.env.XDG_DATA_HOME = join(scratchDir, "override-xdg");
+
+      COM_InitArgv(["q1ts", "-basedir", baseDir, "-homedir", homeDir]);
+      COM_InitFilesystem();
+
+      expect(com_gamedir).toBe(join(homeDir, "id1"));
+      expect(existsSync(join(scratchDir, "override-xdg"))).toBe(false);
+    });
   });
 });
 
@@ -598,7 +698,7 @@ const HAVE_REAL_Q1 = existsSync(join(REAL_Q1_DIR, "id1")) && existsSync(join(REA
 
 describe.skipIf(!HAVE_REAL_Q1)("real-data: classic root with nested rerelease/ (qfiles/q1)", () => {
   test("localization/loc_english.txt, fonts/qfont.kfont, maps/e1m1.bsp and progs.dat all resolve, rerelease above classic", () => {
-    COM_InitArgv(["q1ts", "-basedir", REAL_Q1_DIR]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", REAL_Q1_DIR]);
     COM_InitFilesystem();
 
     expect(COM_IsRereleaseRoot()).toBe(true);
@@ -633,7 +733,7 @@ describe.skipIf(!HAVE_REAL_Q1)("real-data: classic root with nested rerelease/ (
 describe.skipIf(!HAVE_REAL_Q1)("real-data: mounting the rerelease root directly with -mg1 (qfiles/q1/rerelease)", () => {
   test("maps/mge1m1.bsp resolves", () => {
     const rereleaseDir = join(REAL_Q1_DIR, "rerelease");
-    COM_InitArgv(["q1ts", "-basedir", rereleaseDir, "-mg1"]);
+    COM_InitArgv(["q1ts", "-nohomedir", "-basedir", rereleaseDir, "-mg1"]);
     COM_InitFilesystem();
 
     expect(COM_IsRereleaseRoot()).toBe(true);

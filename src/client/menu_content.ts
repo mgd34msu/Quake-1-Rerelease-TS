@@ -55,10 +55,11 @@
 
 import { statSync } from "node:fs";
 import { parseMapdb, type Mapdb, type MapdbMap } from "../lib/mapdb";
-import { Loc_Localize, Loc_ReloadFile } from "../lib/loc";
-import { Cvar_Set, Cvar_VariableString, Cvar_VariableValue } from "../common/cvar";
+import { Loc_Localize } from "../lib/loc";
+import { Loc_LoadOrderedForCurrentLanguage } from "../common/loc_host";
+import { Cvar_Set, Cvar_VariableValue } from "../common/cvar";
 import { Cbuf_AddText } from "../common/cmd";
-import { COM_ClassicDir, COM_LoadTempFile, COM_RereleaseDir, COM_IsRereleaseRoot } from "../common/common";
+import { COM_ClassicDir, COM_LoadAllFiles, COM_LoadTempFile, COM_RereleaseDir, COM_IsRereleaseRoot } from "../common/common";
 import { QEX_SetCampaign } from "../progs/ext/ruleset";
 // U40 addition: read-only use of the bots subsystem's public surface (not a
 // write -- this unit's SCOPE excludes src/bots/**, but importing a landed
@@ -75,6 +76,10 @@ import { Bot_Knowledge, Bot_MapAllowsBots, Bot_SkillName, Bot_Slots } from "../b
 export interface ContentFsSeam {
   directoryExists(path: string): boolean;
   loadTempFile(path: string): Uint8Array | null;
+  /** Every copy of `path` across the whole search path, lowest priority
+   * first -- COM_LoadAllFiles. LoadMenuLocalization's `_mod.txt` overlay
+   * tier needs it (see LOCALIZATION below). */
+  loadAllFiles(path: string): readonly Uint8Array[];
 }
 
 function realDirectoryExists(path: string): boolean {
@@ -88,6 +93,7 @@ function realDirectoryExists(path: string): boolean {
 export const realContentFsSeam: ContentFsSeam = {
   directoryExists: realDirectoryExists,
   loadTempFile: (path: string) => COM_LoadTempFile(path),
+  loadAllFiles: (path: string) => COM_LoadAllFiles(path),
 };
 
 //=============================================================================
@@ -271,15 +277,20 @@ export function AvailableLanguages(seam: ContentFsSeam = realContentFsSeam): Loc
   return LOC_LANGUAGES.filter((lang) => seam.loadTempFile(`localization/loc_${lang}.txt`) !== null);
 }
 
-/** Loads the loc table for the current `language` cvar (falling back to
- * english, matching QEX_LoadLocalization's own fallback), for the menu's own
- * use. Returns the string count Loc_ReloadFile reports (0 means no table --
- * see LocalizedEpisodeName's fallback rule). */
+/** Loads the loc table for the current `language` cvar, for the menu's own
+ * use. Returns the number of distinct keys loaded (0 means no table -- see
+ * LocalizedEpisodeName's fallback rule).
+ *
+ * F3: this goes through src/common/loc_host.ts's
+ * Loc_LoadOrderedForCurrentLanguage -- the same ordered loader
+ * QEX_LoadLocalization uses -- rather than reading the `language` cvar and
+ * one base file straight. Two behaviour changes follow: `language auto`
+ * resolves through the system locale here as it already did in-game, and
+ * every `loc_<lang>_mod.txt` overlay on the search path is merged over the
+ * base file, so a mod that renames an episode is honoured on the New Game
+ * screen and not just in the server's own $key prints. */
 export function LoadMenuLocalization(seam: ContentFsSeam = realContentFsSeam): number {
-  const lang = Cvar_VariableString("language").trim().toLowerCase() || "english";
-  let bytes = seam.loadTempFile(`localization/loc_${lang}.txt`);
-  if (bytes === null && lang !== "english") bytes = seam.loadTempFile("localization/loc_english.txt");
-  return Loc_ReloadFile(bytes);
+  return Loc_LoadOrderedForCurrentLanguage(seam);
 }
 
 /** `locLoaded` is whether LoadMenuLocalization returned > 0 (the brief's
@@ -387,15 +398,29 @@ export function ClassicProgsPlan(episodeDir: string, map: string, skill: number)
  * cvar.ts CVAR_LATCH hazard to route around here (this port's cvar.ts has no
  * latch concept at all -- see this function's own Cvar_Set calls, applied
  * synchronously and safely before the queued `game`/`map` commands run).
+ *
+ * ORDER MATTERS (F3): `game <dir>` goes into the buffer FIRST, and every
+ * archived cvar the screen chose goes in AFTER it. `game` re-execs quake.rc
+ * (default.cfg then the newly mounted gamedir's own archived config.cfg),
+ * which sets `sv_ruleset`/`sv_protocol` from that content's last clean
+ * shutdown -- so a value applied before the switch, or applied synchronously
+ * here, is silently reverted a few frames after the level spawns. Queued
+ * after the `game` line it runs after the whole quake.rc chain (Host_Game_f
+ * inserts that chain ahead of the rest of this script) and wins.
+ *
+ * `campaign` is the one exception that stays a direct call: it is not an
+ * archived cvar (nothing in config.cfg can clobber it) and QEX_SetCampaign
+ * also latches `campaign_valid` for the QuakeC, which no console command
+ * expresses.
  */
 export function Content_PerformLaunch(plan: LaunchPlan): void {
-  Cvar_Set("sv_ruleset", plan.ruleset);
   if (plan.campaign) QEX_SetCampaign(plan.campaignNumber);
   else Cvar_Set("campaign", "0");
 
   Cbuf_AddText("disconnect\n");
-  Cbuf_AddText("maxplayers 1\n");
   Cbuf_AddText(`game ${plan.gameArgs.join(" ")}\n`);
+  Cbuf_AddText("maxplayers 1\n");
+  Cbuf_AddText(`sv_ruleset ${plan.ruleset}\n`);
   Cbuf_AddText(`skill ${plan.skill}\n`);
   Cbuf_AddText(`map ${plan.map}\n`);
 }

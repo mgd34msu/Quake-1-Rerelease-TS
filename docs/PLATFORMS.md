@@ -134,6 +134,26 @@ an error naming that path instead of silently falling back to a system copy.
 | libvorbisfile | No CD audio (the music tracks). Everything else works. This is deliberate: the C's `cd_linux.c` behaves the same way when it cannot open `/dev/cdrom`. |
 | the socket library | `UDP_Init` returns -1, exactly as `-noudp` does, and the engine runs with the loopback driver only: single player works, network play does not. |
 
+## Where the engine writes
+
+By default the engine writes nothing into the game install. `config.cfg`,
+savegames, autosaves, demos, screenshots and `qconsole.log` go to a per-user
+directory, mirrored per game directory (`<home>/id1/`, `<home>/hipnotic/`, and
+so on), created on demand and mounted at the head of the search path so those
+files are found before the install's own copies. The install under `-basedir`
+stays read-only, including each game directory's own `config.cfg`, which is
+still exec'd and never overwritten.
+
+| Platform | `<home>` with neither `-homedir` nor `-nohomedir` |
+| --- | --- |
+| Linux | `$XDG_DATA_HOME/q1rets`, or `~/.local/share/q1rets` when that variable is unset |
+| macOS | `$XDG_DATA_HOME/q1rets` if set, otherwise `~/.local/share/q1rets` -- not `~/Library/Application Support`; untested, see the untested-platform statement above |
+| Windows | `%XDG_DATA_HOME%\q1rets` if set, otherwise `%HOME%\.local\share\q1rets`; `%HOME%` is often unset on Windows, and with neither variable set the engine falls back to writing into the basedir as `-nohomedir` does. Untested. |
+
+`-homedir <dir>` picks a different root; `-nohomedir` writes into
+`<basedir>/<gamedir>` the way WinQuake did. This is a quality-of-life
+addition over WinQuake, matching what QuakeSpasm and Ironwail do on Linux.
+
 ## Known platform limits
 
 - **Windows console input.** `Sys_ConsoleInput` reads `stdin` as a stream.
@@ -160,6 +180,10 @@ an error naming that path instead of silently falling back to a system copy.
 - **macOS Retina scaling** has not been checked. The window is created at the
   requested pixel size; on a HiDPI display SDL may hand back a backing store
   at a different scale than the software renderer's blit expects.
+- **Windows/macOS writable directory.** The default write root is chosen from
+  `$XDG_DATA_HOME`/`$HOME` only (see "Where the engine writes" above); no
+  `%APPDATA%` or `~/Library/Application Support` lookup exists yet, so on
+  Windows the practical answer today is `-homedir <dir>` or `-nohomedir`.
 - **Case-sensitive game data.** Only Linux (and a case-sensitive macOS volume)
   needs this, and it is handled: a mixed-case `Id1/PAK0.PAK` is found by a
   case-insensitive directory scan. Windows and the default macOS filesystem

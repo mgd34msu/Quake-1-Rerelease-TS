@@ -55,11 +55,13 @@ import {
   registered,
   rogue,
   setComGamedir,
+  setComHomedir,
+  com_homedir,
   setComSearchpaths,
 } from "../src/common/common";
 import * as cmdModule from "../src/common/cmd";
-import { Cbuf_Init, Cbuf_Execute } from "../src/common/cmd";
-import { host, sv_autosave, coop, teamplay } from "../src/common/host";
+import { Cbuf_Init, Cbuf_Execute, Cmd_TokenizeString } from "../src/common/cmd";
+import { host, sv_autosave, coop, skill, teamplay } from "../src/common/host";
 import "../src/common/host_cmd";
 import { hostCacheCount, hostcache } from "../src/common/net_main";
 import { svs, sv } from "../src/server/server";
@@ -130,6 +132,7 @@ const savedSvRuleset = { string: sv_ruleset.string, value: sv_ruleset.value };
 const savedCampaign = { string: campaign.string, value: campaign.value };
 const savedComSearchpaths = com_searchpaths;
 const savedComGamedir = com_gamedir;
+const savedComHomedir = com_homedir;
 
 // U40: cl_protocol/sv_protocol/coop/teamplay (real objects, each registered
 // inside its own module's init function rather than at module load -- see
@@ -141,6 +144,9 @@ const savedClProtocol = { string: cl_protocol.string, value: cl_protocol.value }
 const savedSvProtocol = { string: sv_protocol.string, value: sv_protocol.value };
 const savedCoop = { string: coop.string, value: coop.value };
 const savedTeamplay = { string: teamplay.string, value: teamplay.value };
+// F3: the Begin Game launch script now re-queues `skill` after the gamedir
+// switch, so this file drives the real cvar too.
+const savedSkill = { string: skill.string, value: skill.value };
 const savedBotCount = { string: bot_count.string, value: bot_count.value };
 const savedBotSkill = { string: bot_skill.string, value: bot_skill.value };
 
@@ -156,6 +162,7 @@ Cvar_RegisterVariable(cl_protocol);
 Cvar_RegisterVariable(sv_protocol);
 Cvar_RegisterVariable(coop);
 Cvar_RegisterVariable(teamplay);
+Cvar_RegisterVariable(skill);
 
 // A neutral scratch root (no mapdb.json) this file's afterAll re-mounts as
 // its last act, so COM_IsRereleaseRoot()/COM_ClassicDir()/COM_RereleaseDir()
@@ -192,6 +199,8 @@ afterAll(() => {
   sv_protocol.value = savedSvProtocol.value;
   coop.string = savedCoop.string;
   coop.value = savedCoop.value;
+  skill.string = savedSkill.string;
+  skill.value = savedSkill.value;
   teamplay.string = savedTeamplay.string;
   teamplay.value = savedTeamplay.value;
   bot_count.string = savedBotCount.string;
@@ -206,6 +215,7 @@ afterAll(() => {
   COM_InitFilesystem();
   setComSearchpaths(savedComSearchpaths);
   setComGamedir(savedComGamedir);
+  setComHomedir(savedComHomedir);
   rmSync(neutralScratchRoot, { recursive: true, force: true });
 });
 
@@ -548,6 +558,11 @@ describe("M_ScanSaves", () => {
       writeFileSync(join(dir, "s0.sav"), "5\nHello_World\n");
       writeFileSync(join(dir, "s5.sav"), "5\nAnother_Save\n");
 
+      // F3: com_gamedir is the WRITE tier, which defaults to the per-user
+      // home directory. This test's saves live in the scratch gamedir
+      // itself, so it mounts with the home tier off -- the -nohomedir
+      // behaviour -- rather than under $XDG_DATA_HOME.
+      setComHomedir("");
       COM_AddGameDirectory(dir);
       menu.M_ScanSaves();
 
@@ -819,6 +834,38 @@ describe("U17 re-release content screens", () => {
     expect(menu.menuState.m_state).toBe(menu.MStateT.m_options);
   });
 
+  // F3: choosing an Add-Ons row queues the gamedir switch AND the command
+  // that opens that add-on's own New Game screen once the switch (and the
+  // quake.rc re-exec Host_Game_f inserts ahead of it) has actually run.
+  test("Add-Ons ENTER queues `game <dir>` then `menu_episodes <dir>`", () => {
+    menu.M_Menu_QexAddons_f();
+    menu.menuState.qexAddonsCursor = 0; // the synthetic "Base Game" row
+    cbufAddTextSpy.mockClear();
+
+    menu.M_QexAddons_Key(K_ENTER);
+
+    expect(cbufAddTextSpy.mock.calls.map(([s]) => s)).toEqual(["game id1\n", "menu_episodes id1\n"]);
+  });
+
+  test("menu_episodes reloads the content model and lands on the named episode", () => {
+    setMState(menu.MStateT.m_options);
+    Cmd_TokenizeString("menu_episodes id1");
+    menu.M_Menu_QexEpisodes_Cmd_f();
+
+    expect(menu.menuState.m_state).toBe(menu.MStateT.m_qex_episodes);
+    expect(menu.menuState.qexEpisodeCursor).toBe(0); // id1 is the only mounted episode here
+    expect(keyState.key_dest).toBe(KeydestT.key_menu);
+  });
+
+  test("menu_episodes with a name that has no episode leaves the cursor alone", () => {
+    menu.menuState.qexEpisodeCursor = 0;
+    Cmd_TokenizeString("menu_episodes nosuchdir");
+    menu.M_Menu_QexEpisodes_Cmd_f();
+
+    expect(menu.menuState.m_state).toBe(menu.MStateT.m_qex_episodes);
+    expect(menu.menuState.qexEpisodeCursor).toBe(0);
+  });
+
   test("Options' language row cycles through the mounted loc files", () => {
     Cvar_Set("language", "english");
     menu.menuState.options_cursor = 17; // language row
@@ -929,6 +976,9 @@ describe("M_Load_Key / M_Save_Key: Autosave row", () => {
       mkdirSync(join(dir, "autosave"), { recursive: true });
       writeFileSync(join(dir, "autosave", "e1m1.sav"), "6\nAutosaved_Game\n");
 
+      // See M_ScanSaves above: the autosave lives in the scratch gamedir, so
+      // this mounts with the home write tier off.
+      setComHomedir("");
       COM_AddGameDirectory(dir);
       menu.M_ScanSaves();
 
@@ -1257,8 +1307,9 @@ describe("U40: bots/rulesets/protocols, ctf-and-bots root mounted", () => {
   //---------------------------------------------------------------------
   // GameOptions: Begin Game launch strings
 
-  test("Begin Game (classic ruleset, mapdb dm mounted, with bots) queues sv_ruleset/sv_protocol/game/bot_count/bot_skill/map in order", () => {
+  test("Begin Game (classic ruleset, mapdb dm mounted, with bots) queues game before the cvars, then bot_count/bot_skill/map", () => {
     Cvar_SetValue("coop", 0);
+    Cvar_SetValue("skill", 2);
     menu.menuState.gameoptionsCtf = false;
     menu.menuState.maxplayers = 4;
     menu.menuState.startlevel = 0; // dm1
@@ -1274,18 +1325,24 @@ describe("U40: bots/rulesets/protocols, ctf-and-bots root mounted", () => {
     const calls = cbufAddTextSpy.mock.calls.map(([s]) => s);
     expect(calls).toEqual([
       "listen 0\n",
+      // F3: `game` FIRST -- it re-execs quake.rc, whose config.cfg would
+      // otherwise overwrite the archived sv_ruleset/sv_protocol below.
+      "game id1\n",
       "maxplayers 4\n",
+      "coop 0\n",
+      "skill 2\n",
       "sv_ruleset classic\n",
       "sv_protocol auto\n",
-      "game id1\n",
       "bot_count 4\n",
       "bot_skill medium\n",
       "map dm1\n",
     ]);
+    expect(calls.indexOf("game id1\n")).toBeLessThan(calls.indexOf("sv_ruleset classic\n"));
   });
 
   test("Begin Game (rerelease ruleset, disconnect prefix when sv.active)", () => {
     Cvar_SetValue("coop", 0);
+    Cvar_SetValue("skill", 1);
     menu.menuState.gameoptionsCtf = false;
     menu.menuState.maxplayers = 2;
     menu.menuState.startlevel = 1; // dm5
@@ -1302,10 +1359,12 @@ describe("U40: bots/rulesets/protocols, ctf-and-bots root mounted", () => {
     expect(calls).toEqual([
       "disconnect\n",
       "listen 0\n",
+      "game id1\n",
       "maxplayers 2\n",
+      "coop 0\n",
+      "skill 1\n",
       "sv_ruleset rerelease\n",
       "sv_protocol 666\n",
-      "game id1\n",
       "bot_count 0\n",
       "bot_skill easy\n",
       "map dm5\n",
@@ -1316,6 +1375,7 @@ describe("U40: bots/rulesets/protocols, ctf-and-bots root mounted", () => {
     // Cycle Game Type to CTF the same way a player would (row 2's ENTER).
     menu.menuState.gameoptions_cursor = 2;
     Cvar_SetValue("coop", 0);
+    Cvar_SetValue("skill", 3);
     menu.menuState.gameoptionsCtf = false;
     menu.M_NetStart_Change(1); // -> Cooperative
     menu.M_NetStart_Change(1); // -> CTF
@@ -1334,10 +1394,12 @@ describe("U40: bots/rulesets/protocols, ctf-and-bots root mounted", () => {
     const calls = cbufAddTextSpy.mock.calls.map(([s]) => s);
     expect(calls).toEqual([
       "listen 0\n",
+      "game ctf\n",
       "maxplayers 8\n",
+      "coop 0\n",
+      "skill 3\n",
       "sv_ruleset rerelease\n",
       "sv_protocol auto\n",
-      "game ctf\n",
       "teamplay 1\n",
       "bot_count 1\n",
       "bot_skill medium\n",

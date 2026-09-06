@@ -85,7 +85,7 @@ function initGamedir(prefix: string, opts?: { withProgs?: boolean }): void {
   const baseDir = join(scratchDir, prefix);
   mkdirSync(join(baseDir, "id1"), { recursive: true });
   if (opts?.withProgs) writeFileSync(join(baseDir, "id1", "progs.dat"), readFileSync(PROGS_DAT));
-  COM_InitArgv(["quake", "-basedir", baseDir]);
+  COM_InitArgv(["quake", "-basedir", baseDir, "-nohomedir"]);
   COM_InitFilesystem();
 }
 

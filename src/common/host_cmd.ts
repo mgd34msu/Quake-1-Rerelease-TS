@@ -125,6 +125,7 @@ U24 (2021 re-release savegame format, plus autosave):
 
 import {
   Cbuf_AddText,
+  Cbuf_InsertText,
   Cmd_AddCommand,
   Cmd_Argc,
   Cmd_Args,
@@ -1928,7 +1929,17 @@ export function Host_Game_f(): void {
   COM_SwitchGame(dirs);
 
   Con_Printf('"game" changed to "%s"\n', COM_GetGameNames());
-  Cbuf_AddText("exec quake.rc\n");
+  // Cbuf_InsertText, not Cbuf_AddText: a caller that queued this command as
+  // part of a larger script -- the menus' `game <dir>; sv_ruleset X; skill n;
+  // map m` launch, Host_Loadgame_f's KEX gamedir switch -- has the REST of
+  // that script still sitting in the command buffer behind us. Appending the
+  // re-exec to the tail would run default.cfg/config.cfg after the map had
+  // already spawned, so the new gamedir's archived `sv_ruleset`/`sv_protocol`
+  // would overwrite the values the script had just set. Inserting runs the
+  // whole quake.rc chain first, exactly as a fresh boot does (host.ts's
+  // Host_Init uses Cbuf_InsertText for the same script), and leaves the
+  // caller's remaining lines to run after it with the last word.
+  Cbuf_InsertText("exec quake.rc\n");
 }
 
 /*

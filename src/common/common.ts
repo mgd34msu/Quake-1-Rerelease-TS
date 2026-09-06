@@ -520,10 +520,12 @@ export let msg_suppress_1 = false;
 export let static_registered = 1; // only for startup check, then set
 export let com_gamedir = "";
 export let com_cachedir = "";
-// -homedir <dir> (re-release addition, no WinQuake equivalent): "" means
-// "write into com_gamedir" -- the unmodified behaviour. See
-// COM_AddGameDirectory's own comment at the mount site for the write-target
-// and search-priority effect this has once it's non-empty.
+// -homedir <dir> / -nohomedir (re-release addition, no WinQuake equivalent):
+// "" means "write into com_gamedir" -- the unmodified behaviour, which is
+// what -nohomedir selects. With neither parameter given this defaults to
+// COM_DefaultHomeDir() below. See COM_AddGameDirectory's own comment at the
+// mount site for the write-target and search-priority effect this has once
+// it's non-empty.
 export let com_homedir = "";
 export let standard_quake = true;
 export let rogue = false;
@@ -595,6 +597,14 @@ export function setComSearchpaths(p: SearchPathT | null): void {
 }
 export function setComGamedir(s: string): void {
   com_gamedir = s;
+}
+// com_homedir is normally set once, by COM_InitFilesystem's -homedir/
+// -nohomedir/COM_DefaultHomeDir chain. This setter exists for the same
+// reason the ones above it do -- an `export let` cannot be assigned through
+// a named import -- and is what a caller reaching COM_AddGameDirectory
+// WITHOUT going through COM_InitFilesystem uses to pick its write tier.
+export function setComHomedir(s: string): void {
+  com_homedir = s;
 }
 export function setComModified(b: boolean): void {
   com_modified = b;
@@ -1474,9 +1484,8 @@ export function COM_AddGameDirectory(dir: string): void {
   // at the head of the search path -- the highest priority, searched before
   // this gamedir's own tree/paks/zips -- and is also where com_gamedir (and
   // therefore COM_WriteFile, Host_WriteConfiguration's config.cfg, savegames,
-  // screenshots, ...) now points. A no-op when -homedir wasn't given, so the
-  // unmodified game-directory write behaviour is untouched (com_gamedir is
-  // left pointing at `dir` itself, as it always did).
+  // screenshots, ...) now points. A no-op under -nohomedir, which leaves
+  // com_gamedir pointing at `dir` itself the way WinQuake always did.
   if (com_homedir) {
     const homeDir = `${com_homedir}/${homedirBaseName(dir)}`;
     sysMkdirRecursive(homeDir);
@@ -1494,6 +1503,39 @@ export function COM_AddGameDirectory(dir: string): void {
   }
 
   // add the contents of the parms.txt file to the end of the command line
+}
+
+// The directory name the default home tier lives under, in whichever
+// user-data root COM_DefaultHomeDir picks.
+export const HOMEDIR_APPNAME = "q1rets";
+
+/*
+================
+COM_DefaultHomeDir (re-release addition, F3)
+
+The writable root used when neither -homedir nor -nohomedir is given: the
+same QoL rule QuakeSpasm and Ironwail follow on Linux, so a retail install
+(often read-only, and never the right place for one user's saves) is left
+untouched and config.cfg/savegames/demos/screenshots/qconsole.log land under
+the user's own data directory instead. $XDG_DATA_HOME when the environment
+sets it, else $HOME/.local/share, per the XDG base directory spec's own
+default. Returns "" when neither variable is set -- there is no sensible
+per-user location then, so the engine falls back to writing into the
+basedir exactly as -nohomedir does.
+================
+*/
+export function COM_DefaultHomeDir(): string {
+  const xdg = process.env["XDG_DATA_HOME"];
+  if (xdg !== undefined && xdg.length > 0) return `${stripTrailingSlash(xdg)}/${HOMEDIR_APPNAME}`;
+  const home = process.env["HOME"];
+  if (home !== undefined && home.length > 0) return `${stripTrailingSlash(home)}/.local/share/${HOMEDIR_APPNAME}`;
+  return "";
+}
+
+function stripTrailingSlash(path: string): string {
+  let end = path.length;
+  while (end > 1 && (path[end - 1] === "/" || path[end - 1] === "\\")) end--;
+  return path.slice(0, end);
 }
 
 // The last path component of a mounted gamedir ("id1", "hipnotic", a mod
@@ -1687,10 +1729,13 @@ export function COM_InitFilesystem(): void {
     com_cachedir = "";
   }
 
-  // -homedir <path> (re-release addition, U10): see com_homedir's own
-  // comment and COM_AddGameDirectory's home-directory-tier mount.
+  // -homedir <path> / -nohomedir (re-release addition, U10; default changed
+  // in F3): see com_homedir's own comment, COM_DefaultHomeDir, and
+  // COM_AddGameDirectory's home-directory-tier mount.
   i = COM_CheckParm("-homedir");
-  com_homedir = i && i < com_argc - 1 ? com_argv[i + 1] : "";
+  if (i && i < com_argc - 1) com_homedir = stripTrailingSlash(com_argv[i + 1]);
+  else if (COM_CheckParm("-nohomedir")) com_homedir = "";
+  else com_homedir = COM_DefaultHomeDir();
 
   // -classic <dir> / -rerelease <dir> (re-release addition, U10): override
   // COM_IsRereleaseRootDir's auto-detection instead of deriving both roots

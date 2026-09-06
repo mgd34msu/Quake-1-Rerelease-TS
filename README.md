@@ -31,7 +31,8 @@ Landed (2026-09-06):
   lighting, BSPX directory, external `.ent` files and texture wads, textures
   of any size.
 - Re-release roots detected (nested `rerelease/` or direct), `QuakeEX.kpf`
-  mounted, `-mg1 -mg3 -dopa -ctf`, a runtime `game` command, `-homedir`.
+  mounted, `-mg1 -mg3 -dopa -ctf`, a runtime `game` command, and a per-user
+  writable directory (`-homedir`/`-nohomedir`).
 - The unified client and server: one binary speaks NetQuake and QuakeWorld,
   and hosts either server profile, chosen per connection and per command
   line instead of per process. `-dedicated -qw` is a QuakeWorld dedicated
@@ -107,9 +108,21 @@ binary, `q1rets`; see [Building from source](#building-from-source) below.
   `rerelease/` subdirectory inside `-basedir`.
 - `-norerelease` — mount the classic tree only, even when a `rerelease/`
   subdirectory is present.
-- `-homedir <dir>` — a per-user directory mounted above the base search
-  path for configs, saves and replacement assets. No WinQuake equivalent;
-  a re-release-style addition.
+- **Writable directory.** By default the engine writes to
+  `$XDG_DATA_HOME/q1rets` (`~/.local/share/q1rets` when that variable is
+  unset), mirrored per game directory: `~/.local/share/q1rets/id1/`,
+  `.../hipnotic/`, and so on, created on demand. `config.cfg`, savegames,
+  autosaves, demos, screenshots and `qconsole.log` all land there, and that
+  tier sits at the head of the search path so those files are found first.
+  The install under `-basedir` is only ever read, so a read-only or shared
+  retail copy is left untouched — the same quality-of-life rule QuakeSpasm
+  and Ironwail follow on Linux, and an addition over WinQuake, which wrote
+  into the game directory. The game directory's own `config.cfg` in the
+  basedir is still exec'd and never overwritten.
+- `-homedir <dir>` — write to `<dir>` instead of the default above (the
+  same per-game-directory layout).
+- `-nohomedir` — write into `<basedir>/<gamedir>` itself, the unmodified
+  WinQuake behaviour.
 - `-game <dir>` — an arbitrary override game directory, as the original.
   `-hipnotic`, `-rogue`, `-mg1`, `-mg3`, `-dopa`, `-ctf` each add the
   matching mission-pack or re-release campaign directory.

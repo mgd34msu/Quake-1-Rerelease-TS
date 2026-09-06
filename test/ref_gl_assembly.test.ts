@@ -284,7 +284,7 @@ const savedCl = {
 
 beforeAll(() => {
   mkdirSync(join(baseDir, "id1"), { recursive: true });
-  COM_InitArgv(["quake", "-basedir", baseDir]);
+  COM_InitArgv(["quake", "-basedir", baseDir, "-nohomedir"]);
   COM_InitFilesystem();
 
   /*
