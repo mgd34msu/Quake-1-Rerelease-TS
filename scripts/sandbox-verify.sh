@@ -14,6 +14,7 @@ cd "$W"
 # The fixture suites resolve ../qsrc relative to the repo; a worktree elsewhere
 # would skip them silently, so point them at the real tree unless overridden.
 export Q1TS_QSRC="${Q1TS_QSRC:-/home/buzzkill/Projects/qsrc/quake}"
+export Q1TS_RERELEASE_DATA="${Q1TS_RERELEASE_DATA:-/home/buzzkill/Projects/qfiles/q1/rerelease}"
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 300 bash scripts/check.sh || exit 1
 out=$(SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy timeout 300 bun test 2>&1 | grep -E '^ *[0-9]+ (pass|fail)')
 echo "$out"
