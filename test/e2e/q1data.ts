@@ -68,11 +68,11 @@ $Q1TS_HOMEDIR (the runner exports it; $Q1TS_SCRATCH/e2e/home by default), one
 subdirectory per `-game` name, and a driver that wants to find what it wrote
 reads the live com_gamedir rather than rebuilding the path.
 
-The `glquake/` subdirectory is made here as well: the engine's own
-Sys_mkdir for it is not recursive, so it silently does nothing when the
-gamedir above it does not exist yet, and the GL renderer's .ms2 mesh-cache
-write then fails through Sys_FileOpenWrite -- whose failure path is
-Sys_Error, which tears down the video system mid-frame.
+The `glquake/` subdirectory is made here as well, belt and braces: since
+the mesh-cache writer creates the cache file's own directory and opens it
+non-fatally (Sys_FileOpenWriteNonFatal), the engine no longer needs it, but
+a pre-made directory keeps the first GL boot's console free of the
+"meshing" retries the cache would otherwise repeat.
 */
 export function homedirRoot(): string {
   const explicit = process.env.Q1TS_HOMEDIR;

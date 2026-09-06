@@ -132,6 +132,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- `Sys_Error` throws before any shutdown runs (the top-level handler shuts
+  the host down once), so a recovered error no longer leaves a torn-down
+  host behind a caller that carried on; every writer whose C original
+  checked `fopen` for NULL (config.cfg, saves, demo record, the GL mesh
+  cache, QuakeWorld downloads and config) fails with its original message
+  instead of aborting the engine.
 - Horde maps (mg1) were unplayable under `deathmatch 1` for humans and bots
   alike: mg1's coop spawn points remove themselves outside coop, so
   everyone was parked at the intermission camera; a map `mapdb.json` flags

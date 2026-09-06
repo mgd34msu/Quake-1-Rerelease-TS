@@ -29,16 +29,18 @@ Deviations from PORTING.md / the C source:
   dereferences in the C; `netconnection`/`edict` are `| null` here, so those
   reads are guarded and fall back to 0 / "" rather than crashing.
 - `FILE *f` in Host_Savegame_f/Host_Loadgame_f: the writer is host.ts's
-  `SysFileTextWriter` over Sys_FileOpenWrite/Sys_FileWrite/Sys_FileClose;
+  `SysFileTextWriter` over Sys_FileOpenWriteNonFatal/Sys_FileWrite/
+  Sys_FileClose;
   the reader loads the whole file with Sys_FileOpenRead/Sys_FileRead and
   decodes it Latin-1, then drives it with the `scanToken` reader below.
   `fscanf(f, "%i\n" | "%f\n" | "%s\n", ...)` in glibc means "skip leading
   whitespace, take one whitespace-delimited token, then consume the
   whitespace that follows" -- which is exactly `scanToken`, so the character
   loop that reads the `{ ... }` blocks afterwards starts on the same byte the
-  C's `fgetc` loop does. `Sys_FileOpenWrite` `Sys_Error`s where the C's
-  `fopen` returned NULL, so Host_Savegame_f's "ERROR: couldn't open." branch
-  is unreachable (kept for the documented `handle === -1` case).
+  C's `fgetc` loop does. The write opens through `Sys_FileOpenWriteNonFatal`,
+  which returns -1 the way the C's `fopen` returns NULL, so Host_Savegame_f's
+  `if (!f) { Con_Printf ("ERROR: couldn't open.\n"); return; }` runs on a
+  failed open instead of the error being fatal.
 - `sv.lightstyles[i]` is `string` here, `char *` in the C: the savegame
   writer's `if (sv.lightstyles[i]) ... else fprintf (f,"m\n")` maps NULL to
   `""`, so a lightstyle deliberately set to the empty string (which the C
@@ -172,7 +174,7 @@ import {
   Sys_Error,
   Sys_FileClose,
   Sys_FileOpenRead,
-  Sys_FileOpenWrite,
+  Sys_FileOpenWriteNonFatal,
   Sys_FileRead,
   Sys_FileTime,
   Sys_FloatTime,
@@ -759,7 +761,7 @@ function Host_SaveToFile(name: string, skipnotify: boolean): void {
   // Maps in subdirectories (the re-release's vault/ and test/ folders) name
   // nested autosave paths; create the parents the way COM_CopyFile does.
   COM_CreatePath(name);
-  const handle = Sys_FileOpenWrite(name);
+  const handle = Sys_FileOpenWriteNonFatal(name);
   if (handle === -1) {
     Con_Printf("ERROR: couldn't open.\n");
     return;

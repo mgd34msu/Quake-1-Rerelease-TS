@@ -81,11 +81,14 @@ Deviations from the C:
 - `main`'s top-level try/catch is this port's stand-in for the process
   simply calling `exit(1)` from inside `Sys_Error` (platform/sys.ts, which
   throws `SysError` instead so a caller -- here, and every test -- can
-  observe it). `Sys_Error` already wrote its message to stderr and ran
-  `Host_Shutdown` before throwing (see its own file), so this catch does not
-  print it again; anything else escaping this far is not a modeled C exit
-  path at all and gets a `Sys_Printf` + `exit(1)` of its own so a boot bug
-  never hangs the process silently instead of exiting.
+  observe it). `Sys_Error` already wrote its message to stderr before
+  throwing (see its own file), so this catch does not print it again, but the
+  `Host_Shutdown` the C's Sys_Error runs on its way out is run here, once, by
+  `runHostShutdown` -- Sys_Error no longer runs it itself, so that a SysError
+  a caller catches and recovers from leaves a live host behind. Anything else
+  escaping this far is not a modeled C exit path at all and gets a
+  `Sys_Printf` of its own before the same shutdown and `exit(1)`, so a boot
+  bug never hangs the process silently instead of exiting.
 */
 
 import { COM_CheckParm, COM_InitArgv, Q_atof, com_argc, com_argv } from "./common/common";
@@ -116,7 +119,7 @@ import { setSvFlushSignonHook as qwSetSvFlushSignonHook } from "./qw/server/pr_e
 import { SV_Quit_f as QWSV_SV_Quit_f } from "./qw/server/sv_ccmds";
 import { Con_Printf as QWSV_Con_Printf, Con_DPrintf as QWSV_Con_DPrintf } from "./qw/server/sv_send";
 import { Sys_NostdoutFromCvar as QWSV_Sys_NostdoutFromCvar, sys_extrasleep as qwsv_extrasleep } from "./qw/sys_sv";
-import { Sys_FloatTime, Sys_Init, Sys_Printf, Sys_Quit, SysError, installTerminationSignals, sysState } from "./platform/sys";
+import { Sys_FloatTime, Sys_Init, Sys_Printf, Sys_Quit, SysError, installTerminationSignals, runHostShutdown, sysState } from "./platform/sys";
 // The client subsystems host.c links against. Each registers its
 // hostClientHooks members at module load, so importing them here is the
 // port's equivalent of the C link step; a dedicated server still runs with
@@ -553,11 +556,18 @@ export async function main(argv: string[]): Promise<void> {
     Sys_Main_Init(argv);
     await Sys_Main_Loop();
   } catch (err) {
-    if (err instanceof SysError) {
-      process.exit(1);
+    if (!(err instanceof SysError)) {
+      const message = err instanceof Error ? err.message : String(err);
+      Sys_Printf("Fatal: %s\n", message);
     }
-    const message = err instanceof Error ? err.message : String(err);
-    Sys_Printf("Fatal: %s\n", message);
+    // The C's exit(1) is unconditional; a Host_Shutdown that fails in its own
+    // right must not take the exit with it (see platform/sys.ts's
+    // installTerminationSignals, which makes the same guarantee for `quit`).
+    try {
+      runHostShutdown();
+    } catch {
+      // nothing left to report it to: the error that got here is already printed
+    }
     process.exit(1);
   }
 }

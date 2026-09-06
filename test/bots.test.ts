@@ -83,6 +83,7 @@ const scratchDir = mkdtempSync(join(scratchRoot, "bots-test-"));
 const baseDir = join(scratchDir, "quake");
 
 afterAll(() => {
+  Cvar_SetValue("sv_randomseed", 0); // the retail suites pin it (F13); sv_main.test asserts the unseeded default
   Loc_SetLocaleProbeForTest(null);
   Bot_RemoveAll();
   Bot_ClearNav();

@@ -11,8 +11,8 @@ every file in one process and the suites that follow this one register their
 own net host hooks and add their own console commands.
 */
 
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { describe, expect, test, beforeAll, afterAll, spyOn } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { COM_InitArgv, com_gamedir, pop } from "../src/common/common";
 import { writePakToDisk } from "./support/pak_builder";
@@ -25,6 +25,7 @@ import { SvcOpsT } from "../src/common/protocol";
 import { QsocketT } from "../src/common/net";
 import type { SizeBuf } from "../src/common/sizebuf";
 import { setHostShutdown, sysState } from "../src/platform/sys";
+import * as sysModule from "../src/platform/sys";
 import {
   NET_CheckNewConnections,
   NET_Connect,
@@ -46,6 +47,7 @@ import {
   Host_Frame,
   Host_Init,
   Host_ShutdownServer,
+  Host_WriteConfiguration,
   SV_BroadcastPrintf,
   SV_ClientPrintf,
   SV_DropClient,
@@ -738,5 +740,66 @@ describe("Host_Error is scoped to the seat it was raised in", () => {
     expect(raise("first")).toBeInstanceOf(HostError);
     expect(raise("second")).toBeInstanceOf(HostError);
     expect(disconnects).toBe(2);
+  });
+});
+
+/*
+host.c's Host_WriteConfiguration tests `fopen (va("%s/config.cfg",
+com_gamedir), "w")` against NULL and prints "Couldn't write config.cfg."
+rather than dying. src/platform/sys.ts's Sys_FileOpenWriteNonFatal is what
+makes that branch reachable here: plain Sys_FileOpenWrite raises Sys_Error
+instead, which used to leave the failure to propagate out through
+Host_Shutdown/Sys_Quit.
+
+This suite boots -dedicated and Host_WriteConfiguration's first line skips a
+dedicated server, so sysState.isDedicated is cleared around each call and put
+back in the same test (the file's own afterAll restores it too).
+*/
+describe.skipIf(!HAVE_PROGS106)("Host_WriteConfiguration", () => {
+  const sysPrintfSpy = spyOn(sysModule, "Sys_Printf"); // bare call-through spy (rule 15)
+  const configPath = (): string => join(com_gamedir, "config.cfg");
+
+  function writeConfigAsClient(): void {
+    const wasDedicated = sysState.isDedicated;
+    sysState.isDedicated = false;
+    try {
+      Host_WriteConfiguration();
+    } finally {
+      sysState.isDedicated = wasDedicated;
+    }
+  }
+
+  afterAll(() => {
+    sysPrintfSpy.mockRestore();
+    rmSync(configPath(), { recursive: true, force: true });
+  });
+
+  test("writes config.cfg into com_gamedir", () => {
+    rmSync(configPath(), { recursive: true, force: true });
+
+    writeConfigAsClient();
+
+    expect(existsSync(configPath())).toBe(true);
+    expect(readFileSync(configPath(), "utf8").length).toBeGreaterThan(0);
+  });
+
+  test('prints "Couldn\'t write config.cfg." and returns when the open fails', () => {
+    // openSync(path, "w+") on an existing directory fails (EISDIR), which is
+    // the same NULL the C's fopen hands back for an unwritable path.
+    rmSync(configPath(), { recursive: true, force: true });
+    mkdirSync(configPath());
+    sysPrintfSpy.mockClear();
+
+    expect(() => writeConfigAsClient()).not.toThrow();
+
+    const printed = sysPrintfSpy.mock.calls.filter((c) => String(c[1]).includes("Couldn't write config.cfg."));
+    expect(printed.length).toBeGreaterThan(0);
+    // nothing was written over it: the directory is still a directory
+    expect(statSync(configPath()).isDirectory()).toBe(true);
+  });
+
+  test("and the host is still initialized afterwards -- the failed open ran no shutdown", () => {
+    expect(host.initialized).toBe(true);
+    expect(cmdHost.initialized).toBe(true);
   });
 });

@@ -16,16 +16,17 @@ Deviations from PORTING.md / the C source:
   U041) is typed `FileHandle | null` -- the read-side handle COM_FOpenFile
   hands back -- so it cannot also carry a raw write descriptor. Ruling (this
   unit's brief): recording uses a module-level write handle,
-  `demoWriteHandle: number`, opened with `Sys_FileOpenWrite` and written with
+  `demoWriteHandle: number`, opened with `Sys_FileOpenWriteNonFatal` and written
+  with
   `Sys_FileWrite`/closed with `Sys_FileClose`; `cls.demofile` is never
   touched by the recording path (CL_Record_f/CL_WriteDemoMessage/CL_Stop_f),
   only by playback (CL_PlayDemo_f/CL_GetMessage/CL_StopPlayback). This
   supersedes client.ts's own file-header note, which predates this ruling.
-- `Sys_FileOpenWrite` (platform/sys.ts) `Sys_Error`s where the C's `fopen`
-  returns NULL, so CL_Record_f's `if (!cls.demofile) { Con_Printf ("ERROR:
-  couldn't open.\n"); return; }` fallback is kept in place but unreachable,
-  exactly as host.ts's Host_WriteConfiguration documents for the same
-  primitive.
+- The recording open is `Sys_FileOpenWriteNonFatal` (platform/sys.ts), the
+  variant that returns -1 where the C's `fopen` returns NULL, so CL_Record_f's
+  `if (!cls.demofile) { Con_Printf ("ERROR: couldn't open.\n"); return; }`
+  runs on a failed open exactly as it does in the C -- the same primitive
+  host.ts's Host_WriteConfiguration uses.
 - `fread`'s C return value counts whole *items* (nmemb), not bytes: the
   header reads (`fread (&net_message.cursize, 4, 1, ...)` and the three
   `fread (&f, 4, 1, ...)` calls) all discard their return value in the C
@@ -85,7 +86,7 @@ import { NET_GetMessage } from "../common/net_main";
 import { MAX_MSGLEN } from "../common/quakedef";
 import { VectorCopy } from "../common/mathlib";
 import { host } from "../common/host";
-import { Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite } from "../platform/sys";
+import { Sys_Error, Sys_FileClose, Sys_FileOpenWriteNonFatal, Sys_FileWrite } from "../platform/sys";
 import { Con_Printf } from "./console";
 import { CactiveT, SIGNONS, cl, cls } from "./client";
 import type * as ClMainModule from "./cl_main";
@@ -103,7 +104,7 @@ function clMainMod(): typeof ClMainModule {
 
 // recording write handle -- see the file header (`cls.demofile` is the
 // read/playback side only). -1 means no recording in progress, matching
-// Sys_FileOpenWrite's own "no handle" sentinel.
+// Sys_FileOpenWriteNonFatal's own "no handle" sentinel.
 let demoWriteHandle = -1;
 
 function stringToLatin1Bytes(s: string): Uint8Array {
@@ -306,10 +307,8 @@ export function CL_Record_f(): void {
   name = COM_DefaultExtension(name, ".dem");
 
   Con_Printf("recording to %s.\n", name);
-  const handle = Sys_FileOpenWrite(name);
-  // see file header: Sys_FileOpenWrite Sys_Errors rather than returning -1;
-  // this branch is kept for the documented -1 case, matching host.ts's
-  // Host_WriteConfiguration precedent.
+  // cls.demofile = fopen (name, "wb");
+  const handle = Sys_FileOpenWriteNonFatal(name);
   if (handle === -1) {
     Con_Printf("ERROR: couldn't open.\n");
     return;

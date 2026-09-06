@@ -7,7 +7,10 @@ cl_parse.c -- parse a message received from the server
 Deviations from PORTING.md / the C source:
 - `cls.download` is a `FILE *` opened "wb". This port's `FileHandle`
   (src/common/common.ts) is the FILE* stand-in but its COM_FRead is
-  read-only, so the download file is opened with `Sys_FileOpenWrite`, wrapped
+  read-only, so the download file is opened with `Sys_FileOpenWriteNonFatal`
+  (the variant that returns -1 the way the C's `fopen` returns NULL, which is
+  what CL_ParseDownload's own `if (!cls.download)` failure branch tests),
+  wrapped
   in a `FileHandle` so `cls.qw.download`'s declared type still carries it,
   written with `Sys_FileWrite(handle.fd, ...)` and closed with
   `Sys_FileClose`. Same split src/client/cl_demo.ts uses for its write
@@ -97,7 +100,7 @@ import { Con_DPrintf, Con_Printf, conState } from "./console";
 import { BOTTOM_RANGE, TOP_RANGE, getRenderer } from "../../client/render";
 import { S_LocalSound, S_PrecacheSound, S_StartSound, S_StaticSound, S_StopSound } from "../../client/snd_dma";
 import { VID_GRADES, vid } from "../../client/vid";
-import { Sys_Error, Sys_FileClose, Sys_FileOpenRead, Sys_FileOpenWrite, Sys_FileRename, Sys_FileWrite } from "../../platform/sys";
+import { Sys_Error, Sys_FileClose, Sys_FileOpenRead, Sys_FileOpenWriteNonFatal, Sys_FileRename, Sys_FileWrite } from "../../platform/sys";
 import { FileHandle } from "../../common/common";
 import { NET_TIMINGS, NET_TIMINGSMASK, CL_BaselineNum, DownloadTypeT, type PlayerInfoT } from "./client";
 import { UPDATE_BACKUP, UPDATE_MASK } from "../protocol";
@@ -417,7 +420,8 @@ export function CL_ParseDownload(): void {
 
     COM_CreatePath(name);
 
-    const handle = Sys_FileOpenWrite(name);
+    // cls.download = fopen (name, "wb");
+    const handle = Sys_FileOpenWriteNonFatal(name);
     cls.qw.download = handle === -1 ? null : new FileHandle(handle, 0);
     if (!cls.qw.download) {
       msgState.readcount += size;

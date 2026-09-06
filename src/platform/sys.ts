@@ -13,11 +13,28 @@ ported here -- PORTING.md assigns it to src/main.ts (U036), along with the
 `-nostdout` command-line handling that sets sysState.nostdout below.
 
 Deviations from the C:
-- Sys_Error and Sys_Quit call Host_Shutdown, which lives in host.ts (U035).
-  host.ts registers itself through setHostShutdown; until then the hook is a
-  no-op, which is what sys_null.c's Sys_Error does.
+- Sys_Quit calls Host_Shutdown, which lives in host.ts (U035). host.ts
+  registers itself through setHostShutdown; until then the hook is a no-op,
+  which is what sys_null.c's Sys_Error does.
 - Sys_Error is fatal in the C (exit(1)). Under bun, tests need to observe it,
-  so it throws SysError; src/main.ts's top level is where the process exits.
+  so it throws SysError; src/main.ts's top level is where Host_Shutdown runs
+  and where the process exits. Sys_Error itself only prints and throws. The
+  C's Sys_Error reaches Host_Shutdown on its way to exit(1) and never returns,
+  but a thrown SysError can be caught and recovered from (src/client/console.ts
+  and src/qw/client/console.ts both catch "No renderer is loaded" from
+  render.ts's getRenderer and keep printing), and a caller that recovers has to
+  be left with a live host rather than one whose config has already been
+  written and whose sound, network and video are already shut down underneath
+  it. `runHostShutdown` is what the top-level handler calls instead; calling it
+  twice is harmless, since Host_Shutdown carries the C's own `isdown` guard.
+- Sys_FileOpenWrite keeps sys_linux.c's own fatal behaviour (Sys_Error on a
+  failed open) for the callers whose C original called Sys_FileOpenWrite.
+  Sys_FileOpenWriteNonFatal is the variant for callers whose C original called
+  `fopen` and tested the result against NULL -- host.c's
+  Host_WriteConfiguration, host_cmd.c's savegame writer, cl_demo.c's
+  CL_Record_f, gl_mesh.c's .ms2 cache write, and QuakeWorld's config write,
+  demo recording and download writes. It returns -1 instead of throwing, so
+  each of those prints the message its own C original prints and carries on.
 - The fcntl(0, ...) non-blocking-stdin toggles are dropped: bun has no
   equivalent and Sys_ConsoleInput does not use FNDELAY; see its own comment
   below for the non-blocking-stdin replacement this port uses instead. That
@@ -70,6 +87,12 @@ export function setHostShutdown(fn: (() => void) | null): void {
   hostShutdown = fn;
 }
 
+// The registered Host_Shutdown, run by Sys_Quit and by src/main.ts's
+// top-level SysError handler -- see the file header's Sys_Error note.
+export function runHostShutdown(): void {
+  if (hostShutdown) hostShutdown();
+}
+
 // sys_linux.c: `int nostdout = 0;` set from the -nostdout command line parm
 // (main.ts's job, see file header); `qboolean isDedicated;` set from the
 // `-dedicated` parm the same way. Both stay writable singletons here so
@@ -79,7 +102,6 @@ export const sysState = { nostdout: 0, isDedicated: false };
 export function Sys_Error(error: string, ...args: Array<string | number>): never {
   const string = Com_sprintf(error, ...args);
   process.stderr.write(`Error: ${string}\n`);
-  if (hostShutdown) hostShutdown();
   throw new SysError(string);
 }
 
@@ -102,7 +124,7 @@ export function Sys_Printf(fmt: string, ...args: Array<string | number>): void {
 }
 
 export function Sys_Quit(): never {
-  if (hostShutdown) hostShutdown();
+  runHostShutdown();
   process.exit(0);
 }
 
@@ -227,15 +249,29 @@ export function Sys_FileOpenRead(path: string): { handle: number; length: number
   return { handle: fd, length };
 }
 
+// O_RDWR | O_CREAT | O_TRUNC, 0666 (umask applied by the OS, as in the C's umask(0) + open mode)
+function openForWrite(path: string): number {
+  const fd = openSync(path, "w+", 0o666);
+  sysFileTable.set(fd, new SysFileEntry(fd, 0));
+  return fd;
+}
+
 export function Sys_FileOpenWrite(path: string): number {
   try {
-    // O_RDWR | O_CREAT | O_TRUNC, 0666 (umask applied by the OS, as in the C's umask(0) + open mode)
-    const fd = openSync(path, "w+", 0o666);
-    sysFileTable.set(fd, new SysFileEntry(fd, 0));
-    return fd;
+    return openForWrite(path);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return Sys_Error("Error opening %s: %s", path, message);
+  }
+}
+
+// The `fopen (name, "wb"); if (!f)` form -- see the file header. -1 stands in
+// for the NULL FILE* the C's caller tests for.
+export function Sys_FileOpenWriteNonFatal(path: string): number {
+  try {
+    return openForWrite(path);
+  } catch {
+    return -1;
   }
 }
 

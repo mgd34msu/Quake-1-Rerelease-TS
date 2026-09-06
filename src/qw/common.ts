@@ -65,7 +65,8 @@ identical in the QW source; not duplicated here):
   src/common/quakedef.ts -- MAX_NUM_ARGVS
   src/client/console.ts  -- Con_Printf
   src/platform/sys.ts    -- Sys_Error, Sys_Printf, Sys_FileOpenRead,
-                             Sys_FileOpenWrite, Sys_FileClose, Sys_FileSeek,
+                             Sys_FileOpenWrite, Sys_FileOpenWriteNonFatal,
+                             Sys_FileClose, Sys_FileSeek,
                              Sys_FileRead, Sys_FileWrite, Sys_FileTime,
                              Sys_mkdir
   src/qw/protocol.ts     -- QwUsercmdT (type), CM_ANGLE1, CM_ANGLE2,
@@ -240,14 +241,13 @@ Deviations from PORTING.md / the C source:
   practice C undefined behavior, the same idiom src/common/sizebuf.ts's
   MSG_ReadFloat header already uses for a similar case.
 - COM_WriteFile's C tries `fopen` for write, and only on failure calls
-  `Sys_mkdir` then retries, `Sys_Error`ing if that also fails. Ported as a
-  try/catch around src/platform/sys.ts's Sys_FileOpenWrite, since that
-  function throws (via Sys_Error) on failure rather than returning a NULL-
-  equivalent sentinel the way `fopen` does -- the catch stands in for the
-  C's `if (!f)` check. The final Sys_Error's message text (if the retry also
-  fails) is Sys_FileOpenWrite's own ("Error opening %s: %s"), not the C's
-  ("Error opening %s", using `filename` rather than the full `name` path);
-  sys.ts is out of this unit's SCOPE to adjust.
+  `Sys_mkdir` then retries, `Sys_Error`ing if that also fails. The first open
+  is src/platform/sys.ts's `Sys_FileOpenWriteNonFatal`, which returns -1 the
+  way `fopen` returns NULL, so `if (!f)` is a plain `handle === -1` test; the
+  retry is the fatal `Sys_FileOpenWrite`, matching the C's Sys_Error. That
+  final Sys_Error's message text is Sys_FileOpenWrite's own ("Error opening
+  %s: %s"), not the C's ("Error opening %s", using `filename` rather than the
+  full `name` path); sys.ts is out of this unit's SCOPE to adjust.
 - COM_InitFilesystem: QW's version (read directly, lines 1829-1851) only
   handles `-basedir`; there is no `-cachedir`, `-rogue`, `-hipnotic`, `-game`,
   or `-path` handling at all (all absent from the QW source, not merely
@@ -297,7 +297,7 @@ Deviations from PORTING.md / the C source:
   WinQuake's `registered`; QW never registers a `cmdline` cvar (see above).
 */
 
-import { Sys_Error, Sys_Printf, Sys_FileOpenRead, Sys_FileOpenWrite, Sys_FileClose, Sys_FileSeek, Sys_FileRead, Sys_FileWrite, Sys_FileTime, Sys_mkdir, Sys_ResolveCase } from "../platform/sys";
+import { Sys_Error, Sys_Printf, Sys_FileOpenRead, Sys_FileOpenWrite, Sys_FileOpenWriteNonFatal, Sys_FileClose, Sys_FileSeek, Sys_FileRead, Sys_FileWrite, Sys_FileTime, Sys_mkdir, Sys_ResolveCase } from "../platform/sys";
 import { Con_Printf } from "../client/console";
 import { Cache_Flush } from "../common/zone";
 import { Cmd_AddCommand } from "../common/cmd";
@@ -609,13 +609,11 @@ export function COM_Path_f(): void {
 export function COM_WriteFile(filename: string, data: Uint8Array): void {
   const name = `${com_gamedir}/${filename}`;
 
-  let handle: number;
-  try {
-    handle = Sys_FileOpenWrite(name);
-  } catch {
-    // fopen returned NULL in the C; Sys_FileOpenWrite throws instead -- see file header
+  // f = fopen (name, "wb");
+  let handle = Sys_FileOpenWriteNonFatal(name);
+  if (handle === -1) {
     Sys_mkdir(com_gamedir);
-    handle = Sys_FileOpenWrite(name); // a second failure propagates, matching the C's Sys_Error
+    handle = Sys_FileOpenWrite(name); // a second failure raises, matching the C's Sys_Error
   }
 
   Sys_Printf("COM_WriteFile: %s\n", name);

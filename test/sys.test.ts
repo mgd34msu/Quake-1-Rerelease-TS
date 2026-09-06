@@ -6,7 +6,7 @@ directly) for all file I/O so this suite doesn't collide with anything else
 on the filesystem and needs no cleanup step for CI to stay clean.
 */
 
-import { describe, expect, test, beforeAll } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { mkdirSync, existsSync, rmSync } from "node:fs";
 import {
   SysError,
@@ -14,18 +14,27 @@ import {
   Sys_FloatTime,
   Sys_FileOpenRead,
   Sys_FileOpenWrite,
+  Sys_FileOpenWriteNonFatal,
   Sys_FileClose,
   Sys_FileSeek,
   Sys_FileRead,
   Sys_FileWrite,
   Sys_FileTime,
   Sys_mkdir,
+  runHostShutdown,
+  setHostShutdown,
 } from "../src/platform/sys";
 
 const SCRATCH = `${process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests"}/sys-test`;
 
 beforeAll(() => {
   mkdirSync(SCRATCH, { recursive: true });
+});
+
+// The Host_Shutdown hook is process-wide (standing order 13): whatever this
+// file installs is taken back out.
+afterAll(() => {
+  setHostShutdown(null);
 });
 
 describe("Sys_FileOpenWrite / Sys_FileWrite / Sys_FileClose / Sys_FileOpenRead / Sys_FileRead / Sys_FileSeek", () => {
@@ -157,6 +166,82 @@ describe("Sys_Error", () => {
     }
     expect(caught).toBeInstanceOf(SysError);
     expect(caught instanceof SysError && caught.message).toBe("bad thing: oops (42)");
+  });
+
+  // sys_linux.c's Sys_Error reaches Host_Shutdown on its way to exit(1) and
+  // never comes back. This one throws so a caller can observe it, and a
+  // caller that catches it and carries on (src/client/console.ts's "No
+  // renderer is loaded" catch) has to be left with a host that still has its
+  // sound, network and video. src/main.ts's top-level handler is what runs
+  // the shutdown, through runHostShutdown, on its way to the same exit(1).
+  test("does not run the registered Host_Shutdown hook", () => {
+    let ran = 0;
+    setHostShutdown(() => {
+      ran++;
+    });
+    try {
+      expect(() => Sys_Error("still live")).toThrow(SysError);
+      expect(ran).toBe(0);
+
+      runHostShutdown();
+      expect(ran).toBe(1);
+    } finally {
+      setHostShutdown(null);
+    }
+  });
+
+  test("runHostShutdown with no hook registered is a no-op", () => {
+    setHostShutdown(null);
+    expect(() => runHostShutdown()).not.toThrow();
+  });
+});
+
+/*
+The C's fopen-style callers (host.c's Host_WriteConfiguration, host_cmd.c's
+savegame writer, cl_demo.c's CL_Record_f, gl_mesh.c's .ms2 cache, and
+QuakeWorld's config write, demo recording and downloads) test fopen's return
+against NULL and carry on. Sys_FileOpenWriteNonFatal is what they open
+through; Sys_FileOpenWrite keeps sys_linux.c's own fatal behaviour for the
+callers whose C original called Sys_FileOpenWrite.
+*/
+describe("Sys_FileOpenWriteNonFatal", () => {
+  test("returns a usable handle for a path that can be created", () => {
+    const path = `${SCRATCH}/nonfatal-ok.bin`;
+    rmSync(path, { recursive: true, force: true });
+
+    const handle = Sys_FileOpenWriteNonFatal(path);
+    expect(handle).toBeGreaterThanOrEqual(0);
+    expect(Sys_FileWrite(handle, new Uint8Array([7, 7, 7]), 3)).toBe(3);
+    Sys_FileClose(handle);
+
+    const { handle: rHandle, length } = Sys_FileOpenRead(path);
+    expect(length).toBe(3);
+    Sys_FileClose(rHandle);
+  });
+
+  // openSync(path, "w+") on an existing directory fails with EISDIR, the same
+  // "can't open this for writing" the C's fopen answers with NULL.
+  test("returns -1 instead of throwing when the open fails", () => {
+    const path = `${SCRATCH}/nonfatal-is-a-directory`;
+    rmSync(path, { recursive: true, force: true });
+    mkdirSync(path);
+
+    expect(Sys_FileOpenWriteNonFatal(path)).toBe(-1);
+  });
+
+  test("while Sys_FileOpenWrite still throws SysError for the same path", () => {
+    const path = `${SCRATCH}/fatal-is-a-directory`;
+    rmSync(path, { recursive: true, force: true });
+    mkdirSync(path);
+
+    let caught: unknown;
+    try {
+      Sys_FileOpenWrite(path);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SysError);
+    expect(caught instanceof SysError && caught.message).toContain("Error opening ");
   });
 });
 

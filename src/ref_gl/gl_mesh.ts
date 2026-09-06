@@ -40,15 +40,14 @@ Deviations from PORTING.md / the C source:
   little-endian, so this port reads and writes little-endian through a
   DataView, exactly as PORTING.md rules for every other on-disk format.
   Reads go through COM_FOpenFile/COM_FRead/COM_FClose (the search path, so a
-  .ms2 inside a pak is found); writes go through Sys_FileOpenWrite/
+  .ms2 inside a pak is found); writes go through Sys_FileOpenWriteNonFatal/
   Sys_FileWrite/Sys_FileClose to `com_gamedir/glquake/NAME.ms2`, the exact
   path the C's `sprintf (fullpath, "%s/%s", com_gamedir, cache)` builds.
   gl_mesh.c does NOT create that directory: gl_vidlinuxglx.c:897-898's
   VID_Init does (`sprintf (gldir, "%s/glquake", com_gamedir); Sys_mkdir
   (gldir);`), which is U075's. The C's `f = fopen (fullpath, "wb"); if (f)`
-  silently skips the save when the directory is missing; this port's
-  Sys_FileOpenWrite raises SysError instead of returning NULL, so the open
-  is wrapped in a try/catch that reproduces the C's "no cache written" path.
+  silently skips the save when the open fails; Sys_FileOpenWriteNonFatal
+  returns -1 there, which is the same `if (f)` test.
 - `paliashdr->commands` and `paliashdr->posedata` are byte offsets from the
   aliashdr_t base in the C and direct references in this port (see
   gl_model_types.ts's header). The commands block still goes through
@@ -72,7 +71,8 @@ that directory itself (`sprintf(gldir,"%s/glquake",com_gamedir);
 Sys_mkdir(gldir); f = fopen(fullpath,"wb");`) before falling through to the
 existing `if (f)` write. This port goes one step further for every profile:
 COM_CreatePath makes the cache file's own directory (glquake/rogue/ for
-mg3's progs/rogue/*.mdl) before the single Sys_FileOpenWrite attempt.
+mg3's progs/rogue/*.mdl) before the single Sys_FileOpenWriteNonFatal
+attempt.
 */
 
 import { COM_CreatePath, COM_FClose, COM_FOpenFile, COM_FRead, com_gamedir, COM_StripExtension } from "../common/common";
@@ -81,7 +81,7 @@ import type { ModelT } from "../common/model";
 import { Hunk_Alloc } from "../common/zone";
 import { Con_DPrintf, Con_Printf } from "../client/console";
 import { qw } from "../common/quakedef";
-import { Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite } from "../platform/sys";
+import { Sys_Error, Sys_FileClose, Sys_FileOpenWriteNonFatal, Sys_FileWrite } from "../platform/sys";
 import type { AliashdrT } from "./gl_model_types";
 import { pheader, poseverts, stverts, triangles } from "./gl_model";
 
@@ -367,16 +367,10 @@ export function GL_MakeAliasModelDisplayLists(m: ModelT, hdr: AliashdrT): void {
     // The cache file's own directory is created first, for every profile:
     // a model under a progs/ subdirectory (mg3's progs/rogue/sphere.mdl)
     // needs glquake/rogue/, which neither VID_Init's glquake/ mkdir nor
-    // QW's one-level retry (see file header) provides; and Sys_Error tears
-    // the host down before it throws, so the catch below cannot recover a
-    // failed open the way the C's NULL fopen could.
+    // QW's one-level retry (see file header) provides.
     COM_CreatePath(fullpath);
-    let handle = -1;
-    try {
-      handle = Sys_FileOpenWrite(fullpath);
-    } catch {
-      handle = -1; // the C's fopen(fullpath, "wb") returning NULL
-    }
+    // f = fopen (fullpath, "wb"); if (f) { ... }
+    const handle = Sys_FileOpenWriteNonFatal(fullpath);
     if (handle !== -1) {
       const out = new Uint8Array(8 + (glMeshState.numcommands + glMeshState.numorder) * 4);
       const outView = new DataView(out.buffer);

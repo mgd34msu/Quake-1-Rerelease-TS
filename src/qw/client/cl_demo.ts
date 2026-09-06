@@ -16,7 +16,7 @@ Deviations from PORTING.md / the C source:
   typed `FileHandle | null` -- the read-side handle -- so it cannot also carry
   a write descriptor. Same ruling as src/client/cl_demo.ts (WinQuake):
   recording uses a module-level `demoWriteHandle: number` opened with
-  `Sys_FileOpenWrite`, written with `Sys_FileWrite` and closed with
+  `Sys_FileOpenWriteNonFatal`, written with `Sys_FileWrite` and closed with
   `Sys_FileClose`; `cls.demofile` is touched only by the playback path.
 - Playback opens through src/common/common.ts's `COM_FOpenFile`, not
   src/qw/common.ts's: the QW one hands back a bare fd with no position
@@ -43,11 +43,11 @@ Deviations from PORTING.md / the C source:
 - `cls.demofile` null checks in the playback helpers exist only because
   TypeScript cannot see the C's invariant that `cls.demofile` is non-null
   whenever `cls.demoplayback` is set; the C has no such guard.
-- `Sys_FileOpenWrite` Sys_Errors where the C's `fopen` returns NULL, so
-  CL_Record_f/CL_ReRecord_f's `if (!cls.demofile) { Con_Printf ("ERROR:
-  couldn't open.\n"); return; }` fallback is kept in place but unreachable --
-  the same note src/client/cl_demo.ts and host.ts's Host_WriteConfiguration
-  already carry for that primitive.
+- The recording open is `Sys_FileOpenWriteNonFatal`, which returns -1 where
+  the C's `fopen` returns NULL, so CL_Record_f/CL_ReRecord_f's
+  `if (!cls.demofile) { Con_Printf ("ERROR: couldn't open.\n"); return; }`
+  runs on a failed open exactly as it does in the C -- the same primitive
+  src/client/cl_demo.ts and host.ts's Host_WriteConfiguration use.
 - `memcmp(es, &blankes, sizeof(blankes))` (CL_Record_f's baseline scan) is a
   field-by-field comparison against a fresh `QwEntityStateT`; there is no
   struct memory to compare.
@@ -88,12 +88,12 @@ import { COM_FClose, COM_FOpenFile, COM_FRead, type FileHandle } from "../../com
 import { SizeBuf } from "../../common/sizebuf";
 import { CactiveT, cl, cl_lightstyle, cl_static_entities, cls } from "../../client/client";
 import { Con_Printf } from "./console";
-import { Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite, Sys_FloatTime } from "../../platform/sys";
+import { Sys_Error, Sys_FileClose, Sys_FileOpenWriteNonFatal, Sys_FileWrite, Sys_FloatTime } from "../../platform/sys";
 import { cl_baselines } from "./client";
 import { CL_BeginServerConnect, CL_Disconnect, Host_Error, clMainState } from "./cl_main";
 
 // see file header: recording writes through this handle, never cls.demofile.
-// -1 is Sys_FileOpenWrite's own "no handle" sentinel.
+// -1 is Sys_FileOpenWriteNonFatal's own "no handle" sentinel.
 let demoWriteHandle = -1;
 
 const dem_cmd = 0;
@@ -450,8 +450,8 @@ export function CL_Record_f(): void {
   //
   name = COM_DefaultExtension(name, ".qwd");
 
-  demoWriteHandle = Sys_FileOpenWrite(name);
-  // see file header: Sys_FileOpenWrite Sys_Errors rather than returning -1
+  // cls.demofile = fopen (name, "wb");
+  demoWriteHandle = Sys_FileOpenWriteNonFatal(name);
   if (demoWriteHandle === -1) {
     Con_Printf("ERROR: couldn't open.\n");
     return;
@@ -698,7 +698,8 @@ export function CL_ReRecord_f(): void {
   //
   name = COM_DefaultExtension(name, ".qwd");
 
-  demoWriteHandle = Sys_FileOpenWrite(name);
+  // cls.demofile = fopen (name, "wb");
+  demoWriteHandle = Sys_FileOpenWriteNonFatal(name);
   if (demoWriteHandle === -1) {
     Con_Printf("ERROR: couldn't open.\n");
     return;

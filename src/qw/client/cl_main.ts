@@ -91,12 +91,16 @@ Deviations from PORTING.md / the C source:
   QuakeWorld track). CL_Init installs it before registering any cvar, since
   in the C it is compiled in unconditionally.
 - `Host_WriteConfiguration`'s `fopen` goes through platform/sys.ts's
-  `Sys_FileOpenWrite`, which throws `SysError` where the C's `fopen` returned
-  NULL (e.g. `-game` names a directory that doesn't exist). Caught around the
-  open the same way the C tests `fopen`'s return against NULL, so
-  `Con_Printf ("Couldn't write config.cfg.\n"); return;` stays reachable
-  instead of the error propagating out through Sys_Quit (src/platform/sys.ts's
-  `installTerminationSignals`).
+  `Sys_FileOpenWriteNonFatal`, which returns -1 where the C's `fopen` returned
+  NULL (e.g. the gamedir is unwritable), so
+  `Con_Printf ("Couldn't write config.cfg.\n"); return;` is the whole of the
+  failure path here as it is in the C, instead of the error propagating out
+  through Sys_Quit (src/platform/sys.ts's `installTerminationSignals`).
+- CL_Download_f's `cls.download = fopen (cls.downloadname, "wb");` is
+  unchecked in the C: a failed open leaves `cls.download` NULL, and it is
+  CL_ParseDownload (src/qw/client/cl_parse.ts) that tests it and opens the
+  file itself. `Sys_FileOpenWriteNonFatal` reproduces that -- a failed open
+  leaves `cls.qw.download` null rather than raising.
 */
 
 import { Cbuf_AddText, Cbuf_Execute, Cbuf_Init, Cbuf_InsertText, Cmd_AddCommand, Cmd_Argc, Cmd_Argv, Cmd_ForwardToServer, Cmd_Init, cl_warncmd, qwCmdHooks } from "../cmd";
@@ -164,7 +168,7 @@ import { getRenderer, r_origin, re, vpn, vright, vup } from "../../client/render
 import { S_StopAllSounds, S_Shutdown, S_Update } from "../../client/snd_dma";
 import { vidBackend } from "../../client/vid";
 import { V_Init } from "../../client/view";
-import { Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FloatTime, Sys_Quit, Sys_SendKeyEvents, Sys_mkdir, SysError } from "../../platform/sys";
+import { Sys_Error, Sys_FileClose, Sys_FileOpenWriteNonFatal, Sys_FloatTime, Sys_Quit, Sys_SendKeyEvents, Sys_mkdir } from "../../platform/sys";
 import { CL_DecayLights, CL_EmitEntities, CL_SetUpPlayerPrediction } from "./cl_ents";
 import { CL_InitPrediction, CL_PredictMove } from "./cl_pred";
 import { Cam_Reset, CL_InitCam } from "./cl_cam";
@@ -1103,8 +1107,10 @@ export function CL_Download_f(): void {
   }
 
   cls.qw.downloadtempname = cls.qw.downloadname;
-  const handle = Sys_FileOpenWrite(cls.qw.downloadname);
-  cls.qw.download = new FileHandle(handle, 0);
+  // cls.download = fopen (cls.downloadname, "wb"); -- unchecked in the C, see
+  // the file header: a NULL here is CL_ParseDownload's to notice.
+  const handle = Sys_FileOpenWriteNonFatal(cls.qw.downloadname);
+  cls.qw.download = handle === -1 ? null : new FileHandle(handle, 0);
   cls.qw.downloadtype = DownloadTypeT.dl_single;
 
   MSG_WriteByte(cls.qw.netchan.message, ClcOpsT.clc_stringcmd);
@@ -1301,17 +1307,10 @@ Writes key bindings and archived cvars to config.cfg
 */
 export function Host_WriteConfiguration(): void {
   if (clMainState.host_initialized) {
-    let handle: number;
-    try {
-      // f = fopen (va("%s/config.cfg",com_gamedir), "w");
-      handle = Sys_FileOpenWrite(va("%s/config.cfg", com_gamedir));
-    } catch (err) {
-      if (!(err instanceof SysError)) throw err;
-      // if (!f) { Con_Printf ("Couldn't write config.cfg.\n"); return; }
-      Con_Printf("Couldn't write config.cfg.\n");
-      return;
-    }
+    // f = fopen (va("%s/config.cfg",com_gamedir), "w");
+    const handle = Sys_FileOpenWriteNonFatal(va("%s/config.cfg", com_gamedir));
     if (handle === -1) {
+      // if (!f) { Con_Printf ("Couldn't write config.cfg.\n"); return; }
       Con_Printf("Couldn't write config.cfg.\n");
       return;
     }

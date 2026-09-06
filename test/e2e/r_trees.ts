@@ -106,21 +106,9 @@ for (const entry of wanted) {
         ? `load threw: ${load.error} (disk bsp ${diskVersion})`
         : `never reached in-game (disk bsp ${diskVersion}); console: ${conSince(mark).filter((l) => l.length > 0).slice(-6).join(" | ")}`,
     );
-    if (load.error !== null) {
-      // src/platform/sys.ts's Sys_Error calls Host_Shutdown before it throws,
-      // so the engine is torn down and every later map would fail with the
-      // aftermath ("qgl: no GL function table loaded") rather than with
-      // anything true about itself. Stop here and say what was not attempted.
-      const rest = wanted.slice(wanted.indexOf(entry) + 1).map((m) => m.bsp);
-      if (rest.length > 0) {
-        check(
-          `${tag}/sweep-aborted`,
-          false,
-          `Sys_Error tore the engine down, so ${rest.length} maps were not attempted: ${rest.join(" ")}`,
-        );
-      }
-      break;
-    }
+    // Since F15 a Sys_Error throws without tearing the host down, so a map
+    // whose load threw is reported and the sweep carries on to the next one
+    // after the disconnect below resets the server.
     disconnectCatching();
     continue;
   }
