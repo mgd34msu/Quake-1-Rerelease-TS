@@ -182,6 +182,7 @@ import type { EntityT } from "../client/render";
 // U39: r_nolerp_list is a GL-only cvar today -- see this file's header note
 // on why this reaches into ref_gl rather than a renderer-agnostic home.
 import { r_nolerp_list } from "../ref_gl/glquake";
+import { lerpFraction } from "../common/lerp_blend";
 import type * as SkinModule from "../qw/client/skin";
 
 // QW skin.c reaches the whole QuakeWorld client (skin.c -> cl_parse.c ->
@@ -290,30 +291,35 @@ function resolvePoseVerts(pahdr: AliashdrT, pmdl: MdlT, posenum: number): Triver
   if (frame < 0 || frame >= pmdl.numframes) return null;
   const framedesc = pahdr.frames[frame];
   if (framedesc === undefined) return null;
-  if (framedesc.type === AliasframetypeT.ALIAS_SINGLE) return Array.isArray(framedesc.frame) ? framedesc.frame : null;
-  const group = framedesc.frame;
-  if (!(group instanceof MaliasgroupT)) return null;
-  const groupframe = group.frames[subframe];
-  return groupframe ? groupframe.frame : null;
+  let verts: TrivertxT[] | null = null;
+  if (framedesc.type === AliasframetypeT.ALIAS_SINGLE) {
+    verts = Array.isArray(framedesc.frame) ? framedesc.frame : null;
+  } else {
+    const group = framedesc.frame;
+    if (!(group instanceof MaliasgroupT)) return null;
+    const groupframe = group.frames[subframe];
+    verts = groupframe ? groupframe.frame : null;
+  }
+  // A pose array shorter than the model's own vertex count would be read
+  // past its end by R_AliasTransformFinalVert; degenerate to "no lerp"
+  // rather than hand it on.
+  if (verts !== null && verts.length < pmdl.numverts) return null;
+  return verts;
 }
 
 // U39: per-entity cache of which TrivertxT[] array `previouspose`/
 // `currentpose`'s numbers actually denote -- see this file's header note.
+// U48: `header` records WHICH model those two arrays came from. An EntityT
+// outlives its model (a reused entity slot, and cl.viewent every time the
+// player changes weapon), and vertex arrays from the previous model have the
+// previous model's vertex count, which R_AliasTransformFinalVert would read
+// past the end of.
 interface AliasPoseCacheT {
+  header: AliashdrT;
   previousVerts: TrivertxT[];
   currentVerts: TrivertxT[];
 }
 const aliasPoseCache = new WeakMap<EntityT, AliasPoseCacheT>();
-
-// U39 addition, no WinQuake counterpart: the C's `CLAMP(_minval,_number,_maxval)`
-// macro (Ironwail/QuakeSpasm's own quakedef.h, ported already for
-// gl_rmain.ts's own R_SetupAliasFrame/R_SetupEntityTransform); duplicated
-// here as its own tiny local helper rather than shared, matching gl_rmain.ts's
-// own choice to keep this file-private rather than promote it to a shared
-// utility module.
-function CLAMP(minv: number, v: number, maxv: number): number {
-  return v < minv ? minv : v > maxv ? maxv : v;
-}
 
 // U39 addition, no WinQuake counterpart: gl_rmain.ts's own nameInList
 // (MOD_NOLERP by name at draw time instead of a load-time model flag --
@@ -346,6 +352,23 @@ const AEDGES: ReadonlyArray<readonly [number, number]> = [
   [3, 6],
 ];
 
+// U48 addition, no WinQuake counterpart: the last line of defence for the
+// software rasterizer, which indexes its span and scan tables with the screen
+// coordinates it is handed and has no representation for a non-finite one --
+// D_PolysetScanLeftEdge walks off a_spans, D_PolysetDrawSpans8's
+// `do {} while (--count)` never terminates. Culling the entity for the frame
+// is the cheapest correct answer; whatever produced the value is the bug.
+const nonFiniteTransformWarned = new Set<string>();
+
+function aliastransformFinite(): boolean {
+  for (let i = 0; i < 3; i++) {
+    for (let j = 0; j < 4; j++) {
+      if (!Number.isFinite(aliastransform[i][j])) return false;
+    }
+  }
+  return true;
+}
+
 /*
 ================
 R_AliasCheckBBox
@@ -367,7 +390,21 @@ export function R_AliasCheckBBox(): boolean {
   const pmdl = pahdr.model;
   rState.pmdl = pmdl;
 
-  R_AliasSetUpTransform(0);
+  // U48: an MD5 replacement draws through R_AliasSetUpTransformMd5, which
+  // builds its transform from the entity's RAW origin/angles. Deciding
+  // trivial_accept from a move-lerped position the mesh will not be drawn at
+  // lets a model the bbox found fully on screen project off it, and the
+  // unclipped path has no clipping left to catch that.
+  const md5 = r_enhancedmodels.value ? getMd5Payload(pahdr) : null;
+  R_AliasSetUpTransform(0, md5 === null);
+
+  if (!aliastransformFinite()) {
+    if (!nonFiniteTransformWarned.has(pmodel.name)) {
+      nonFiniteTransformWarned.add(pmodel.name);
+      Con_DPrintf("R_AliasCheckBBox: non-finite transform for %s\n", pmodel.name);
+    }
+    return false;
+  }
 
   // construct the base bounding box for this frame
   let frame = ent.frame;
@@ -565,7 +602,7 @@ export function R_AliasPreparePoints(): void {
 R_AliasSetUpTransform
 ================
 */
-export function R_AliasSetUpTransform(trivial_accept: number): void {
+export function R_AliasSetUpTransform(trivial_accept: number, moveLerp = true): void {
   const ent = rState.currententity;
   if (ent === null) Sys_Error("R_AliasSetUpTransform: no current entity");
   const pmdl = rState.pmdl;
@@ -593,10 +630,10 @@ export function R_AliasSetUpTransform(trivial_accept: number): void {
     VectorCopy(ent.angles, ent.currentangles);
   }
 
-  if (r_lerpmove.value && ent !== cl.viewent && ent.lerpflags & LERP_MOVESTEP) {
+  if (moveLerp && r_lerpmove.value && ent !== cl.viewent && ent.lerpflags & LERP_MOVESTEP) {
     let blend: number;
-    if (ent.lerpflags & LERP_FINISH) blend = CLAMP(0.0, (cl.time - ent.movelerpstart) / (ent.lerpfinish - ent.movelerpstart), 1.0);
-    else blend = CLAMP(0.0, (cl.time - ent.movelerpstart) / 0.1, 1.0);
+    if (ent.lerpflags & LERP_FINISH) blend = lerpFraction(cl.time, ent.movelerpstart, ent.lerpfinish);
+    else blend = lerpFraction(cl.time, ent.movelerpstart, ent.movelerpstart + 0.1);
 
     // translation
     VectorSubtract(ent.currentorigin, ent.previousorigin, moveLerpDelta);
@@ -1026,13 +1063,19 @@ export function R_AliasSetupFrame(): void {
     // vertex data instead of assuming they mean "this call's own pose" --
     // see resolvePoseVerts's own header note.
     cache = {
+      header: pahdr,
       previousVerts: resolvePoseVerts(pahdr, pmdl, ent.previouspose) ?? selectedVerts,
       currentVerts: resolvePoseVerts(pahdr, pmdl, ent.currentpose) ?? selectedVerts,
     };
     aliasPoseCache.set(ent, cache);
   }
 
-  if (ent.lerpflags & LERP_RESETANIM) {
+  // U48: cached verts belonging to a model this entity no longer wears are
+  // dead, exactly as an in-progress lerp is dead after LERP_RESETANIM.
+  const staleCache = cache.header !== pahdr;
+  if (staleCache) cache.header = pahdr;
+
+  if (ent.lerpflags & LERP_RESETANIM || staleCache) {
     // kill any lerp in progress
     ent.lerpstart = 0;
     ent.previouspose = posenum;
@@ -1062,8 +1105,8 @@ export function R_AliasSetupFrame(): void {
   const noLerpModel = ent.model !== null && nameInList(r_nolerp_list.string, ent.model.name);
 
   if (r_lerpmodels.value && !(noLerpModel && r_lerpmodels.value !== 2)) {
-    if (ent.lerpflags & LERP_FINISH && groupNumPoses === 1) r_aliasblend = CLAMP(0.0, (cl.time - ent.lerpstart) / (ent.lerpfinish - ent.lerpstart), 1.0);
-    else r_aliasblend = CLAMP(0.0, (cl.time - ent.lerpstart) / ent.lerptime, 1.0);
+    if (ent.lerpflags & LERP_FINISH && groupNumPoses === 1) r_aliasblend = lerpFraction(cl.time, ent.lerpstart, ent.lerpfinish);
+    else r_aliasblend = lerpFraction(cl.time, ent.lerpstart, ent.lerpstart + ent.lerptime);
     if (r_aliasblend === 1.0) {
       ent.previouspose = ent.currentpose;
       cache.previousVerts = cache.currentVerts;

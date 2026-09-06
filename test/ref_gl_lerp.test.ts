@@ -541,3 +541,93 @@ describe("R_DrawSpriteModel entity scale", () => {
     expect(rec.vertex3fv[0]).toEqual([0, 16, -20]);
   });
 });
+
+//============================================================================
+// U48: stale pose numbers and degenerate lerp spans
+//============================================================================
+
+describe("R_SetupAliasFrame -- stale pose numbers", () => {
+  test("a previouspose/currentpose left over from a bigger model is reset before it can index posedata", () => {
+    const hdr = makeTwoPoseAliashdr(); // numposes 2
+    const e = new EntityT();
+    e.lerpflags = 0;
+    e.previouspose = 97; // from the model this entity slot used to wear
+    e.currentpose = 98;
+    e.lerpstart = 0;
+    r_lerpmodels.value = 1;
+
+    const lerpdata = { pose1: -1, pose2: -1, blend: -1 };
+    cl.time = 5;
+    R_SetupAliasFrame(e, 0, hdr, false, lerpdata);
+
+    expect(lerpdata.pose1).toBe(lerpdata.pose2);
+    expect(lerpdata.pose1).toBeGreaterThanOrEqual(0);
+    expect(lerpdata.pose1).toBeLessThan(hdr.numposes);
+    expect(e.previouspose).toBe(e.currentpose);
+    expect(e.lerpstart).toBe(0);
+  });
+
+  test("a negative pose number is reset the same way", () => {
+    const hdr = makeTwoPoseAliashdr();
+    const e = new EntityT();
+    e.lerpflags = 0;
+    e.previouspose = -3;
+    e.currentpose = 0;
+    e.lerpstart = 0;
+    r_lerpmodels.value = 1;
+
+    const lerpdata = { pose1: -1, pose2: -1, blend: -1 };
+    cl.time = 5;
+    R_SetupAliasFrame(e, 0, hdr, false, lerpdata);
+
+    expect(lerpdata.pose1).toBe(lerpdata.pose2);
+    expect(lerpdata.pose1).toBeGreaterThanOrEqual(0);
+    expect(lerpdata.pose1).toBeLessThan(hdr.numposes);
+  });
+});
+
+describe("zero-span LERP_FINISH", () => {
+  test("a pose lerp whose lerpfinish equals its lerpstart blends fully, not to NaN", () => {
+    const hdr = new AliashdrT();
+    hdr.numframes = 1;
+    hdr.numposes = 1;
+    const fr = new MaliasframedescT();
+    fr.firstpose = 0;
+    fr.numposes = 1;
+    hdr.frames.push(fr);
+
+    const e = new EntityT();
+    e.lerpflags = LERP_FINISH;
+    e.previouspose = 0;
+    e.currentpose = 0;
+    e.lerpstart = 1.4;
+    e.lerpfinish = 1.4; // a U_LERPFINISH byte of 0 lands on the same instant
+    r_lerpmodels.value = 1;
+
+    const lerpdata = { pose1: 0, pose2: 0, blend: 0 };
+    cl.time = 1.4;
+    R_SetupAliasFrame(e, 0, hdr, false, lerpdata);
+
+    expect(Number.isFinite(lerpdata.blend)).toBe(true);
+    expect(lerpdata.blend).toBe(1);
+  });
+
+  test("a move lerp whose lerpfinish equals its movelerpstart lands on the current origin, finitely", () => {
+    r_lerpmove.value = 1;
+    const e = new EntityT();
+    e.lerpflags = LERP_MOVESTEP | LERP_FINISH;
+    e.origin.set([10, 0, 0]);
+    e.angles.set([0, 0, 0]);
+    cl.time = 1.4;
+    e.lerpfinish = 1.4; // == the movelerpstart the first call records
+
+    const lerpdata = { origin: new Float32Array(3), angles: new Float32Array(3) };
+    R_SetupEntityTransform(e, lerpdata);
+
+    for (let i = 0; i < 3; i++) {
+      expect(Number.isFinite(lerpdata.origin[i])).toBe(true);
+      expect(Number.isFinite(lerpdata.angles[i])).toBe(true);
+    }
+    expect(Array.from(lerpdata.origin)).toEqual([10, 0, 0]);
+  });
+});

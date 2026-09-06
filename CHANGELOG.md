@@ -113,6 +113,20 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   dedicated process finds them without the GL renderer's `R_Init` ever
   running.
 
+### Fixed
+- Software renderer: the weapon view model's pose cache is keyed by model,
+  so switching weapons no longer reads the previous weapon's vertex array
+  (rogue r2m8 crashed on the lava nailgun); a view-model change also resets
+  the animation lerp in both renderers. The alias bounding-box check and the
+  MD5 draw path now agree on where a moving monster is (dopa e5m7 crashed
+  and hipnotic hip1m2 hung on the unclipped draw path). Both renderers
+  compute lerp fractions through one helper (`src/common/lerp_blend.ts`)
+  that never yields a non-finite blend, the GL frame setup resets a stale
+  pose index, and the software path culls a model whose transform is not
+  finite instead of handing it to the rasterizer.
+- The retail sweep's per-map timeout follows its SIGTERM with SIGKILL, so a
+  driver spinning inside one frame cannot stall the sweep.
+
 ## Quake-1-TS [1.0.0] - 2026-09-05 (the seed)
 
 First release: id Software's 1999 GPL Quake sources ported to TypeScript on

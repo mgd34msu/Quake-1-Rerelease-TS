@@ -205,7 +205,8 @@ import { Chase_Update, chase_active } from "./chase";
 import { cl_forwardspeed } from "./cl_input";
 import { conState } from "./console";
 import type { EntityT } from "./render";
-import { getRenderer, r_refdef } from "./render";
+import type { ModelT } from "../common/model";
+import { LERP_RESETANIM, getRenderer, r_refdef } from "./render";
 import { scr_viewsize } from "./screen";
 import { vid } from "./vid";
 import { STAT_ITEMS } from "../qw/bothdefs";
@@ -691,6 +692,19 @@ export function angledelta(a: number): number {
   return a;
 }
 
+// U48 addition, no WinQuake counterpart: V_CalcRefdef reassigns the weapon
+// entity's model every frame from STAT_WEAPON, and cl.viewent is one
+// long-lived EntityT that outlives each weapon it wears. Both renderers'
+// pose lerp holds state (previouspose/currentpose, and the software
+// renderer's own vertex arrays) that belongs to the model that was there
+// before, so the switch needs QuakeSpasm's "don't lerp animation across a
+// model change" reset -- the same LERP_RESETANIM cl_parse.c raises for a
+// world entity whose modelindex changed.
+function V_SetViewModel(view: EntityT, model: ModelT | null): void {
+  if (view.model !== model) view.lerpflags |= LERP_RESETANIM;
+  view.model = model;
+}
+
 /*
 ==================
 CalcGunAngle
@@ -910,7 +924,7 @@ export function V_CalcRefdef(): void {
     else if (scr_viewsize.value === 90) view.origin[2] += 1;
     else if (scr_viewsize.value === 80) view.origin[2] += 0.5;
 
-    view.model = vm.flags & (PF_GIB | PF_DEAD) ? null : (cl.model_precache[cl.stats[STAT_WEAPON]] ?? null);
+    V_SetViewModel(view, vm.flags & (PF_GIB | PF_DEAD) ? null : (cl.model_precache[cl.stats[STAT_WEAPON]] ?? null));
     view.frame = vm.weaponframe;
     view.colormap = vid.colormap;
 
@@ -996,7 +1010,7 @@ export function V_CalcRefdef(): void {
   else if (scr_viewsize.value === 90) view.origin[2] += 1;
   else if (scr_viewsize.value === 80) view.origin[2] += 0.5;
 
-  view.model = cl.model_precache[cl.stats[STAT_WEAPON]] ?? null;
+  V_SetViewModel(view, cl.model_precache[cl.stats[STAT_WEAPON]] ?? null);
   view.frame = cl.stats[STAT_WEAPONFRAME];
   view.colormap = vid.colormap;
 

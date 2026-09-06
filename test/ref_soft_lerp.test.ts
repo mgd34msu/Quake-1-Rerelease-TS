@@ -18,7 +18,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { vec3 } from "../src/common/mathlib";
 import { AliasframetypeT, StvertT, TrivertxT, type MdlT } from "../src/common/modelgen";
 import { ModelT } from "../src/common/model";
-import { EntityT, LERP_MOVESTEP, LERP_RESETANIM, r_lerpmodels, r_lerpmove } from "../src/client/render";
+import { EntityT, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, r_lerpmodels, r_lerpmove } from "../src/client/render";
+import { lerpFraction } from "../src/common/lerp_blend";
 import { cl } from "../src/client/client";
 import { AuxvertT, FinalvertT, allocAuxverts, allocFinalverts, modelorg, r_origin, r_refdef, rState, vpn, vright, vup } from "../src/ref_soft/r_local";
 import { AliashdrT, MaliasframedescT } from "../src/ref_soft/model_types";
@@ -500,6 +501,217 @@ describe("R_AliasSetUpTransform -- move lerp", () => {
     R_AliasSetUpTransform(0);
     cl.time = 0.05;
     R_AliasSetUpTransform(0);
+    expect(aliastransform[2][3]).toBeCloseTo(100, 5);
+  });
+});
+
+//============================================================================
+
+describe("lerpFraction", () => {
+  test("a positive span reproduces the CLAMP(0, (now-start)/(end-start), 1) it replaces", () => {
+    expect(lerpFraction(0, 0, 0.1)).toBe(0);
+    expect(lerpFraction(0.025, 0, 0.1)).toBeCloseTo(0.25, 12);
+    expect(lerpFraction(0.05, 0, 0.1)).toBeCloseTo(0.5, 12);
+    expect(lerpFraction(0.1, 0, 0.1)).toBe(1);
+    expect(lerpFraction(2.05, 2, 2.1)).toBeCloseTo(0.5, 12);
+  });
+
+  test("clamps outside the span at both ends", () => {
+    expect(lerpFraction(-5, 0, 0.1)).toBe(0);
+    expect(lerpFraction(5, 0, 0.1)).toBe(1);
+  });
+
+  test("a zero span reports the blend as already finished instead of 0/0", () => {
+    expect(lerpFraction(1.5, 1.5, 1.5)).toBe(1);
+    expect(lerpFraction(2, 1.5, 1.5)).toBe(1);
+  });
+
+  test("a negative span reports the blend as already finished", () => {
+    expect(lerpFraction(1.5, 1.5, 1.0)).toBe(1);
+  });
+
+  test("a NaN anywhere still yields a finite 0..1 fraction", () => {
+    expect(lerpFraction(Number.NaN, 0, 0.1)).toBe(1);
+    expect(lerpFraction(0.05, Number.NaN, 0.1)).toBe(1);
+    expect(lerpFraction(0.05, 0, Number.NaN)).toBe(1);
+  });
+
+  test("infinities never escape as a non-finite fraction", () => {
+    expect(lerpFraction(Number.POSITIVE_INFINITY, 0, 0.1)).toBe(1);
+    expect(lerpFraction(Number.NEGATIVE_INFINITY, 0, 0.1)).toBe(0);
+    expect(lerpFraction(0.05, 0, Number.POSITIVE_INFINITY)).toBe(0);
+  });
+});
+
+//============================================================================
+
+// A second model, with MORE vertices than makeTwoFrameAliashdr's one, so the
+// pose arrays cached for that model are too short for this one.
+function makeThreeVertAliashdr(pmdl: MdlT): AliashdrT {
+  const framesVerts: TrivertxT[][] = [];
+  for (let f = 0; f < 2; f++) {
+    const verts: TrivertxT[] = [];
+    for (let i = 0; i < 3; i++) {
+      const v = new TrivertxT();
+      v.v[0] = 96;
+      v.v[1] = 20 + f * 40 + i * 30;
+      v.v[2] = 30;
+      v.lightnormalindex = 0;
+      verts.push(v);
+    }
+    framesVerts.push(verts);
+  }
+
+  const pahdr = new AliashdrT();
+  pahdr.model = pmdl;
+  pahdr.frames = framesVerts.map((verts) => {
+    const fd = new MaliasframedescT();
+    fd.type = AliasframetypeT.ALIAS_SINGLE;
+    fd.frame = verts;
+    return fd;
+  });
+  pahdr.stverts = [0, 1, 2].map(() => {
+    const st = new StvertT();
+    st.s = 5;
+    st.t = 7;
+    st.onseam = 0;
+    return st;
+  });
+  pahdr.triangles = [];
+  return pahdr;
+}
+
+describe("R_AliasSetupFrame -- pose cache across a model change", () => {
+  test("an entity that switches model drops the previous model's cached pose verts and draws every vertex of the new one", () => {
+    const ent = setUpView();
+    setUpProjection();
+    r_lerpmodels.value = 1;
+
+    // Model A: one vertex, two frames. Leave a lerp in progress so the cache
+    // holds A's own (one-element) pose arrays.
+    const pmdlA = makeMdl(2, 1);
+    const pahdrA = makeTwoFrameAliashdr(pmdlA);
+    rState.pmdl = pmdlA;
+    rState.paliashdr = pahdrA;
+    ent.frame = 0;
+    cl.time = 0;
+    R_AliasSetupFrame();
+    ent.frame = 1;
+    cl.time = 0;
+    R_AliasSetupFrame();
+    expect(r_apverts1).not.toBe(r_apverts2);
+    expect(r_apverts1?.length).toBe(1);
+
+    // Model B: three vertices. Same EntityT -- this is cl.viewent changing
+    // weapon, or a reused entity slot.
+    const pmdlB = makeMdl(2, 3);
+    const pahdrB = makeThreeVertAliashdr(pmdlB);
+    rState.pmdl = pmdlB;
+    rState.paliashdr = pahdrB;
+    rState.pfinalverts = allocFinalverts(3);
+    rState.pauxverts = allocAuxverts(3);
+    R_AliasSetUpTransform(0);
+    ent.frame = 0;
+    cl.time = 0.05;
+    R_AliasSetupFrame();
+
+    // reset, exactly as LERP_RESETANIM would leave it
+    expect(r_apverts1).toBe(r_apverts2);
+    expect(r_apverts1?.length).toBe(3);
+    expect(ent.previouspose).toBe(ent.currentpose);
+    expect(ent.lerpstart).toBe(0);
+
+    // and the draw reads all three of the new model's vertices
+    R_AliasPreparePoints();
+    const fv = rState.pfinalverts;
+    expect(fv).not.toBeNull();
+    if (!fv) return;
+    for (let i = 0; i < 3; i++) {
+      expect(Number.isFinite(fv[i].v[0])).toBe(true);
+      expect(Number.isFinite(fv[i].v[1])).toBe(true);
+    }
+    expect(fv[0].v[0]).not.toBe(fv[1].v[0]);
+  });
+
+  test("a cold-start pose number that resolves to fewer verts than the model has is ignored", () => {
+    const ent = setUpView();
+    setUpProjection();
+    r_lerpmodels.value = 1;
+
+    // frame 1 carries only one vertex while the mdl claims three: a
+    // previouspose pointing at it must not become a lerp source.
+    const pmdl = makeMdl(2, 3);
+    const pahdr = makeThreeVertAliashdr(pmdl);
+    const shortFrame = pahdr.frames[1].frame;
+    expect(Array.isArray(shortFrame)).toBe(true);
+    if (!Array.isArray(shortFrame)) return;
+    pahdr.frames[1].frame = [shortFrame[0]];
+
+    rState.pmdl = pmdl;
+    rState.paliashdr = pahdr;
+    ent.previouspose = 65536; // frame 1, subframe 0
+    ent.currentpose = 65536;
+    ent.frame = 0;
+    cl.time = 0;
+    R_AliasSetupFrame();
+
+    expect(r_apverts1?.length).toBe(3);
+    expect(r_apverts2?.length).toBe(3);
+  });
+});
+
+//============================================================================
+
+describe("zero-span LERP_FINISH", () => {
+  test("a pose lerp whose lerpfinish equals its lerpstart blends fully to the current pose", () => {
+    const ent = setUpView();
+    setUpProjection();
+    const pmdl = makeMdl(2, 1);
+    const pahdr = makeTwoFrameAliashdr(pmdl);
+    rState.pmdl = pmdl;
+    rState.paliashdr = pahdr;
+    r_lerpmodels.value = 1;
+
+    ent.lerpflags = LERP_FINISH;
+    ent.frame = 0;
+    cl.time = 1.4;
+    R_AliasSetupFrame();
+
+    // pose change at cl.time 1.4 sets lerpstart to 1.4; a U_LERPFINISH byte
+    // of 0 puts lerpfinish on the same instant, so the span is exactly zero.
+    ent.frame = 1;
+    R_AliasSetupFrame();
+    ent.lerpfinish = 1.4;
+    R_AliasSetupFrame();
+
+    expect(r_aliasblend).toBe(1);
+    expect(r_apverts1).toBe(r_apverts2);
+    expect(r_apverts2?.[0].v[1]).toBe(120);
+  });
+
+  test("a move lerp whose lerpfinish equals its movelerpstart transforms at the current origin, finitely", () => {
+    const ent = setUpView();
+    const pmdl = makeMdl(1, 0);
+    rState.pmdl = pmdl;
+    r_lerpmove.value = 1;
+
+    ent.lerpflags = LERP_MOVESTEP | LERP_FINISH;
+    ent.origin[0] = 100;
+    ent.origin[1] = 0;
+    ent.origin[2] = 0;
+    modelorg[0] = r_origin[0] - ent.origin[0];
+    modelorg[1] = r_origin[1] - ent.origin[1];
+    modelorg[2] = r_origin[2] - ent.origin[2];
+
+    cl.time = 1.4;
+    ent.lerpfinish = 1.4; // == the movelerpstart the call below records
+    R_AliasSetUpTransform(0);
+
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 4; j++) {
+        expect(Number.isFinite(aliastransform[i][j])).toBe(true);
+      }
+    }
     expect(aliastransform[2][3]).toBeCloseTo(100, 5);
   });
 });

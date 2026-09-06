@@ -36,11 +36,11 @@ const { Cmd_Exists } = cmdMod;
 const { Cvar_SetValue } = cvarMod;
 const { host } = hostMod;
 const { vec3 } = mathMod;
-const { PITCH, ROLL, YAW, STAT_HEALTH } = quakedefMod;
+const { PITCH, ROLL, YAW, STAT_HEALTH, STAT_WEAPON } = quakedefMod;
 const { CONTENTS_LAVA, CONTENTS_SLIME, CONTENTS_WATER } = bspMod;
 const { MSG_BeginReading, net_message } = sizebufMod;
 const { CSHIFT_CONTENTS, CSHIFT_DAMAGE, cl, cl_entities, cls } = clientMod;
-const { r_refdef, re } = renderMod;
+const { LERP_RESETANIM, r_refdef, re } = renderMod;
 const { vid } = vidMod;
 const { conState } = consoleMod;
 
@@ -544,6 +544,44 @@ describe("V_CalcRefdef", () => {
     // viewsize 100 lifts the gun 2 units above the eye height
     expect(cl.viewent.origin[2]).toBeCloseTo(22 + 2, 5);
     expect(cl.viewent.model).toBe(null);
+  });
+
+  test("switching weapon raises LERP_RESETANIM on the view entity, and holding one does not", () => {
+    const shotgun = new modelMod.ModelT();
+    shotgun.name = "progs/v_shot.mdl";
+    const nailgun = new modelMod.ModelT();
+    nailgun.name = "progs/v_nail.mdl";
+    cl.model_precache[3] = shotgun;
+    cl.model_precache[4] = nailgun;
+
+    cl.nodrift = true;
+    cl.onground = false;
+    cl.viewheight = 22;
+    cl.viewent.lerpflags = 0;
+
+    cl.stats[STAT_WEAPON] = 3;
+    V_CalcRefdef();
+    expect(cl.viewent.model).toBe(shotgun);
+    expect(cl.viewent.lerpflags & LERP_RESETANIM).toBe(LERP_RESETANIM);
+
+    // the renderer consumes the flag; the same weapon next frame must not
+    // raise it again, or the weapon would never animate smoothly at all
+    cl.viewent.lerpflags = 0;
+    V_CalcRefdef();
+    expect(cl.viewent.model).toBe(shotgun);
+    expect(cl.viewent.lerpflags & LERP_RESETANIM).toBe(0);
+
+    cl.stats[STAT_WEAPON] = 4;
+    V_CalcRefdef();
+    expect(cl.viewent.model).toBe(nailgun);
+    expect(cl.viewent.lerpflags & LERP_RESETANIM).toBe(LERP_RESETANIM);
+
+    // and losing the weapon entirely (model -> null) is a change too
+    cl.viewent.lerpflags = 0;
+    cl.stats[STAT_WEAPON] = 0;
+    V_CalcRefdef();
+    expect(cl.viewent.model).toBe(null);
+    expect(cl.viewent.lerpflags & LERP_RESETANIM).toBe(LERP_RESETANIM);
   });
 });
 

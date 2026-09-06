@@ -228,6 +228,7 @@ export { r_lerpmodels, r_lerpmove };
 // src/common/render_cvars.ts (U44 -- see that module's header); re-exported
 // below so existing `from "./gl_rmain"` imports (gl_rsurf.ts) keep working.
 import { r_lavaalpha, r_slimealpha, r_telealpha, r_wateralpha } from "../common/render_cvars";
+import { lerpFraction } from "../common/lerp_blend";
 export { r_lavaalpha, r_slimealpha, r_telealpha, r_wateralpha };
 import { d_8to24table, vid } from "../client/vid";
 import { chase_active } from "../client/chase";
@@ -581,13 +582,6 @@ export const rmainState: {
   alpha: 1,
 };
 
-// U16 addition, no WinQuake counterpart: the C's `CLAMP(_minval,_number,_maxval)`
-// macro (Ironwail/QuakeSpasm's own quakedef.h), used exactly as
-// R_SetupAliasFrame/R_SetupEntityTransform below use it.
-function CLAMP(minv: number, v: number, maxv: number): number {
-  return v < minv ? minv : v > maxv ? maxv : v;
-}
-
 // U16 addition: R_SetupAliasFrame's two-pose result (QuakeSpasm/Ironwail's
 // `lerpdata_t`, the alias-frame half). One reusable object -- R_DrawAliasModel
 // is never reentrant, matching this file's other scratch-vector globals
@@ -765,7 +759,14 @@ export function R_SetupAliasFrame(e: EntityT, frameIn: number, paliashdr: Aliash
     e.lerptime = 0.1;
   }
 
-  if (e.lerpflags & LERP_RESETANIM) {
+  // A previouspose/currentpose left over from a DIFFERENT model (the entity
+  // slot was reused, or cl.viewent switched weapons) indexes paliashdr's
+  // posedata out of range, which GL_DrawAliasFrame would read as undefined
+  // verts. Treat it exactly as LERP_RESETANIM does below.
+  const staleposes =
+    e.previouspose < 0 || e.previouspose >= paliashdr.numposes || e.currentpose < 0 || e.currentpose >= paliashdr.numposes;
+
+  if (e.lerpflags & LERP_RESETANIM || staleposes) {
     // kill any lerp in progress
     e.lerpstart = 0;
     e.previouspose = posenum;
@@ -787,8 +788,8 @@ export function R_SetupAliasFrame(e: EntityT, frameIn: number, paliashdr: Aliash
   }
 
   if (r_lerpmodels.value && !(noLerp && r_lerpmodels.value !== 2)) {
-    if (e.lerpflags & LERP_FINISH && numposes === 1) lerpdata.blend = CLAMP(0.0, (cl.time - e.lerpstart) / (e.lerpfinish - e.lerpstart), 1.0);
-    else lerpdata.blend = CLAMP(0.0, (cl.time - e.lerpstart) / e.lerptime, 1.0);
+    if (e.lerpflags & LERP_FINISH && numposes === 1) lerpdata.blend = lerpFraction(cl.time, e.lerpstart, e.lerpfinish);
+    else lerpdata.blend = lerpFraction(cl.time, e.lerpstart, e.lerpstart + e.lerptime);
     if (lerpdata.blend === 1.0) e.previouspose = e.currentpose;
     lerpdata.pose1 = e.previouspose;
     lerpdata.pose2 = e.currentpose;
@@ -833,8 +834,8 @@ export function R_SetupEntityTransform(e: EntityT, lerpdata: EntityTransformLerp
   // set up values
   if (r_lerpmove.value && e !== cl.viewent && e.lerpflags & LERP_MOVESTEP) {
     let blend: number;
-    if (e.lerpflags & LERP_FINISH) blend = CLAMP(0.0, (cl.time - e.movelerpstart) / (e.lerpfinish - e.movelerpstart), 1.0);
-    else blend = CLAMP(0.0, (cl.time - e.movelerpstart) / 0.1, 1.0);
+    if (e.lerpflags & LERP_FINISH) blend = lerpFraction(cl.time, e.movelerpstart, e.lerpfinish);
+    else blend = lerpFraction(cl.time, e.movelerpstart, e.movelerpstart + 0.1);
 
     // translation
     VectorSubtract(e.currentorigin, e.previousorigin, entityLerpDelta);
