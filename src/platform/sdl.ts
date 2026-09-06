@@ -199,6 +199,17 @@ const SDL_WINDOWEVENT_SIZE_CHANGED = 6;
 const SDL_WINDOWEVENT_FOCUS_GAINED = 12;
 const SDL_WINDOWEVENT_FOCUS_LOST = 13;
 const SDL_WINDOWEVENT_CLOSE = 14;
+// A window minimized from its titlebar or taskbar normally gets FOCUS_LOST
+// alongside MINIMIZED, but the pairing is not guaranteed -- a "minimize"
+// hotkey or a compositor gesture can deliver MINIMIZED on its own, which left
+// the pointer grabbed to a window that is no longer on screen. RESTORED is
+// its counterpart, and unlike MINIMIZED it says nothing about focus: a window
+// can be restored behind the focused one, so it only re-activates when SDL
+// reports the window actually holds input focus.
+const SDL_WINDOWEVENT_MINIMIZED = 9;
+const SDL_WINDOWEVENT_RESTORED = 5;
+
+const SDL_WINDOW_INPUT_FOCUS = 0x00000200;
 
 const SDL_BUTTON_LEFT = 1;
 const SDL_BUTTON_MIDDLE = 2;
@@ -1829,7 +1840,10 @@ export function SDL_PumpInput(): void {
         const ev = eventBuf[WINDOWEVENT_EVENT];
         if (ev === SDL_WINDOWEVENT_FOCUS_GAINED) SDL_AppActivate(true);
         else if (ev === SDL_WINDOWEVENT_FOCUS_LOST) SDL_AppActivate(false);
-        else if (ev === SDL_WINDOWEVENT_CLOSE) Sys_Quit();
+        else if (ev === SDL_WINDOWEVENT_MINIMIZED) SDL_AppActivate(false);
+        else if (ev === SDL_WINDOWEVENT_RESTORED) {
+          if (SDL_WindowHasInputFocus()) SDL_AppActivate(true);
+        } else if (ev === SDL_WINDOWEVENT_CLOSE) Sys_Quit();
         else if (ev === SDL_WINDOWEVENT_SIZE_CHANGED) {
           SDL_WindowSizeChanged(eventView.getInt32(WINDOWEVENT_DATA1, true), eventView.getInt32(WINDOWEVENT_DATA2, true));
         }
@@ -1919,6 +1933,15 @@ export function SDL_PumpInput(): void {
         break;
     }
   }
+}
+
+/* Whether SDL says the window currently holds keyboard input focus -- what
+   separates a RESTORED that brings the window back to the front from one that
+   un-minimizes it behind whatever has focus now. `false` with no window up. */
+export function SDL_WindowHasInputFocus(): boolean {
+  const l = lib();
+  if (!l || !window) return false;
+  return (Number(l.symbols.SDL_GetWindowFlags(window)) & SDL_WINDOW_INPUT_FOCUS) !== 0;
 }
 
 export function SDL_AppActivate(active: boolean): void {
@@ -2157,6 +2180,8 @@ export const SDL_TEST_WINDOWEVENT_SIZE_CHANGED = SDL_WINDOWEVENT_SIZE_CHANGED;
 export const SDL_TEST_WINDOWEVENT_FOCUS_GAINED = SDL_WINDOWEVENT_FOCUS_GAINED;
 export const SDL_TEST_WINDOWEVENT_FOCUS_LOST = SDL_WINDOWEVENT_FOCUS_LOST;
 export const SDL_TEST_WINDOWEVENT_CLOSE = SDL_WINDOWEVENT_CLOSE;
+export const SDL_TEST_WINDOWEVENT_MINIMIZED = SDL_WINDOWEVENT_MINIMIZED;
+export const SDL_TEST_WINDOWEVENT_RESTORED = SDL_WINDOWEVENT_RESTORED;
 
 // SDL_GameControllerButton/Axis ids, re-exported for test/gamepad.test.ts so
 // it never has to hardcode SDL's own enum numbers a second time.

@@ -137,6 +137,21 @@ function surfPrev(s: SurfT): SurfT {
   return p;
 }
 
+/*
+`edge->u` is 20.12 fixed point: one screen pixel is 2^20, so `u >> 20` is the
+pixel column and a 2048-pixel-wide viewport already puts `2048 << 20` past
+INT_MAX. Every `u` here is a whole number well inside a double's exact
+integer range, so the shifts are written as the multiply and floor-divide
+they stand for; for anything that did fit in a 32-bit int the two agree bit
+for bit (`>>` on a signed int is a floor divide, and that is what
+Math.floor gives).
+*/
+const U_ONE = 0x100000;
+
+function ushift20(u: number): number {
+  return Math.floor(u / U_ONE);
+}
+
 //=============================================================================
 
 /*
@@ -371,7 +386,7 @@ function R_LeadingEdgeBackwards(edge: EdgeT): void {
       }
     } else {
       // emit a span (obscures current top)
-      const iu = edge.u >> 20;
+      const iu = ushift20(edge.u);
 
       if (iu > surf2.last_u) {
         const span = allocSpan();
@@ -411,7 +426,7 @@ function R_TrailingEdge(surf: SurfT, edge: EdgeT): void {
 
     if (surf === surfaces[1].next) {
       // emit a span (current top going away)
-      const iu = edge.u >> 20;
+      const iu = ushift20(edge.u);
       if (iu > surf.last_u) {
         const span = allocSpan();
         span.u = surf.last_u;
@@ -514,7 +529,7 @@ function R_LeadingEdge(edge: EdgeT): void {
         }
       } else {
         // emit a span (obscures current top)
-        const iu = edge.u >> 20;
+        const iu = ushift20(edge.u);
 
         if (iu > surf2.last_u) {
           const span = allocSpan();
@@ -614,16 +629,16 @@ export function R_ScanEdges(): void {
 
   // clear active edges to just the background edges around the whole screen
   // FIXME: most of this only needs to be set up once
-  edge_head.u = r_refdef.vrect.x << 20;
-  edge_head_u_shift20 = edge_head.u >> 20;
+  edge_head.u = r_refdef.vrect.x * U_ONE;
+  edge_head_u_shift20 = ushift20(edge_head.u);
   edge_head.u_step = 0;
   edge_head.prev = null;
   edge_head.next = edge_tail;
   edge_head.surfs[0] = 0;
   edge_head.surfs[1] = 1;
 
-  edge_tail.u = (r_refdef.vrectright << 20) + 0xfffff;
-  edge_tail_u_shift20 = edge_tail.u >> 20;
+  edge_tail.u = r_refdef.vrectright * U_ONE + 0xfffff;
+  edge_tail_u_shift20 = ushift20(edge_tail.u);
   edge_tail.u_step = 0;
   edge_tail.prev = edge_head;
   edge_tail.next = edge_aftertail;

@@ -123,14 +123,20 @@ describe("anorm_dots", () => {
 });
 
 describe("r_shared.h constants", () => {
+  // MAXHEIGHT/MAXWIDTH are the two values this port does NOT take from
+  // r_shared.h (1024/1280, WinQuake's largest mode): src/platform/vid.ts's
+  // own mode table reaches 3840x2160, and every table sized off them --
+  // d_scantable/zspantable, newedges/removeedges, D_WarpScreen's row and
+  // column tables -- has to cover the widest and tallest entry in it. MAXSPANS
+  // keeps the C's headroom against the wider MAXWIDTH for the same reason.
   test("match the C header", () => {
     expect(MAXVERTS).toBe(16);
     expect(MAXWORKINGVERTS).toBe(20);
-    expect(MAXHEIGHT).toBe(1024);
-    expect(MAXWIDTH).toBe(1280);
-    expect(MAXDIMENSION).toBe(1280);
+    expect(MAXHEIGHT).toBe(2160);
+    expect(MAXWIDTH).toBe(4096);
+    expect(MAXDIMENSION).toBe(4096);
     expect(CYCLE).toBe(128);
-    expect(SIN_BUFFER_SIZE).toBe(1280 + 128);
+    expect(SIN_BUFFER_SIZE).toBe(4096 + 128);
     expect(ALIAS_ONSEAM).toBe(0x0020);
     expect(ALIAS_XY_CLIP_MASK).toBe(0x000f);
     expect(MAXALIASVERTS).toBe(2000);

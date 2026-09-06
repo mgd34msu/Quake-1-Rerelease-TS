@@ -49,6 +49,9 @@ import {
   SDL_TEST_BUTTON_RIGHT,
   SDL_TEST_WINDOWEVENT_FOCUS_GAINED,
   SDL_TEST_WINDOWEVENT_FOCUS_LOST,
+  SDL_TEST_WINDOWEVENT_MINIMIZED,
+  SDL_TEST_WINDOWEVENT_RESTORED,
+  SDL_WindowHasInputFocus,
   SDL_MakeWindowEvent,
   SDL_MakeWindowSizeChangedEvent,
   SDL_SetWindowSizeChangedHandler,
@@ -608,5 +611,70 @@ describe("SDL_PumpInput -- SDL_WINDOWEVENT_SIZE_CHANGED", () => {
     } finally {
       SDL_SetWindowSizeChangedHandler(VID_SizeChanged);
     }
+  });
+});
+
+/*
+SDL_WINDOWEVENT_MINIMIZED (9) and SDL_WINDOWEVENT_RESTORED (5), the other two
+window events the pump used to drop. A window minimized from its titlebar
+usually gets FOCUS_LOST alongside MINIMIZED, but nothing guarantees the
+pairing -- a "minimize" hotkey or a compositor gesture can deliver MINIMIZED
+on its own, which left the pointer grabbed to a window that is no longer on
+screen. RESTORED is not the mirror image: a window can be un-minimized behind
+whatever holds focus now, so it re-activates only when SDL says the window
+really has input focus.
+*/
+describe("SDL_PumpInput -- SDL_WINDOWEVENT_MINIMIZED / RESTORED", () => {
+  afterAll(() => {
+    SDL_DrainEventsForTests();
+    SDL_PushTestEvent(SDL_MakeWindowEvent(SDL_TEST_WINDOWEVENT_FOCUS_GAINED));
+    Sys_SendKeyEvents();
+    keyState.key_dest = KeydestT.key_game;
+    IN_Commands();
+  });
+
+  test("MINIMIZED on its own clears windowActive and releases the mouse, with no FOCUS_LOST alongside it", () => {
+    keyState.key_dest = KeydestT.key_game;
+    SDL_SetFullscreenHint(false);
+    SDL_DrainEventsForTests();
+    SDL_PushTestEvent(SDL_MakeWindowEvent(SDL_TEST_WINDOWEVENT_FOCUS_GAINED));
+    Sys_SendKeyEvents();
+    IN_Commands();
+    expect(SDL_InputStateForTests().mouse_active).toBe(true);
+
+    SDL_DrainEventsForTests();
+    expect(SDL_PushTestEvent(SDL_MakeWindowEvent(SDL_TEST_WINDOWEVENT_MINIMIZED))).toBe(1);
+    Sys_SendKeyEvents();
+
+    expect(SDL_InputStateForTests().windowActive).toBe(false);
+    expect(SDL_InputStateForTests().mouse_active).toBe(false);
+    expect(SDL_InputStateForTests().cursorVisible).toBe(true);
+
+    // and it stays released while minimized, exactly as it does unfocused
+    IN_Commands();
+    expect(SDL_InputStateForTests().mouse_active).toBe(false);
+  });
+
+  test("RESTORED re-activates the window when SDL reports it holds input focus", () => {
+    // precondition: the dummy driver's window really does carry
+    // SDL_WINDOW_INPUT_FOCUS, so this exercises the branch that activates.
+    // The other branch -- restored behind another window, no input focus --
+    // needs a real window manager to produce and is not reachable here.
+    expect(SDL_WindowHasInputFocus()).toBe(true);
+    expect(SDL_InputStateForTests().windowActive).toBe(false);
+
+    SDL_DrainEventsForTests();
+    expect(SDL_PushTestEvent(SDL_MakeWindowEvent(SDL_TEST_WINDOWEVENT_RESTORED))).toBe(1);
+    Sys_SendKeyEvents();
+
+    expect(SDL_InputStateForTests().windowActive).toBe(true);
+    keyState.key_dest = KeydestT.key_game;
+    IN_Commands();
+    expect(SDL_InputStateForTests().mouse_active).toBe(true);
+  });
+
+  test("the two events are SDL2's own SDL_WindowEventID numbering", () => {
+    expect(SDL_TEST_WINDOWEVENT_MINIMIZED).toBe(9);
+    expect(SDL_TEST_WINDOWEVENT_RESTORED).toBe(5);
   });
 });

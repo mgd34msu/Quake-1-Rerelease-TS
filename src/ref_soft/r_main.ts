@@ -603,21 +603,50 @@ Guaranteed to be called before the first refresh
 ===============
 */
 export function R_ViewChanged(pvrect: VrectT, lineadj: number, aspect: number): void {
-  let i: number;
-  let res_scale: number;
-
   rState.r_viewchanged = true;
 
   R_SetVrect(pvrect, r_refdef.vrect, lineadj);
 
+  R_DeriveVrect(aspect);
+}
+
+/*
+Everything R_ViewChanged reads off `r_refdef.vrect` once R_SetVrect has cut
+the passed rectangle down by viewsize and the status bar. Split out because
+`r_refdef.vrect` also changes WITHOUT going through R_ViewChanged: with more
+than one seat, src/client/screen.ts renders the frame once per seat and
+src/client/splitscreen.ts's SS_ApplySeatRect drops that seat's pane into
+`r_refdef.vrect` in front of each pass. Left underived, the clamp edges
+R_EmitEdge sorts against (fvrecty_adj/fvrectbottom_adj, vrect_x_adj_shift20/
+vrectright_adj_shift20) and the projection the vertices come from stay the
+WHOLE screen's while R_ScanEdges walks the seat's rows alone -- an edge whose
+insert row is above the pane never enters the active list, its remove row is
+inside the pane, and R_RemoveEdges unlinks an edge that was never linked
+("active edge list is not terminated").
+*/
+const derivedVrect = new VrectT();
+let derivedAspect = 0;
+let vrectDerived = false;
+
+function R_DeriveVrect(aspect: number): void {
+  let i: number;
+  let res_scale: number;
+
+  derivedVrect.x = r_refdef.vrect.x;
+  derivedVrect.y = r_refdef.vrect.y;
+  derivedVrect.width = r_refdef.vrect.width;
+  derivedVrect.height = r_refdef.vrect.height;
+  derivedAspect = aspect;
+  vrectDerived = true;
+
   r_refdef.horizontalFieldOfView = 2.0 * Math.tan((r_refdef.fov_x / 360) * M_PI);
   r_refdef.fvrectx = r_refdef.vrect.x;
   r_refdef.fvrectx_adj = r_refdef.vrect.x - 0.5;
-  r_refdef.vrect_x_adj_shift20 = ((r_refdef.vrect.x << 20) + (1 << 19) - 1) | 0;
+  r_refdef.vrect_x_adj_shift20 = r_refdef.vrect.x * 0x100000 + (1 << 19) - 1;
   r_refdef.fvrecty = r_refdef.vrect.y;
   r_refdef.fvrecty_adj = r_refdef.vrect.y - 0.5;
   r_refdef.vrectright = r_refdef.vrect.x + r_refdef.vrect.width;
-  r_refdef.vrectright_adj_shift20 = ((r_refdef.vrectright << 20) + (1 << 19) - 1) | 0;
+  r_refdef.vrectright_adj_shift20 = r_refdef.vrectright * 0x100000 + (1 << 19) - 1;
   r_refdef.fvrectright = r_refdef.vrectright;
   r_refdef.fvrectright_adj = r_refdef.vrectright - 0.5;
   r_refdef.vrectrightedge = r_refdef.vrectright - 0.99;
@@ -697,6 +726,19 @@ export function R_ViewChanged(pvrect: VrectT, lineadj: number, aspect: number): 
   else rState.r_fov_greater_than_90 = true;
 
   D_ViewChanged();
+}
+
+/*
+Re-derive if `r_refdef.vrect` has been replaced since the last derivation --
+see R_DeriveVrect. A one-seat frame never differs and pays one comparison.
+Called before R_SetupFrame so R_TransformFrustum/R_SetUpFrustumIndexes there
+rebuild the frustum from this rectangle's screenedge planes.
+*/
+export function R_CheckVrectChanged(): void {
+  if (!vrectDerived) return;
+  const vrect = r_refdef.vrect;
+  if (vrect.x === derivedVrect.x && vrect.y === derivedVrect.y && vrect.width === derivedVrect.width && vrect.height === derivedVrect.height) return;
+  R_DeriveVrect(derivedAspect);
 }
 
 /*
@@ -1136,6 +1178,8 @@ export function R_RenderView_(): void {
   rState.r_warpbuffer32 = warpbuffer32;
 
   if (r_timegraph.value || r_speeds.value || r_dspeeds.value) rState.r_time1 = Sys_FloatTime();
+
+  R_CheckVrectChanged();
 
   R_SetupFrame();
 

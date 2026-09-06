@@ -59,7 +59,11 @@ Deviations from PORTING.md / the C source:
   usable slot -- the same values `surface_p - surfaces` and
   `surf_max - surfaces` produce in C.
 - Fixed-point values (`fixed16_t u`, `fixed8_t`) stay plain `number`;
-  callers keep the C's `| 0` / `>>` / `<< 20`.
+  callers keep the C's `| 0` / `>>` / `<< 20`, except for `edge_t.u`'s 20.12
+  pixel column: at the widths MAXWIDTH now allows, `vrectright << 20` runs
+  past INT_MAX, so r_edge.ts/r_draw.ts/r_main.ts write those three sites as
+  the multiply and floor-divide the shifts stand for (identical results for
+  everything that did fit in an int).
 - `int pad[2]` in surf_t is struct padding "to 64 bytes" for the x86 asm and
   is dropped, as is `byte reserved[2]` in clipplane_t (r_local.ts).
 - Declared by r_shared.h but DEFINED by no non-asm .c in v1.09, so kept as
@@ -101,8 +105,15 @@ export const MAXVERTS = 16; // max points in a surface polygon
 export const MAXWORKINGVERTS = MAXVERTS + 4; // max points in an intermediate
 //  polygon (while processing)
 // !!! if this is changed, it must be changed in d_ifacea.h too !!!
-export const MAXHEIGHT = 1024;
-export const MAXWIDTH = 1280;
+// r_shared.h's 1024/1280 are WinQuake's largest supported mode. This port's
+// own mode table (src/platform/vid.ts's VID_MODES, 320x240 through 3840x2160)
+// goes far past that, and every table sized off these two -- d_local.ts's
+// d_scantable/zspantable, r_local.ts's newedges/removeedges, d_scan.ts's
+// D_WarpScreen row/column tables, d_sprite.ts's and d_polyse.ts's span pools
+// -- has to cover the tallest and widest mode the table can select, plus the
+// 4096-wide case the edge list is now good for.
+export const MAXHEIGHT = 2160;
+export const MAXWIDTH = 4096;
 export const MAXDIMENSION = MAXHEIGHT > MAXWIDTH ? MAXHEIGHT : MAXWIDTH;
 
 export const SIN_BUFFER_SIZE = MAXDIMENSION + CYCLE;
@@ -124,7 +135,11 @@ export const NUMSTACKEDGES = 2400;
 export const MINEDGES = NUMSTACKEDGES;
 export const NUMSTACKSURFACES = 800;
 export const MINSURFACES = NUMSTACKSURFACES;
-export const MAXSPANS = 3000;
+// r_shared.h's `#define MAXSPANS 3000` sizes R_ScanEdges's span pool against
+// that file's own 1280-pixel MAXWIDTH: `max_span_p = MAXSPANS - vrect.width`
+// has to leave a whole scanline's worth of spans below the flush point. The
+// pool keeps the same headroom against the wider MAXWIDTH above.
+export const MAXSPANS = 9600;
 
 // !!! if this is changed, it must be changed in asm_draw.h too !!!
 export class EspanT {

@@ -75,6 +75,24 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clock they touch so the dedicated boot test passes in any file order.
 
 ### Changed
+- The engine writes to a per-user directory by default instead of the game
+  install: `$XDG_DATA_HOME/q1rets` (`~/.local/share/q1rets` when unset),
+  mirrored per game directory and created on demand, mounted at the head of
+  the search path so its `config.cfg`, saves, autosaves, demos, screenshots
+  and `qconsole.log` are found first. `-homedir <dir>` picks a different
+  root; the new `-nohomedir` restores writing into `<basedir>/<gamedir>`.
+  Each game directory's own `config.cfg` in the basedir is still exec'd and
+  is never overwritten. QuakeSpasm/Ironwail-style quality of life, an
+  addition over WinQuake.
+- The New Game and multiplayer start-server screens queue `game <dir>`
+  first, then the chosen cvars, then `map`, so a ruleset/protocol choice is
+  applied after the gamedir switch rather than before it.
+- Choosing an add-on on the Add-Ons screen now opens that add-on's own New
+  Game (mapdb) screen once the switch has taken effect, via a new
+  `menu_episodes [gamedir]` console command.
+- The menus load localization through the same ordered loader the server
+  uses (`Loc_ResolveLanguage` + `COM_LoadAllFiles` + `Loc_LoadOrdered`), so
+  `language auto` and `loc_<lang>_mod.txt` overlays apply to menu text too.
 - Repository seeded from Quake-1-TS v1.0.0 (86c6867) as commit 1; package
   renamed `quake-1-re-ts`.
 - Three suites made order-independent (construction defaults checked on
@@ -114,6 +132,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- A game-directory switch from the menu no longer reverts the chosen
+  ruleset or protocol. The `game` command re-execs `quake.rc` with
+  `Cbuf_InsertText` instead of appending it, so the new gamedir's archived
+  `config.cfg` runs before the rest of the queued launch script rather than
+  after the map had already spawned and clobbering `sv_ruleset`/
+  `sv_protocol` back to `auto`.
+- Playing from the menu no longer writes savegames, autosaves, `config.cfg`
+  or `qconsole.log` into the retail install: `-game <dir>` was dropped by a
+  subsequent `game <dir>`, and writes went to `<basedir>/<gamedir>`. See the
+  writable-directory change above.
 - Software renderer: the weapon view model's pose cache is keyed by model,
   so switching weapons no longer reads the previous weapon's vertex array
   (rogue r2m8 crashed on the lava nailgun); a view-model change also resets
@@ -132,6 +160,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   origin for a frame.
 - The retail sweep's per-map timeout follows its SIGTERM with SIGKILL, so a
   driver spinning inside one frame cannot stall the sweep.
+- Software renderer at 2048 pixels wide and up: the 20.12 fixed-point edge
+  coordinates overflowed 32-bit shifts at exactly 2048 (`vrectright << 20`
+  is 2^31), the edge tail sorted before every real edge and the scan walked
+  off the list; the shifts are now exact arithmetic and the edge, span and
+  scan tables are sized for the mode table (up to 3840x2160, 4096 wide).
+  Splitscreen panes re-derive the clip limits from the seat's own view
+  rectangle, so a pane no longer removes edges it never inserted.
+- `-vid_ref` on the command line applies once at video init instead of at
+  every restart, so `vid_ref gl; vid_restart` works after a `-vid_ref soft`
+  boot. Minimizing the window releases the mouse like losing focus, and
+  restoring re-activates only when the window has input focus.
 - Localization files decode as UTF-8 (the re-release tables are UTF-8:
   Russian, accented French/German/Italian/Spanish, the trademark sign in
   English), and kfont text walks code points, so non-ASCII strings render

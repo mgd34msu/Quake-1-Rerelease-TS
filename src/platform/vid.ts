@@ -326,17 +326,25 @@ function resolveMode(): { width: number; height: number; fullscreen: boolean } {
 // port's own added cvar, so the parm that seeds it is the port's own
 // convention too.
 //
-// Reading it once at boot is not enough, though: `vid_ref` is archived
-// (`new CvarT("vid_ref", "soft", true)` above), so config.cfg's own
-// `vid_ref "soft"` line re-executes on every boot and overwrites whatever
-// `-vid_ref gl` just selected -- the live renderer stays GL (VID_Init has
-// already created it by the time config.cfg runs), but the cvar now says
-// "soft", so the video menu shows the wrong renderer and a `vid_restart` (or
-// menu Apply) tears GL down and switches to soft out from under the parm.
-// resolveMode() already treats `-width`/`-height`/`-window` as winning over
-// whatever the mode/fullscreen cvars say every single time the mode is
-// resolved, not just at boot; `-vid_ref` gets the same treatment here, called
-// from both VID_Init and every VID_CheckChanges so the parm always wins back.
+// It seeds the cvar ONCE, from VID_Init, and never again. An earlier version
+// re-applied it at the top of every VID_CheckChanges (the way resolveMode()
+// re-reads `-width`/`-height`/`-window`), which made the parm a permanent
+// lock rather than a boot-time choice: `vid_ref gl; vid_restart` sets the
+// cvar, then VID_CheckChanges overwrites it back to the parm's value one
+// line before VID_CheckChanges_ reads it, so a session started with
+// `-vid_ref soft` could never reach GL at all -- and the video menu's Apply
+// action and `vid_restart` are the ONLY ways this port has of switching a
+// renderer at runtime. `-width`/`-height` can win every time because nothing
+// in the engine ever writes back to them; `vid_ref` is a cvar the user is
+// expected to change.
+//
+// Known consequence, unchanged from before this was a parm at all: `vid_ref`
+// is archived (`new CvarT("vid_ref", "soft", true)` above), so an existing
+// config.cfg's own `vid_ref` line re-executes after VID_Init and leaves the
+// CVAR reading whatever was archived while the LIVE renderer is the one the
+// parm picked. The next `vid_restart` then follows the cvar. Making the parm
+// survive that would need a re-assert after quake.rc finishes, in host.c's
+// Host_Init -- not here.
 function applyVidRefParm(): void {
   const refParm = COM_CheckParm("-vid_ref");
   if (refParm) {
@@ -412,14 +420,6 @@ Host_Init calls in sequence) -- if VID_Init's own call into this function
 also triggered R_Init, the very first boot would run it twice.
 */
 export function VID_CheckChanges(runRInit: boolean = true): void {
-  // see applyVidRefParm's own comment: re-applied on every call (vid_restart,
-  // the video menu's Apply, and VID_Init's own call below) so a session
-  // started with `-vid_ref <name>` cannot be silently overridden by
-  // config.cfg's archived `vid_ref` cvar re-executing under it. Not called
-  // from VID_CheckChanges_'s own gl-fallback recursion below: that recursion
-  // is what sets the cvar to "soft" after a `-vid_ref gl` attempt fails, and
-  // re-applying the parm there would immediately undo the fallback.
-  applyVidRefParm();
   // Both screen.c's (WinQuake screen.c:SCR_UpdateScreen, QW screen.c/
   // gl_screen.c likewise) return early while `scr_disabled_for_loading` is
   // set, which is how the C keeps a Con_Printf issued mid-mode-change from
@@ -796,11 +796,9 @@ export function VID_Init(palette: Uint8Array): void {
   Cvar_RegisterVariable(vid_fullscreen);
   Cmd_AddCommand("vid_restart", VID_Restart_f);
 
-  // see applyVidRefParm's own comment. `vid_restart` after setting the cvar
-  // stays the runtime path; VID_CheckChanges(false) below re-applies this
-  // same parm anyway, but it also has to be resolved here, before it, so the
-  // cvar (and thus resolveMode/the video menu) already agree with it on this
-  // very first call.
+  // see applyVidRefParm's own comment: the parm is resolved here, and only
+  // here, so the cvar (and thus VID_CheckChanges below, resolveMode and the
+  // video menu) agrees with it for the renderer this boot creates.
   applyVidRefParm();
 
   vid.maxwarpwidth = WARP_WIDTH;

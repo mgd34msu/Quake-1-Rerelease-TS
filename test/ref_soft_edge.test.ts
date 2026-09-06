@@ -180,14 +180,14 @@ function activeEdgeUs(): number[] {
 // the part of R_ScanEdges that builds the sentinel edges, for the two tests
 // that drive R_InsertNewEdges / R_StepActiveU on their own
 function primeActiveEdgeList(): void {
-  edge_head.u = r_refdef.vrect.x << 20;
+  edge_head.u = r_refdef.vrect.x * 0x100000;
   edge_head.u_step = 0;
   edge_head.prev = null;
   edge_head.next = edge_tail;
   edge_head.surfs[0] = 0;
   edge_head.surfs[1] = 1;
 
-  edge_tail.u = (r_refdef.vrectright << 20) + 0xfffff;
+  edge_tail.u = r_refdef.vrectright * 0x100000 + 0xfffff;
   edge_tail.u_step = 0;
   edge_tail.prev = edge_head;
   edge_tail.next = edge_aftertail;
@@ -367,5 +367,141 @@ describe("R_ScanEdges", () => {
 
     // the active list is back to just the sentinels
     expect(edge_head.next).toBe(edge_tail);
+  });
+});
+
+/*
+Drives one R_ScanEdges frame over an arbitrary viewport rectangle with a
+single opaque surface spanning columns [left, right) on every row of the
+pane, and returns that surface's spans and the background's. `vrect` is used
+verbatim -- x/y need not be 0 and width/height need not be the whole screen,
+which is what a splitscreen seat's pane looks like (src/client/splitscreen.ts's
+SS_ApplySeatRect) and what a mode wider than 2048 makes the 20.12 fixed-point
+`u` overflow at.
+*/
+function scanOneSurface(
+  vrect: { x: number; y: number; width: number; height: number },
+  left: number,
+  right: number,
+): { surf: Array<{ u: number; v: number; count: number }>; background: Array<{ u: number; v: number; count: number }> } {
+  r_refdef.vrect.x = vrect.x;
+  r_refdef.vrect.y = vrect.y;
+  r_refdef.vrect.width = vrect.width;
+  r_refdef.vrect.height = vrect.height;
+  r_refdef.vrectright = vrect.x + vrect.width;
+  r_refdef.vrectbottom = vrect.y + vrect.height;
+
+  R_BeginEdgeFrame();
+
+  const surfs = surfaces();
+  surfs[2].clear();
+  surfs[2].index = 2;
+  surfs[2].key = 10;
+  rState.surface_p = 3;
+
+  const leading = new EdgeT();
+  leading.u = left * 0x100000;
+  leading.u_step = 0;
+  leading.surfs[0] = 0;
+  leading.surfs[1] = 2;
+
+  const trailing = new EdgeT();
+  trailing.u = right * 0x100000;
+  trailing.u_step = 0;
+  trailing.surfs[0] = 2;
+  trailing.surfs[1] = 0;
+
+  leading.next = trailing;
+  trailing.next = null;
+  newedges[vrect.y] = leading;
+
+  // alive to the last row: R_ScanEdges never removes on the final scan, the
+  // same shape r_draw.c's R_EmitEdge produces for an edge that reaches the
+  // bottom of the viewport
+  leading.nextremove = trailing;
+  trailing.nextremove = null;
+  removeedges[vrect.y + vrect.height - 1] = leading;
+
+  R_ScanEdges();
+
+  const out = { surf: spanList(surfs[2]), background: spanList(surfs[1]) };
+
+  for (let v = vrect.y; v < vrect.y + vrect.height; v++) {
+    newedges[v] = null;
+    removeedges[v] = null;
+  }
+  r_refdef.vrect.x = 0;
+  r_refdef.vrect.y = 0;
+  r_refdef.vrect.width = VRECT_WIDTH;
+  r_refdef.vrect.height = VRECT_HEIGHT;
+  r_refdef.vrectright = VRECT_WIDTH;
+  r_refdef.vrectbottom = VRECT_HEIGHT;
+  return out;
+}
+
+describe("R_ScanEdges at viewport widths past the 20.12 fixed-point 32-bit range", () => {
+  // `u` is 20.12 fixed point, so a viewport 2048 pixels wide puts edge_tail's
+  // own `vrectright << 20` at exactly 2^31: as a 32-bit int that is negative,
+  // which makes the tail sort BEFORE every real edge and R_StepActiveU walk
+  // off the head of the list ("active edge list has no predecessor"). 4096 is
+  // MAXWIDTH, twice over the same boundary.
+  for (const width of [2048, 4096]) {
+    test(`${width} pixels wide: the tail sentinel still bounds the row and every pixel is covered once`, () => {
+      const left = width / 4;
+      const right = width - width / 4;
+      const height = 3;
+
+      const spans = scanOneSurface({ x: 0, y: 0, width, height }, left, right);
+
+      expect(spans.surf.length).toBe(height);
+      for (let v = 0; v < height; v++) {
+        expect(spans.surf[v]).toEqual({ u: left, v, count: right - left });
+      }
+
+      const expectedBg: Array<{ u: number; v: number; count: number }> = [];
+      for (let v = 0; v < height; v++) {
+        expectedBg.push({ u: 0, v, count: left });
+        expectedBg.push({ u: right, v, count: width - right });
+      }
+      expect(spans.background).toEqual(expectedBg);
+
+      let covered = 0;
+      for (const s of spans.surf) covered += s.count;
+      for (const s of spans.background) covered += s.count;
+      expect(covered).toBe(width * height);
+    });
+  }
+});
+
+describe("R_ScanEdges over a partial viewport rectangle", () => {
+  // A splitscreen seat's pane: not at the origin, and neither the full width
+  // nor the full height of the screen. The head and tail sentinels have to
+  // bound the PANE (vrect.x .. vrectright), not the screen, or the rows the
+  // scan walks and the columns the spans cover disagree with the rows
+  // R_BeginEdgeFrame cleared -- which is how R_RemoveEdges ends up unlinking
+  // an edge that was never inserted ("active edge list is not terminated").
+  test("half-height, half-width pane: spans stay inside the pane", () => {
+    const pane = { x: VRECT_WIDTH / 2, y: VRECT_HEIGHT / 2, width: VRECT_WIDTH / 2, height: VRECT_HEIGHT / 2 };
+    const left = pane.x + 2;
+    const right = pane.x + pane.width - 2;
+
+    const spans = scanOneSurface(pane, left, right);
+
+    expect(spans.surf.length).toBe(pane.height);
+    for (let i = 0; i < pane.height; i++) {
+      expect(spans.surf[i]).toEqual({ u: left, v: pane.y + i, count: right - left });
+    }
+
+    const expectedBg: Array<{ u: number; v: number; count: number }> = [];
+    for (let i = 0; i < pane.height; i++) {
+      expectedBg.push({ u: pane.x, v: pane.y + i, count: left - pane.x });
+      expectedBg.push({ u: right, v: pane.y + i, count: pane.x + pane.width - right });
+    }
+    expect(spans.background).toEqual(expectedBg);
+
+    let covered = 0;
+    for (const s of spans.surf) covered += s.count;
+    for (const s of spans.background) covered += s.count;
+    expect(covered).toBe(pane.width * pane.height);
   });
 });

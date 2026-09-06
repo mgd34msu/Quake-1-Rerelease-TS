@@ -210,8 +210,11 @@ export function R_EmitEdge(pv0: MvertexT, pv1: MvertexT): void {
     u = r_u1 + (v - r_v1) * u_step;
   }
 
-  edge.u_step = (u_step * 0x100000) | 0;
-  edge.u = (u * 0x100000 + 0xfffff) | 0;
+  // 20.12 fixed point (see r_edge.ts's own ushift20 note): `| 0` wraps a
+  // viewport 2048 pixels or wider past INT_MAX and hands the sorted edge list
+  // a negative `u`, so the truncation is written without the 32-bit narrowing.
+  edge.u_step = Math.trunc(u_step * 0x100000);
+  edge.u = Math.trunc(u * 0x100000 + 0xfffff);
 
   // we need to do this to avoid stepping off the edges if a very nearly
   // horizontal edge is less than epsilon above a scan, and numeric error causes
