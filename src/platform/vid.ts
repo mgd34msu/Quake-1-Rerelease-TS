@@ -148,8 +148,8 @@ import { Mod_ClearAll, Mod_ForName, setModelLoaderHooks } from "../common/model"
 import { cl, cl_static_entities } from "../client/client";
 import { Cache_Flush } from "../common/zone";
 import { inputBackend } from "../client/input";
-import { SDL_BackendEnabled, SDL_SetBackendEnabled, SDL_SetWindowSizeChangedHandler, SDLVID_Init, SDLVID_Present, SDLVID_Resize, SDLVID_SetWindowTitle, SDLVID_Shutdown, SDL_SetFullscreenHint } from "./sdl";
-import { SWimp_Present32 } from "./swimp";
+import { SDL_BackendEnabled, SDL_SetBackendEnabled, SDL_SetWindowSizeChangedHandler, SDLVID_Init, SDLVID_Present, SDLVID_Resize, SDLVID_SetWindowTitle, SDLVID_Shutdown, SDL_SetFullscreenHint, SDLVID_PresentRGBA } from "./sdl";
+import { SWimp_Present32, swimpRawPresent } from "./swimp";
 import { CreateGLimp, glimpHolder } from "./glimp";
 import { VID_MenuDraw, VID_MenuKey } from "./vid_menu";
 // ref_soft's own r_main.ts (R_Init, registerRenderer, hostClientHooks.rInit)
@@ -163,6 +163,9 @@ import { VID_MenuDraw, VID_MenuKey } from "./vid_menu";
 // way vid_x.c's ResetFrameBuffer does. r_shared.ts is a pure types/state
 // leaf (no imports back into src/platform), so this creates no cycle.
 import { rState } from "../ref_soft/r_shared";
+
+// The true-color software frame goes to SDL directly (U25 follow-up).
+swimpRawPresent.current = (rgba, w, h) => SDLVID_PresentRGBA(rgba, w, h);
 
 // d_iface.h: `#define WARP_WIDTH 320` / `#define WARP_HEIGHT 200`. Neither
 // ref_soft/ref_gl has landed to own d_iface.h's port yet; declared here

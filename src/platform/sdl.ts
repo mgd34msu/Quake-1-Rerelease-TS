@@ -659,6 +659,28 @@ export function SDLVID_Present(buffer: Uint8Array, rowbytes: number, width: numb
   framesPresented++;
 }
 
+// The true-color present (src/platform/swimp.ts's swimpRawPresent): the
+// software renderer's vid.buffer32 frame, already ABGR8888 as d_8to24table
+// packs it, uploaded without the palette expansion SDLVID_Present does.
+export function SDLVID_PresentRGBA(pixels: Uint8Array, width: number, height: number): void {
+  const l = lib();
+  if (!l || !texture || !renderer) return;
+  if (width !== texWidth || height !== texHeight) {
+    Con_DPrintf("SDLVID_PresentRGBA: %ix%i frame vs %ix%i texture -- dropped\n", width, height, texWidth, texHeight);
+    return;
+  }
+  l.symbols.SDL_UpdateTexture(texture, null, pixels, width * 4);
+  l.symbols.SDL_RenderClear(renderer);
+  const rect = VID_CalcBlitRect(texWidth, texHeight, dispWidth, dispHeight, true);
+  dstRectBuf[0] = rect.x;
+  dstRectBuf[1] = rect.y;
+  dstRectBuf[2] = rect.w;
+  dstRectBuf[3] = rect.h;
+  l.symbols.SDL_RenderCopy(renderer, texture, null, dstRectBuf);
+  l.symbols.SDL_RenderPresent(renderer);
+  framesPresented++;
+}
+
 export function SDLVID_SetWindowTitle(title: string): void {
   const l = lib();
   if (!l || !window) return;
