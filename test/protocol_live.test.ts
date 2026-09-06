@@ -191,7 +191,16 @@ describe.skipIf(!HAVE_PROGS106)("SV_SpawnServer chooses and publishes a protocol
 
 const BASEDIR = process.env.Q1TS_DATA ?? "";
 const GAME = "e2e_proto_t";
-const MAP = "e1m1";
+// e1m2, not e1m1: `svc_spawnstatic` only appears for maps whose QuakeC calls
+// makestatic (torches and flames), and e1m1 has none, so asserting
+// `cl.num_statics > 0` there tests nothing. e1m2's torches make the static
+// path a real assertion.
+const MAP = "e1m2";
+
+// A classic install with a nested `rerelease/` mounts the re-release tree on
+// top of id1 by default (src/common/common.ts:1627-1630). These rows are the
+// CLASSIC gates, so they ask for the classic tree alone.
+const CLASSIC_ARGS = ["-norerelease"];
 const mainTs = join(import.meta.dir, "..", "src", "main.ts");
 const headlessEnv = { ...process.env, SDL_VIDEODRIVER: "dummy", SDL_AUDIODRIVER: "dummy" };
 
@@ -208,8 +217,8 @@ afterAll(() => {
 // process's client to it over the loopback driver -- our own binary in both
 // seats. Frames are paced the way sys_linux.c's main loop paces Host_Frame
 // (a fixed slice spun as fast as a loop can go would race the server clock).
-function buildScript(protocol: string, map: string, extraArgs: string[]): string {
-  const args = ["q1ts", "-basedir", BASEDIR, "-game", GAME, "-nosound", ...extraArgs, "+sv_protocol", protocol, "+map", map];
+function buildScript(protocol: string, map: string, extraArgs: string[], basedir: string, game: string): string {
+  const args = ["q1ts", "-basedir", basedir, "-game", game, "-nosound", ...extraArgs, "+sv_protocol", protocol, "+map", map];
   return [
     `const { Sys_Main_Init, runFrames } = await import(${JSON.stringify(mainTs)});`,
     `const { cl, cls, cl_entities, SIGNONS } = await import(${JSON.stringify(join(import.meta.dir, "..", "src", "client", "client.ts"))});`,
@@ -319,11 +328,18 @@ function parseResult(log: string): LiveResult | null {
   return null;
 }
 
-async function runChild(tag: string, protocol: string, map: string, extraArgs: string[] = []): Promise<{ result: LiveResult | null; log: string; exitCode: number | string }> {
+async function runChild(
+  tag: string,
+  protocol: string,
+  map: string,
+  extraArgs: string[] = [],
+  basedir: string = BASEDIR,
+  game: string = GAME,
+): Promise<{ result: LiveResult | null; log: string; exitCode: number | string }> {
   const logPath = join(logDir, `${tag}.log`);
   const fd = openSync(logPath, "w");
   const child = Bun.spawn({
-    cmd: [process.execPath, "-e", buildScript(protocol, map, extraArgs)],
+    cmd: [process.execPath, "-e", buildScript(protocol, map, extraArgs, basedir, game)],
     env: headlessEnv,
     stdout: fd,
     stderr: fd,
@@ -342,7 +358,7 @@ describe.skipIf(!HAVE_DATA)("a listen server and its loopback client on every pr
     ["999", "999", PROTOCOL_RMQ, PRFL_INT32COORD | PRFL_SHORTANGLE],
   ] as const) {
     test(`sv_protocol ${name} on ${MAP}: the player spawns and entities arrive`, async () => {
-      const { result, log, exitCode } = await runChild(`listen-${name}`, requested, MAP);
+      const { result, log, exitCode } = await runChild(`listen-${name}`, requested, MAP, CLASSIC_ARGS);
       expect(exitCode).toBe(0);
       expect(result).not.toBeNull();
       if (result === null) return;
@@ -362,9 +378,10 @@ describe.skipIf(!HAVE_DATA)("a listen server and its loopback client on every pr
       expect(result.viewentity).toBeGreaterThan(0);
       expect(result.playerHasModel).toBe(true);
 
-      // Entity updates arrived: e1m1 has plenty of visible entities and
-      // static torches, and the client only creates entity slots through
-      // CL_EntityNum, which only runs from a parsed update or baseline.
+      // Entity updates arrived: e1m2 has plenty of visible entities and
+      // static torches (see MAP's own note), and the client only creates
+      // entity slots through CL_EntityNum, which only runs from a parsed
+      // update or baseline.
       expect(result.numEntities).toBeGreaterThan(1);
       expect(result.entitiesWithModels).toBeGreaterThan(0);
       expect(result.numStatics).toBeGreaterThan(0);
@@ -372,15 +389,17 @@ describe.skipIf(!HAVE_DATA)("a listen server and its loopback client on every pr
   }
 });
 
-// The re-release's mission pack 1 (`rerelease/mg1`) ships BSP2 maps; `start` is
-// the one every installation has. Skipped when the tree is a classic-only
+// The re-release's mission pack 1 ships BSP2 maps; `start` is the one every
+// installation has. `mg1` is a gamedir INSIDE the re-release tree, so it needs
+// that tree as its basedir -- `-game rerelease/mg1` against a classic basedir
+// names a directory that does not exist there. Skipped on a classic-only
 // install.
-const MG1_DIRS = HAVE_DATA ? ["rerelease/mg1", "mg1"] : [];
-const MG1_GAME = MG1_DIRS.find((d) => existsSync(join(BASEDIR, d, "pak0.pak")) || existsSync(join(BASEDIR, d, "maps")));
+const RERELEASE_DIR = HAVE_DATA ? join(BASEDIR, "rerelease") : "";
+const HAVE_MG1 = HAVE_DATA && existsSync(join(RERELEASE_DIR, "mg1"));
 
-describe.skipIf(!HAVE_DATA || MG1_GAME === undefined)("a BSP2 map under sv_protocol auto", () => {
+describe.skipIf(!HAVE_MG1)("a BSP2 map under sv_protocol auto", () => {
   test("mg1 start picks protocol 999", async () => {
-    const { result, log, exitCode } = await runChild("auto-mg1", "auto", "start", ["-game", MG1_GAME ?? "mg1"]);
+    const { result, log, exitCode } = await runChild("auto-mg1", "auto", "start", [], RERELEASE_DIR, "mg1");
     expect(exitCode).toBe(0);
     expect(result).not.toBeNull();
     if (result === null) return;

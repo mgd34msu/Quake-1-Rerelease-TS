@@ -56,7 +56,7 @@ Deviations from PORTING.md / the C source:
 import { Con_Printf } from "./console";
 import { M_PI, VectorCopy, VectorNormalize, VectorSubtract, vec3, vec3_origin } from "../common/mathlib";
 import { Mod_ForName, type ModelT } from "../common/model";
-import { MSG_ReadByte, MSG_ReadCoord, MSG_ReadShort } from "../common/sizebuf";
+import { MSG_ReadByte, MSG_ReadCoordFlags, MSG_ReadShort } from "../common/sizebuf";
 import { TE_BEAM, TE_EXPLOSION, TE_EXPLOSION2, TE_GUNSHOT, TE_KNIGHTSPIKE, TE_LAVASPLASH, TE_LIGHTNING1, TE_LIGHTNING2, TE_LIGHTNING3, TE_SPIKE, TE_SUPERSPIKE, TE_TAREXPLOSION, TE_TELEPORT, TE_WIZSPIKE } from "../common/protocol";
 import { Sys_Error } from "../platform/sys";
 import { cl, cl_beams, cl_entities, cl_temp_entities, cl_visedicts, clState, MAX_BEAMS, MAX_TEMP_ENTITIES, MAX_VISEDICTS } from "./client";
@@ -116,8 +116,13 @@ CL_ParseBeam
 export function CL_ParseBeam(m: ModelT | null): void {
   const ent = MSG_ReadShort();
 
-  const start = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
-  const end = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+  // U3: every temp-entity coordinate is read at the session's protocol width
+  // (Ironwail cl_tent.c:68-247, `MSG_ReadCoord (cl.protocolflags)` at every
+  // site). MSG_ReadCoordFlags with no flags set is `MSG_ReadShort() * (1/8)`,
+  // the same expression MSG_ReadCoord evaluates, so protocol 15 reads exactly
+  // the bytes it always did.
+  const start = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
+  const end = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
 
   // override any beam with the same entity
   for (let i = 0; i < MAX_BEAMS; i++) {
@@ -157,7 +162,7 @@ export function CL_ParseTEnt(): void {
   switch (type) {
     case TE_WIZSPIKE: {
       // spike hitting wall
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
       R_RunParticleEffect(pos, vec3_origin, 20, 30);
       S_StartSound(-1, 0, cl_sfx_wizhit, pos, 1, 1);
       break;
@@ -165,7 +170,7 @@ export function CL_ParseTEnt(): void {
 
     case TE_KNIGHTSPIKE: {
       // spike hitting wall
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
       R_RunParticleEffect(pos, vec3_origin, 226, 20);
       S_StartSound(-1, 0, cl_sfx_knighthit, pos, 1, 1);
       break;
@@ -173,7 +178,7 @@ export function CL_ParseTEnt(): void {
 
     case TE_SPIKE: {
       // spike hitting wall
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
       R_RunParticleEffect(pos, vec3_origin, 0, 10);
       if (rand() % 5) {
         S_StartSound(-1, 0, cl_sfx_tink1, pos, 1, 1);
@@ -187,7 +192,7 @@ export function CL_ParseTEnt(): void {
     }
     case TE_SUPERSPIKE: {
       // super spike hitting wall
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
       R_RunParticleEffect(pos, vec3_origin, 0, 20);
 
       if (rand() % 5) {
@@ -203,14 +208,14 @@ export function CL_ParseTEnt(): void {
 
     case TE_GUNSHOT: {
       // bullet hitting wall
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
       R_RunParticleEffect(pos, vec3_origin, 0, 20);
       break;
     }
 
     case TE_EXPLOSION: {
       // rocket explosion
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
       R_ParticleExplosion(pos);
       const dl = CL_AllocDlight(0);
       VectorCopy(pos, dl.origin);
@@ -223,7 +228,7 @@ export function CL_ParseTEnt(): void {
 
     case TE_TAREXPLOSION: {
       // tarbaby explosion
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
       R_BlobExplosion(pos);
 
       S_StartSound(-1, 0, cl_sfx_r_exp3, pos, 1, 1);
@@ -249,20 +254,20 @@ export function CL_ParseTEnt(): void {
     // PGM 01/21/97
 
     case TE_LAVASPLASH: {
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
       R_LavaSplash(pos);
       break;
     }
 
     case TE_TELEPORT: {
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
       R_TeleportSplash(pos);
       break;
     }
 
     case TE_EXPLOSION2: {
       // color mapped explosion
-      const pos = vec3(MSG_ReadCoord(), MSG_ReadCoord(), MSG_ReadCoord());
+      const pos = vec3(MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags), MSG_ReadCoordFlags(cl.protocolflags));
       const colorStart = MSG_ReadByte();
       const colorLength = MSG_ReadByte();
       R_ParticleExplosion2(pos, colorStart, colorLength);

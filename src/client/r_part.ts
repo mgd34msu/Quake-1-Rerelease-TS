@@ -90,7 +90,7 @@ Deviations from PORTING.md / the C source:
 
 import { Con_Printf } from "./console";
 import { COM_CheckParm, COM_FClose, COM_FOpenFile, COM_FRead, Q_atoi, com_argv } from "../common/common";
-import { MSG_ReadByte, MSG_ReadChar, MSG_ReadCoord } from "../common/sizebuf";
+import { MSG_ReadByte, MSG_ReadChar, MSG_ReadCoordFlags } from "../common/sizebuf";
 import { VectorAdd, VectorCopy, VectorNormalize, VectorScale, VectorSubtract, vec3, vec3_origin, type Vec3 } from "../common/mathlib";
 import { sv_gravity } from "../server/sv_phys";
 import { sv } from "../server/server";
@@ -440,7 +440,11 @@ export function R_ParseParticleEffect(): void {
   const org = vec3();
   const dir = vec3();
 
-  for (let i = 0; i < 3; i++) org[i] = MSG_ReadCoord();
+  // U3: Ironwail r_part.c:202 -- `MSG_ReadCoord (cl.protocolflags)`. The
+  // server writes svc_particle's origin at the session's protocol width
+  // (sv_main.ts's SV_StartParticle), so this must read at the same width.
+  // MSG_ReadCoordFlags with no flags set is MSG_ReadCoord's own expression.
+  for (let i = 0; i < 3; i++) org[i] = MSG_ReadCoordFlags(cl.protocolflags);
   for (let i = 0; i < 3; i++) dir[i] = MSG_ReadChar() * (1.0 / 16);
   const msgcount = MSG_ReadByte();
   const color = MSG_ReadByte();

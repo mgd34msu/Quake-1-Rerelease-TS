@@ -139,7 +139,7 @@ import {
 } from "../common/mathlib";
 import { Mod_ForName, Mod_LeafPVS, Mod_PointInLeaf, type ModelT } from "../common/model";
 import { EntityStateT, MAX_MODELS, MAX_SOUNDS } from "../common/quakedef";
-import { MSG_WriteAngle, MSG_WriteByte, MSG_WriteChar, MSG_WriteCoord, MSG_WriteLong, MSG_WriteShort, MSG_WriteString, type SizeBuf } from "../common/sizebuf";
+import { MSG_WriteByte, MSG_WriteChar, MSG_WriteLong, MSG_WriteShort, MSG_WriteString, type SizeBuf } from "../common/sizebuf";
 import { ENTALPHA_DEFAULT, ENTALPHA_ZERO, ENTSCALE_DEFAULT, PROTOCOL_NETQUAKE, PROTOCOL_RMQ, SvcOpsT } from "../common/protocol";
 import { getCodec } from "../common/protocol/registry";
 import { Sys_Error, SysError } from "../platform/sys";
@@ -1345,12 +1345,18 @@ function PF_WriteLong(): void {
   MSG_WriteLong(WriteDest(), G_FLOAT(OFS_PARM1));
 }
 
+// U3: every QuakeC-written coordinate and angle -- which is every
+// svc_temp_entity payload, since WinQuake's TE_* messages are all built in
+// QuakeC -- goes through the session's codec, so a PRFL_INT32COORD /
+// PRFL_SHORTANGLE session writes four and two bytes where protocol 15 writes
+// two and one. Ironwail pr_cmds.c:1573,1578 threads sv.protocolflags through
+// the same two builtins.
 function PF_WriteAngle(): void {
-  MSG_WriteAngle(WriteDest(), G_FLOAT(OFS_PARM1));
+  getCodec(sv.protocol).writeAngle(WriteDest(), G_FLOAT(OFS_PARM1), sv.protocolflags);
 }
 
 function PF_WriteCoord(): void {
-  MSG_WriteCoord(WriteDest(), G_FLOAT(OFS_PARM1));
+  getCodec(sv.protocol).writeCoord(WriteDest(), G_FLOAT(OFS_PARM1), sv.protocolflags);
 }
 
 function PF_WriteString(): void {

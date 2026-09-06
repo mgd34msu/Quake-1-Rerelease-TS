@@ -63,7 +63,21 @@ const baseDir = join(scratchDir, "quake");
 
 // A do-nothing Renderer with a few counters, the same shape
 // test/client_types.test.ts's makeFakeRenderer uses.
-function makeFakeRenderer(): Renderer & { newMapCalls: number; addEfragsCalls: EntityT[]; translateSkinCalls: number[] } {
+interface FogCall {
+  density: number;
+  r: number;
+  g: number;
+  b: number;
+  time: number;
+}
+
+function makeFakeRenderer(): Renderer & {
+  newMapCalls: number;
+  addEfragsCalls: EntityT[];
+  translateSkinCalls: number[];
+  fogCalls: FogCall[];
+  skyboxCalls: string[];
+} {
   const hooks: ModelLoaderHooks = {
     notexture: new TextureT(),
     textureLoaded(): void {},
@@ -76,6 +90,8 @@ function makeFakeRenderer(): Renderer & { newMapCalls: number; addEfragsCalls: E
     newMapCalls: 0,
     addEfragsCalls: [],
     translateSkinCalls: [],
+    fogCalls: [],
+    skyboxCalls: [],
 
     R_Init(): void {},
     R_InitTextures(): void {},
@@ -150,6 +166,15 @@ function makeFakeRenderer(): Renderer & { newMapCalls: number; addEfragsCalls: E
     Draw_Alt_String(): void {},
     isGL: false,
     SCR_ScreenShot_f(): void {},
+
+    // The GL unit's optional seam members (render.ts): cl_parse.ts hands them
+    // the raw wire values and the renderer owns every conversion.
+    fogParseServerMessage(density: number, r: number, g: number, b: number, time: number): void {
+      this.fogCalls.push({ density, r, g, b, time });
+    },
+    skyLoadSkyBox(name: string): void {
+      this.skyboxCalls.push(name);
+    },
   };
 }
 
@@ -267,6 +292,38 @@ describe("CL_ParseServerMessage: svc_serverinfo", () => {
     CL_ParseServerMessage();
 
     expect(cl.maxclients).toBe(0); // CL_ClearState ran, but the version check returned before setting it
+  });
+});
+
+describe("CL_ParseServerMessage: the FitzQuake renderer opcodes", () => {
+  test("svc_fog hands the five raw wire values to the renderer", () => {
+    fakeRenderer.fogCalls.length = 0;
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, 41); // svc_fog -- Ironwail protocol.h:204
+      MSG_WriteByte(sb, 128); // density
+      MSG_WriteByte(sb, 10); // red
+      MSG_WriteByte(sb, 20); // green
+      MSG_WriteByte(sb, 30); // blue
+      MSG_WriteShort(sb, 250); // time, in centiseconds
+    });
+
+    CL_ParseServerMessage();
+
+    expect(fakeRenderer.fogCalls).toEqual([{ density: 128, r: 10, g: 20, b: 30, time: 250 }]);
+  });
+
+  test("svc_skybox hands the name to the renderer", () => {
+    fakeRenderer.skyboxCalls.length = 0;
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, 37); // svc_skybox -- Ironwail protocol.h:202
+      MSG_WriteString(sb, "unforgiven");
+    });
+
+    CL_ParseServerMessage();
+
+    expect(fakeRenderer.skyboxCalls).toEqual(["unforgiven"]);
   });
 });
 

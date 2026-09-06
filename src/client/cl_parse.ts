@@ -118,7 +118,6 @@ import { getCodec, protocolSupported } from "../common/protocol/registry";
 import { ClientdataTailT, EntityUpdateTailT, SoundHeaderT } from "../common/protocol/codec";
 import {
   MSG_BeginReading,
-  MSG_ReadAngle,
   MSG_ReadByte,
   MSG_ReadChar,
   MSG_ReadFloat,
@@ -966,7 +965,11 @@ export function CL_ParseServerMessage(): void {
         break;
 
       case SvcOpsT.svc_setangle:
-        for (i = 0; i < 3; i++) cl.viewangles[i] = MSG_ReadAngle();
+        // Ironwail cl_parse.c:1183 -- `MSG_ReadAngle (cl.protocolflags)`, so a
+        // PRFL_SHORTANGLE session reads a short here, not a byte. Plain
+        // MSG_ReadAngle would consume three bytes of a six-byte payload and
+        // desync the rest of the message.
+        for (i = 0; i < 3; i++) cl.viewangles[i] = clCodec().readAngle(cl.protocolflags);
         break;
 
       case SvcOpsT.svc_setview:
@@ -1076,24 +1079,29 @@ export function CL_ParseServerMessage(): void {
       case svc_spawnstaticsound2:
         CL_ParseStaticSound(2);
         break;
-      case svc_skybox:
-        // [string] name. The sky loader is a renderer unit; the name is read
-        // so the stream stays in sync, and dropped.
-        MSG_ReadString();
+      case svc_skybox: {
+        // [string] name -- QuakeSpasm's Sky_LoadSkyBox. Loading a skybox is a
+        // no-op under ref_soft, so the seam member is optional (render.ts).
+        const name = MSG_ReadString();
+        getRenderer().skyLoadSkyBox?.(name);
         break;
+      }
       case svc_bf:
         // Ironwail runs the `bf` console command (a screen flash); screen.ts's
         // flash is a later unit, so this opcode carries no payload to skip.
         break;
-      case svc_fog:
+      case svc_fog: {
         // [byte] density [byte] red [byte] green [byte] blue [short] time.
-        // Fog is a renderer unit; read past it so the stream stays in sync.
-        MSG_ReadByte();
-        MSG_ReadByte();
-        MSG_ReadByte();
-        MSG_ReadByte();
-        MSG_ReadShort();
+        // The five raw wire values go to the renderer, which owns the /255 and
+        // /100 conversions (render.ts's fogParseServerMessage contract).
+        const density = MSG_ReadByte();
+        const r = MSG_ReadByte();
+        const g = MSG_ReadByte();
+        const b = MSG_ReadByte();
+        const time = MSG_ReadShort();
+        getRenderer().fogParseServerMessage?.(density, r, g, b, time);
         break;
+      }
 
       case SvcOpsT.svc_cdtrack:
         cl.cdtrack = MSG_ReadByte();

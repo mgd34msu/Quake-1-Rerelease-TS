@@ -75,9 +75,9 @@ import { host } from "../common/host";
 import { CvarT, Cvar_FindVar } from "../common/cvar";
 import { type Vec3, vec3, vec3_origin, M_PI, AngleVectors, DotProduct, VectorNormalize, VectorScale, VectorCopy, VectorAdd, Length } from "../common/mathlib";
 import { PITCH, YAW, ROLL, ON_EPSILON } from "../common/quakedef";
-import { MSG_BeginReading, MSG_ReadChar, MSG_ReadByte, MSG_ReadShort, MSG_ReadFloat, MSG_ReadAngle, MSG_ReadString, msgState } from "../common/sizebuf";
+import { MSG_BeginReading, MSG_ReadChar, MSG_ReadByte, MSG_ReadShort, MSG_ReadFloat, MSG_ReadAngle16, MSG_ReadAngleFlags, MSG_ReadString, msgState } from "../common/sizebuf";
 import { NET_GetMessage } from "../common/net_main";
-import { ClcOpsT } from "../common/protocol";
+import { ClcOpsT, PROTOCOL_NETQUAKE } from "../common/protocol";
 import { Cmd_ExecuteString, CmdSourceT, Cbuf_InsertText } from "../common/cmd";
 import { Q_strncasecmp } from "../common/common";
 import { Con_DPrintf } from "../client/console";
@@ -483,8 +483,14 @@ export function SV_ReadClientMove(move: UsercmdT): void {
   host_client.num_pings++;
 
   // read current angles
+  // johnfitz -- 16-bit angles for PROTOCOL_FITZQUAKE (Ironwail
+  // sv_user.c:451-455). Mirrors cl_input.ts's write: the test is on the
+  // PROTOCOL, not the flag word.
   const angle = vec3();
-  for (let i = 0; i < 3; i++) angle[i] = MSG_ReadAngle();
+  for (let i = 0; i < 3; i++) {
+    if (sv.protocol === PROTOCOL_NETQUAKE) angle[i] = MSG_ReadAngleFlags(sv.protocolflags);
+    else angle[i] = MSG_ReadAngle16(sv.protocolflags);
+  }
 
   const edict = requireEdict(host_client);
   VectorCopy(angle, edict.v.v_angle);

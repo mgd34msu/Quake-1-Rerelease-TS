@@ -199,7 +199,7 @@ import {
   YAW,
   qw,
 } from "../common/quakedef";
-import { MSG_ReadByte, MSG_ReadCoord } from "../common/sizebuf";
+import { MSG_ReadByte, MSG_ReadCoordFlags } from "../common/sizebuf";
 import { CSHIFT_BONUS, CSHIFT_CONTENTS, CSHIFT_DAMAGE, CSHIFT_POWERUP, CactiveT, CshiftT, cl, cl_entities, cls } from "./client";
 import { Chase_Update, chase_active } from "./chase";
 import { cl_forwardspeed } from "./cl_input";
@@ -522,7 +522,10 @@ export function V_ParseDamage(): void {
 
   armor = MSG_ReadByte();
   blood = MSG_ReadByte();
-  for (i = 0; i < 3; i++) from[i] = MSG_ReadCoord();
+  // U3: Ironwail view.c:296 -- `MSG_ReadCoord (cl.protocolflags)`. The server
+  // writes svc_damage's inflictor origin at the session's protocol width
+  // (sv_main.ts's SV_WriteClientdataToMessage), so this must match.
+  for (i = 0; i < 3; i++) from[i] = MSG_ReadCoordFlags(cl.protocolflags);
 
   count = blood * 0.5 + armor * 0.5;
   if (count < 10) count = 10;

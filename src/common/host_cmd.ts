@@ -151,7 +151,6 @@ import {
 import { Con_Printf } from "../client/console";
 import { Com_sprintf } from "./sprintf";
 import {
-  MSG_WriteAngle,
   MSG_WriteByte,
   MSG_WriteFloat,
   MSG_WriteLong,
@@ -161,6 +160,7 @@ import {
   SZ_Write,
 } from "./sizebuf";
 import { SvcOpsT } from "./protocol";
+import { getCodec } from "./protocol/registry";
 import {
   Sys_Error,
   Sys_FileClose,
@@ -1363,9 +1363,13 @@ export function Host_Spawn_f(): void {
   // and it won't happen if the game was just loaded, so you wind up
   // with a permanent head tilt
   const ent = EDICT_NUM(1 + svs.clients.indexOf(host_client));
+  // U3: Ironwail host_cmd.c:3159-3162 threads sv.protocolflags through all
+  // three angles, so a PRFL_SHORTANGLE session writes three shorts here. The
+  // codec keeps protocol 15 on WinQuake's own `((int)f*256/360) & 255` byte.
+  const codec = getCodec(sv.protocol);
   MSG_WriteByte(host_client.message, SvcOpsT.svc_setangle);
-  for (let i = 0; i < 2; i++) MSG_WriteAngle(host_client.message, ent.v.angles[i]);
-  MSG_WriteAngle(host_client.message, 0);
+  for (let i = 0; i < 2; i++) codec.writeAngle(host_client.message, ent.v.angles[i], sv.protocolflags);
+  codec.writeAngle(host_client.message, 0, sv.protocolflags);
 
   SV_WriteClientdataToMessage(requireSvPlayer(), host_client.message);
 

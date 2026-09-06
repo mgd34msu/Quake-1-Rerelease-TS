@@ -53,8 +53,9 @@ import { CvarT } from "../common/cvar";
 import { host } from "../common/host";
 import { anglemod } from "../common/mathlib";
 import { PITCH, YAW, ROLL } from "../common/quakedef";
-import { MSG_WriteAngle, MSG_WriteByte, MSG_WriteFloat, MSG_WriteShort, SizeBuf } from "../common/sizebuf";
-import { ClcOpsT } from "../common/protocol";
+import { MSG_WriteAngle16, MSG_WriteByte, MSG_WriteFloat, MSG_WriteShort, SizeBuf } from "../common/sizebuf";
+import { ClcOpsT, PROTOCOL_NETQUAKE } from "../common/protocol";
+import { getCodec } from "../common/protocol/registry";
 import { NET_SendUnreliableMessage } from "../common/net_main";
 import { cl, cls, KbuttonT, SIGNONS, UsercmdT } from "./client";
 // cl_main.c (concurrent sibling, not yet landed -- absent-at-gate rule)
@@ -419,7 +420,14 @@ export function CL_SendMove(cmd: UsercmdT): void {
 
   MSG_WriteFloat(buf, cl.mtime[0]); // so server can get ping times
 
-  for (let i = 0; i < 3; i++) MSG_WriteAngle(buf, cl.viewangles[i]);
+  // johnfitz -- 16-bit angles for PROTOCOL_FITZQUAKE (Ironwail
+  // cl_input.c:408-412). The test is on the PROTOCOL, not on the flag word:
+  // 666 and 999 always send a short here, whether or not PRFL_SHORTANGLE is
+  // set, while protocol 15 keeps WinQuake's byte through the nq15 codec.
+  for (let i = 0; i < 3; i++) {
+    if (cl.protocol === PROTOCOL_NETQUAKE) getCodec(cl.protocol).writeAngle(buf, cl.viewangles[i], cl.protocolflags);
+    else MSG_WriteAngle16(buf, cl.viewangles[i], cl.protocolflags);
+  }
 
   MSG_WriteShort(buf, cmd.forwardmove);
   MSG_WriteShort(buf, cmd.sidemove);

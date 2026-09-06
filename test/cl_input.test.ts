@@ -460,6 +460,45 @@ describe("CL_SendMove", () => {
     expect(NET_GetMessage(server)).toBe(0);
   });
 
+  // U3: 16-bit angles for PROTOCOL_FITZQUAKE/PROTOCOL_RMQ (Ironwail
+  // cl_input.c:408-412). The test is on the PROTOCOL, not on the flag word, so
+  // 666 sends a short here even though its protocolflags are 0. The read half
+  // is test/protocol_wire_sites.test.ts's SV_ReadClientMove group.
+  test("666 and 999 send two-byte viewangles where protocol 15 sends one", () => {
+    const savedProtocol = cl.protocol;
+    const savedFlags = cl.protocolflags;
+    try {
+      for (const protocol of [666, 999]) {
+        cl.protocol = protocol;
+        cl.protocolflags = protocol === 999 ? 0x82 : 0;
+
+        cl.movemessages = 3; // past the dump-first-two threshold
+        cl.mtime[0] = 1.5;
+        cl.viewangles[0] = 10.008; // finer than one 8-bit step (360/256 = 1.4)
+        cl.viewangles[1] = 90;
+        cl.viewangles[2] = -45;
+
+        const cmd = new UsercmdT();
+        cl_input.CL_SendMove(cmd);
+
+        expect(NET_GetMessage(server)).toBe(2);
+        // 1 (clc_move) + 4 (float) + 3*2 (angles) + 3*2 (moves) + 1 + 1
+        expect(net_message.cursize).toBe(19);
+
+        MSG_BeginReading();
+        expect(MSG_ReadByte()).toBe(ClcOpsT.clc_move);
+        expect(MSG_ReadFloat()).toBeCloseTo(1.5, 4);
+        // MSG_ReadAngle16's decode: short * (360 / 65536)
+        expect(Math.abs(MSG_ReadShort() * (360 / 65536) - 10.008)).toBeLessThan(360 / 65536);
+        expect(Math.abs(MSG_ReadShort() * (360 / 65536) - 90)).toBeLessThan(360 / 65536);
+        expect(Math.abs(MSG_ReadShort() * (360 / 65536) - -45)).toBeLessThan(360 / 65536);
+      }
+    } finally {
+      cl.protocol = savedProtocol;
+      cl.protocolflags = savedFlags;
+    }
+  });
+
   test("the byte layout of the third call matches clc_move exactly, and button/impulse state is cleared afterward", () => {
     cl_input.CL_SendMove(new UsercmdT());
     cl_input.CL_SendMove(new UsercmdT());
