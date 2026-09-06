@@ -22,7 +22,7 @@ import * as consoleMod from "../../src/client/console";
 import { conState } from "../../src/client/console";
 import { FL_ONGROUND, svs } from "../../src/server/server";
 import { Bot_Add, Bot_RemoveAll, Bot_Slots } from "../../src/bots";
-import { Q1TS_DATA } from "./q1data";
+import { Q1TS_DATA, homedirArgs } from "./q1data";
 
 //============================================================================
 // driver contract: [PASS]/[FAIL] lines, a RESULT line, a non-zero exit
@@ -74,7 +74,10 @@ export const PORT_BASE = 26400;
  * own flag, exactly as the re-release's own launcher passes them.
  */
 export function boot(tree: TreeName, maxclients: number, port: number, extra: string[] = []): void {
-  const argv = ["quake", "-basedir", Q1TS_DATA, "-game", "e2e_u", "-nosound", "-port", String(port), "-listen", String(maxclients)];
+  // F18: writes go to the per-family home directory like every other family;
+  // without it the engine's default per-user directory (or the retail tree)
+  // would receive this family's config and autosaves.
+  const argv = ["quake", "-basedir", Q1TS_DATA, "-game", "e2e_u", ...homedirArgs("e2e_u"), "-nosound", "-port", String(port), "-listen", String(maxclients)];
   if (tree !== "id1") argv.push(`-${tree}`);
   Sys_Main_Init([...argv, ...extra]);
 
