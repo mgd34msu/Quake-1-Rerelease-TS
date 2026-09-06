@@ -40,7 +40,9 @@ const saved = {
   currententity: glState.currententity,
   shadelight: rmainState.shadelight,
   ambientlight: rmainState.ambientlight,
-  lastposenum: rmainState.lastposenum,
+  lastpose1: rmainState.lastpose1,
+  lastpose2: rmainState.lastpose2,
+  lastblend: rmainState.lastblend,
   shadedots: rmainState.shadedots,
   r_shadows: r_shadows.value,
   gl_nocolors: gl_nocolors.value,
@@ -160,7 +162,9 @@ afterAll(() => {
   glState.currententity = saved.currententity;
   rmainState.shadelight = saved.shadelight;
   rmainState.ambientlight = saved.ambientlight;
-  rmainState.lastposenum = saved.lastposenum;
+  rmainState.lastpose1 = saved.lastpose1;
+  rmainState.lastpose2 = saved.lastpose2;
+  rmainState.lastblend = saved.lastblend;
   rmainState.shadedots = saved.shadedots;
   r_shadows.value = saved.r_shadows;
   gl_nocolors.value = saved.gl_nocolors;

@@ -33,7 +33,7 @@ import { buildBsp, ensureDir, writeGameFile } from "./support/bsp_builder";
 import { writePakToDisk } from "./support/pak_builder";
 import { MAX_DLIGHTS, cl, cl_dlights, cl_efrags, cl_entities, cl_lightstyle, cl_visedicts, clState } from "../src/client/client";
 import { EntityT, r_origin, vpn, vright, vup } from "../src/client/render";
-import { d_lightstylevalue, gl_coloredlight, glState } from "../src/ref_gl/glquake";
+import { d_lightstylevalue, gl_coloredlight, glState, r_lerplightstyles } from "../src/ref_gl/glquake";
 import { GL_BLEND, GL_ONE, GL_TEXTURE_2D, GL_TRIANGLE_FAN, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
 import { AddLightBlend, R_AnimateLight, R_LightPoint, R_PushDlights, R_RenderDlights, lightcolor, lightspot, rlightState } from "../src/ref_gl/gl_rlight";
 import { R_AddEfrags, R_RemoveEfrags, R_StoreEfrags, refragState } from "../src/ref_gl/gl_refrag";
@@ -183,6 +183,85 @@ describe("R_AnimateLight", () => {
     R_AnimateLight();
 
     expect(d_lightstylevalue[10]).toBe(25 * 22);
+  });
+});
+
+// U16: r_lerplightstyles (Ironwail gl_rlight.c), declared in glquake.ts. A
+// CvarT.value is 0 until registered or assigned directly (cvar.ts), so this
+// block sets and restores it itself, per rule 15.
+describe("R_AnimateLight: r_lerplightstyles (U16)", () => {
+  const savedLerp = r_lerplightstyles.value;
+
+  afterAll(() => {
+    r_lerplightstyles.value = savedLerp;
+  });
+
+  test("r_lerplightstyles 0 reproduces the classic snap-to-current-value read (no interpolation)", () => {
+    r_lerplightstyles.value = 0;
+    cl_lightstyle[10].length = 2;
+    cl_lightstyle[10].map = "am"; // 'a'=0, 'm'=12
+    cl.time = 0.05; // halfway through decisecond 0 -> 1, if lerping
+
+    R_AnimateLight();
+
+    // i = 0, k = map[0]-'a' = 0 -> 0*22 = 0, exactly as the pre-U16 body gave
+    expect(d_lightstylevalue[10]).toBe(0);
+  });
+
+  test("r_lerplightstyles 1 interpolates halfway between this decisecond's value and the next", () => {
+    r_lerplightstyles.value = 1;
+    cl_lightstyle[10].length = 2;
+    // 'a'=0, 'f'=5: a 5-step change is BELOW the abrupt-swing threshold
+    // (('m'-'a')/2 = 6), so r_lerplightstyles 1 interpolates it.
+    cl_lightstyle[10].map = "af";
+    cl.time = 0.05; // f = 0.5 (halfway between decisecond 0 and 1)
+
+    R_AnimateLight();
+
+    // (0*22 + (5-0)*22*0.5) = 55
+    expect(d_lightstylevalue[10]).toBe(55);
+  });
+
+  test("r_lerplightstyles 1 does not interpolate an abrupt swing (only >=2 does)", () => {
+    r_lerplightstyles.value = 1;
+    cl_lightstyle[10].length = 2;
+    cl_lightstyle[10].map = "az"; // k=0, n=25 -- an abrupt swing ('m'-'a')/2 = 6
+    cl.time = 0.05; // f = 0.5
+
+    R_AnimateLight();
+
+    // the abrupt-swing guard forces n = k, so this is exactly r_lerplightstyles 0's read
+    expect(d_lightstylevalue[10]).toBe(0);
+  });
+
+  test("r_lerplightstyles 2 interpolates even an abrupt swing", () => {
+    r_lerplightstyles.value = 2;
+    cl_lightstyle[10].length = 2;
+    cl_lightstyle[10].map = "az"; // k=0, n=25
+    cl.time = 0.05; // f = 0.5
+
+    R_AnimateLight();
+
+    // (0*22 + (25-0)*22*0.5) = 275
+    expect(d_lightstylevalue[10]).toBe(275);
+  });
+
+  test("at an exact decisecond boundary (f===0) every r_lerplightstyles setting agrees", () => {
+    cl_lightstyle[10].length = 2;
+    cl_lightstyle[10].map = "am";
+    cl.time = 0.1; // f = 0 exactly
+
+    r_lerplightstyles.value = 0;
+    R_AnimateLight();
+    const at0 = d_lightstylevalue[10];
+
+    r_lerplightstyles.value = 2;
+    R_AnimateLight();
+    const at2 = d_lightstylevalue[10];
+
+    expect(at0).toBe(at2);
+    // i = 1, map[1 % 2] = map[1] = 'm' -> 12*22 = 264
+    expect(at0).toBe(264);
   });
 });
 

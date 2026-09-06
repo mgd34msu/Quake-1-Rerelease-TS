@@ -207,6 +207,25 @@ export const GL_MAX_SURFACE_EXTENTS = 2000;
 // 0 forces the classic grey path even when `.lit`/BSPX RGB data is present.
 export const gl_coloredlight = new CvarT("gl_coloredlight", "1");
 
+// U16 additions, no WinQuake counterparts: QuakeSpasm's r_nolerp_list
+// (gl_rmain.c) and Ironwail's r_lerplightstyles (gl_rlight.c). Both are
+// read-only-by-the-GL-renderer cvars (unlike r_lerpmove/r_lerpmodels above
+// client.ts... see render.ts's header for those two), so they live beside
+// gl_coloredlight rather than in render.ts.
+//
+// r_nolerp_list: model names gl_rmain.ts's alias-frame setup treats as
+// MOD_NOLERP (Mod_SetExtraFlags's `nameInList` check, done here at draw time
+// by name instead of as a load-time model flag -- see gl_rmain.ts's own
+// header note on why).
+export const r_nolerp_list = new CvarT(
+  "r_nolerp_list",
+  "progs/flame.mdl,progs/flame2.mdl,progs/braztall.mdl,progs/brazshrt.mdl,progs/longtrch.mdl,progs/flame_pyre.mdl,progs/v_saw.mdl,progs/v_xfist.mdl,progs/h2stuff/newfire.mdl",
+);
+// r_lerplightstyles: interpolate lightstyle values between animation frames
+// (gl_rlight.ts's R_AnimateLight); >= 2 also interpolates abrupt swings
+// (e.g. e1m1's flickering light), matching Ironwail exactly.
+export const r_lerplightstyles = new CvarT("r_lerplightstyles", "1");
+
 // gl_vidnt.c:104's `glvert_t glv`, the GL_EXT_vertex_array staging vertex.
 export class GlvertT {
   x = 0;

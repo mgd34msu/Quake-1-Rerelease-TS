@@ -158,8 +158,8 @@ import { CL_ClearState, CL_SignonReply, cl_shownet } from "./cl_main";
 import { CL_GetMessage } from "./cl_demo";
 import { CL_ParseTEnt } from "./cl_tent";
 import { Con_DPrintf, Con_Printf } from "./console";
-import { EntityExtT, PromptChoiceT, SIGNONS, ScoreboardT, cl, cl_entities, cl_entity_ext, cl_lightstyle, cl_static_entities, cl_static_entity_ext, cls, growEntities, growStaticEntities } from "./client";
-import { BOTTOM_RANGE, TOP_RANGE, getRenderer, type EntityT } from "./render";
+import { PromptChoiceT, SIGNONS, ScoreboardT, cl, cl_entities, cl_lightstyle, cl_static_entities, cls, growEntities, growStaticEntities } from "./client";
+import { BOTTOM_RANGE, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, TOP_RANGE, getRenderer, type EntityT } from "./render";
 // r_part.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { R_ParseParticleEffect } from "./r_part";
 // sbar.c (concurrent sibling, not yet landed -- absent-at-gate rule)
@@ -299,7 +299,6 @@ export function CL_EntityNum(num: number): EntityT {
     if (!growEntities(num)) Host_Error("CL_EntityNum: %i is an invalid number", num);
     while (cl.num_entities <= num) {
       cl_entities[cl.num_entities].colormap = vid.colormap;
-      cl_entity_ext[cl.num_entities].clear();
       cl.num_entities++;
     }
   }
@@ -565,13 +564,17 @@ export function CL_ParseUpdate(bitsIn: number): void {
   else num = MSG_ReadByte();
 
   const ent = CL_EntityNum(num);
-  const ext = cl_entity_ext[num];
 
   for (let i = 0; i < 16; i++) if (bits & (1 << i)) bitcounts[i]++;
 
   let forcelink: boolean;
   if (ent.msgtime !== cl.mtime[1]) forcelink = true; // no previous frame to lerp from
   else forcelink = false;
+
+  // johnfitz -- lerping: more than 0.2 seconds since the last message (most
+  // entities think every 0.1 sec) -- if we missed a think, we'd be lerping
+  // from the wrong frame
+  if (ent.msgtime + 0.2 < cl.mtime[0]) ent.lerpflags |= LERP_RESETANIM;
 
   ent.msgtime = cl.mtime[0];
 
@@ -623,21 +626,27 @@ export function CL_ParseUpdate(bitsIn: number): void {
   if (bits & U_ANGLE3) ent.msg_angles[0][2] = codec.readAngle(cl.protocolflags);
   else ent.msg_angles[0][2] = ent.baseline.angles[2];
 
-  if (bits & U_NOLERP) ent.forcelink = true;
+  // johnfitz -- lerping for movetype_step entities
+  if (bits & U_NOLERP) {
+    ent.lerpflags |= LERP_MOVESTEP;
+    ent.forcelink = true;
+  } else {
+    ent.lerpflags &= ~LERP_MOVESTEP;
+  }
 
   // johnfitz -- PROTOCOL_FITZQUAKE: alpha, scale, the high bytes of frame and
   // modelindex, and the lerp finish time. Empty on protocol 15, where the
   // codec's tail reader reads nothing and leaves the defaults.
   codec.readEntityUpdateTail(bits, entityUpdateTail);
-  ext.alpha = entityUpdateTail.hasAlpha ? entityUpdateTail.alpha : ent.baseline.alpha;
-  ext.scale = entityUpdateTail.hasScale ? entityUpdateTail.scale : ent.baseline.scale;
+  ent.alpha = entityUpdateTail.hasAlpha ? entityUpdateTail.alpha : ent.baseline.alpha;
+  ent.scale = entityUpdateTail.hasScale ? entityUpdateTail.scale : ent.baseline.scale;
   if (entityUpdateTail.hasFrame2) ent.frame = (ent.frame & 0x00ff) | (entityUpdateTail.frameHigh << 8);
   if (entityUpdateTail.hasModel2) modnum = (modnum & 0x00ff) | (entityUpdateTail.modelHigh << 8);
   if (entityUpdateTail.hasLerpfinish) {
-    ext.lerpfinish = ent.msgtime + entityUpdateTail.lerpfinish;
-    ext.hasLerpfinish = true;
+    ent.lerpfinish = ent.msgtime + entityUpdateTail.lerpfinish;
+    ent.lerpflags |= LERP_FINISH;
   } else {
-    ext.hasLerpfinish = false;
+    ent.lerpflags &= ~LERP_FINISH;
   }
 
   // johnfitz -- moved here from above: U_MODEL2 can still change modnum
@@ -652,6 +661,8 @@ export function CL_ParseUpdate(bitsIn: number): void {
     } else forcelink = true; // hack to make null model players work
 
     if (num > 0 && num <= cl.maxclients) getRenderer().R_TranslatePlayerSkin(num - 1);
+
+    ent.lerpflags |= LERP_RESETANIM; // johnfitz -- don't lerp animation across model changes
   }
 
   if (forcelink) {
@@ -786,14 +797,11 @@ export function CL_ParseClientdata(): void {
   cl.stats[STAT_ROCKETS] |= clientdataTail.rocketsHigh << 8;
   cl.stats[STAT_CELLS] |= clientdataTail.cellsHigh << 8;
   cl.stats[STAT_WEAPONFRAME] |= clientdataTail.weaponframeHigh << 8;
-  clViewentAlpha.alpha = clientdataTail.weaponalpha;
+  // U16: was parked in the standalone `clViewentAlpha` (a U3 EntityExtT) --
+  // cl.viewent is an EntityT from src/client/render.ts and now carries its
+  // own `alpha` field directly (Ironwail's `cl.viewent.alpha`).
+  cl.viewent.alpha = clientdataTail.weaponalpha;
 }
-
-// The view model's alpha (Ironwail's `cl.viewent.alpha`). `cl.viewent` is an
-// EntityT from src/client/render.ts, outside this unit's SCOPE, so the value
-// is parked beside the other per-entity 666/999 extras; the unit that lands
-// client-side alpha rendering folds it onto EntityT.
-export const clViewentAlpha = new EntityExtT();
 
 /*
 =====================
@@ -836,7 +844,6 @@ export function CL_ParseStatic(version = 1): void {
   const i = cl.num_statics;
   if (!growStaticEntities(i)) Host_Error("Too many static entities");
   const ent = cl_static_entities[i];
-  const ext = cl_static_entity_ext[i];
   cl.num_statics++;
   CL_ParseBaseline(ent, version);
 
@@ -846,8 +853,8 @@ export function CL_ParseStatic(version = 1): void {
   ent.colormap = vid.colormap;
   ent.skinnum = ent.baseline.skin;
   ent.effects = ent.baseline.effects;
-  ext.alpha = ent.baseline.alpha; // johnfitz -- alpha
-  ext.scale = ent.baseline.scale;
+  ent.alpha = ent.baseline.alpha; // johnfitz -- alpha
+  ent.scale = ent.baseline.scale;
 
   VectorCopy(ent.baseline.origin, ent.origin);
   VectorCopy(ent.baseline.angles, ent.angles);

@@ -47,7 +47,8 @@ import {
 } from "../src/client/client";
 import { chase_active } from "../src/client/chase";
 import { ModelT } from "../src/common/model";
-import { EF_BRIGHTLIGHT, sv } from "../src/server/server";
+import { LERP_MOVESTEP, LERP_RESETANIM, LERP_RESETANIM2, LERP_RESETMOVE, r_lerpmodels, r_lerpmove } from "../src/client/render";
+import { EF_BRIGHTLIGHT, EF_MUZZLEFLASH, sv } from "../src/server/server";
 import { hostClientHooks } from "../src/common/host";
 import { SZ_Alloc, SZ_Print } from "../src/common/sizebuf";
 import { NET_Init, NET_CheckNewConnections, setNetHostHooks, type NetHostHooks } from "../src/common/net_main";
@@ -373,6 +374,192 @@ describe("CL_RelinkEntities", () => {
     expect(cl.viewangles[1]).toBeCloseTo(-180, 2);
 
     cls.demoplayback = false; // reset
+  });
+});
+
+//============================================================================
+// CL_RelinkEntities -- U16 lerpflags bookkeeping and r_lerpmove
+//
+// r_lerpmove/r_lerpmodels are CvarT singletons declared in src/client/
+// render.ts (see that file's header on why); a CvarT.value is 0 until
+// Cvar_RegisterVariable or a direct assignment sets it (cvar.ts's own
+// constructor comment), so every test below sets and restores .value
+// directly rather than relying on either cvar's registered default.
+
+describe("CL_RelinkEntities: U16 lerpflags", () => {
+  test("a dropped entity (msgtime !== cl.mtime[0]) is flagged LERP_RESETMOVE|LERP_RESETANIM for next reuse", () => {
+    sv.active = false;
+    CL_ClearState();
+    cl_nolerp.value = 0;
+    cls.timedemo = false;
+    cls.demoplayback = false;
+    cl.mtime[0] = 1.0;
+    cl.mtime[1] = 0.95;
+    cl.time = 0.975;
+    cl.viewentity = 0;
+    cl.num_entities = 2;
+
+    const ent = cl_entities[1];
+    ent.model = new ModelT();
+    ent.msgtime = 0.5; // stale: not this frame's cl.mtime[0]
+    ent.lerpflags = 0;
+
+    CL_RelinkEntities();
+
+    expect(ent.model).toBeNull();
+    expect(ent.lerpflags & LERP_RESETMOVE).toBeTruthy();
+    expect(ent.lerpflags & LERP_RESETANIM).toBeTruthy();
+  });
+
+  test("a >100-unit teleport sets LERP_RESETMOVE on top of the classic teleport snap", () => {
+    sv.active = false;
+    CL_ClearState();
+    cl_nolerp.value = 0;
+    cls.timedemo = false;
+    cls.demoplayback = false;
+    cl.mtime[0] = 1.0;
+    cl.mtime[1] = 0.95;
+    cl.time = 0.975;
+    cl.viewentity = 0;
+    cl.num_entities = 2;
+
+    const ent = cl_entities[1];
+    ent.model = new ModelT();
+    ent.msgtime = cl.mtime[0];
+    ent.lerpflags = 0;
+    ent.msg_origins[1][0] = 0;
+    ent.msg_origins[0][0] = 200; // > 100, assumed a teleport
+
+    CL_RelinkEntities();
+
+    expect(ent.origin[0]).toBeCloseTo(200, 2);
+    expect(ent.lerpflags & LERP_RESETMOVE).toBeTruthy();
+  });
+
+  test("r_lerpmove 1 skips the classic per-frame lerp for a MOVETYPE_STEP (LERP_MOVESTEP) entity: origin snaps to msg_origins[0] instead of the 0.5 frac blend", () => {
+    const savedLerpmove = r_lerpmove.value;
+    sv.active = false;
+    CL_ClearState();
+    cl_nolerp.value = 0;
+    cls.timedemo = false;
+    cls.demoplayback = false;
+    cl.mtime[0] = 1.0;
+    cl.mtime[1] = 0.95;
+    cl.time = 0.975; // frac === 0.5
+    cl.viewentity = 0;
+    cl.num_entities = 2;
+    r_lerpmove.value = 1;
+
+    const ent = cl_entities[1];
+    ent.model = new ModelT();
+    ent.msgtime = cl.mtime[0];
+    ent.lerpflags = LERP_MOVESTEP; // CL_ParseUpdate's U_STEP bit already set this
+    ent.msg_origins[1][0] = 0;
+    ent.msg_origins[0][0] = 10; // well within the +-100 teleport threshold
+
+    CL_RelinkEntities();
+
+    // r_lerpmove 1 + LERP_MOVESTEP: f forced to 1, so origin lands exactly on
+    // msg_origins[0], not the frac===0.5 blend (5) the classic path would give.
+    expect(ent.origin[0]).toBeCloseTo(10, 2);
+
+    r_lerpmove.value = savedLerpmove;
+  });
+
+  test("r_lerpmove 0 keeps the classic per-frame lerp even for a LERP_MOVESTEP entity (byte-identical to pre-U16 WinQuake behavior)", () => {
+    const savedLerpmove = r_lerpmove.value;
+    sv.active = false;
+    CL_ClearState();
+    cl_nolerp.value = 0;
+    cls.timedemo = false;
+    cls.demoplayback = false;
+    cl.mtime[0] = 1.0;
+    cl.mtime[1] = 0.95;
+    cl.time = 0.975; // frac === 0.5
+    cl.viewentity = 0;
+    cl.num_entities = 2;
+    r_lerpmove.value = 0;
+
+    const ent = cl_entities[1];
+    ent.model = new ModelT();
+    ent.msgtime = cl.mtime[0];
+    ent.lerpflags = LERP_MOVESTEP;
+    ent.msg_origins[1][0] = 0;
+    ent.msg_origins[0][0] = 10;
+
+    CL_RelinkEntities();
+
+    // r_lerpmove 0: the LERP_MOVESTEP bypass never fires, so this is the
+    // ordinary frac===0.5 blend every other entity in this file gets.
+    expect(ent.origin[0]).toBeCloseTo(5, 2);
+
+    r_lerpmove.value = savedLerpmove;
+  });
+
+  test("EF_MUZZLEFLASH sets LERP_RESETANIM|LERP_RESETANIM2 on the entity, or on cl.viewent when it is the view entity, unless r_lerpmodels is 2", () => {
+    const savedLerpmodels = r_lerpmodels.value;
+    sv.active = false;
+    CL_ClearState();
+    cl_nolerp.value = 0;
+    cls.timedemo = false;
+    cls.demoplayback = false;
+    cl.mtime[0] = 1.0;
+    cl.mtime[1] = 0.95;
+    cl.time = 0.975;
+    cl.viewentity = 2;
+    cl.num_entities = 3;
+    r_lerpmodels.value = 1;
+
+    const plainModel = new ModelT();
+
+    const ent1 = cl_entities[1];
+    ent1.model = plainModel;
+    ent1.msgtime = cl.mtime[0];
+    ent1.effects = EF_MUZZLEFLASH;
+    ent1.lerpflags = 0;
+
+    const viewEnt = cl_entities[2]; // cl.viewentity
+    viewEnt.model = plainModel;
+    viewEnt.msgtime = cl.mtime[0];
+    viewEnt.effects = EF_MUZZLEFLASH;
+    cl.viewent.lerpflags = 0;
+
+    CL_RelinkEntities();
+
+    expect(ent1.lerpflags & LERP_RESETANIM).toBeTruthy();
+    expect(ent1.lerpflags & LERP_RESETANIM2).toBeTruthy();
+    // the view entity's own lerpflags are untouched; cl.viewent's are set instead
+    expect(cl.viewent.lerpflags & LERP_RESETANIM).toBeTruthy();
+    expect(cl.viewent.lerpflags & LERP_RESETANIM2).toBeTruthy();
+
+    r_lerpmodels.value = savedLerpmodels;
+  });
+
+  test("EF_MUZZLEFLASH's reset-anim hack is skipped when r_lerpmodels is 2", () => {
+    const savedLerpmodels = r_lerpmodels.value;
+    sv.active = false;
+    CL_ClearState();
+    cl_nolerp.value = 0;
+    cls.timedemo = false;
+    cls.demoplayback = false;
+    cl.mtime[0] = 1.0;
+    cl.mtime[1] = 0.95;
+    cl.time = 0.975;
+    cl.viewentity = 0;
+    cl.num_entities = 2;
+    r_lerpmodels.value = 2;
+
+    const ent = cl_entities[1];
+    ent.model = new ModelT();
+    ent.msgtime = cl.mtime[0];
+    ent.effects = EF_MUZZLEFLASH;
+    ent.lerpflags = 0;
+
+    CL_RelinkEntities();
+
+    expect(ent.lerpflags & (LERP_RESETANIM | LERP_RESETANIM2)).toBe(0);
+
+    r_lerpmodels.value = savedLerpmodels;
   });
 });
 

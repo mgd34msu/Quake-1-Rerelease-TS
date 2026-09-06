@@ -85,7 +85,7 @@ import { EF_BRIGHTFIELD, EF_BRIGHTLIGHT, EF_DIMLIGHT, EF_MUZZLEFLASH, sv } from 
 import { host, Host_ClearMemory, Host_Error, Host_ShutdownServer, hostClientHooks } from "../common/host";
 import { Con_DPrintf, Con_Printf } from "./console";
 import type { EntityT } from "./render";
-import { getRenderer, re } from "./render";
+import { LERP_MOVESTEP, LERP_RESETANIM, LERP_RESETANIM2, LERP_RESETMOVE, getRenderer, r_lerpmodels, r_lerpmove, re } from "./render";
 import type { BeamT, DlightT, LightstyleT } from "./client";
 import {
   CactiveT,
@@ -623,6 +623,9 @@ export function CL_RelinkEntities(): void {
     // if the object wasn't included in the last packet, remove it
     if (ent.msgtime !== cl.mtime[0]) {
       ent.model = null;
+      // johnfitz -- next time this entity slot is reused, the lerp will need
+      // to be reset
+      ent.lerpflags |= LERP_RESETMOVE | LERP_RESETANIM;
       continue;
     }
 
@@ -642,8 +645,14 @@ export function CL_RelinkEntities(): void {
       const delta: Vec3 = vec3();
       for (let j = 0; j < 3; j++) {
         delta[j] = ent.msg_origins[0][j] - ent.msg_origins[1][j];
-        if (delta[j] > 100 || delta[j] < -100) f = 1; // assume a teleportation, not a motion
+        if (delta[j] > 100 || delta[j] < -100) {
+          f = 1; // assume a teleportation, not a motion
+          ent.lerpflags |= LERP_RESETMOVE; // johnfitz -- don't lerp teleports
+        }
       }
+
+      // johnfitz -- don't cl_lerp entities that will be r_lerped
+      if (r_lerpmove.value && ent.lerpflags & LERP_MOVESTEP) f = 1;
 
       // interpolate the origin and angles
       for (let j = 0; j < 3; j++) {
@@ -675,6 +684,13 @@ export function CL_RelinkEntities(): void {
       dl.radius = 200 + rand31();
       dl.minlight = 32;
       dl.die = cl.time + 0.1;
+
+      // johnfitz -- assume muzzle flash accompanied by muzzle flare, which
+      // looks bad when lerped
+      if (r_lerpmodels.value !== 2) {
+        if (i === cl.viewentity) cl.viewent.lerpflags |= LERP_RESETANIM | LERP_RESETANIM2; // no lerping for two frames
+        else ent.lerpflags |= LERP_RESETANIM | LERP_RESETANIM2; // no lerping for two frames
+      }
     }
     if (ent.effects & EF_BRIGHTLIGHT) {
       const dl = CL_AllocDlight(i);

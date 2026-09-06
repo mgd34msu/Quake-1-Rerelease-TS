@@ -27,8 +27,23 @@ import { join } from "node:path";
 
 import { COM_CheckRegistered, COM_InitArgv, COM_InitFilesystem, pop, setStaticRegistered, static_registered } from "../src/common/common";
 import { HostEndGame, HostError } from "../src/common/host";
-import { Mod_Init, TextureT, setModelLoaderHooks, type ModelLoaderHooks } from "../src/common/model";
-import { ClcOpsT, PROTOCOL_VERSION, SU_ITEMS, SU_VIEWHEIGHT, SvcOpsT, U_FRAME, U_MOREBITS, U_ORIGIN1 } from "../src/common/protocol";
+import { Mod_Init, ModelT, TextureT, setModelLoaderHooks, type ModelLoaderHooks } from "../src/common/model";
+import {
+  ClcOpsT,
+  PROTOCOL_FITZQUAKE,
+  PROTOCOL_VERSION,
+  SU_ITEMS,
+  SU_VIEWHEIGHT,
+  SvcOpsT,
+  U_ALPHA,
+  U_EXTEND1,
+  U_FRAME,
+  U_LERPFINISH,
+  U_MODEL,
+  U_MOREBITS,
+  U_ORIGIN1,
+  U_STEP,
+} from "../src/common/protocol";
 import {
   MSG_WriteAngle,
   MSG_WriteByte,
@@ -49,7 +64,7 @@ import { sv } from "../src/server/server";
 import { ScoreboardT, cl, cl_entities, cl_lightstyle, cl_static_entities, cls } from "../src/client/client";
 import { CL_KeepaliveMessage, CL_ParseServerMessage } from "../src/client/cl_parse";
 import type { EntityT, ParticleT, Renderer } from "../src/client/render";
-import { BOTTOM_RANGE, TOP_RANGE, re } from "../src/client/render";
+import { BOTTOM_RANGE, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, TOP_RANGE, re } from "../src/client/render";
 import { VID_GRADES, VrectT, vid } from "../src/client/vid";
 import type { QpicT } from "../src/common/wad";
 
@@ -352,6 +367,157 @@ describe("CL_ParseServerMessage: fast update (U_MOREBITS|U_ORIGIN1|U_FRAME)", ()
     expect(ent.origin[1]).toBe(0);
     expect(ent.origin[2]).toBe(0);
     expect(ent.colormap).toBe(vid.colormap);
+  });
+});
+
+// U16: CL_ParseUpdate's lerpflags bookkeeping (QuakeSpasm cl_parse.c). Each
+// case saves and restores cl.protocol/cl.mtime itself (rule 15) since this
+// suite's other describes never touch either.
+describe("CL_ParseServerMessage: CL_ParseUpdate lerpflags (U16)", () => {
+  test("sets LERP_RESETANIM when the previous update for this entity is stale by more than 0.2s", () => {
+    const savedMtime0 = cl.mtime[0];
+    const savedMtime1 = cl.mtime[1];
+
+    const num = 70;
+    cl_entities[num].clear();
+    cl_entities[num].msgtime = 0;
+    cl.mtime[1] = 0; // ent.msgtime === cl.mtime[1]: forcelink comes from staleness, not this
+    cl.mtime[0] = 1.0; // 0 + 0.2 < 1.0
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, 128); // fast update, bits = 0
+      MSG_WriteByte(sb, num);
+    });
+
+    CL_ParseServerMessage();
+
+    expect(cl_entities[num].lerpflags & LERP_RESETANIM).toBeTruthy();
+
+    cl.mtime[0] = savedMtime0;
+    cl.mtime[1] = savedMtime1;
+  });
+
+  test("does NOT set LERP_RESETANIM for a normal, non-stale update", () => {
+    const savedMtime0 = cl.mtime[0];
+    const savedMtime1 = cl.mtime[1];
+
+    const num = 71;
+    cl_entities[num].clear();
+    cl_entities[num].msgtime = 0.9;
+    cl.mtime[1] = 0.9;
+    cl.mtime[0] = 1.0; // 0.9 + 0.2 = 1.1, not < 1.0
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, 128);
+      MSG_WriteByte(sb, num);
+    });
+
+    CL_ParseServerMessage();
+
+    expect(cl_entities[num].lerpflags & LERP_RESETANIM).toBe(0);
+
+    cl.mtime[0] = savedMtime0;
+    cl.mtime[1] = savedMtime1;
+  });
+
+  test("sets LERP_RESETANIM when the model index changes", () => {
+    const num = 72;
+    cl_entities[num].clear();
+    const model = new ModelT();
+    cl.model_precache[6] = model;
+
+    const bits = U_MOREBITS | U_MODEL;
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, (bits | 128) & 0xff);
+      MSG_WriteByte(sb, (bits >> 8) & 0xff);
+      MSG_WriteByte(sb, num);
+      MSG_WriteByte(sb, 6); // modnum
+    });
+
+    CL_ParseServerMessage();
+
+    expect(cl_entities[num].model).toBe(model);
+    expect(cl_entities[num].lerpflags & LERP_RESETANIM).toBeTruthy();
+
+    cl.model_precache[6] = null;
+  });
+
+  test("U_STEP sets LERP_MOVESTEP and forces a relink; the next update without it clears LERP_MOVESTEP", () => {
+    const num = 73;
+    cl_entities[num].clear();
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, (U_STEP | 128) & 0xff);
+      MSG_WriteByte(sb, num);
+    });
+    CL_ParseServerMessage();
+
+    expect(cl_entities[num].lerpflags & LERP_MOVESTEP).toBeTruthy();
+    expect(cl_entities[num].forcelink).toBe(true);
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, 128); // bits = 0, U_STEP not set this time
+      MSG_WriteByte(sb, num);
+    });
+    CL_ParseServerMessage();
+
+    expect(cl_entities[num].lerpflags & LERP_MOVESTEP).toBe(0);
+  });
+
+  test("U_LERPFINISH sets LERP_FINISH and computes lerpfinish from ent.msgtime + the wire byte / 255", () => {
+    const savedProtocol = cl.protocol;
+    const savedMtime0 = cl.mtime[0];
+
+    const num = 74;
+    cl_entities[num].clear();
+    cl.protocol = PROTOCOL_FITZQUAKE;
+    cl.mtime[0] = 5.0;
+
+    // U_ALPHA and U_LERPFINISH both live past bit 15, so this needs
+    // U_MOREBITS's extra byte to carry U_EXTEND1, and U_EXTEND1's own extra
+    // byte (protocol.ts's readEntityBits) to carry the two high bits.
+    const bits = U_MOREBITS | U_EXTEND1 | U_ALPHA | U_LERPFINISH;
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, (bits | 128) & 0xff);
+      MSG_WriteByte(sb, (bits >> 8) & 0xff);
+      MSG_WriteByte(sb, (bits >> 16) & 0xff);
+      MSG_WriteByte(sb, num);
+      MSG_WriteByte(sb, 200); // U_ALPHA
+      MSG_WriteByte(sb, 128); // U_LERPFINISH
+    });
+
+    CL_ParseServerMessage();
+
+    const ent = cl_entities[num];
+    expect(ent.alpha).toBe(200);
+    expect(ent.lerpflags & LERP_FINISH).toBeTruthy();
+    expect(ent.lerpfinish).toBeCloseTo(5.0 + 128 / 255, 5);
+
+    cl.protocol = savedProtocol;
+    cl.mtime[0] = savedMtime0;
+  });
+
+  test("U_LERPFINISH absent clears LERP_FINISH on a later update", () => {
+    const savedProtocol = cl.protocol;
+    const savedMtime0 = cl.mtime[0];
+
+    const num = 75;
+    cl_entities[num].clear();
+    cl_entities[num].lerpflags = LERP_FINISH; // as if a previous update had set it
+    cl.protocol = PROTOCOL_FITZQUAKE;
+    cl.mtime[0] = 6.0;
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, 128); // bits = 0: no U_ALPHA/U_SCALE/U_LERPFINISH
+      MSG_WriteByte(sb, num);
+    });
+
+    CL_ParseServerMessage();
+
+    expect(cl_entities[num].lerpflags & LERP_FINISH).toBe(0);
+
+    cl.protocol = savedProtocol;
+    cl.mtime[0] = savedMtime0;
   });
 });
 

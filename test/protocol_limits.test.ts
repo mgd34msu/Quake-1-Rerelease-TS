@@ -24,7 +24,7 @@ import {
   MAX_SOUNDS,
   MIN_EDICTS,
 } from "../src/common/quakedef";
-import { MAX_STATIC_ENTITIES, MAX_VISEDICTS, cl_entities, cl_entity_ext, cl_static_entities, cl_static_entity_ext, cl_visedicts, growEntities, growStaticEntities } from "../src/client/client";
+import { MAX_STATIC_ENTITIES, MAX_VISEDICTS, cl_entities, cl_static_entities, cl_visedicts, growEntities, growStaticEntities } from "../src/client/client";
 import { ModelT } from "../src/common/model";
 import { BSP_WIDTH_29, BSP_WIDTH_2PSB, BSP_WIDTH_BSP2 } from "../src/common/bspfile";
 import { PROTOCOL_FITZQUAKE, PROTOCOL_NETQUAKE, PROTOCOL_RMQ } from "../src/common/protocol";
@@ -87,11 +87,9 @@ describe("the client's entity tables grow on demand", () => {
     // Nothing here shrinks the arrays, so a suite that ran before this one may
     // already have grown them; the invariant is the ceiling, not the start.
     expect(cl_entities.length).toBeLessThanOrEqual(MAX_EDICTS);
-    expect(cl_entity_ext.length).toBe(cl_entities.length);
 
     expect(growEntities(2000)).toBe(true);
     expect(cl_entities.length).toBeGreaterThan(2000);
-    expect(cl_entity_ext.length).toBe(cl_entities.length);
     expect(cl_entities[2000]).not.toBe(cl_entities[1999]);
     expect(cl_entities[2000].origin).not.toBe(cl_entities[1999].origin);
 
@@ -109,7 +107,6 @@ describe("the client's entity tables grow on demand", () => {
   test("cl_static_entities grows the same way, capped at MAX_STATIC_ENTITIES", () => {
     expect(growStaticEntities(500)).toBe(true);
     expect(cl_static_entities.length).toBeGreaterThan(500);
-    expect(cl_static_entity_ext.length).toBe(cl_static_entities.length);
     expect(growStaticEntities(MAX_STATIC_ENTITIES)).toBe(false);
     expect(growStaticEntities(MAX_STATIC_ENTITIES - 1)).toBe(true);
     expect(cl_static_entities.length).toBe(MAX_STATIC_ENTITIES);

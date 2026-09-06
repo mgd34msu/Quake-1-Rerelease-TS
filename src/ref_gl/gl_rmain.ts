@@ -26,7 +26,10 @@ Deviations from PORTING.md / the C source:
   glquake.ts's `glState` does not carry them (glquake.h does not declare them:
   they are gl_rmain.c-private). PORTING.md's globals rule gives them the
   "small exported holder" shape instead: `rmainState`. `shadevector` is
-  mutated in place, so it stays an exported `const` vec3.
+  mutated in place, so it stays an exported `const` vec3. U16 (QuakeSpasm/
+  Ironwail's own two-pose lerp) splits `lastposenum` into `lastpose1`/
+  `lastpose2`/`lastblend`, since GL_DrawAliasShadow now needs the same two
+  poses and blend fraction the main draw used, not one posenum.
 - `shadedots` is `r_avertexnormal_dots[row]`, a `float *` into a
   [SHADEDOT_QUANT][256] table. anorm_dots.ts holds that table flat, so a row
   is `subarray(row * ANORM_DOTS_ROW, (row + 1) * ANORM_DOTS_ROW)` -- a view
@@ -176,6 +179,7 @@ import {
   RotatePointAroundVector,
   type Vec3,
   VectorAdd,
+  VectorCompare,
   VectorCopy,
   VectorMA,
   VectorNormalize,
@@ -206,29 +210,19 @@ function skinMod(): typeof SkinModule {
 function glRmiscMod(): typeof GlRmiscModule {
   return require("./gl_rmisc");
 }
-import {
-  MAX_DLIGHTS,
-  MAX_VISEDICTS,
-  NUM_CSHIFTS,
-  cl,
-  cl_dlights,
-  cl_entities,
-  cl_entity_ext,
-  cl_static_entities,
-  cl_static_entity_ext,
-  cl_visedicts,
-  clState,
-} from "../client/client";
+import { MAX_DLIGHTS, MAX_VISEDICTS, NUM_CSHIFTS, cl, cl_dlights, cl_entities, cl_static_entities, cl_visedicts, clState } from "../client/client";
 import type { EntityT, ParticleT } from "../client/render";
-import { ENTALPHA_DECODE, ENTALPHA_DEFAULT } from "../common/protocol";
+import { LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, LERP_RESETANIM2, LERP_RESETMOVE } from "../client/render";
+import { ENTALPHA_DECODE, ENTSCALE_DECODE } from "../common/protocol";
 // r_drawentities/r_drawviewmodel/r_fullbright/r_speeds: r_main.c also
 // registers these under the same name (render.ts's shared block); imported,
 // not redefined, so a Cvar_Set reaches both renderers' objects because there
 // is only one object. Re-exported below so existing `from "./gl_rmain"`
 // imports (gl_rmisc.ts, test/ref_gl_rsurf.test.ts) keep working.
-import { r_drawentities, r_drawviewmodel, r_fullbright, r_netgraph, r_origin, r_refdef, r_speeds, vpn, vright, vup } from "../client/render";
+import { r_drawentities, r_drawviewmodel, r_fullbright, r_lerpmodels, r_lerpmove, r_netgraph, r_origin, r_refdef, r_speeds, vpn, vright, vup } from "../client/render";
 export { r_netgraph };
 export { r_drawentities, r_drawviewmodel, r_fullbright, r_speeds };
+export { r_lerpmodels, r_lerpmove };
 import { d_8to24table, vid } from "../client/vid";
 import { chase_active } from "../client/chase";
 import { gl_cshiftpercent, V_SetContentsColor } from "../client/view";
@@ -244,6 +238,7 @@ import {
   r_avertexnormal_dots,
   r_base_world_matrix,
   r_entorigin,
+  r_nolerp_list,
   r_world_matrix,
   r_worldentity,
 } from "./glquake";
@@ -345,18 +340,21 @@ export function R_WaterAlphaForTextureName(name: string): number {
 }
 
 // U21 addition, no WinQuake counterpart: the re-release entity-alpha
-// extension (src/common/protocol.ts's ENTALPHA_*, decoded off the
-// cl_entity_ext/cl_static_entity_ext side tables U3 added -- see
-// src/client/client.ts's header on why alpha lives beside EntityT rather
-// than on it). EntityT carries no index of its own, so this resolves one
-// the same way the player-skin recolor code elsewhere in this file already
-// does (`cl_entities.indexOf(currententity)`).
+// extension (src/common/protocol.ts's ENTALPHA_*). U3 parked the decoded
+// byte in a cl_entity_ext/cl_static_entity_ext side table because EntityT
+// (src/client/render.ts) had no consumer yet; U16 folds `alpha` onto EntityT
+// directly (cl.viewent included, since it is an EntityT too), so this is now
+// a one-line decode of the entity's own field.
 export function R_EntityAlpha(e: EntityT): number {
-  let i = cl_entities.indexOf(e);
-  if (i >= 0) return ENTALPHA_DECODE(cl_entity_ext[i].alpha);
-  i = cl_static_entities.indexOf(e);
-  if (i >= 0) return ENTALPHA_DECODE(cl_static_entity_ext[i].alpha);
-  return ENTALPHA_DECODE(ENTALPHA_DEFAULT);
+  return ENTALPHA_DECODE(e.alpha);
+}
+
+// U16 addition, no WinQuake counterpart: nameInList's exact-match,
+// comma-separated scan (gl_model.c's Mod_SetExtraFlags), ported at draw time
+// instead of as a load-time ModelT flag -- see glquake.ts's r_nolerp_list
+// header note on why. Named to match the C for anyone cross-referencing it.
+function nameInList(list: string, name: string): boolean {
+  return list.split(",").includes(name);
 }
 
 /*
@@ -371,12 +369,24 @@ export function R_CullBox(mins: Vec3, maxs: Vec3): boolean {
   return false;
 }
 
-export function R_RotateForEntity(e: EntityT): void {
-  qgl().qglTranslatef(e.origin[0], e.origin[1], e.origin[2]);
+// U16: johnfitz -- modified to take origin, angles and scale directly
+// instead of an entity pointer, matching QuakeSpasm/Ironwail's
+// R_RotateForEntity exactly -- callers that need the raw, unlerped
+// entity transform still pass e.origin/e.angles (R_DrawBrushModel,
+// R_DrawSpriteModel's own orientation math), while R_DrawAliasModel passes
+// the lerped transform R_SetupEntityTransform computed. `scale` is the raw
+// ENTSCALE_ENCODE byte (0 means "use ENTSCALE_DEFAULT", matching
+// ENTSCALE_DECODE's own convention); a decoded scale of 1.0 skips the
+// qglScalef call entirely, so every existing test that never sets an
+// entity's scale keeps seeing the exact same GL call sequence.
+export function R_RotateForEntity(origin: Vec3, angles: Vec3, scale: number): void {
+  const scalefactor = ENTSCALE_DECODE(scale);
+  qgl().qglTranslatef(origin[0], origin[1], origin[2]);
 
-  qgl().qglRotatef(e.angles[1], 0, 0, 1);
-  qgl().qglRotatef(-e.angles[0], 0, 1, 0);
-  qgl().qglRotatef(e.angles[2], 1, 0, 0);
+  qgl().qglRotatef(angles[1], 0, 0, 1);
+  qgl().qglRotatef(-angles[0], 0, 1, 0);
+  qgl().qglRotatef(angles[2], 1, 0, 0);
+  if (scalefactor !== 1.0) qgl().qglScalef(scalefactor, scalefactor, scalefactor);
 }
 
 /*
@@ -473,6 +483,13 @@ export function R_DrawSpriteModel(e: EntityT): void {
   if (entAlpha === 1) qgl().qglColor3f(1, 1, 1);
   else qgl().qglColor4f(1, 1, 1, entAlpha);
 
+  // U16 addition, no WinQuake counterpart: the re-release entity-scale
+  // extension (QuakeSpasm/Ironwail r_sprite.c's R_DrawSpriteModel). A scale
+  // of 1 (ENTSCALE_DEFAULT, the overwhelming common case) multiplies every
+  // offset by 1, keeping the exact corner coordinates every existing test
+  // pins.
+  const entScale = ENTSCALE_DECODE(currententity.scale);
+
   GL_DisableMultitexture();
 
   GL_Bind(frame.gl_texturenum);
@@ -488,23 +505,23 @@ export function R_DrawSpriteModel(e: EntityT): void {
   }
 
   qgl().qglTexCoord2f(0, 1);
-  VectorMA(e.origin, frame.down, up, spritePoint);
-  VectorMA(spritePoint, frame.left, right, spritePoint);
+  VectorMA(e.origin, frame.down * entScale, up, spritePoint);
+  VectorMA(spritePoint, frame.left * entScale, right, spritePoint);
   qgl().qglVertex3fv(spritePoint);
 
   qgl().qglTexCoord2f(0, 0);
-  VectorMA(e.origin, frame.up, up, spritePoint);
-  VectorMA(spritePoint, frame.left, right, spritePoint);
+  VectorMA(e.origin, frame.up * entScale, up, spritePoint);
+  VectorMA(spritePoint, frame.left * entScale, right, spritePoint);
   qgl().qglVertex3fv(spritePoint);
 
   qgl().qglTexCoord2f(1, 0);
-  VectorMA(e.origin, frame.up, up, spritePoint);
-  VectorMA(spritePoint, frame.right, right, spritePoint);
+  VectorMA(e.origin, frame.up * entScale, up, spritePoint);
+  VectorMA(spritePoint, frame.right * entScale, right, spritePoint);
   qgl().qglVertex3fv(spritePoint);
 
   qgl().qglTexCoord2f(1, 1);
-  VectorMA(e.origin, frame.down, up, spritePoint);
-  VectorMA(spritePoint, frame.right, right, spritePoint);
+  VectorMA(e.origin, frame.down * entScale, up, spritePoint);
+  VectorMA(spritePoint, frame.right * entScale, right, spritePoint);
   qgl().qglVertex3fv(spritePoint);
 
   qgl().qglEnd();
@@ -529,7 +546,12 @@ export const rmainState: {
   shadelight: number;
   ambientlight: number;
   shadedots: Float32Array;
-  lastposenum: number;
+  // U16: the two poses and the blend fraction R_SetupAliasFrame last handed
+  // to GL_DrawAliasFrame, read by R_DrawAliasModel to draw a lerped shadow
+  // through the same two poses (replaces the single-pose `lastposenum`).
+  lastpose1: number;
+  lastpose2: number;
+  lastblend: number;
   // U15: per-channel shadelight (see this file's header note); what
   // GL_DrawAliasFrame actually reads.
   shadelightColor: Vec3;
@@ -545,21 +567,63 @@ export const rmainState: {
   shadelight: 0,
   ambientlight: 0,
   shadedots: r_avertexnormal_dots.subarray(0, ANORM_DOTS_ROW),
-  lastposenum: 0,
+  lastpose1: 0,
+  lastpose2: 0,
+  lastblend: 0,
   shadelightColor: vec3(),
   alpha: 1,
 };
+
+// U16 addition, no WinQuake counterpart: the C's `CLAMP(_minval,_number,_maxval)`
+// macro (Ironwail/QuakeSpasm's own quakedef.h), used exactly as
+// R_SetupAliasFrame/R_SetupEntityTransform below use it.
+function CLAMP(minv: number, v: number, maxv: number): number {
+  return v < minv ? minv : v > maxv ? maxv : v;
+}
+
+// U16 addition: R_SetupAliasFrame's two-pose result (QuakeSpasm/Ironwail's
+// `lerpdata_t`, the alias-frame half). One reusable object -- R_DrawAliasModel
+// is never reentrant, matching this file's other scratch-vector globals
+// (aliasDist, aliasMins, ...).
+interface AliasFrameLerpT {
+  pose1: number;
+  pose2: number;
+  blend: number;
+}
+const aliasFrameLerp: AliasFrameLerpT = { pose1: 0, pose2: 0, blend: 0 };
+
+// U16 addition: R_SetupEntityTransform's result (`lerpdata_t`'s transform
+// half): the origin/angles to actually draw the model at this frame, which
+// for a MOVETYPE_STEP entity under r_lerpmove differ from the entity's own
+// (unlerped) origin/angles.
+interface EntityTransformLerpT {
+  origin: Vec3;
+  angles: Vec3;
+}
+const entityTransformLerp: EntityTransformLerpT = { origin: vec3(), angles: vec3() };
+const entityLerpDelta: Vec3 = vec3();
 
 /*
 =============
 GL_DrawAliasFrame
 =============
 */
-export function GL_DrawAliasFrame(paliashdr: AliashdrT, posenum: number): void {
-  rmainState.lastposenum = posenum;
+// U16: rewritten to support lerping (QuakeSpasm/Ironwail's r_alias.c
+// GL_DrawAliasFrame, ported into this file's immediate-mode structure --
+// see this file's header). `pose1 === pose2` (paused animation, or lerping
+// disabled for this model/r_lerpmodels 0) skips the blend entirely and
+// reduces to the previous single-pose body every existing test pins.
+export function GL_DrawAliasFrame(paliashdr: AliashdrT, pose1: number, pose2: number, blend: number): void {
+  rmainState.lastpose1 = pose1;
+  rmainState.lastpose2 = pose2;
+  rmainState.lastblend = blend;
+
+  const lerping = pose1 !== pose2;
+  const iblend = 1.0 - blend;
 
   const posedata = paliashdr.posedata;
-  let vertnum = posenum * paliashdr.poseverts;
+  let vertnum1 = pose1 * paliashdr.poseverts;
+  let vertnum2 = pose2 * paliashdr.poseverts;
   const order = paliashdr.commands;
   // the texture coordinates gl_mesh.c stored into the command list as raw
   // float bits (`*(float *)&commands[n] = s`), read back through the C's
@@ -582,14 +646,17 @@ export function GL_DrawAliasFrame(paliashdr: AliashdrT, posenum: number): void {
       o += 2;
 
       // normals and vertexes come from the frame list
-      const verts = posedata[vertnum];
+      const verts1 = posedata[vertnum1];
+      const verts2 = posedata[vertnum2];
       // U15: per-channel shadelight (see this file's header note); reduces
       // to the classic `qglColor3f(l, l, l)` whenever color is not active.
-      const dot = rmainState.shadedots[verts.lightnormalindex];
+      const dot = lerping ? rmainState.shadedots[verts1.lightnormalindex] * iblend + rmainState.shadedots[verts2.lightnormalindex] * blend : rmainState.shadedots[verts1.lightnormalindex];
       if (rmainState.alpha === 1) qgl().qglColor3f(dot * rmainState.shadelightColor[0], dot * rmainState.shadelightColor[1], dot * rmainState.shadelightColor[2]);
       else qgl().qglColor4f(dot * rmainState.shadelightColor[0], dot * rmainState.shadelightColor[1], dot * rmainState.shadelightColor[2], rmainState.alpha);
-      qgl().qglVertex3f(verts.v[0], verts.v[1], verts.v[2]);
-      vertnum++;
+      if (lerping) qgl().qglVertex3f(verts1.v[0] * iblend + verts2.v[0] * blend, verts1.v[1] * iblend + verts2.v[1] * blend, verts1.v[2] * iblend + verts2.v[2] * blend);
+      else qgl().qglVertex3f(verts1.v[0], verts1.v[1], verts1.v[2]);
+      vertnum1++;
+      vertnum2++;
     } while (--count);
 
     qgl().qglEnd();
@@ -603,14 +670,25 @@ const shadowPoint: Vec3 = vec3();
 GL_DrawAliasShadow
 =============
 */
-export function GL_DrawAliasShadow(paliashdr: AliashdrT, posenum: number): void {
+// U16: reads the same two poses and blend fraction GL_DrawAliasFrame's main
+// draw used for this entity this frame (rmainState.lastpose1/2/blend), so
+// the shadow follows the lerped animation instead of snapping between poses.
+// QuakeSpasm/Ironwail's own GL_DrawAliasShadow shares GL_DrawAliasFrame's
+// vertex loop outright (`shading = false`) and lets its shadow MATRIX do the
+// skew; this port's GL_DrawAliasShadow has always computed the skewed point
+// by hand per vertex (WinQuake/original GLQuake style), so the two-pose
+// blend is folded into that same per-vertex computation instead.
+export function GL_DrawAliasShadow(paliashdr: AliashdrT, pose1: number, pose2: number, blend: number): void {
   const currententity = glState.currententity;
   if (currententity === null) Sys_Error("GL_DrawAliasShadow: no current entity");
 
   const lheight = currententity.origin[2] - lightspot[2];
+  const lerping = pose1 !== pose2;
+  const iblend = 1.0 - blend;
 
   const posedata = paliashdr.posedata;
-  let vertnum = posenum * paliashdr.poseverts;
+  let vertnum1 = pose1 * paliashdr.poseverts;
+  let vertnum2 = pose2 * paliashdr.poseverts;
   const order = paliashdr.commands;
   let o = 0;
 
@@ -631,10 +709,15 @@ export function GL_DrawAliasShadow(paliashdr: AliashdrT, posenum: number): void 
       o += 2;
 
       // normals and vertexes come from the frame list
-      const verts = posedata[vertnum];
-      shadowPoint[0] = verts.v[0] * paliashdr.scale[0] + paliashdr.scale_origin[0];
-      shadowPoint[1] = verts.v[1] * paliashdr.scale[1] + paliashdr.scale_origin[1];
-      shadowPoint[2] = verts.v[2] * paliashdr.scale[2] + paliashdr.scale_origin[2];
+      const verts1 = posedata[vertnum1];
+      const verts2 = posedata[vertnum2];
+      const vx = lerping ? verts1.v[0] * iblend + verts2.v[0] * blend : verts1.v[0];
+      const vy = lerping ? verts1.v[1] * iblend + verts2.v[1] * blend : verts1.v[1];
+      const vz = lerping ? verts1.v[2] * iblend + verts2.v[2] * blend : verts1.v[2];
+
+      shadowPoint[0] = vx * paliashdr.scale[0] + paliashdr.scale_origin[0];
+      shadowPoint[1] = vy * paliashdr.scale[1] + paliashdr.scale_origin[1];
+      shadowPoint[2] = vz * paliashdr.scale[2] + paliashdr.scale_origin[2];
 
       shadowPoint[0] -= shadevector[0] * (shadowPoint[2] + lheight);
       shadowPoint[1] -= shadevector[1] * (shadowPoint[2] + lheight);
@@ -642,7 +725,8 @@ export function GL_DrawAliasShadow(paliashdr: AliashdrT, posenum: number): void 
       //			height -= 0.001;
       qgl().qglVertex3fv(shadowPoint);
 
-      vertnum++;
+      vertnum1++;
+      vertnum2++;
     } while (--count);
 
     qgl().qglEnd();
@@ -651,25 +735,120 @@ export function GL_DrawAliasShadow(paliashdr: AliashdrT, posenum: number): void 
 
 /*
 =================
-R_SetupAliasFrame
-
+R_SetupAliasFrame -- U16: johnfitz -- rewritten to support lerping
+(QuakeSpasm/Ironwail r_alias.c). Updates `e`'s lerp bookkeeping fields and
+fills `lerpdata` with the two poses and blend fraction GL_DrawAliasFrame /
+GL_DrawAliasShadow should draw through.
 =================
 */
-export function R_SetupAliasFrame(frame: number, paliashdr: AliashdrT): void {
+export function R_SetupAliasFrame(e: EntityT, frameIn: number, paliashdr: AliashdrT, noLerp: boolean, lerpdata: AliasFrameLerpT): void {
+  let frame = frameIn;
   if (frame >= paliashdr.numframes || frame < 0) {
     Con_DPrintf("R_AliasSetupFrame: no such frame %d\n", frame);
     frame = 0;
   }
 
-  let pose = paliashdr.frames[frame].firstpose;
   const numposes = paliashdr.frames[frame].numposes;
+  let posenum = paliashdr.frames[frame].firstpose;
 
   if (numposes > 1) {
-    const interval = paliashdr.frames[frame].interval;
-    pose += ((cl.time / interval) | 0) % numposes;
+    e.lerptime = paliashdr.frames[frame].interval;
+    posenum += ((cl.time / e.lerptime) | 0) % numposes;
+  } else {
+    e.lerptime = 0.1;
   }
 
-  GL_DrawAliasFrame(paliashdr, pose);
+  if (e.lerpflags & LERP_RESETANIM) {
+    // kill any lerp in progress
+    e.lerpstart = 0;
+    e.previouspose = posenum;
+    e.currentpose = posenum;
+    e.lerpflags &= ~LERP_RESETANIM;
+  } else if (e.currentpose !== posenum) {
+    // pose changed, start a new lerp
+    if (e.lerpflags & LERP_RESETANIM2) {
+      // defer lerping one more time
+      e.lerpstart = 0;
+      e.previouspose = posenum;
+      e.currentpose = posenum;
+      e.lerpflags &= ~LERP_RESETANIM2;
+    } else {
+      e.lerpstart = cl.time;
+      e.previouspose = e.currentpose;
+      e.currentpose = posenum;
+    }
+  }
+
+  if (r_lerpmodels.value && !(noLerp && r_lerpmodels.value !== 2)) {
+    if (e.lerpflags & LERP_FINISH && numposes === 1) lerpdata.blend = CLAMP(0.0, (cl.time - e.lerpstart) / (e.lerpfinish - e.lerpstart), 1.0);
+    else lerpdata.blend = CLAMP(0.0, (cl.time - e.lerpstart) / e.lerptime, 1.0);
+    if (lerpdata.blend === 1.0) e.previouspose = e.currentpose;
+    lerpdata.pose1 = e.previouspose;
+    lerpdata.pose2 = e.currentpose;
+  } else {
+    // poses the same means either 1. the entity has paused its animation, or
+    // 2. r_lerpmodels is disabled
+    lerpdata.blend = 1;
+    lerpdata.pose1 = e.currentpose;
+    lerpdata.pose2 = e.currentpose;
+  }
+}
+
+/*
+=================
+R_SetupEntityTransform -- U16: johnfitz -- set up the transform half of
+lerpdata (QuakeSpasm/Ironwail r_alias.c). Under r_lerpmove, a MOVETYPE_STEP
+entity (LERP_MOVESTEP, set by CL_ParseUpdate's U_STEP bit) draws at a
+position blended between the last two origins/angles CL_RelinkEntities
+recorded into `e.currentorigin`/`e.previousorigin`, instead of at `e.origin`
+directly; every other entity (and cl.viewent, which this never lerps) draws
+at its own raw origin/angles, unchanged.
+=================
+*/
+export function R_SetupEntityTransform(e: EntityT, lerpdata: EntityTransformLerpT): void {
+  if (e.lerpflags & LERP_RESETMOVE) {
+    // kill any lerps in progress
+    e.movelerpstart = 0;
+    VectorCopy(e.origin, e.previousorigin);
+    VectorCopy(e.origin, e.currentorigin);
+    VectorCopy(e.angles, e.previousangles);
+    VectorCopy(e.angles, e.currentangles);
+    e.lerpflags &= ~LERP_RESETMOVE;
+  } else if (!VectorCompare(e.origin, e.currentorigin) || !VectorCompare(e.angles, e.currentangles)) {
+    // origin/angles changed, start a new lerp
+    e.movelerpstart = cl.time;
+    VectorCopy(e.currentorigin, e.previousorigin);
+    VectorCopy(e.origin, e.currentorigin);
+    VectorCopy(e.currentangles, e.previousangles);
+    VectorCopy(e.angles, e.currentangles);
+  }
+
+  // set up values
+  if (r_lerpmove.value && e !== cl.viewent && e.lerpflags & LERP_MOVESTEP) {
+    let blend: number;
+    if (e.lerpflags & LERP_FINISH) blend = CLAMP(0.0, (cl.time - e.movelerpstart) / (e.lerpfinish - e.movelerpstart), 1.0);
+    else blend = CLAMP(0.0, (cl.time - e.movelerpstart) / 0.1, 1.0);
+
+    // translation
+    VectorSubtract(e.currentorigin, e.previousorigin, entityLerpDelta);
+    lerpdata.origin[0] = e.previousorigin[0] + entityLerpDelta[0] * blend;
+    lerpdata.origin[1] = e.previousorigin[1] + entityLerpDelta[1] * blend;
+    lerpdata.origin[2] = e.previousorigin[2] + entityLerpDelta[2] * blend;
+
+    // rotation
+    VectorSubtract(e.currentangles, e.previousangles, entityLerpDelta);
+    for (let i = 0; i < 3; i++) {
+      if (entityLerpDelta[i] > 180) entityLerpDelta[i] -= 360;
+      if (entityLerpDelta[i] < -180) entityLerpDelta[i] += 360;
+    }
+    lerpdata.angles[0] = e.previousangles[0] + entityLerpDelta[0] * blend;
+    lerpdata.angles[1] = e.previousangles[1] + entityLerpDelta[1] * blend;
+    lerpdata.angles[2] = e.previousangles[2] + entityLerpDelta[2] * blend;
+  } else {
+    // don't lerp
+    VectorCopy(e.origin, lerpdata.origin);
+    VectorCopy(e.angles, lerpdata.angles);
+  }
 }
 
 const aliasDist: Vec3 = vec3();
@@ -692,6 +871,18 @@ export function R_DrawAliasModel(e: EntityT): void {
 
   const clmodel = currententity.model;
   if (clmodel === null) Sys_Error("R_DrawAliasModel: NULL model");
+
+  // U16: set up pose/lerp data first, before culling -- QuakeSpasm/Ironwail's
+  // R_DrawAliasModel does the same ("so we don't miss updates due to
+  // culling"): R_SetupAliasFrame/R_SetupEntityTransform mutate `e`'s own
+  // lerp bookkeeping (lerpstart/previouspose/currentorigin/...), and an
+  // early return below must not skip that or the entity's lerp desyncs the
+  // next time it is actually drawn.
+  const extradataForLerp = Mod_Extradata(clmodel);
+  if (!(extradataForLerp instanceof AliashdrT)) Sys_Error("R_DrawAliasModel: not an alias model");
+  const noLerpModel = nameInList(r_nolerp_list.string, clmodel.name);
+  R_SetupAliasFrame(currententity, currententity.frame, extradataForLerp, noLerpModel, aliasFrameLerp);
+  R_SetupEntityTransform(currententity, entityTransformLerp);
 
   VectorAdd(currententity.origin, clmodel.mins, aliasMins);
   VectorAdd(currententity.origin, clmodel.maxs, aliasMaxs);
@@ -801,11 +992,9 @@ export function R_DrawAliasModel(e: EntityT): void {
   //
   // locate the proper data
   //
-  // C: Mod_Extradata (currententity->model) -- clmodel is that same pointer,
-  // already narrowed non-null above
-  const extradata = Mod_Extradata(clmodel);
-  if (!(extradata instanceof AliashdrT)) Sys_Error("R_DrawAliasModel: not an alias model");
-  const paliashdr = extradata;
+  // C: Mod_Extradata (currententity->model) -- already fetched above, before
+  // culling, as `extradataForLerp`.
+  const paliashdr = extradataForLerp;
 
   glState.c_alias_polys += paliashdr.numtris;
 
@@ -816,7 +1005,10 @@ export function R_DrawAliasModel(e: EntityT): void {
   GL_DisableMultitexture();
 
   qgl().qglPushMatrix();
-  R_RotateForEntity(e);
+  // U16: the lerped transform (raw origin/angles for everything but a
+  // MOVETYPE_STEP entity under r_lerpmove -- see R_SetupEntityTransform's
+  // header), with the entity's own ENTSCALE_DECODE scale applied on top.
+  R_RotateForEntity(entityTransformLerp.origin, entityTransformLerp.angles, currententity.scale);
 
   // QW/client/gl_rmain.c drops the gl_doubleeyes guard entirely (see file
   // header) -- the eyes.mdl special case always applies when qw.active.
@@ -867,7 +1059,7 @@ export function R_DrawAliasModel(e: EntityT): void {
   }
   rmainState.alpha = entAlpha;
 
-  R_SetupAliasFrame(currententity.frame, paliashdr);
+  GL_DrawAliasFrame(paliashdr, aliasFrameLerp.pose1, aliasFrameLerp.pose2, aliasFrameLerp.blend);
 
   rmainState.alpha = 1;
   if (entAlpha < 1) {
@@ -884,11 +1076,11 @@ export function R_DrawAliasModel(e: EntityT): void {
 
   if (r_shadows.value) {
     qgl().qglPushMatrix();
-    R_RotateForEntity(e);
+    R_RotateForEntity(entityTransformLerp.origin, entityTransformLerp.angles, currententity.scale);
     qgl().qglDisable(GL_TEXTURE_2D);
     qgl().qglEnable(GL_BLEND);
     qgl().qglColor4f(0, 0, 0, 0.5);
-    GL_DrawAliasShadow(paliashdr, rmainState.lastposenum);
+    GL_DrawAliasShadow(paliashdr, rmainState.lastpose1, rmainState.lastpose2, rmainState.lastblend);
     qgl().qglEnable(GL_TEXTURE_2D);
     qgl().qglDisable(GL_BLEND);
     qgl().qglColor4f(1, 1, 1, 1);

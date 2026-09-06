@@ -71,7 +71,7 @@ import { SURF_DRAWTILED, type MleafT, type MnodeT, isMleaf } from "../common/mod
 import { Sys_Error } from "../platform/sys";
 import { MAX_DLIGHTS, cl, cl_dlights, cl_lightstyle, type DlightT } from "../client/client";
 import { r_origin, vpn, vright, vup } from "../client/render";
-import { d_lightstylevalue, gl_coloredlight, glState } from "./glquake";
+import { d_lightstylevalue, gl_coloredlight, glState, r_lerplightstyles } from "./glquake";
 import { GL_BLEND, GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_SMOOTH, GL_SRC_ALPHA, GL_TEXTURE_2D, GL_TRIANGLE_FAN, qgl } from "./qgl";
 import { gl_flashblend, v_blend } from "./gl_rmain";
 
@@ -108,17 +108,34 @@ export function R_AnimateLight(): void {
   //
   // light animations
   // 'm' is normal light, 'a' is no light, 'z' is double bright
-  const i = (cl.time * 10) | 0;
+  //
+  // U16 (Ironwail gl_rlight.c): r_lerplightstyles interpolates between the
+  // current decisecond's value ('k') and the next one ('n') by the
+  // fractional part of cl.time*10 ('f'); r_lerplightstyles 0 forces f to 0,
+  // which reduces this to the classic WinQuake snap-to-current-value read.
+  let f = cl.time * 10.0;
+  const base = Math.floor(f);
+  const i = base;
+  f -= base;
+  if (!r_lerplightstyles.value) f = 0.0;
+
   for (let j = 0; j < MAX_LIGHTSTYLES; j++) {
     const style = cl_lightstyle[j];
     if (!style.length) {
       d_lightstylevalue[j] = 256;
       continue;
     }
-    let k = i % style.length;
-    k = style.map.charCodeAt(k) - "a".charCodeAt(0);
-    k = k * 22;
-    d_lightstylevalue[j] = k;
+    const k0 = i % style.length;
+    let n0 = k0 + 1;
+    if (n0 === style.length) n0 = 0;
+    let k = style.map.charCodeAt(k0) - "a".charCodeAt(0);
+    let n = style.map.charCodeAt(n0) - "a".charCodeAt(0);
+
+    // only interpolate abrupt changes (e.g. flickering light in e1m1) if
+    // r_lerplightstyles >= 2
+    if (r_lerplightstyles.value < 2 && Math.abs(n - k) >= ("m".charCodeAt(0) - "a".charCodeAt(0)) / 2) n = k;
+
+    d_lightstylevalue[j] = (k * 22 + (n - k) * 22 * f) | 0;
   }
 }
 

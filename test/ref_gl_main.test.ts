@@ -24,6 +24,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 import { Cmd_Exists, cmdHost } from "../src/common/cmd";
 import { Cvar_FindVar, Cvar_VariableValue } from "../src/common/cvar";
 import { ModelT, ModtypeT } from "../src/common/model";
+import { ENTSCALE_DEFAULT, ENTSCALE_ENCODE } from "../src/common/protocol";
 import { TrivertxT } from "../src/common/modelgen";
 import { SPR_VP_PARALLEL, SpriteframetypeT } from "../src/common/spritegn";
 import { EntityT, ParticleT, r_origin, r_refdef, vpn, vright, vup } from "../src/client/render";
@@ -123,7 +124,9 @@ const saved = {
   v_blend: [v_blend[0], v_blend[1], v_blend[2], v_blend[3]],
   shadelight: rmainState.shadelight,
   ambientlight: rmainState.ambientlight,
-  lastposenum: rmainState.lastposenum,
+  lastpose1: rmainState.lastpose1,
+  lastpose2: rmainState.lastpose2,
+  lastblend: rmainState.lastblend,
   shadedots: rmainState.shadedots,
   shadelightColor: [rmainState.shadelightColor[0], rmainState.shadelightColor[1], rmainState.shadelightColor[2]],
   gl_cull: gl_cull.value,
@@ -183,7 +186,9 @@ afterAll(() => {
   for (let i = 0; i < 4; i++) v_blend[i] = saved.v_blend[i];
   rmainState.shadelight = saved.shadelight;
   rmainState.ambientlight = saved.ambientlight;
-  rmainState.lastposenum = saved.lastposenum;
+  rmainState.lastpose1 = saved.lastpose1;
+  rmainState.lastpose2 = saved.lastpose2;
+  rmainState.lastblend = saved.lastblend;
   rmainState.shadedots = saved.shadedots;
   rmainState.shadelightColor[0] = saved.shadelightColor[0];
   rmainState.shadelightColor[1] = saved.shadelightColor[1];
@@ -331,7 +336,11 @@ describe("R_RotateForEntity", () => {
     e.angles[1] = 20;
     e.angles[2] = 30;
 
-    R_RotateForEntity(e);
+    // U16: R_RotateForEntity now takes origin/angles/scale directly
+    // (johnfitz's own signature change, ported verbatim -- see gl_rmain.ts's
+    // header note). ENTSCALE_DEFAULT decodes to 1.0, so no qglScalef fires,
+    // keeping this test's call sequence unchanged.
+    R_RotateForEntity(e.origin, e.angles, ENTSCALE_DEFAULT);
 
     expect(rec.calls).toEqual([
       { name: "qglTranslatef", args: [1, 2, 3] },
@@ -339,6 +348,16 @@ describe("R_RotateForEntity", () => {
       { name: "qglRotatef", args: [-10, 0, 1, 0] },
       { name: "qglRotatef", args: [30, 1, 0, 0] },
     ]);
+  });
+
+  test("a non-default scale appends a qglScalef after the three rotates", () => {
+    const e = new EntityT();
+    e.origin[0] = e.origin[1] = e.origin[2] = 0;
+    e.angles[0] = e.angles[1] = e.angles[2] = 0;
+
+    R_RotateForEntity(e.origin, e.angles, ENTSCALE_ENCODE(2.0));
+
+    expect(rec.calls[4]).toEqual({ name: "qglScalef", args: [2, 2, 2] });
   });
 });
 
@@ -456,9 +475,13 @@ describe("GL_DrawAliasFrame", () => {
     rmainState.shadelightColor[2] = 1;
     const dots = rmainState.shadedots;
 
-    GL_DrawAliasFrame(paliashdr, 0);
+    // pose1 === pose2 === 0, blend 1: no lerp, single-pose body (U16's
+    // GL_DrawAliasFrame(paliashdr, pose1, pose2, blend) signature).
+    GL_DrawAliasFrame(paliashdr, 0, 0, 1);
 
-    expect(rmainState.lastposenum).toBe(0);
+    expect(rmainState.lastpose1).toBe(0);
+    expect(rmainState.lastpose2).toBe(0);
+    expect(rmainState.lastblend).toBe(1);
     expect(names()).toEqual([
       "qglBegin",
       "qglTexCoord2f",

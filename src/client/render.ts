@@ -194,6 +194,7 @@ import type { MleafT, ModelLoaderHooks, ModelT, MnodeT, TextureT } from "../comm
 import type { QpicT } from "../common/wad";
 import type { PlayerInfoT } from "../qw/client/client";
 import { type Vec3, vec3 } from "../common/mathlib";
+import { ENTALPHA_DEFAULT, ENTSCALE_DEFAULT } from "../common/protocol";
 import { Sys_Error } from "../platform/sys";
 import { VrectT } from "./vid";
 
@@ -208,6 +209,18 @@ export class EfragT {
   entity: EntityT | null = null;
   entnext: EfragT | null = null;
 }
+
+// U16 (QuakeSpasm render.h): entity_t's lerping bitflags. this is a MOVETYPE_STEP
+// entity, enable movement lerp; disable anim lerping until the next anim
+// frame; the same, but for two anim frames (an entity that gets RESETANIM2
+// twice in a row, e.g. a muzzle flash on the same frame the model itself
+// resets); disable movement lerping until the next origin/angles change; use
+// lerpfinish from the server update instead of assuming a 0.1s interval.
+export const LERP_MOVESTEP = 1 << 0;
+export const LERP_RESETANIM = 1 << 1;
+export const LERP_RESETANIM2 = 1 << 2;
+export const LERP_RESETMOVE = 1 << 3;
+export const LERP_FINISH = 1 << 4;
 
 export class EntityT {
   forcelink = false; // model changed
@@ -245,6 +258,26 @@ export class EntityT {
   //  that splits bmodel, or NULL if
   //  not split
 
+  // U16 (Ironwail/QuakeSpasm render.h's entity_t, johnfitz -- alpha/scale/
+  // lerping): U3 landed alpha/scale/lerpfinish beside this class, in
+  // src/client/client.ts's EntityExtT side tables, because this class had no
+  // consumer yet. This unit folds them on directly and removes the side
+  // tables -- see client.ts's own header for the historical note.
+  alpha: number = ENTALPHA_DEFAULT; // johnfitz -- alpha
+  scale: number = ENTSCALE_DEFAULT; // johnfitz -- scale
+
+  lerpflags = 0; // johnfitz -- lerping, see the LERP_* flags above
+  lerpstart = 0; // johnfitz -- animation lerping
+  lerptime = 0; // johnfitz -- animation lerping
+  lerpfinish = 0; // johnfitz -- lerping -- server sent a more accurate interval, use it instead of 0.1
+  previouspose = 0; // johnfitz -- animation lerping
+  currentpose = 0; // johnfitz -- animation lerping
+  movelerpstart = 0; // johnfitz -- transform lerping
+  previousorigin: Vec3 = vec3(); // johnfitz -- transform lerping
+  currentorigin: Vec3 = vec3(); // johnfitz -- transform lerping
+  previousangles: Vec3 = vec3(); // johnfitz -- transform lerping
+  currentangles: Vec3 = vec3(); // johnfitz -- transform lerping
+
   clear(): void {
     this.forcelink = false;
     this.update_type = 0;
@@ -270,6 +303,19 @@ export class EntityT {
     this.dlightbits = 0;
     this.trivial_accept = 0;
     this.topnode = null;
+    this.alpha = ENTALPHA_DEFAULT;
+    this.scale = ENTSCALE_DEFAULT;
+    this.lerpflags = 0;
+    this.lerpstart = 0;
+    this.lerptime = 0;
+    this.lerpfinish = 0;
+    this.previouspose = 0;
+    this.currentpose = 0;
+    this.movelerpstart = 0;
+    this.previousorigin[0] = this.previousorigin[1] = this.previousorigin[2] = 0;
+    this.currentorigin[0] = this.currentorigin[1] = this.currentorigin[2] = 0;
+    this.previousangles[0] = this.previousangles[1] = this.previousangles[2] = 0;
+    this.currentangles[0] = this.currentangles[1] = this.currentangles[2] = 0;
   }
 
   // QW/client/client.h:367 declares `entity_t cl_visedicts_list[2][MAX_VISEDICTS]`
@@ -303,6 +349,21 @@ export class EntityT {
     this.dlightbits = src.dlightbits;
     this.trivial_accept = src.trivial_accept;
     this.topnode = src.topnode;
+    this.alpha = src.alpha;
+    this.scale = src.scale;
+    this.lerpflags = src.lerpflags;
+    this.lerpstart = src.lerpstart;
+    this.lerptime = src.lerptime;
+    this.lerpfinish = src.lerpfinish;
+    this.previouspose = src.previouspose;
+    this.currentpose = src.currentpose;
+    this.movelerpstart = src.movelerpstart;
+    for (let i = 0; i < 3; i++) {
+      this.previousorigin[i] = src.previousorigin[i];
+      this.currentorigin[i] = src.currentorigin[i];
+      this.previousangles[i] = src.previousangles[i];
+      this.currentangles[i] = src.currentangles[i];
+    }
   }
 }
 
@@ -370,6 +431,26 @@ export const r_speeds = new CvarT("r_speeds", "0");
 // at gl_screen.c:1145's call site and no client module may import a
 // renderer.
 export const r_netgraph = new CvarT("r_netgraph", "0");
+
+// U16 addition, no WinQuake counterpart: QuakeSpasm/Ironwail's r_lerpmove
+// (gl_rmain.c's `cvar_t r_lerpmove = {"r_lerpmove", "1", CVAR_NONE};`),
+// gating CL_RelinkEntities's (src/client/cl_main.ts) MOVETYPE_STEP
+// step-smoothing versus WinQuake's classic per-frame lerp. It lives here
+// rather than in a renderer module because cl_main.ts is a client file and
+// PORTING.md's renderer-seam rule forbids a client module importing either
+// renderer -- the same reason r_netgraph above is declared here instead of
+// in gl_rmain.ts. Registered by gl_rmisc.ts's R_Init, mirroring r_netgraph.
+export const r_lerpmove = new CvarT("r_lerpmove", "1");
+
+// U16 addition, no WinQuake counterpart: QuakeSpasm/Ironwail's r_lerpmodels
+// (gl_rmain.c's `cvar_t r_lerpmodels = {"r_lerpmodels", "1", CVAR_NONE};`).
+// The GL renderer's alias-frame pose blend (gl_rmain.ts's R_SetupAliasFrame/
+// GL_DrawAliasFrame) is the main reader, but CL_RelinkEntities's
+// EF_MUZZLEFLASH handling also tests it directly (`r_lerpmodels.value != 2`
+// skips the reset-anim-for-two-frames hack when a shader-side lerp would
+// otherwise smear the flash across the model-swap), so this needs the same
+// client-readable-without-a-renderer-import home as r_lerpmove above.
+export const r_lerpmodels = new CvarT("r_lerpmodels", "1");
 
 //=============================================================================
 // d_iface.h / glquake.h

@@ -7,15 +7,17 @@ Bun.env.SDL_AUDIODRIVER = "dummy";
 /*
 Tests for U21's translucency additions: gl_rmain.ts's R_WaterAlphaForTextureName
 (the lava/slime/tele-by-texture-name override of r_wateralpha),
-R_EntityAlpha (the cl_entity_ext/cl_static_entity_ext ENTALPHA lookup),
-R_DrawEntitiesOnList's alphapass (translucent entities drawn last, sorted
-back-to-front), R_DrawBrushModel's entity-alpha GL_BLEND bracket, and
-gl_rsurf.ts's R_DrawWaterSurfaces per-surface alpha bracket.
+R_EntityAlpha (U16: a plain ENTALPHA_DECODE(e.alpha) read off EntityT itself
+-- see gl_rmain.ts's header note on why U3's cl_entity_ext/cl_static_entity_ext
+side tables are gone), R_DrawEntitiesOnList's alphapass (translucent
+entities drawn last, sorted back-to-front), R_DrawBrushModel's entity-alpha
+GL_BLEND bracket, and gl_rsurf.ts's R_DrawWaterSurfaces per-surface alpha
+bracket.
 
 Every case drives a QGLRecording installed as qglHolder.current. Every
 shared singleton this file writes (qglHolder, r_wateralpha/r_lavaalpha/
-r_slimealpha/r_telealpha, cl_entities/cl_entity_ext slots this file uses,
-cl_visedicts/clState.cl_numvisedicts, r_refdef.vieworg, glRsurfState.waterchain,
+r_slimealpha/r_telealpha, cl_entities' alpha fields, cl_visedicts/
+clState.cl_numvisedicts, r_refdef.vieworg, glRsurfState.waterchain,
 r_drawentities) is saved in beforeAll and restored in afterAll, per standing
 orders 13 and 15.
 */
@@ -24,7 +26,7 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 
 import { MsurfaceT, MtexinfoT, TextureT, SURF_DRAWTURB } from "../src/common/model";
 import { ENTALPHA_DECODE, ENTALPHA_DEFAULT, ENTALPHA_ENCODE } from "../src/common/protocol";
-import { cl, cl_entities, cl_entity_ext, cl_static_entities, cl_static_entity_ext, cl_visedicts, clState } from "../src/client/client";
+import { cl, cl_entities, cl_static_entities, cl_visedicts, clState } from "../src/client/client";
 import { EntityT, r_refdef, r_drawentities } from "../src/client/render";
 import { glState, GlpolyT, setSurfPolys } from "../src/ref_gl/glquake";
 import { GL_BLEND, QGLRecording, qglHolder } from "../src/ref_gl/qgl";
@@ -51,13 +53,13 @@ const saved = {
   waterchain: glRsurfState.waterchain,
   vup: [vup[0], vup[1], vup[2]],
   vright: [vright[0], vright[1], vright[2]],
-  ent1: { model: cl_entities[1].model, origin: [...cl_entities[1].origin], frame: cl_entities[1].frame, alpha: cl_entity_ext[1].alpha },
-  ent2: { model: cl_entities[2].model, origin: [...cl_entities[2].origin], frame: cl_entities[2].frame, alpha: cl_entity_ext[2].alpha },
-  ent3: { model: cl_entities[3].model, origin: [...cl_entities[3].origin], frame: cl_entities[3].frame, alpha: cl_entity_ext[3].alpha },
+  ent1: { model: cl_entities[1].model, origin: [...cl_entities[1].origin], frame: cl_entities[1].frame, alpha: cl_entities[1].alpha },
+  ent2: { model: cl_entities[2].model, origin: [...cl_entities[2].origin], frame: cl_entities[2].frame, alpha: cl_entities[2].alpha },
+  ent3: { model: cl_entities[3].model, origin: [...cl_entities[3].origin], frame: cl_entities[3].frame, alpha: cl_entities[3].alpha },
 };
 
 function setAlpha(index: number, value: 0 | number): void {
-  cl_entity_ext[index].alpha = value === 0 ? ENTALPHA_DEFAULT : ENTALPHA_ENCODE(value);
+  cl_entities[index].alpha = value === 0 ? ENTALPHA_DEFAULT : ENTALPHA_ENCODE(value);
 }
 
 beforeEach(() => {
@@ -80,7 +82,7 @@ beforeEach(() => {
     cl_entities[i].model = null;
     cl_entities[i].origin[0] = cl_entities[i].origin[1] = cl_entities[i].origin[2] = 0;
     cl_entities[i].frame = 0;
-    cl_entity_ext[i].alpha = ENTALPHA_DEFAULT;
+    cl_entities[i].alpha = ENTALPHA_DEFAULT;
   }
 });
 
@@ -110,15 +112,15 @@ afterAll(() => {
   cl_entities[1].model = saved.ent1.model;
   cl_entities[1].origin.set(saved.ent1.origin);
   cl_entities[1].frame = saved.ent1.frame;
-  cl_entity_ext[1].alpha = saved.ent1.alpha;
+  cl_entities[1].alpha = saved.ent1.alpha;
   cl_entities[2].model = saved.ent2.model;
   cl_entities[2].origin.set(saved.ent2.origin);
   cl_entities[2].frame = saved.ent2.frame;
-  cl_entity_ext[2].alpha = saved.ent2.alpha;
+  cl_entities[2].alpha = saved.ent2.alpha;
   cl_entities[3].model = saved.ent3.model;
   cl_entities[3].origin.set(saved.ent3.origin);
   cl_entities[3].frame = saved.ent3.frame;
-  cl_entity_ext[3].alpha = saved.ent3.alpha;
+  cl_entities[3].alpha = saved.ent3.alpha;
 });
 
 //============================================================================
@@ -167,22 +169,22 @@ describe("R_WaterAlphaForTextureName", () => {
 //============================================================================
 
 describe("R_EntityAlpha", () => {
-  test("an entity not found in cl_entities or cl_static_entities decodes ENTALPHA_DEFAULT (opaque)", () => {
+  test("a fresh entity decodes ENTALPHA_DEFAULT (opaque)", () => {
     const e = new EntityT();
     expect(R_EntityAlpha(e)).toBe(ENTALPHA_DECODE(ENTALPHA_DEFAULT));
     expect(R_EntityAlpha(e)).toBe(1);
   });
 
-  test("reads the decoded alpha out of cl_entity_ext by index", () => {
+  test("reads the decoded alpha out of the entity's own `alpha` field", () => {
     setAlpha(2, 0.5);
     expect(R_EntityAlpha(cl_entities[2])).toBeCloseTo(0.5, 2);
   });
 
-  test("reads cl_static_entity_ext for a static entity", () => {
-    const saved = cl_static_entity_ext[0].alpha;
-    cl_static_entity_ext[0].alpha = ENTALPHA_ENCODE(0.25);
+  test("works the same for a static entity (same EntityT class)", () => {
+    const saved = cl_static_entities[0].alpha;
+    cl_static_entities[0].alpha = ENTALPHA_ENCODE(0.25);
     expect(R_EntityAlpha(cl_static_entities[0])).toBeCloseTo(0.25, 2);
-    cl_static_entity_ext[0].alpha = saved;
+    cl_static_entities[0].alpha = saved;
   });
 });
 

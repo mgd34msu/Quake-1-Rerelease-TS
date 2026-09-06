@@ -99,7 +99,7 @@ import { R_InitBubble } from "./gl_rlight";
 import { ngraphState } from "./gl_ngraph";
 import { R_ClearParticles, R_InitParticles, R_ReadPointFile_f } from "../client/r_part";
 import type * as QwRPartModule from "../qw/client/r_part";
-import { d_lightstylevalue, gl_coloredlight, glState, r_worldentity } from "./glquake";
+import { d_lightstylevalue, gl_coloredlight, glState, r_lerplightstyles, r_nolerp_list, r_worldentity } from "./glquake";
 import { AliashdrT } from "./gl_model_types";
 import {
   GL_BACK,
@@ -173,6 +173,8 @@ import {
   r_dynamic,
   r_fullbright,
   r_lavaalpha,
+  r_lerpmodels,
+  r_lerpmove,
   r_lightmap,
   r_mirroralpha,
   r_netgraph,
@@ -329,6 +331,13 @@ export function R_Init(): void {
   Cvar_RegisterVariable(r_dynamic);
   Cvar_RegisterVariable(r_novis);
   Cvar_RegisterVariable(r_speeds);
+  // U16 additions: no WinQuake counterparts (see render.ts's and glquake.ts's
+  // header notes on why r_lerpmove/r_lerpmodels live in render.ts while
+  // r_nolerp_list/r_lerplightstyles live in glquake.ts).
+  Cvar_RegisterVariable(r_lerpmove);
+  Cvar_RegisterVariable(r_lerpmodels);
+  Cvar_RegisterVariable(r_nolerp_list);
+  Cvar_RegisterVariable(r_lerplightstyles);
   // QW/client/gl_rmisc.c / r_misc.c: r_netgraph (see gl_rmain.ts's header).
   if (qw.active) Cvar_RegisterVariable(r_netgraph);
 

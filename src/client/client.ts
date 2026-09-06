@@ -64,7 +64,7 @@ import type { FileHandle } from "../common/common";
 import type { ModelT } from "../common/model";
 import type { QsocketT } from "../common/net";
 import { MAX_CL_STATS, MAX_EDICTS, MAX_LIGHTSTYLES, MAX_MODELS, MAX_SOUNDS } from "../common/quakedef";
-import { ENTALPHA_DEFAULT, ENTSCALE_DEFAULT, PROTOCOL_NETQUAKE } from "../common/protocol";
+import { PROTOCOL_NETQUAKE } from "../common/protocol";
 import { type Vec3, vec3 } from "../common/mathlib";
 import { SizeBuf } from "../common/sizebuf";
 import { UsercmdT } from "../server/server";
@@ -436,46 +436,22 @@ export const cl_efrags: EfragT[] = makeArray(MAX_EFRAGS, () => new EfragT());
 export const cl_entities: EntityT[] = makeArray(CL_ENTITIES_INITIAL, () => new EntityT());
 export const cl_static_entities: EntityT[] = makeArray(CL_STATIC_ENTITIES_INITIAL, () => new EntityT());
 
-// U3: FitzQuake 666 / RMQ 999 give entity_t an `alpha`, a `scale` and a
-// `lerpfinish` (Ironwail render.h's entity_t). `EntityT` lives in
-// src/client/render.ts, outside this unit's SCOPE, so the three decoded values
-// are parked in a table indexed exactly like cl_entities / cl_static_entities,
-// which this module already owns and hands to every consumer. The unit that
-// lands client-side lerp consumption is the one that folds them onto EntityT.
-export class EntityExtT {
-  alpha: number = ENTALPHA_DEFAULT;
-  scale: number = ENTSCALE_DEFAULT;
-  lerpfinish = 0; // absolute client time the current frame finishes lerping at
-  hasLerpfinish = false;
-
-  clear(): void {
-    this.alpha = ENTALPHA_DEFAULT;
-    this.scale = ENTSCALE_DEFAULT;
-    this.lerpfinish = 0;
-    this.hasLerpfinish = false;
-  }
-}
-
-export const cl_entity_ext: EntityExtT[] = makeArray(CL_ENTITIES_INITIAL, () => new EntityExtT());
-export const cl_static_entity_ext: EntityExtT[] = makeArray(CL_STATIC_ENTITIES_INITIAL, () => new EntityExtT());
-
-// Grows cl_entities/cl_entity_ext so index `num` exists. Returns false when
-// `num` is past MAX_EDICTS, which is CL_EntityNum's Host_Error case.
+// U16: U3's `cl_entity_ext`/`cl_static_entity_ext` side tables (alpha, scale,
+// lerpfinish, indexed alongside cl_entities/cl_static_entities because
+// EntityT lived in src/client/render.ts, outside U3's SCOPE) are gone -- this
+// unit folded every one of those fields, plus the rest of QuakeSpasm's
+// lerping fields, directly onto EntityT. Every reader now reads
+// cl_entities[i].alpha / .scale / .lerpfinish / .lerpflags etc. Growing the
+// entity arrays is therefore just growing one array again.
 export function growEntities(num: number): boolean {
   if (num >= MAX_EDICTS) return false;
-  while (cl_entities.length <= num) {
-    cl_entities.push(new EntityT());
-    cl_entity_ext.push(new EntityExtT());
-  }
+  while (cl_entities.length <= num) cl_entities.push(new EntityT());
   return true;
 }
 
 export function growStaticEntities(num: number): boolean {
   if (num >= MAX_STATIC_ENTITIES) return false;
-  while (cl_static_entities.length <= num) {
-    cl_static_entities.push(new EntityT());
-    cl_static_entity_ext.push(new EntityExtT());
-  }
+  while (cl_static_entities.length <= num) cl_static_entities.push(new EntityT());
   return true;
 }
 export const cl_lightstyle: LightstyleT[] = makeArray(MAX_LIGHTSTYLES, () => new LightstyleT());

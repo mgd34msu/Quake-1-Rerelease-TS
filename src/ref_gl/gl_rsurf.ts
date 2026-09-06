@@ -1213,7 +1213,12 @@ export function R_DrawBrushModel(e: EntityT): void {
 
   gl.qglPushMatrix();
   e.angles[0] = -e.angles[0]; // stupid quake bug
-  R_RotateForEntity(e);
+  // U16: R_RotateForEntity now takes origin/angles/scale directly (johnfitz's
+  // own signature change -- see gl_rmain.ts's header note); brush models are
+  // never move-lerped (QuakeSpasm's own R_DrawBrushModel draws at e->origin/
+  // e->angles unchanged), so this passes the entity's raw fields, plus its
+  // ENTSCALE_DECODE scale.
+  R_RotateForEntity(e.origin, e.angles, e.scale);
   e.angles[0] = -e.angles[0]; // stupid quake bug
 
   //
