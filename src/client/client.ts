@@ -92,6 +92,42 @@ export class ScoreboardT {
   translations: Uint8Array = new Uint8Array(VID_GRADES * 256);
 }
 
+// F9: no C original -- quakec_ctf/status.qc's SendCTFScoresUpdate stuffcmds
+// "ctfscores <red> <blue> <flagstatus>" at every status update (MOTD,
+// MOTD_ChooseTeam, and every subsequent score/flag change); it is this
+// port's only channel for the CTF team scores and flag state, since the mod
+// draws no HUD of its own through QuakeC print/centerprint builtins.
+// src/client/ctf_hud.ts's CTF_ParseScores_f decodes the stuffed command onto
+// a `ClientStateT`'s own `ctf` field below, and its CTF_Draw reads it back
+// through src/client/sbar.ts's one draw hook. `unknown` for a flag means no
+// ctfscores update has named that flag yet: the QuakeC's flagstatus bit for
+// a team's flag is an if/else-if over FLAG_AT_BASE(0)/FLAG_CARRIED(1)/
+// FLAG_DROPPED(2), so exactly one of its three bits is set once a real
+// SendCTFScoresUpdate has run; the only way this side ever sees all three
+// clear is "no update yet".
+export enum CtfFlagStateT {
+  unknown = 0,
+  atBase = 1,
+  carried = 2,
+  dropped = 3,
+}
+
+export class CtfScoresT {
+  active = false; // set true by this connection's first "ctfscores" stuffcmd
+  redScore = 0;
+  blueScore = 0;
+  redFlag: CtfFlagStateT = CtfFlagStateT.unknown;
+  blueFlag: CtfFlagStateT = CtfFlagStateT.unknown;
+
+  clear(): void {
+    this.active = false;
+    this.redScore = 0;
+    this.blueScore = 0;
+    this.redFlag = CtfFlagStateT.unknown;
+    this.blueFlag = CtfFlagStateT.unknown;
+  }
+}
+
 export class CshiftT {
   destcolor: Int32Array = new Int32Array(3);
   percent = 0; // 0-256
@@ -346,6 +382,13 @@ export class ClientStateT {
   seq = 0; // svc_seq
   servervars = ""; // svc_servervars
 
+  // F9: see this file's own CtfScoresT doc comment above. Per-seat like every
+  // other member of this class -- src/client/splitscreen.ts rebinds the
+  // whole `cl` object per seat (this file's own SeatBindingT comment), so a
+  // splitscreen seat that never receives its own "ctfscores" stuffcmd (not
+  // yet in a CTF game) simply never sets `active`.
+  ctf: CtfScoresT = new CtfScoresT();
+
   clear(): void {
     this.movemessages = 0;
     this.cmd.viewangles[0] = this.cmd.viewangles[1] = this.cmd.viewangles[2] = 0;
@@ -406,6 +449,7 @@ export class ClientStateT {
     this.backtolobby = false;
     this.seq = 0;
     this.servervars = "";
+    this.ctf.clear();
   }
 }
 

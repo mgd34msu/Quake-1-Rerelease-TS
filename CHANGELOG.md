@@ -132,6 +132,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- The `ctfscores` client command the re-release CTF progs stuff at every
+  client is implemented: team scores and each flag's state (at base,
+  carried, dropped) are kept per connection and drawn under the status bar
+  and on the scoreboard, cleared on level change and disconnect.
 - Menus draw their labels through the localization table (`$m_*` keys with
   the English literal as fallback), so `language` changes the menus; the
   Options, difficulty, level-select, bots, setup, key-bind, quit and

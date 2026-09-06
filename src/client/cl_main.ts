@@ -155,6 +155,11 @@ import { S_StopAllSounds } from "./snd_dma";
 // the single Cmd_AddCommand registration below, next to the other client
 // commands CL_Init already registers).
 import { Haptics_Vibrate_f } from "../platform/haptics";
+// F9: the `ctfscores` client command handler itself lives in
+// src/client/ctf_hud.ts (this unit's SCOPE keeps this file's own edit to the
+// single Cmd_AddCommand registration below, next to the other client
+// commands CL_Init already registers).
+import { CTF_ParseScores_f } from "./ctf_hud";
 import {
   SS_ActiveSeat,
   SS_Init,
@@ -1089,6 +1094,7 @@ export function CL_Init(): void {
   Cmd_AddCommand("playdemo", CL_PlayDemo_f, "nq");
   Cmd_AddCommand("timedemo", CL_TimeDemo_f, "nq");
   Cmd_AddCommand("vibrate", Haptics_Vibrate_f);
+  Cmd_AddCommand("ctfscores", CTF_ParseScores_f);
 
   // Unified client: `connect` under the NetQuake profile is the rule's
   // dispatcher (src/common/host_cmd.ts's Host_Connect_f stays registered

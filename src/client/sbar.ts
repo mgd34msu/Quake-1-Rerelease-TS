@@ -186,6 +186,13 @@ Ironwail's own `GL_SetCanvas(CANVAS_SBAR)` (`Draw_Transform` with
   `drawScaledPic` below therefore KEEPS its lazy-require fallback rather than
   dropping it, for the same reason. See render.ts's own comment on these two
   members for the full account and the deviation from F2's proposed follow-up.
+
+F9 (the ctfscores CTF HUD): one line added at the very end of Sbar_Draw,
+`CTF_Draw()` (src/client/ctf_hud.ts) -- see that file's own header for the
+quakec_ctf/status.qc protocol it decodes, why it draws through
+Sbar_DrawString rather than the retail redf/bluef pics, and why importing it
+back here is a safe two-way cycle with that file (which imports
+Sbar_DrawString from here).
 */
 
 import { Cvar_FindVar } from "../common/cvar";
@@ -247,6 +254,10 @@ import type { QpicT } from "../common/wad";
 // through a lazy require() there; see that file's header).
 import { CL_LocalizeKey, SbarScale, Text_Draw, Text_Width } from "./kfont_text";
 import { SS_Canvas } from "./splitscreen";
+// F9: see src/client/ctf_hud.ts's own header's "TWO-WAY IMPORT WITH sbar.ts"
+// paragraph for why this is a safe cycle (ctf_hud.ts imports
+// Sbar_DrawString back from this file).
+import { CTF_Draw } from "./ctf_hud";
 // F2: see this file's header's "F2 (scr_sbarscale for the PIC-based
 // elements)" paragraph -- type-only, erased at compile time (same reasoning
 // as kfont_text.ts's own identical type-only renderer imports); the runtime
@@ -1221,6 +1232,13 @@ export function Sbar_Draw(): void {
   if (sbarCanvasWidth() > 320) {
     if (cl.gametype === GAME_DEATHMATCH) Sbar_MiniDeathmatchOverlay();
   }
+
+  // F9: quakec_ctf's ctfscores HUD -- see src/client/ctf_hud.ts's own
+  // header. Draws through Sbar_DrawString, so it scales and centres with
+  // scr_sbarscale exactly like every other status-bar element in this file
+  // (F2/F2b, this file's own header); a no-op until this connection's first
+  // "ctfscores" stuffcmd arrives.
+  CTF_Draw();
 }
 
 //=============================================================================
