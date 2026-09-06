@@ -1,0 +1,40 @@
+{
+  "family": "w",
+  "drivers": [
+    {
+      "name": "w_newgame",
+      "cmd": ["bun", "test/e2e/w_newgame.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "w_multiplayer",
+      "cmd": ["bun", "test/e2e/w_multiplayer.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "w_options",
+      "cmd": ["bun", "test/e2e/w_options.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "w_controller",
+      "cmd": ["bun", "test/e2e/w_controller.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease"]
+    },
+    {
+      "name": "w_loc",
+      "cmd": ["bun", "test/e2e/w_loc.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease"]
+    }
+  ]
+}
