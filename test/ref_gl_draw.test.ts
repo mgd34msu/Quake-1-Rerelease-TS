@@ -103,7 +103,7 @@ import {
   Draw_TileClear,
   Draw_TransPicTranslate,
   Draw_FadeScreen,
-  glDrawState,
+  GL_LIGHTMAP_FORMAT_DEFAULT, glDrawState,
   GL_Bind,
   GL_LoadTexture,
   GL_MipMap,
@@ -621,10 +621,13 @@ describe("gl_draw.ts (WinQuake gl_draw.c)", () => {
   });
 
   test("glDrawState.gl_lightmap_format defaults to 4 (GL_ALPHA) and is a mutable holder gl_rsurf.ts can write through", () => {
-    expect(glDrawState.gl_lightmap_format).toBe(4);
+    // The live holder is rewritten by GL_BuildLightmaps in any suite that
+    // boots the GL renderer, so the initialiser is asserted by its constant.
+    expect(GL_LIGHTMAP_FORMAT_DEFAULT).toBe(4);
+    const saved = glDrawState.gl_lightmap_format;
     glDrawState.gl_lightmap_format = 999;
     expect(glDrawState.gl_lightmap_format).toBe(999);
-    glDrawState.gl_lightmap_format = 4;
+    glDrawState.gl_lightmap_format = saved;
   });
 });
 

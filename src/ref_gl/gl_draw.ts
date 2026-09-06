@@ -257,7 +257,8 @@ const conback = new QpicT();
 // GL_BuildLightmaps, so it is a holder field (glDrawState.gl_lightmap_format),
 // not a plain let; see file header, updated to match gl_rsurf.ts's landed
 // contract.
-export const glDrawState: { gl_lightmap_format: number } = { gl_lightmap_format: 4 };
+export const GL_LIGHTMAP_FORMAT_DEFAULT = 4; // GL_ALPHA, gl_draw.c's initialiser
+export const glDrawState: { gl_lightmap_format: number } = { gl_lightmap_format: GL_LIGHTMAP_FORMAT_DEFAULT };
 export const gl_solid_format = 3;
 export const gl_alpha_format = 4;
 

@@ -53,7 +53,7 @@ import {
   type Renderer,
 } from "../src/client/render";
 import { VID_CBITS, VID_GRADES, ViddefT, VrectT, d_8to16table, d_8to24table, vid, vidBackend, vidMenuHooks } from "../src/client/vid";
-import { scrState, scr_vrect } from "../src/client/screen_types";
+import { scrState, scrStateInitial, scr_vrect } from "../src/client/screen_types";
 import { inputBackend } from "../src/client/input";
 import { cdAudio } from "../src/client/cdaudio";
 
@@ -478,16 +478,20 @@ describe("vid.h", () => {
 describe("screen.h data, input.h and cdaudio.h holders", () => {
   test("scrState and scr_vrect start zeroed", () => {
     expect(scr_vrect).toBeInstanceOf(VrectT);
-    expect(scrState.scr_con_current).toBe(0);
-    expect(scrState.scr_conlines).toBe(0);
-    expect(scrState.scr_fullupdate).toBe(0);
-    expect(scrState.sb_lines).toBe(0);
-    expect(scrState.clearnotify).toBe(0);
-    expect(scrState.scr_disabled_for_loading).toBe(false);
-    expect(scrState.scr_skipupdate).toBe(false);
-    expect(scrState.scr_copytop).toBe(0);
-    expect(scrState.scr_copyeverything).toBe(0);
-    expect(scrState.block_drawing).toBe(false);
+    // Construction defaults from the factory; the live `scrState` is mutated
+    // by every screen suite, so it cannot be asserted here.
+    const fresh = scrStateInitial();
+    expect(Object.keys(fresh)).toEqual(Object.keys(scrState));
+    expect(fresh.scr_con_current).toBe(0);
+    expect(fresh.scr_conlines).toBe(0);
+    expect(fresh.scr_fullupdate).toBe(0);
+    expect(fresh.sb_lines).toBe(0);
+    expect(fresh.clearnotify).toBe(0);
+    expect(fresh.scr_disabled_for_loading).toBe(false);
+    expect(fresh.scr_skipupdate).toBe(false);
+    expect(fresh.scr_copytop).toBe(0);
+    expect(fresh.scr_copyeverything).toBe(0);
+    expect(fresh.block_drawing).toBe(false);
   });
 
   test("the input and cd audio backends are either uninstalled or a real platform implementation", () => {

@@ -46,20 +46,26 @@ import { VrectT } from "./vid";
 
 export const scr_vrect = new VrectT();
 
-export const scrState = {
-  scr_con_current: 0,
-  scr_conlines: 0, // lines of console to display
+// Construction defaults as a factory, so a suite can compare against a fresh
+// copy instead of the live singleton (which every screen test mutates).
+export function scrStateInitial() {
+  return {
+    scr_con_current: 0,
+    scr_conlines: 0, // lines of console to display
+  
+    scr_fullupdate: 0, // set to 0 to force full redraw
+    sb_lines: 0,
+  
+    clearnotify: 0, // set to 0 whenever notify text is drawn
+    scr_disabled_for_loading: false,
+    scr_skipupdate: false,
+  
+    // only the refresh window will be updated unless these variables are flagged
+    scr_copytop: 0,
+    scr_copyeverything: 0,
+  
+    block_drawing: false,
+  };
+}
 
-  scr_fullupdate: 0, // set to 0 to force full redraw
-  sb_lines: 0,
-
-  clearnotify: 0, // set to 0 whenever notify text is drawn
-  scr_disabled_for_loading: false,
-  scr_skipupdate: false,
-
-  // only the refresh window will be updated unless these variables are flagged
-  scr_copytop: 0,
-  scr_copyeverything: 0,
-
-  block_drawing: false,
-};
+export const scrState: ReturnType<typeof scrStateInitial> = scrStateInitial();
