@@ -342,6 +342,25 @@ re-release saves are read (Ironwail `SAVEGAME_VERSION_KEX`,
 active, so saves round-trip with the retail game. Autosave slots
 (Ironwail `autosave/`) as an addition.
 
+## Source layout
+
+- `src/lib/` — game-agnostic modules: decoders (zip, PNG, JPG, TGA), the
+  TTF rasterizer and kfont atlas reader, the localization parser, the BSPX
+  lump-directory walker, the NAV file reader, the bot brain. Rule: a file
+  under `src/lib` imports nothing from `src/` outside `src/lib` (Node/Bun
+  built-ins are fine). Lifted files keep quake-2-re-ts's structure and name
+  their source path and commit in the header.
+- `src/common/` — engine common (filesystem, cvars, commands, model
+  loader, mathlib). `src/common/protocol/` holds the codec seam and one
+  file per codec (`nq15.ts`, `fitz666.ts`, `rmq999.ts`, `qw28.ts`, `qex.ts`).
+- `src/progs/` — the one QuakeC VM. `src/progs/profiles/` holds the
+  NetQuake and QuakeWorld host profiles (builtin tables, progdefs layouts,
+  known CRCs, extension registry). `src/qw/server/pr_*.ts` become thin
+  bindings of the unified VM to the QW profile.
+- `src/server/`, `src/client/`, `src/ref_soft/`, `src/ref_gl/`,
+  `src/platform/`, `src/qw/` — as in the seed, transformed in place.
+- `src/bots/` — the Quake 1 binding of the bot brain plus nav integration.
+
 ## Porting standards (inherited, still binding)
 
 Strict TypeScript, zero `any`, no casts but `as const`. One `.ts` per
