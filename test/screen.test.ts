@@ -59,6 +59,24 @@ const { conState } = consoleMod;
 // captured before any beforeEach/test runs, restored in this file's afterAll.
 const savedClsState = cls.state;
 
+// U46: resetScreenState()'s own beforeEach baseline (below) force-sets
+// `host.realtime = 0` (and `host.frametime = 0.1`) before every test in this
+// file, and one test ("scr_disabled_for_loading swallows the frame...")
+// pushes `host.realtime` on to 61 mid-test -- but nothing here ever touches
+// `host.oldrealtime`, host.ts's own singleton (host.ts:389-390) that
+// Host_FilterTime advances in lockstep with `host.realtime` on every real
+// frame (host.ts:889-902). A suite upstream of this one that drives real
+// frames (test/main_boot.test.ts) leaves `host.oldrealtime` at that boot's
+// last frame time; this file then zeroes `host.realtime` underneath it
+// without restoring either afterward, so a later suite driving its own real
+// frame (test/sv_tick.test.ts) inherits `host.realtime < host.oldrealtime`
+// and Host_FilterTime's `host.realtime - host.oldrealtime < 1/72` guard
+// swallows its first frame outright. Snapshotted here for the same reason as
+// savedClsState above.
+const savedHostRealtime = host.realtime;
+const savedHostOldrealtime = host.oldrealtime;
+const savedHostFrametime = host.frametime;
+
 // -- spies wrapping the real console/menu/sbar/snd_dma exports (see file
 // header): each replaces only its own function with a name-recording body.
 // These REPLACE real behavior (unlike a call-through spy), so unlike a
@@ -98,6 +116,13 @@ afterAll(() => {
   sStopAllSoundsSpy.mockRestore();
   sClearBufferSpy.mockRestore();
   cls.state = savedClsState;
+  host.realtime = savedHostRealtime;
+  host.oldrealtime = savedHostOldrealtime;
+  host.frametime = savedHostFrametime;
+  // U46 guard: prove the clock singleton actually came back.
+  expect(host.realtime).toBe(savedHostRealtime);
+  expect(host.oldrealtime).toBe(savedHostOldrealtime);
+  expect(host.frametime).toBe(savedHostFrametime);
 });
 
 // the registered-name/default-string pairs, captured as early as this file's

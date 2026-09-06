@@ -53,6 +53,18 @@ const savedLandriverCount = net_landrivers.length;
 // would otherwise see it still true process-wide and take the "signon !=
 // SIGNONS" redraw branch it never used to reach.
 const savedConInitialized = conState.con_initialized;
+// U46: this file's own dedicated boots drive real frames through
+// Host_Frame/Host_FilterTime (host.ts), which advances `host.realtime` and
+// `host.oldrealtime` together (host.ts:889-902) and are never reset by
+// Host_Init on a later boot (they model actual wall-clock time, which a real
+// process only ever has one of). Left unrestored, a later suite that also
+// drives real frames (test/sv_tick.test.ts) inherits a nonzero
+// `host.oldrealtime` with no matching `host.realtime`, and Host_FilterTime's
+// `host.realtime - host.oldrealtime < 1/72` guard silently swallows its very
+// first frame -- see this unit's own report for the reproducer.
+const savedHostRealtime = host.realtime;
+const savedHostOldrealtime = host.oldrealtime;
+const savedHostFrametime = host.frametime;
 
 const builtFixtures: DedicatedFixture[] = [];
 
@@ -77,6 +89,14 @@ afterAll(() => {
   svState.sv_player = null;
   sv.clear();
   conState.con_initialized = savedConInitialized;
+  host.realtime = savedHostRealtime;
+  host.oldrealtime = savedHostOldrealtime;
+  host.frametime = savedHostFrametime;
+  // U46 guard: prove the clock singleton actually came back, not just that
+  // the assignment lines above ran.
+  expect(host.realtime).toBe(savedHostRealtime);
+  expect(host.oldrealtime).toBe(savedHostOldrealtime);
+  expect(host.frametime).toBe(savedHostFrametime);
   for (const fixture of builtFixtures) destroyDedicatedFixture(fixture);
 });
 

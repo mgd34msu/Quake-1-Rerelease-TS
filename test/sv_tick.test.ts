@@ -54,6 +54,14 @@ const savedConInitialized = conState.con_initialized;
 const savedSvRuleset = sv_ruleset.string;
 const savedSvTickrate = sv_tickrate.string;
 const savedTickAccumulator = host.svTickAccumulator;
+// U46: this file's own dedicated boots (bootDedicated + runFrames) drive real
+// frames through Host_Frame/Host_FilterTime, which advances `host.realtime`
+// and `host.oldrealtime` together (host.ts:889-902) and are never reset by a
+// later Host_Init call. See test/main_boot.test.ts's and test/screen.test.ts's
+// own copies of this comment for the U46 reproducer this restores against.
+const savedHostRealtime = host.realtime;
+const savedHostOldrealtime = host.oldrealtime;
+const savedHostFrametime = host.frametime;
 
 const builtFixtures: DedicatedFixture[] = [];
 
@@ -81,6 +89,13 @@ afterAll(() => {
   sv_tickrate.string = savedSvTickrate;
   sv_tickrate.value = Number(savedSvTickrate);
   host.svTickAccumulator = savedTickAccumulator;
+  host.realtime = savedHostRealtime;
+  host.oldrealtime = savedHostOldrealtime;
+  host.frametime = savedHostFrametime;
+  // U46 guard: prove the clock singleton actually came back.
+  expect(host.realtime).toBe(savedHostRealtime);
+  expect(host.oldrealtime).toBe(savedHostOldrealtime);
+  expect(host.frametime).toBe(savedHostFrametime);
   for (const fixture of builtFixtures) destroyDedicatedFixture(fixture);
 });
 
