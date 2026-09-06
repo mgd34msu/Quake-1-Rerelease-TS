@@ -49,7 +49,7 @@ import {
 } from "../src/common/common";
 import { ModelT, ModtypeT } from "../src/common/model";
 import { MdlT, readMdl, TrivertxT } from "../src/common/modelgen";
-import { EntityT } from "../src/client/render";
+import { EntityT, LERP_MOVESTEP, r_lerpmove } from "../src/client/render";
 import { cl } from "../src/client/client";
 import { vec3 } from "../src/common/mathlib";
 import { frustum, glState } from "../src/ref_gl/glquake";
@@ -211,6 +211,7 @@ const saved = {
   clWorldmodel: cl.worldmodel,
   gl_nocolors: gl_nocolors.value,
   r_shadows: r_shadows.value,
+  r_lerpmove: r_lerpmove.value,
   lightspot: [lightspot[0], lightspot[1], lightspot[2]],
   frustum: frustum.map((p) => ({ normal: [p.normal[0], p.normal[1], p.normal[2]], dist: p.dist, type: p.type, signbits: p.signbits })),
 };
@@ -294,6 +295,7 @@ beforeEach(() => {
   cl.worldmodel = null; // R_LightPoint returns a deterministic 255 with no lightdata
   gl_nocolors.value = 1; // skip the player-colormap GL_Bind branch
   r_shadows.value = 0;
+  r_lerpmove.value = 1;
   r_enhancedmodels.string = "1";
   r_enhancedmodels.value = 1;
   lightspot[0] = 0;
@@ -317,6 +319,7 @@ afterAll(() => {
   cl.worldmodel = saved.clWorldmodel;
   gl_nocolors.value = saved.gl_nocolors;
   r_shadows.value = saved.r_shadows;
+  r_lerpmove.value = saved.r_lerpmove;
   lightspot[0] = saved.lightspot[0];
   lightspot[1] = saved.lightspot[1];
   lightspot[2] = saved.lightspot[2];
@@ -720,6 +723,52 @@ describe("R_DrawAliasModel branches on r_enhancedmodels for an attached MD5 payl
     expect(rec.vertex3fv.length).toBe(3);
     // origin (0,0,0), lightspot (0,0,0) -> lheight = 0, height = -0+1 = 1
     for (const v of rec.vertex3fv) expect(v[2]).toBe(1);
+  });
+
+  test("U50: the MD5 model matrix translates to the move-lerped origin, exactly as the classic path's does", () => {
+    r_enhancedmodels.value = 1;
+    r_lerpmove.value = 1;
+    const e = makeEntity("progs/mixed.mdl", hdr);
+    e.lerpflags = LERP_MOVESTEP;
+    e.origin.set([100, 0, 0]);
+    glState.currententity = e;
+
+    // first draw at cl.time 0 starts the lerp (previousorigin (0,0,0) ->
+    // currentorigin (100,0,0)); the second, half the 0.1s step later, is the
+    // midpoint the mesh must be drawn at.
+    cl.time = 0;
+    R_DrawAliasModel(e);
+    rec.clear();
+
+    cl.time = 0.05;
+    R_DrawAliasModel(e);
+
+    const translates = rec.calls.filter((c) => c.name === "qglTranslatef");
+    expect(translates.length).toBeGreaterThan(0);
+    expect(translates[0].args[0]).toBeCloseTo(50, 5);
+    expect(translates[0].args[1]).toBeCloseTo(0, 5);
+    expect(translates[0].args[2]).toBeCloseTo(0, 5);
+    // R_RotateForEntity is the ONLY translate on the MD5 path -- no
+    // scale_origin decompression pair follows it.
+    expect(translates.length).toBe(1);
+  });
+
+  test("U50: r_lerpmove 0 puts the MD5 mesh at the entity's raw origin", () => {
+    r_enhancedmodels.value = 1;
+    r_lerpmove.value = 0;
+    const e = makeEntity("progs/mixed.mdl", hdr);
+    e.lerpflags = LERP_MOVESTEP;
+    e.origin.set([100, 0, 0]);
+    glState.currententity = e;
+
+    cl.time = 0;
+    R_DrawAliasModel(e);
+    rec.clear();
+    cl.time = 0.05;
+    R_DrawAliasModel(e);
+
+    const translates = rec.calls.filter((c) => c.name === "qglTranslatef");
+    expect(translates[0].args[0]).toBeCloseTo(100, 5);
   });
 
   test("U35: r_shadows 0 draws no MD5 shadow", () => {

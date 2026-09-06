@@ -253,7 +253,13 @@ export function CL_ClearState(): void {
   SZ_Clear(cls.message);
 
   // clear other arrays
-  for (const e of cl_entities) e.clear();
+  for (const e of cl_entities) {
+    e.clear();
+    // clear() zeroes lerpflags; the next level's first sight of this slot
+    // must not lerp in from the cleared origin (cl_parse.c's CL_EntityNum
+    // rule, which only runs for slots above the new num_entities).
+    e.lerpflags |= LERP_RESETMOVE | LERP_RESETANIM;
+  }
 
   if (!primary) return;
 

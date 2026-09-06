@@ -159,7 +159,7 @@ import { CL_GetMessage } from "./cl_demo";
 import { CL_ParseTEnt } from "./cl_tent";
 import { Con_DPrintf, Con_Printf } from "./console";
 import { PromptChoiceT, SIGNONS, ScoreboardT, cl, cl_entities, cl_lightstyle, cl_static_entities, cls, growEntities, growStaticEntities } from "./client";
-import { BOTTOM_RANGE, EntityT, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, TOP_RANGE, getRenderer } from "./render";
+import { BOTTOM_RANGE, EntityT, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, LERP_RESETMOVE, TOP_RANGE, getRenderer } from "./render";
 import { SS_IsPrimary } from "./splitscreen";
 // r_part.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { R_ParseParticleEffect } from "./r_part";
@@ -306,6 +306,9 @@ export function CL_EntityNum(num: number): EntityT {
     if (!growEntities(num)) Host_Error("CL_EntityNum: %i is an invalid number", num);
     while (cl.num_entities <= num) {
       cl_entities[cl.num_entities].colormap = vid.colormap;
+      // johnfitz -- lerping: a slot handed out for the first time has no
+      // previous frame, so neither its animation nor its movement lerps in.
+      cl_entities[cl.num_entities].lerpflags |= LERP_RESETMOVE | LERP_RESETANIM;
       cl.num_entities++;
     }
   }

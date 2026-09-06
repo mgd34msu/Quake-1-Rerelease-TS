@@ -402,6 +402,9 @@ describe("CL_ParseServerMessage: CL_ParseUpdate lerpflags (U16)", () => {
     const savedMtime1 = cl.mtime[1];
 
     const num = 71;
+    // an entity already in play: allocated by an earlier update (a slot
+    // CL_EntityNum hands out for the first time carries LERP_RESETANIM)
+    if (cl.num_entities <= num) cl.num_entities = num + 1;
     cl_entities[num].clear();
     cl_entities[num].msgtime = 0.9;
     cl.mtime[1] = 0.9;

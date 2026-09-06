@@ -124,6 +124,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that never yields a non-finite blend, the GL frame setup resets a stale
   pose index, and the software path culls a model whose transform is not
   finite instead of handing it to the rasterizer.
+- MD5 replacement models move-lerp like `.mdl` models: the software MD5
+  transform takes the same blended origin and angles the alias
+  bounding-box check used (GL already shared one model matrix), and an
+  entity slot handed out for the first time starts its animation and
+  movement lerps at its real origin instead of blending in from the world
+  origin for a frame.
 - The retail sweep's per-map timeout follows its SIGTERM with SIGKILL, so a
   driver spinning inside one frame cannot stall the sweep.
 - A dedicated server no longer prints one "Unknown command" line for every

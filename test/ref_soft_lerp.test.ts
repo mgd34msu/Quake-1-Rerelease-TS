@@ -18,13 +18,14 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { vec3 } from "../src/common/mathlib";
 import { AliasframetypeT, StvertT, TrivertxT, type MdlT } from "../src/common/modelgen";
 import { ModelT } from "../src/common/model";
-import { EntityT, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, r_lerpmodels, r_lerpmove } from "../src/client/render";
+import { EntityT, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, LERP_RESETMOVE, r_lerpmodels, r_lerpmove } from "../src/client/render";
 import { lerpFraction } from "../src/common/lerp_blend";
 import { cl } from "../src/client/client";
 import { AuxvertT, FinalvertT, allocAuxverts, allocFinalverts, modelorg, r_origin, r_refdef, rState, vpn, vright, vup } from "../src/ref_soft/r_local";
 import { AliashdrT, MaliasframedescT } from "../src/ref_soft/model_types";
 import { r_nolerp_list } from "../src/ref_gl/glquake";
-import { R_AliasPreparePoints, R_AliasProjectFinalVert, R_AliasSetUpTransform, R_AliasSetupFrame, R_AliasTransformFinalVert, aliastransform, r_aliasblend, r_apverts1, r_apverts2 } from "../src/ref_soft/r_alias";
+import { R_AliasPreparePoints, R_AliasProjectFinalVert, R_AliasSetUpTransform, R_AliasSetupFrame, R_AliasTransformFinalVert, aliastransform, lerpEntityAngles, lerpEntityOrigin, r_aliasblend, r_apverts1, r_apverts2 } from "../src/ref_soft/r_alias";
+import { R_AliasSetUpTransformMd5 } from "../src/ref_soft/r_md5";
 
 const saved = {
   currententity: rState.currententity,
@@ -502,6 +503,122 @@ describe("R_AliasSetUpTransform -- move lerp", () => {
     cl.time = 0.05;
     R_AliasSetUpTransform(0);
     expect(aliastransform[2][3]).toBeCloseTo(100, 5);
+  });
+});
+
+//============================================================================
+
+// U50: the first-appearance reset the client now raises (CL_ReadFromServer /
+// CL_ClearState in src/client/cl_main.ts), and the MD5 replacement drawing
+// through the same blend the classic .mdl path uses.
+describe("R_AliasSetUpTransform -- U50 first appearance and the MD5 transform", () => {
+  test("LERP_RESETMOVE snaps previousorigin/currentorigin to the real origin, so the first frame is not blended in from the world origin", () => {
+    const ent = setUpView();
+    const pmdl = makeMdl(1, 0);
+    rState.pmdl = pmdl;
+
+    r_lerpmove.value = 1;
+    // what CL_ReadFromServer now sets on a slot CL_EntityNum just handed out
+    ent.lerpflags = LERP_MOVESTEP | LERP_RESETMOVE;
+    ent.origin[0] = 440;
+    ent.origin[1] = 0;
+    ent.origin[2] = 0;
+    ent.angles[1] = 90;
+    modelorg[0] = r_origin[0] - ent.origin[0];
+    modelorg[1] = r_origin[1] - ent.origin[1];
+    modelorg[2] = r_origin[2] - ent.origin[2];
+
+    cl.time = 0;
+    R_AliasSetUpTransform(0);
+
+    expect(ent.previousorigin[0]).toBe(440);
+    expect(ent.currentorigin[0]).toBe(440);
+    expect(ent.previousangles[1]).toBe(90);
+    expect(ent.currentangles[1]).toBe(90);
+    expect(ent.movelerpstart).toBe(0);
+    expect(ent.lerpflags & LERP_RESETMOVE).toBe(0); // consumed
+    expect(lerpEntityOrigin[0]).toBe(440);
+    expect(lerpEntityAngles[1]).toBe(90);
+    expect(aliastransform[2][3]).toBeCloseTo(440, 5); // drawn where it is, not at (0,0,0)
+
+    // the same entity one frame later, still not moving: nothing restarts.
+    cl.time = 0.05;
+    R_AliasSetUpTransform(0);
+    expect(aliastransform[2][3]).toBeCloseTo(440, 5);
+  });
+
+  test("without the reset, a fresh entity's first frame does blend in from the world origin (the behaviour the client-side flag exists to prevent)", () => {
+    const ent = setUpView();
+    const pmdl = makeMdl(1, 0);
+    rState.pmdl = pmdl;
+
+    r_lerpmove.value = 1;
+    ent.lerpflags = LERP_MOVESTEP; // no LERP_RESETMOVE
+    ent.origin[0] = 440;
+    modelorg[0] = r_origin[0] - ent.origin[0];
+    modelorg[1] = r_origin[1] - ent.origin[1];
+    modelorg[2] = r_origin[2] - ent.origin[2];
+
+    cl.time = 0;
+    R_AliasSetUpTransform(0);
+    expect(aliastransform[2][3]).toBeCloseTo(0, 5);
+  });
+
+  test("R_AliasSetUpTransformMd5 builds the identical transform R_AliasSetUpTransform does, mid move-lerp", () => {
+    const ent = setUpView();
+    // scale (1,1,1) / scale_origin (0,0,0): the .mdl byte-decompression
+    // tmatrix collapses to the identity, which is the only difference
+    // between the two functions, so the two matrices must match exactly.
+    const pmdl = makeMdl(1, 0);
+    rState.pmdl = pmdl;
+
+    r_lerpmove.value = 1;
+    ent.lerpflags = LERP_MOVESTEP;
+    ent.origin[0] = 100;
+    ent.angles[1] = 40;
+    modelorg[0] = r_origin[0] - ent.origin[0];
+    modelorg[1] = r_origin[1] - ent.origin[1];
+    modelorg[2] = r_origin[2] - ent.origin[2];
+
+    cl.time = 0;
+    R_AliasSetUpTransform(0); // starts the lerp: previousorigin (0,0,0) -> (100,0,0)
+
+    cl.time = 0.05; // blend 0.5
+    R_AliasSetUpTransform(0);
+    expect(lerpEntityOrigin[0]).toBeCloseTo(50, 5);
+    expect(lerpEntityAngles[1]).toBeCloseTo(20, 5);
+    const classic = aliastransform.map((row) => Array.from(row));
+    expect(classic[2][3]).toBeCloseTo(50, 5);
+
+    R_AliasSetUpTransformMd5(0);
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 4; j++) expect(aliastransform[i][j]).toBeCloseTo(classic[i][j], 5);
+    }
+  });
+
+  test("R_AliasSetUpTransformMd5 applies the trivial_accept screen scaling on the lerped transform, same as the classic path", () => {
+    const ent = setUpView();
+    const pmdl = makeMdl(1, 0);
+    rState.pmdl = pmdl;
+    setUpProjection();
+
+    r_lerpmove.value = 1;
+    ent.lerpflags = LERP_MOVESTEP;
+    ent.origin[0] = 100;
+    modelorg[0] = r_origin[0] - ent.origin[0];
+    modelorg[1] = r_origin[1] - ent.origin[1];
+    modelorg[2] = r_origin[2] - ent.origin[2];
+
+    cl.time = 0;
+    R_AliasSetUpTransform(0);
+    cl.time = 0.05;
+    R_AliasSetUpTransform(3);
+    const classic = aliastransform.map((row) => Array.from(row));
+
+    R_AliasSetUpTransformMd5(3);
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 4; j++) expect(aliastransform[i][j]).toBeCloseTo(classic[i][j], 5);
+    }
   });
 });
 

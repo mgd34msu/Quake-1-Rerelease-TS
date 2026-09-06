@@ -22,7 +22,7 @@
 // renderer, via getRenderer().R_RemoveEfrags), so unlike
 // test/client_types.test.ts this file needs no fake Renderer.
 
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll, spyOn } from "bun:test";
 import {
   CL_AllocDlight,
   CL_ClearState,
@@ -30,10 +30,13 @@ import {
   CL_Disconnect,
   CL_EstablishConnection,
   CL_LerpPoint,
+  CL_ReadFromServer,
   CL_RelinkEntities,
   CL_SendCmd,
   cl_nolerp,
 } from "../src/client/cl_main";
+import * as clDemo from "../src/client/cl_demo";
+import * as clParse from "../src/client/cl_parse";
 import {
   CactiveT,
   MAX_EFRAGS,
@@ -662,5 +665,76 @@ describe("CL_EstablishConnection / CL_Disconnect / CL_SendCmd", () => {
     expect(cls.demoplayback).toBe(false);
     expect(cls.timedemo).toBe(false);
     expect(cls.signon).toBe(0);
+  });
+});
+
+//============================================================================
+// U50: an entity slot handed out for the first time has no previous frame to
+// lerp from, so the renderers must not blend it in from cl_entities[i]'s
+// zeroed previousorigin (the world origin).
+
+const getMessageSpy = spyOn(clDemo, "CL_GetMessage");
+const parseMessageSpy = spyOn(clParse, "CL_ParseServerMessage");
+
+describe("U50 first-appearance lerp reset", () => {
+  // CL_EntityNum (cl_parse.ts) is the only writer of cl.num_entities and
+  // raises the reset flags on every slot it hands out, so a stand-in parse
+  // that allocates through it is all this needs.
+  let entitiesToAllocate = 0;
+
+  beforeAll(() => {
+    getMessageSpy.mockImplementation(() => (entitiesToAllocate > 0 ? 1 : 0));
+    parseMessageSpy.mockImplementation(() => {
+      if (entitiesToAllocate > 0) clParse.CL_EntityNum(entitiesToAllocate - 1);
+      entitiesToAllocate = 0;
+    });
+  });
+
+  afterAll(() => {
+    getMessageSpy.mockRestore();
+    parseMessageSpy.mockRestore();
+  });
+
+  test("CL_ClearState flags every entity slot, so the next level's first frame starts at each entity's real origin", () => {
+    sv.active = false;
+    cl_entities[1].lerpflags = 0;
+    cl_entities[7].lerpflags = 0;
+
+    CL_ClearState();
+
+    expect(cl_entities[1].lerpflags & LERP_RESETMOVE).toBeTruthy();
+    expect(cl_entities[1].lerpflags & LERP_RESETANIM).toBeTruthy();
+    expect(cl_entities[7].lerpflags & LERP_RESETMOVE).toBeTruthy();
+    expect(cl_entities[7].lerpflags & LERP_RESETANIM).toBeTruthy();
+  });
+
+  test("slots the parse allocates through CL_EntityNum carry the reset flags, and the ones already in play are left alone", () => {
+    sv.active = false;
+    CL_ClearState();
+    cls.state = CactiveT.ca_connected;
+    cls.demoplayback = false;
+    cls.timedemo = false;
+    cl_nolerp.value = 0;
+    cl.mtime[0] = 1.0;
+    cl.mtime[1] = 0.95;
+    cl.time = 0.975;
+    cl.viewentity = 0;
+
+    // three slots already in play, mid-lerp, with the flags consumed
+    cl.num_entities = 3;
+    for (let i = 1; i < 3; i++) cl_entities[i].lerpflags = LERP_MOVESTEP;
+
+    entitiesToAllocate = 6; // the parse hands out slots 3, 4 and 5
+    CL_ReadFromServer();
+
+    expect(cl.num_entities).toBe(6);
+    for (let i = 1; i < 3; i++) {
+      expect(cl_entities[i].lerpflags & LERP_RESETMOVE).toBe(0);
+      expect(cl_entities[i].lerpflags & LERP_RESETANIM).toBe(0);
+    }
+    for (let i = 3; i < 6; i++) {
+      expect(cl_entities[i].lerpflags & LERP_RESETMOVE).toBeTruthy();
+      expect(cl_entities[i].lerpflags & LERP_RESETANIM).toBeTruthy();
+    }
   });
 });

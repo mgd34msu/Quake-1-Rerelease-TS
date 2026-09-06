@@ -124,7 +124,7 @@ import {
 import { r_affinetridesc } from "./d_iface";
 import { D_PolysetDraw, D_PolysetDrawFinalVerts, D_PolysetUpdateTables } from "./d_polyse";
 import { R_AliasClipTriangle } from "./r_aclip";
-import { R_AliasProjectFinalVert, aliasPoseFrame, aliastransform, r_aliasblend } from "./r_alias";
+import { R_AliasProjectFinalVert, aliasPoseFrame, aliastransform, lerpEntityAngles, lerpEntityOrigin, r_aliasblend } from "./r_alias";
 
 // Ironwail's own name and default ("1" -- enabled), per this unit's brief.
 export { r_enhancedmodels }; // lives in src/common/render_cvars.ts, shared with the GL renderer
@@ -326,6 +326,13 @@ const md5_right: Vec3 = vec3();
 const md5_up: Vec3 = vec3();
 
 /*
+U50: the entity origin/angles this builds from are R_AliasSetUpTransform's
+own already-blended `lerpEntityOrigin`/`lerpEntityAngles` (filled by the
+R_AliasSetUpTransform call R_AliasDrawModel makes before reaching here, and
+by R_AliasCheckBBox's own call before that), so a MOVETYPE_STEP entity's MD5
+mesh move-lerps exactly as its .mdl would and the bbox check and the draw
+agree on where the model is.
+
 r_alias.c's R_AliasSetUpTransform builds `tmatrix` from the .mdl's own
 scale/scale_origin, because trivertx_t vertices are bytes 0..255 that need
 decompressing into model space. md5Skin's output (calcSkelVert) is already
@@ -339,14 +346,14 @@ written into the same shared `aliastransform` r_alias.ts exports, so
 R_AliasProjectFinalVert and R_AliasClipTriangle (both reading it indirectly
 through the finalverts they are handed) need no MD5-specific twin.
 */
-function R_AliasSetUpTransformMd5(trivialAccept: number): void {
+export function R_AliasSetUpTransformMd5(trivialAccept: number): void {
   const ent = rState.currententity;
   if (ent === null) Sys_Error("R_AliasSetUpTransformMd5: no current entity");
 
   const angles: Vec3 = vec3();
-  angles[ROLL] = ent.angles[ROLL];
-  angles[PITCH] = -ent.angles[PITCH];
-  angles[YAW] = ent.angles[YAW];
+  angles[ROLL] = lerpEntityAngles[ROLL];
+  angles[PITCH] = -lerpEntityAngles[PITCH];
+  angles[YAW] = lerpEntityAngles[YAW];
   AngleVectors(angles, md5_forward, md5_right, md5_up);
 
   const t2matrix = mat3x4();
@@ -355,9 +362,11 @@ function R_AliasSetUpTransformMd5(trivialAccept: number): void {
     t2matrix[i][1] = -md5_right[i];
     t2matrix[i][2] = md5_up[i];
   }
-  t2matrix[0][3] = -modelorg[0];
-  t2matrix[1][3] = -modelorg[1];
-  t2matrix[2][3] = -modelorg[2];
+  // the same modelorg correction R_AliasSetUpTransform applies -- see
+  // r_alias.ts's own header note for the algebra.
+  t2matrix[0][3] = -modelorg[0] + (lerpEntityOrigin[0] - ent.origin[0]);
+  t2matrix[1][3] = -modelorg[1] + (lerpEntityOrigin[1] - ent.origin[1]);
+  t2matrix[2][3] = -modelorg[2] + (lerpEntityOrigin[2] - ent.origin[2]);
 
   const viewmatrix = mat3x4();
   VectorCopy(vright, viewmatrix[0]);

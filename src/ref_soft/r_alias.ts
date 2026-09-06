@@ -330,8 +330,11 @@ function nameInList(list: string, name: string): boolean {
 }
 
 const lerpVertScratch: Vec3 = vec3();
-const lerpEntityOrigin: Vec3 = vec3();
-const lerpEntityAngles: Vec3 = vec3();
+// U50: read by r_md5.ts's R_AliasSetUpTransformMd5, so the MD5 draw and the
+// bbox check are placed by the one blend R_AliasSetUpTransform computes
+// rather than each rebuilding its own.
+export const lerpEntityOrigin: Vec3 = vec3();
+export const lerpEntityAngles: Vec3 = vec3();
 const moveLerpDelta: Vec3 = vec3();
 
 const finalvertsPool: FinalvertT[] = allocFinalverts(MAXALIASVERTS);
@@ -390,13 +393,7 @@ export function R_AliasCheckBBox(): boolean {
   const pmdl = pahdr.model;
   rState.pmdl = pmdl;
 
-  // U48: an MD5 replacement draws through R_AliasSetUpTransformMd5, which
-  // builds its transform from the entity's RAW origin/angles. Deciding
-  // trivial_accept from a move-lerped position the mesh will not be drawn at
-  // lets a model the bbox found fully on screen project off it, and the
-  // unclipped path has no clipping left to catch that.
-  const md5 = r_enhancedmodels.value ? getMd5Payload(pahdr) : null;
-  R_AliasSetUpTransform(0, md5 === null);
+  R_AliasSetUpTransform(0);
 
   if (!aliastransformFinite()) {
     if (!nonFiniteTransformWarned.has(pmodel.name)) {
@@ -602,7 +599,7 @@ export function R_AliasPreparePoints(): void {
 R_AliasSetUpTransform
 ================
 */
-export function R_AliasSetUpTransform(trivial_accept: number, moveLerp = true): void {
+export function R_AliasSetUpTransform(trivial_accept: number): void {
   const ent = rState.currententity;
   if (ent === null) Sys_Error("R_AliasSetUpTransform: no current entity");
   const pmdl = rState.pmdl;
@@ -630,7 +627,7 @@ export function R_AliasSetUpTransform(trivial_accept: number, moveLerp = true): 
     VectorCopy(ent.angles, ent.currentangles);
   }
 
-  if (moveLerp && r_lerpmove.value && ent !== cl.viewent && ent.lerpflags & LERP_MOVESTEP) {
+  if (r_lerpmove.value && ent !== cl.viewent && ent.lerpflags & LERP_MOVESTEP) {
     let blend: number;
     if (ent.lerpflags & LERP_FINISH) blend = lerpFraction(cl.time, ent.movelerpstart, ent.lerpfinish);
     else blend = lerpFraction(cl.time, ent.movelerpstart, ent.movelerpstart + 0.1);
