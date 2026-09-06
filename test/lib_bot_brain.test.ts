@@ -15,18 +15,22 @@ import {
   aimError,
   aimStep,
   BotBrain,
+  BotGoalStatus,
   BotKnowledge,
   BotPathStatus,
+  BOT_BUTTON_JUMP,
   BOT_RUN_SPEED,
   bvec,
   bvecDistance,
   canFire,
   chooseWeapon,
+  clearPath,
   emptyUsercmd,
   followPath,
   isAware,
   itemValue,
   NavGraph,
+  navGraphFromNav2,
   NavLinkType,
   NavNodeFlags,
   newAimState,
@@ -366,7 +370,7 @@ function buildKnowledge(): BotKnowledge {
 describe("nav graph: A*", () => {
   test("finds the shortest of two routes, not merely a connected one", () => {
     // 0 -> 1 -> 5 is 400 units; 0 -> 2 -> 3 -> 4 -> 5 is 1200.
-    const graph = new NavGraph(
+    const graph = navGraphFromNav2(
       buildNav(
         [bvec(0, 0, 0), bvec(200, 0, 0), bvec(0, 300, 0), bvec(300, 300, 0), bvec(600, 300, 0), bvec(400, 0, 0)],
         [
@@ -384,18 +388,18 @@ describe("nav graph: A*", () => {
   });
 
   test("answers null when the goal is in a disconnected component", () => {
-    const graph = new NavGraph(buildNav([bvec(0, 0, 0), bvec(100, 0, 0), bvec(9000, 0, 0)], [{ from: 0, to: 1 }]));
+    const graph = navGraphFromNav2(buildNav([bvec(0, 0, 0), bvec(100, 0, 0), bvec(9000, 0, 0)], [{ from: 0, to: 1 }]));
     expect(graph.findPath(0, 2)).toBeNull();
   });
 
   test("a start that is also the goal is a one-node path", () => {
-    const graph = new NavGraph(buildNav([bvec(0, 0, 0), bvec(100, 0, 0)], chainLinks(2)));
+    const graph = navGraphFromNav2(buildNav([bvec(0, 0, 0), bvec(100, 0, 0)], chainLinks(2)));
     expect(graph.findPath(1, 1)).toEqual([1]);
   });
 
   test("a Teleport link costs a flat 1, so it beats a long walk", () => {
     // Walking 0->1->2 is 2000 units; teleporting 0->2 is one link.
-    const graph = new NavGraph(
+    const graph = navGraphFromNav2(
       buildNav(
         [bvec(0, 0, 0), bvec(1000, 0, 0), bvec(2000, 0, 0)],
         [
@@ -409,7 +413,7 @@ describe("nav graph: A*", () => {
   });
 
   test("traverse caps refuse the link types the searcher cannot use", () => {
-    const graph = new NavGraph(
+    const graph = navGraphFromNav2(
       buildNav(
         [bvec(0, 0, 0), bvec(200, 0, 200), bvec(400, 0, 0), bvec(0, 400, 0), bvec(400, 400, 0)],
         [
@@ -429,7 +433,7 @@ describe("nav graph: A*", () => {
   });
 
   test("a non-swimmer is routed around underwater nodes", () => {
-    const graph = new NavGraph(
+    const graph = navGraphFromNav2(
       buildNav(
         [bvec(0, 0, 0), bvec(200, 0, 0), bvec(400, 0, 0), bvec(0, 400, 0), bvec(400, 400, 0)],
         [
@@ -449,7 +453,7 @@ describe("nav graph: A*", () => {
   });
 
   test("closestNode picks the nearest node inside the height window", () => {
-    const graph = new NavGraph(buildNav([bvec(0, 0, 0), bvec(100, 0, 0), bvec(50, 0, 512)], chainLinks(3)));
+    const graph = navGraphFromNav2(buildNav([bvec(0, 0, 0), bvec(100, 0, 0), bvec(50, 0, 512)], chainLinks(3)));
     expect(graph.closestNode(bvec(90, 0, 8))).toBe(1);
     // The node 512 units up is outside the default window even though it is
     // closest in XY.
@@ -464,7 +468,7 @@ describe("nav graph: A*", () => {
 describe("nav graph: string pulling", () => {
   test("a straight corridor collapses to its far end", () => {
     const positions = [bvec(0, 0, 0), bvec(128, 0, 0), bvec(256, 0, 0), bvec(384, 0, 0)];
-    const graph = new NavGraph(buildNav(positions, chainLinks(4)));
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(4)));
     const pulled = graph.stringPull([0, 1, 2, 3], bvec(384, 0, 0));
     expect(pulled.points.length).toBe(1);
     expect(pulled.points[0]).toEqual({ x: 384, y: 0, z: 0 });
@@ -472,7 +476,7 @@ describe("nav graph: string pulling", () => {
 
   test("an L-shaped corridor keeps its corner", () => {
     const positions = [bvec(0, 0, 0), bvec(128, 0, 0), bvec(256, 0, 0), bvec(256, 128, 0), bvec(256, 256, 0)];
-    const graph = new NavGraph(buildNav(positions, chainLinks(5)));
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(5)));
     const pulled = graph.stringPull([0, 1, 2, 3, 4], bvec(256, 256, 0));
     expect(pulled.points.length).toBe(2);
     expect(pulled.points[0]).toEqual({ x: 256, y: 0, z: 0 });
@@ -481,7 +485,7 @@ describe("nav graph: string pulling", () => {
 
   test("a traversal link becomes an exact takeoff and landing pair", () => {
     const positions = [bvec(0, 0, 0), bvec(128, 0, 0), bvec(384, 0, 0)];
-    const graph = new NavGraph(
+    const graph = navGraphFromNav2(
       buildNav(positions, [
         { from: 0, to: 1 },
         { from: 1, to: 2, type: NavLinkType.LongJump, traversal: { funnel: bvec(), start: bvec(130, 0, 4), end: bvec(380, 0, 4) } },
@@ -502,7 +506,7 @@ describe("nav graph: string pulling", () => {
     // Node 1 is 200 units off the straight line from 0 to 2, and its radius
     // is 32 -- the corridor really does bend.
     const positions = [bvec(0, 0, 0), bvec(128, 200, 0), bvec(256, 0, 0)];
-    const graph = new NavGraph(buildNav(positions, chainLinks(3)));
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(3)));
     const pulled = graph.stringPull([0, 1, 2], bvec(256, 0, 0));
     expect(pulled.points.length).toBe(2);
     expect(pulled.points[0]).toEqual({ x: 128, y: 200, z: 0 });
@@ -510,7 +514,7 @@ describe("nav graph: string pulling", () => {
 
   test("planPath goes from world point to world point in one call", () => {
     const positions = [bvec(0, 0, 0), bvec(128, 0, 0), bvec(256, 0, 0), bvec(256, 128, 0)];
-    const graph = new NavGraph(buildNav(positions, chainLinks(4)));
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(4)));
     const path = graph.planPath(bvec(8, 0, 0), bvec(250, 120, 0));
     expect(path).not.toBeNull();
     expect(path!.nodes[0]).toBe(0);
@@ -534,7 +538,7 @@ function movementSettings(over: Partial<BotMovementSettings> = {}): BotMovementS
 describe("path controller", () => {
   test("a straight corridor produces pure forward movement", () => {
     const positions = [bvec(0, 0, 0), bvec(128, 0, 0), bvec(256, 0, 0), bvec(384, 0, 0)];
-    const graph = new NavGraph(buildNav(positions, chainLinks(4)));
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(4)));
     const state = newPathState();
     setPath(state, graph.stringPull([0, 1, 2, 3], bvec(384, 0, 0)), bvec(0, 0, 0), 0);
 
@@ -548,7 +552,7 @@ describe("path controller", () => {
 
   test("an L-shaped corridor strafes around the corner without turning the view", () => {
     const positions = [bvec(0, 0, 0), bvec(128, 0, 0), bvec(256, 0, 0), bvec(256, 128, 0), bvec(256, 256, 0)];
-    const graph = new NavGraph(buildNav(positions, chainLinks(5)));
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(5)));
     const state = newPathState();
     setPath(state, graph.stringPull([0, 1, 2, 3, 4], bvec(256, 256, 0)), bvec(0, 0, 0), 0);
     const movement = movementSettings({ walkOnly: false });
@@ -567,7 +571,7 @@ describe("path controller", () => {
 
   test("reaching the last point reports Arrived", () => {
     const positions = [bvec(0, 0, 0), bvec(128, 0, 0)];
-    const graph = new NavGraph(buildNav(positions, chainLinks(2)));
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(2)));
     const state = newPathState();
     setPath(state, graph.stringPull([0, 1], bvec(128, 0, 0)), bvec(0, 0, 0), 0);
 
@@ -577,7 +581,7 @@ describe("path controller", () => {
 
   test("standing still for longer than stuckTime reports Stuck and bumps the counter", () => {
     const positions = [bvec(0, 0, 0), bvec(512, 0, 0)];
-    const graph = new NavGraph(buildNav(positions, chainLinks(2)));
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(2)));
     const state = newPathState();
     setPath(state, graph.stringPull([0, 1], bvec(512, 0, 0)), bvec(0, 0, 0), 0);
     const movement = movementSettings();
@@ -595,7 +599,7 @@ describe("path controller", () => {
 
   test("a jump link asks for a jump, and only while on the ground", () => {
     const positions = [bvec(0, 0, 0), bvec(256, 0, 0)];
-    const graph = new NavGraph(
+    const graph = navGraphFromNav2(
       buildNav(positions, [{ from: 0, to: 1, type: NavLinkType.LongJump, traversal: { funnel: bvec(), start: bvec(200, 0, 0), end: bvec(256, 0, 0) } }]),
     );
     const state = newPathState();
@@ -611,7 +615,7 @@ describe("path controller", () => {
 
   test("walk_only halves the movement speed", () => {
     const positions = [bvec(0, 0, 0), bvec(512, 0, 0)];
-    const graph = new NavGraph(buildNav(positions, chainLinks(2)));
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(2)));
     const state = newPathState();
     setPath(state, graph.stringPull([0, 1], bvec(512, 0, 0)), bvec(0, 0, 0), 0);
     const out = followPath(state, { origin: bvec(0, 0, 0), pitch: 0, yaw: 0, onGround: true, now: 0, stuckTime: 1 }, movementSettings({ walkOnly: true }), new Xorshift32(1));
@@ -959,6 +963,7 @@ class StubWorld implements BotWorldT {
       waterLevel: 0,
       team: 0,
       dead: false,
+      hasProtection: false,
     };
   }
 
@@ -1005,9 +1010,32 @@ function stubEnemy(id: number, origin: BotVec3): BotEntityT {
     team: 0,
     dead: false,
     invisible: false,
+    waterLevel: 0,
     isBot: false,
     spawnflags: 0,
     hasHealth: true,
+    hasTargetname: false,
+  };
+}
+
+function stubItem(id: number, classname: string, origin: BotVec3): BotEntityT {
+  return {
+    id,
+    kind: BotEntityKind.Item,
+    classname,
+    origin,
+    center: { x: origin.x, y: origin.y, z: origin.z + 8 },
+    head: { x: origin.x, y: origin.y, z: origin.z + 16 },
+    feet: { x: origin.x, y: origin.y, z: origin.z },
+    velocity: bvec(),
+    health: 0,
+    team: 0,
+    dead: false,
+    invisible: false,
+    waterLevel: 0,
+    isBot: false,
+    spawnflags: 0,
+    hasHealth: false,
     hasTargetname: false,
   };
 }
@@ -1086,7 +1114,7 @@ describe("brain", () => {
   test("bot_movetopoint walks toward the point and reports Success on arrival", () => {
     const positions = [bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0)];
     const world = new StubWorld(bvec(0, 0, 0));
-    world.graph = new NavGraph(buildNav(positions, chainLinks(3)));
+    world.graph = navGraphFromNav2(buildNav(positions, chainLinks(3)));
     const brain = makeBrain(5);
 
     brain.requestMoveToPoint(bvec(512, 0, 0));
@@ -1108,7 +1136,7 @@ describe("brain", () => {
   test("bot_followentity re-plans as the entity moves", () => {
     const positions = [bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0), bvec(768, 0, 0)];
     const world = new StubWorld(bvec(0, 0, 0));
-    world.graph = new NavGraph(buildNav(positions, chainLinks(4)));
+    world.graph = navGraphFromNav2(buildNav(positions, chainLinks(4)));
     const enemy = stubEnemy(2, bvec(256, 0, 0));
     world.ents = [enemy];
     const brain = makeBrain(6);
@@ -1152,7 +1180,7 @@ describe("brain", () => {
 
     const run = (): string => {
       const world = new StubWorld(bvec(0, 0, 0));
-      world.graph = new NavGraph(nav);
+      world.graph = navGraphFromNav2(nav);
       world.ents = [stubEnemy(2, bvec(400, 100, 0))];
       const brain = makeBrain(0x1234abcd);
       const out: string[] = [];
@@ -1171,7 +1199,7 @@ describe("brain", () => {
   test("two different seeds diverge, so the RNG is actually consulted", () => {
     const run = (seed: number): string => {
       const world = new StubWorld(bvec(0, 0, 0));
-      world.graph = new NavGraph(buildNav([bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0), bvec(0, 512, 0)], chainLinks(4)));
+      world.graph = navGraphFromNav2(buildNav([bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0), bvec(0, 512, 0)], chainLinks(4)));
       const brain = makeBrain(seed);
       const out: string[] = [];
       for (let i = 0; i < 80; i++) {
@@ -1198,6 +1226,120 @@ describe("brain", () => {
       if ((cmd.buttons & 1) !== 0) pressed = true;
     }
     expect(pressed).toBe(true);
+  });
+
+  // Regressions from the three bugs the quake-2-re-ts lift exposed in this
+  // brain and fed back here (src/lib/bot_brain/brain.ts's header).
+
+  test("an unreachable goal is rested and another goal chosen", () => {
+    // node 0 is where the bot starts and is linked only to node 1; node 2
+    // sits right on top of the closer, higher-value item but has no links at
+    // all, so the planner can never reach it. node 1 holds a farther,
+    // reachable item.
+    const positions = [bvec(0, 0, 0), bvec(700, 0, 0), bvec(80, 0, 0)];
+    const links = [
+      { from: 0, to: 1 },
+      { from: 1, to: 0 },
+    ];
+    const world = new StubWorld(bvec(0, 0, 0));
+    world.selfState.health = 50; // so the health item scores above zero
+    world.graph = navGraphFromNav2(buildNav(positions, links));
+    world.ents = [stubItem(10, "item_armor2", bvec(80, 0, 0)), stubItem(11, "item_health", bvec(700, 0, 0))];
+    const brain = makeBrain(20);
+
+    world.now += 0.05;
+    brain.think(world);
+    // The unreachable armor is closer and worth more, so it is picked first;
+    // with no path to it, the brain rests it instead of steering into the
+    // wall between the bot and node 2 forever.
+    expect(brain.currentPath()).toBeNull();
+
+    world.now += 0.05;
+    brain.think(world);
+    // Rested, the only item left is the reachable one, and a real path to it
+    // exists.
+    expect(brain.currentPath()).not.toBeNull();
+    const points = brain.currentPath()!.points;
+    expect(bvecDistance(points[points.length - 1]!, bvec(700, 0, 0))).toBeLessThan(1);
+  });
+
+  test("the stuck tally lives on the brain, not on the path state clearPath/setPath reset", () => {
+    // The bug: pathState.stuckCount is zeroed by both clearPath (the brain's
+    // own non-give-up recovery, called on every trip short of
+    // STUCK_GIVE_UP) and setPath (the replan that immediately follows it) --
+    // so a give-up check against pathState.stuckCount can never see more
+    // than the single trip just detected, no matter how many trips a goal
+    // has actually taken. BotBrain.stuckTrips is kept off pathState
+    // specifically so clearPath/setPath do not touch it; this reproduces
+    // the brain's own bookkeeping (increment on Stuck, clear-and-replan
+    // short of the threshold) against the exported path_follow.ts
+    // primitives to show pathState's own counter is still reset the old
+    // way while an externally-held tally is not zeroed by either call.
+    const positions = [bvec(0, 0, 0), bvec(1024, 0, 0)];
+    const nav = navGraphFromNav2(buildNav(positions, [{ from: 0, to: 1 }]));
+    const state = newPathState();
+    const movement = movementSettings({ walkOnly: false });
+    const rng = new Xorshift32(1);
+    const origin = bvec(0, 0, 0);
+
+    let stuckTrips = 0;
+    let now = 0;
+    const path = nav.planPath(origin, bvec(1024, 0, 0))!;
+    setPath(state, path, origin, now);
+    for (let i = 0; i < 3; i++) {
+      now += 1.05; // outlasts STUCK_SECONDS (1.0) with the bot frozen
+      const out = followPath(state, { origin, pitch: 0, yaw: 0, onGround: true, now, stuckTime: 1 }, movement, rng);
+      expect(out.status).toBe(BotPathStatus.Stuck);
+      stuckTrips++; // BotBrain's own field: never touched by clearPath/setPath
+      // BotBrain's non-give-up recovery, exactly as brain.ts's think() runs
+      // it: clearPath, then the next ensurePath() call replans.
+      clearPath(state);
+      expect(state.stuckCount).toBe(0); // pathState's own count: erased every trip
+      setPath(state, path, origin, now);
+    }
+    expect(stuckTrips).toBe(3); // an externally-held tally survives all three clears
+  });
+
+  test("a stuck trip does not give up the goal before STUCK_GIVE_UP, and the goal keeps retrying", () => {
+    // BotBrain.think()'s own give-up threshold (STUCK_GIVE_UP = 3) checked
+    // end to end: a bot walled off from a goal it cannot physically reach re-
+    // plans the identical route every time the nav graph says it is fine, so
+    // the escalation this file's header describes is, in practice, rarely
+    // reached this way -- but it must never fire EARLY (on the first or
+    // second trip) and the retry loop must not misbehave across many trips.
+    const positions = [bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0), bvec(768, 0, 0), bvec(1024, 0, 0)];
+    const world = new StubWorld(bvec(0, 0, 0));
+    world.graph = navGraphFromNav2(buildNav(positions, chainLinks(5)));
+    const brain = makeBrain(21);
+
+    brain.requestMoveToPoint(bvec(1024, 0, 0));
+    expect(brain.goalStatus()).toBe(BotGoalStatus.InProgress);
+
+    for (let i = 0; i < 200; i++) {
+      world.now += 0.05;
+      brain.think(world);
+      expect(brain.goalStatus()).toBe(BotGoalStatus.InProgress);
+    }
+  });
+
+  test("the unstick window produces sidestep/jump input", () => {
+    const positions = [bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0)];
+    const world = new StubWorld(bvec(0, 0, 0));
+    world.graph = navGraphFromNav2(buildNav(positions, chainLinks(3)));
+    const brain = makeBrain(22);
+
+    brain.requestMoveToPoint(bvec(512, 0, 0));
+
+    // The bot's origin is frozen, so it walks dead-on into the same wall
+    // every trip; the first stuck trip must open the sidestep-and-hop window
+    // on that very same frame.
+    let sawUnstick = false;
+    for (let i = 0; i < 40 && !sawUnstick; i++) {
+      world.now += 0.05;
+      const cmd = brain.think(world);
+      if (Math.abs(cmd.sidemove) === BOT_RUN_SPEED && (cmd.buttons & BOT_BUTTON_JUMP) !== 0) sawUnstick = true;
+    }
+    expect(sawUnstick).toBe(true);
   });
 });
 
@@ -1281,7 +1423,7 @@ describe.skipIf(!HAVE_ID1)("NAV2 vocabulary, against the real id1 data", () => {
     for (const name of realNames(pak)) {
       const file = parseNav(pak.read(name)).file;
       if (file === undefined) continue;
-      const graph = new NavGraph(file);
+      const graph = navGraphFromNav2(file);
       for (const link of graph.links) {
         if (link.traversal === null) continue;
         checked++;
@@ -1302,7 +1444,7 @@ describe.skipIf(!HAVE_ID1)("NAV2 vocabulary, against the real id1 data", () => {
     for (const name of realNames(pak)) {
       const file = parseNav(pak.read(name)).file;
       if (file === undefined) continue;
-      const graph = new NavGraph(file);
+      const graph = navGraphFromNav2(file);
       for (const node of graph.nodes) {
         if ((node.flags & NavNodeFlags.Teleporter) !== 0) {
           teleporterNodes++;
@@ -1348,7 +1490,7 @@ describe.skipIf(!HAVE_ID1)("NAV2 vocabulary, against the real id1 data", () => {
     const pak = new PakFile(ID1_PAK);
     const file = parseNav(pak.read("bots/navigation/dm4.nav")).file;
     expect(file).toBeDefined();
-    const graph = new NavGraph(file!);
+    const graph = navGraphFromNav2(file!);
     expect(graph.nodeCount).toBe(85);
 
     // Every node the graph can reach from node 0 must give a path back to
@@ -1368,7 +1510,7 @@ describe.skipIf(!HAVE_ID1)("NAV2 vocabulary, against the real id1 data", () => {
   test("string pulling never invents a point that is not on the path", () => {
     const pak = new PakFile(ID1_PAK);
     const file = parseNav(pak.read("bots/navigation/e1m1.nav")).file!;
-    const graph = new NavGraph(file);
+    const graph = navGraphFromNav2(file);
     const chain = graph.findPath(0, graph.nodeCount - 1);
     if (chain === null) return; // e1m1's last node may be disconnected; nothing to assert
     const pulled = graph.stringPull(chain, graph.nodes[graph.nodeCount - 1]!.origin);
@@ -1392,7 +1534,7 @@ test("the trailing entity table attaches a bounding box to the link it indexes",
   record.maxs = { x: 16, y: 16, z: 128 };
   file.entityLinks.push(record);
 
-  const graph = new NavGraph(file);
+  const graph = navGraphFromNav2(file);
   expect(graph.entityLinks.length).toBe(1);
   expect(graph.entityLinks[0]!.type).toBe(NavLinkType.Elevator);
   expect(graph.entityLinks[0]!.entityBounds).toEqual({ mins: { x: -16, y: -16, z: 0 }, maxs: { x: 16, y: 16, z: 128 } });

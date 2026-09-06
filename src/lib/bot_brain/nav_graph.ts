@@ -10,13 +10,39 @@
 // assertions live in test/lib_bot_brain.test.ts's "NAV2 vocabulary, against
 // the real id1 data" describe block.
 
-import { NavLinkType, NavNodeFlags, type NavFile, type NavLinkTypeT, type NavNode } from "../nav";
 import { bvec, bvecAdd, bvecDistance, bvecDistance2D, bvecNormalized, bvecScale, bvecSub, type BotVec3 } from "./math";
 
 //============================================================================
 // vocabulary
+//
+// Declared here rather than imported from src/lib/nav.ts, so this directory
+// stays game-agnostic (ARCHITECTURE.md, "Bots and navigation") and can be fed
+// back into quake-2-re-ts's src/qcommon/bot_brain wholesale. The values are
+// src/lib/nav.ts's own NavLinkType/NavNodeFlags, reproduced verbatim; see
+// that file's header for the sweep that confirmed them.
 
-export { NavLinkType, NavNodeFlags, type NavLinkTypeT };
+export const NavLinkType = {
+  Walk: 0,
+  LongJump: 1,
+  Teleport: 2,
+  WalkOffLedge: 3,
+  Pusher: 4,
+  BarrierJump: 5,
+  Elevator: 6,
+  Train: 7,
+  ManualLongJump: 8,
+} as const;
+export type NavLinkTypeT = number;
+
+export const NavNodeFlags = {
+  Teleporter: 1,
+  Pusher: 2,
+  ElevatorTop: 4,
+  ElevatorBottom: 8,
+  UnderWater: 16,
+  /** Bits 5..8 together: "the engine re-checks this node at runtime". See src/lib/nav.ts's header. */
+  ConditionalMask: 32 | 64 | 128 | 256,
+} as const;
 
 /** The link types that only work by leaving the ground under power. */
 export function navLinkIsJump(type: NavLinkTypeT): boolean {
@@ -93,9 +119,143 @@ export interface NavPathT {
   cost: number;
 }
 
+//============================================================================
+// what a graph is built from
+//
+// GAME-AGNOSTIC BY CONSTRUCTION. This class used to take a parsed NAV2 file
+// (src/lib/nav.ts's `NavFile`) straight off the loader, so it carried Quake
+// 1's own byte-layout vocabulary into its constructor. Quake II's NAV3 files
+// hold the same graph in a different layout, read by a different loader, so
+// the constructor now takes the neutral description below -- nodes and
+// links, with the traversal and entity bounds already resolved -- and the
+// NAV2 decode moved into `navGraphFromNav2`, which still accepts a Quake 1
+// `NavFile` structurally (see `Nav2FileT` below): nothing in this directory
+// imports src/lib/nav.ts, so the whole directory can be lifted into a second
+// game's tree unchanged, the way quake-2-re-ts's src/qcommon/bot_brain does.
+
+export interface NavGraphSourceNodeT {
+  origin: BotVec3;
+  radius: number;
+  flags: number;
+}
+
+export interface NavGraphSourceLinkT {
+  /** Index into `NavGraphSourceT.nodes` of the node this link leaves. */
+  from: number;
+  /** Index into `NavGraphSourceT.nodes` of the node this link reaches. */
+  to: number;
+  type: NavLinkTypeT;
+  traversal: NavTraversalT | null;
+  entityBounds: { mins: BotVec3; maxs: BotVec3 } | null;
+}
+
+export interface NavGraphSourceT {
+  nodes: readonly NavGraphSourceNodeT[];
+  links: readonly NavGraphSourceLinkT[];
+}
+
+//----------------------------------------------------------------------------
+// the Quake 1 NAV2 file, structurally. src/lib/nav.ts's own `NavFile`/
+// `NavNode`/`NavLink`/`NavHint`/`NavEntityLink` satisfy these without a
+// conversion; declared here rather than imported so this directory keeps
+// importing nothing outside itself.
+
+export interface Nav2NodeT {
+  position: BotVec3;
+  radius: number;
+  flags: number;
+  firstLink: number;
+  linkCount: number;
+}
+
+export interface Nav2LinkT {
+  target: number;
+  type: NavLinkTypeT;
+  /** Index into the file's hint array, or null when the link carries no traversal. */
+  traversal: number | null;
+}
+
+export interface Nav2HintT {
+  funnel: BotVec3;
+  start: BotVec3;
+  end: BotVec3;
+}
+
+export interface Nav2EntityLinkT {
+  /** Index into the file's flat link array. */
+  link: number;
+  mins: BotVec3;
+  maxs: BotVec3;
+}
+
+export interface Nav2FileT {
+  nodes: readonly Nav2NodeT[];
+  links: readonly Nav2LinkT[];
+  hints: readonly Nav2HintT[];
+  entityLinks: readonly Nav2EntityLinkT[];
+}
+
 /**
- * A NAV2 file turned into an adjacency structure. Built once per map load and
- * then read-only, so several bots and every monster share one instance.
+ * The NAV2 decode this class's constructor used to be, unchanged: node link
+ * ranges resolved against the flat link array, traversal indices resolved
+ * against the hint array, and the trailing entity table attached to the flat
+ * link each record indexes.
+ */
+export function navGraphFromNav2(file: Nav2FileT): NavGraph {
+  const nodes: NavGraphSourceNodeT[] = [];
+  for (const src of file.nodes) {
+    nodes.push({ origin: { x: src.position.x, y: src.position.y, z: src.position.z }, radius: src.radius, flags: src.flags });
+  }
+
+  const links: NavGraphSourceLinkT[] = [];
+  // The trailing table indexes the FILE's flat link array; `flatIndexOf` maps
+  // a slot of that array to the link this builder actually produced from it,
+  // because a link naming an out-of-range target is dropped and the two
+  // arrays then no longer line up.
+  const flatIndexOf = new Map<number, NavGraphSourceLinkT>();
+  for (let i = 0; i < file.nodes.length; i++) {
+    const src = file.nodes[i]!;
+    for (let k = 0; k < src.linkCount; k++) {
+      const slot = src.firstLink + k;
+      const raw = file.links[slot];
+      if (raw === undefined) continue;
+      if (raw.target >= nodes.length) continue;
+
+      let traversal: NavTraversalT | null = null;
+      if (raw.traversal !== null) {
+        const hint = file.hints[raw.traversal];
+        if (hint !== undefined) {
+          traversal = {
+            funnel: { x: hint.funnel.x, y: hint.funnel.y, z: hint.funnel.z },
+            start: { x: hint.start.x, y: hint.start.y, z: hint.start.z },
+            end: { x: hint.end.x, y: hint.end.y, z: hint.end.z },
+          };
+        }
+      }
+
+      const link: NavGraphSourceLinkT = { from: i, to: raw.target, type: raw.type, traversal, entityBounds: null };
+      flatIndexOf.set(slot, link);
+      links.push(link);
+    }
+  }
+
+  for (const record of file.entityLinks) {
+    const link = flatIndexOf.get(record.link);
+    if (link === undefined) continue;
+    link.entityBounds = {
+      mins: { x: record.mins.x, y: record.mins.y, z: record.mins.z },
+      maxs: { x: record.maxs.x, y: record.maxs.y, z: record.maxs.z },
+    };
+  }
+
+  return new NavGraph({ nodes, links });
+}
+
+/**
+ * A navigation graph turned into an adjacency structure. Built once per map
+ * load and then read-only, so several bots and every monster share one
+ * instance. See `NavGraphSourceT` above for what it is built from and
+ * `navGraphFromNav2` for the Quake 1 file that used to be its only input.
  */
 export class NavGraph {
   readonly nodes: NavGraphNodeT[] = [];
@@ -110,60 +270,45 @@ export class NavGraph {
   private readonly generation: Int32Array;
   private searchGeneration = 0;
 
-  constructor(file: NavFile) {
-    for (let i = 0; i < file.nodes.length; i++) {
-      const src: NavNode = file.nodes[i]!;
+  constructor(source: NavGraphSourceT) {
+    for (let i = 0; i < source.nodes.length; i++) {
+      const src = source.nodes[i]!;
       this.nodes.push({
         index: i,
-        origin: { x: src.position.x, y: src.position.y, z: src.position.z },
+        origin: { x: src.origin.x, y: src.origin.y, z: src.origin.z },
         radius: src.radius,
         flags: src.flags,
         links: [],
       });
     }
 
-    for (let i = 0; i < file.nodes.length; i++) {
-      const src = file.nodes[i]!;
-      for (let k = 0; k < src.linkCount; k++) {
-        const raw = file.links[src.firstLink + k];
-        if (raw === undefined) continue;
-        if (raw.target >= this.nodes.length) continue;
+    for (const raw of source.links) {
+      if (raw.from < 0 || raw.from >= this.nodes.length) continue;
+      if (raw.to < 0 || raw.to >= this.nodes.length) continue;
 
-        let traversal: NavTraversalT | null = null;
-        if (raw.traversal !== null) {
-          const hint = file.hints[raw.traversal];
-          if (hint !== undefined) {
-            traversal = {
-              funnel: { x: hint.funnel.x, y: hint.funnel.y, z: hint.funnel.z },
-              start: { x: hint.start.x, y: hint.start.y, z: hint.start.z },
-              end: { x: hint.end.x, y: hint.end.y, z: hint.end.z },
-            };
-          }
-        }
-
-        const link: NavGraphLinkT = { from: i, to: raw.target, type: raw.type, traversal, entityBounds: null };
-        this.nodes[i]!.links.push(link);
-        this.links.push(link);
-      }
-    }
-
-    // The trailing table indexes the flat link array; see the file header.
-    const flatIndexOf = new Map<number, NavGraphLinkT>();
-    {
-      let flat = 0;
-      for (let i = 0; i < file.nodes.length; i++) {
-        const src = file.nodes[i]!;
-        for (let k = 0; k < src.linkCount; k++) flatIndexOf.set(src.firstLink + k, this.links[flat++]!);
-      }
-    }
-    for (const record of file.entityLinks) {
-      const link = flatIndexOf.get(record.link);
-      if (link === undefined) continue;
-      link.entityBounds = {
-        mins: { x: record.mins.x, y: record.mins.y, z: record.mins.z },
-        maxs: { x: record.maxs.x, y: record.maxs.y, z: record.maxs.z },
+      const link: NavGraphLinkT = {
+        from: raw.from,
+        to: raw.to,
+        type: raw.type,
+        traversal:
+          raw.traversal === null
+            ? null
+            : {
+                funnel: { x: raw.traversal.funnel.x, y: raw.traversal.funnel.y, z: raw.traversal.funnel.z },
+                start: { x: raw.traversal.start.x, y: raw.traversal.start.y, z: raw.traversal.start.z },
+                end: { x: raw.traversal.end.x, y: raw.traversal.end.y, z: raw.traversal.end.z },
+              },
+        entityBounds:
+          raw.entityBounds === null
+            ? null
+            : {
+                mins: { x: raw.entityBounds.mins.x, y: raw.entityBounds.mins.y, z: raw.entityBounds.mins.z },
+                maxs: { x: raw.entityBounds.maxs.x, y: raw.entityBounds.maxs.y, z: raw.entityBounds.maxs.z },
+              },
       };
-      this.entityLinks.push(link);
+      this.nodes[raw.from]!.links.push(link);
+      this.links.push(link);
+      if (link.entityBounds !== null) this.entityLinks.push(link);
     }
 
     this.gScore = new Float64Array(this.nodes.length);

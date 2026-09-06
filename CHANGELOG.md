@@ -64,6 +64,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   count to loopback clients only.
 - This engine's bot brain (`src/lib/bot_brain`) is now also bound by
   quake-2-re-ts; see that project's own changelog for its side of the work.
+  Three fixes found while binding it there came back here: an unreachable
+  goal is skipped for a while instead of re-picked every frame, the stuck
+  trip counter survives a replan so the give-up limit is real, and a stuck
+  bot sidesteps and hops for 0.6 s before giving up. The brain's run/walk
+  speeds and a weapon-select callback are now config, `NavGraph` takes a
+  neutral source (`navGraphFromNav2` builds it from a NAV2 file), and
+  weapon selection sees real protection and water state.
+- Test hygiene: `sv_tick`, `main_boot` and `screen` suites restore the host
+  clock they touch so the dedicated boot test passes in any file order.
 
 ### Changed
 - Repository seeded from Quake-1-TS v1.0.0 (86c6867) as commit 1; package

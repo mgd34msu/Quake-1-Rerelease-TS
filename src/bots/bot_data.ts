@@ -17,7 +17,7 @@ import { COM_LoadTempFile } from "../common/common";
 import { Con_DPrintf, Con_Printf } from "../client/console";
 import { parseNav } from "../lib/nav";
 import { BotKnowledge, type BotDataFilesT } from "../lib/bot_brain/knowledge";
-import { NavGraph } from "../lib/bot_brain/nav_graph";
+import { navGraphFromNav2, type NavGraph } from "../lib/bot_brain/nav_graph";
 
 function loadText(path: string): string | null {
   const bytes = COM_LoadTempFile(path);
@@ -121,7 +121,7 @@ export function Bot_LoadNav(mapname: string): NavGraph | null {
     return null;
   }
 
-  const graph = new NavGraph(result.file);
+  const graph = navGraphFromNav2(result.file);
   Con_DPrintf("bots: %s.nav v%i, %i nodes, %i links, %i entity links\n", mapname, result.file.version, graph.nodeCount, graph.links.length, graph.entityLinks.length);
   botDataState.nav = graph;
   return graph;

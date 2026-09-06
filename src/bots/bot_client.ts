@@ -53,6 +53,8 @@ import {
   BOT_BUTTON_ATTACK,
   BOT_BUTTON_JUMP,
   BOT_BUTTON_USE,
+  BOT_RUN_SPEED,
+  BOT_WALK_SPEED,
   BotBrain,
   Xorshift32,
   type BotChatEventT,
@@ -262,6 +264,10 @@ export function Bot_Add(nameRequest: string, skillRequest: string): number {
     character: knowledge.character(nameRequest),
     maxHealth: 100,
     weaponImpulse,
+    // BotBrainConfigT.runSpeed/walkSpeed default to these anyway; passed
+    // explicitly since this is the binding that pins the game's own values.
+    runSpeed: BOT_RUN_SPEED,
+    walkSpeed: BOT_WALK_SPEED,
     onChat: (event) => Bot_QueueChat(clientnum, event),
     humanTeammateNear: () => Bot_HumanTeammateNear(clientnum),
   });

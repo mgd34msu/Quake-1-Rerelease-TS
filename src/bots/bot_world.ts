@@ -137,6 +137,7 @@ export class BotServerWorld implements BotWorldT {
       waterLevel: ent.v.waterlevel | 0,
       team: ent.v.team | 0,
       dead: ent.v.health <= 0 || ent.v.deadflag !== 0,
+      hasProtection: hasProtection(ent),
     };
   }
 
@@ -233,6 +234,7 @@ export class BotServerWorld implements BotWorldT {
         team: ent.v.team | 0,
         dead: kind === BotEntityKind.Player || kind === BotEntityKind.Monster ? ent.v.health <= 0 || ent.v.deadflag !== 0 : false,
         invisible: (items & IT_INVISIBILITY) !== 0,
+        waterLevel: ent.v.waterlevel | 0,
         isBot: edictIsBot(ent),
         spawnflags: ent.v.spawnflags | 0,
         hasHealth: ent.v.health > 0,

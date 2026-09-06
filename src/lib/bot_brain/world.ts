@@ -48,6 +48,8 @@ export interface BotEntityT {
   dead: boolean;
   /** True while the entity is invisible (Ring of Shadows, or the game's equivalent). */
   invisible: boolean;
+  /** 0 dry, 1 feet wet, 2 waist, 3 fully submerged -- the QuakeC waterlevel. weapons.txt's electric-in-water exemption needs the TARGET's water state, not just the bot's own. */
+  waterLevel: number;
   /** Set on a bot-controlled player so bots can tell each other apart from humans. */
   isBot: boolean;
   /** The entity's spawnflags, which items.txt and interactables.txt both test. */
@@ -93,6 +95,8 @@ export interface BotSelfT {
   waterLevel: number;
   team: number;
   dead: boolean;
+  /** True when the bot holds the Pentagram, which weapons.txt's electric-in-water rule exempts. */
+  hasProtection: boolean;
 }
 
 //============================================================================

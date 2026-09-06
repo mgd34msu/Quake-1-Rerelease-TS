@@ -13,7 +13,14 @@ import type { BotMovementSettings } from "../botdata";
 import { navLinkIsJump, NavLinkType, steerDirection, type NavGraphLinkT, type NavPathT } from "./nav_graph";
 import { randomChance, type BotRandomT } from "./rng";
 
-/** Quake's own run and walk speeds; a usercmd is in units per second. */
+/**
+ * Quake's own run and walk speeds; a usercmd is in units per second.
+ *
+ * `BotFollowInputT.runSpeed`/`walkSpeed` and `steerDirect`'s last two
+ * arguments override these for a game whose move clamp differs (Quake II's
+ * `sv_maxspeed` is 300, not 320), so a caller with no opinion behaves exactly
+ * as the Quake 1 binding does.
+ */
 export const BOT_RUN_SPEED = 320;
 export const BOT_WALK_SPEED = 160;
 
@@ -89,6 +96,10 @@ export interface BotFollowInputT {
   now: number;
   /** Seconds of no meaningful progress before the controller reports Stuck. */
   stuckTime: number;
+  /** Units per second at a run; `BOT_RUN_SPEED` when the caller has no opinion. */
+  runSpeed?: number;
+  /** Units per second under `movement.walk_only`; `BOT_WALK_SPEED` by default. */
+  walkSpeed?: number;
 }
 
 /**
@@ -144,7 +155,7 @@ export function followPath(state: BotPathStateT, input: BotFollowInputT, movemen
   }
 
   const dir = steerDirection(input.origin, target);
-  const speed = movement.walkOnly ? BOT_WALK_SPEED : BOT_RUN_SPEED;
+  const speed = movement.walkOnly ? (input.walkSpeed ?? BOT_WALK_SPEED) : (input.runSpeed ?? BOT_RUN_SPEED);
   const { forward, right } = angleVectors(0, input.yaw, 0);
 
   const forwardmove = clamp((dir.x * forward.x + dir.y * forward.y) * speed, -speed, speed);
@@ -178,9 +189,9 @@ export function rollCombatJump(state: BotPathStateT, movement: BotMovementSettin
 }
 
 /** Straight-line steering with no path at all, for a target the bot can see. */
-export function steerDirect(origin: BotVec3, yaw: number, target: BotVec3, walkOnly: boolean): { forwardmove: number; sidemove: number } {
+export function steerDirect(origin: BotVec3, yaw: number, target: BotVec3, walkOnly: boolean, runSpeed = BOT_RUN_SPEED, walkSpeed = BOT_WALK_SPEED): { forwardmove: number; sidemove: number } {
   const dir = steerDirection(origin, target);
-  const speed = walkOnly ? BOT_WALK_SPEED : BOT_RUN_SPEED;
+  const speed = walkOnly ? walkSpeed : runSpeed;
   const { forward, right } = angleVectors(0, yaw, 0);
   return {
     forwardmove: clamp((dir.x * forward.x + dir.y * forward.y) * speed, -speed, speed),

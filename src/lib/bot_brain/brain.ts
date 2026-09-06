@@ -23,6 +23,27 @@
 //   7. choose a weapon by weapons.txt's own rule and fire when the weapon
 //      cone has settled
 //
+// A GOAL THE NAV GRAPH CANNOT REACH. Picking the nearest valuable item and
+// then failing to plan a path to it used to wedge the bot permanently: with
+// no path, movement fell into the straight-line steering branch below --
+// which has no stuck detection -- and the bot walked into the wall between
+// it and the item for the rest of the match, re-picking the same item every
+// frame. `unreachableUntil` remembers a goal entity the planner could not
+// reach and stops choosing it for a while.
+//
+// THE "GIVE UP AFTER STUCK_GIVE_UP TRIPS" ESCALATION. This used to count
+// trips on `pathState.stuckCount`, which both `clearPath` and `setPath`
+// zero -- and the stuck branch below calls `clearPath` on every trip short
+// of giving up, so the tally could never reach `STUCK_GIVE_UP` and a bot
+// walled off from a reachable goal re-planned the same blocked route
+// forever. The tally now lives on the brain itself, as `stuckTrips`.
+//
+// THE UNSTICK WINDOW. A bot that walked dead-on into a wall has no
+// tangential velocity to slide along it with, so it presses forwardmove at
+// full speed and does not move a unit -- and re-planning produces the same
+// route into the same wall. Every stuck trip opens a short sidestep-and-hop
+// window (`unstickUntil`/`unstickSide`) to break contact with the wall.
+//
 // Determinism: every random decision goes through the injected
 // `BotRandomT`. Two brains with the same seed, fed the same worlds, emit
 // the same usercmds.
@@ -32,7 +53,7 @@ import { aimError, aimLeadPoint, aimStep, newAimState, type BotAimStateT } from 
 import { angleMod, bvec, bvecAdd, bvecDistance, bvecSub, type BotVec3 } from "./math";
 import { BotGameType, chooseWeapon, itemValue, type BotGameModeT, type BotKnowledge, type BotWeaponT } from "./knowledge";
 import { defaultTraverseCaps, type NavPathT, type NavTraverseCapsT } from "./nav_graph";
-import { BotPathStatus, clearPath, followPath, newPathState, rollCombatJump, setPath, steerDirect, type BotPathStateT } from "./path_follow";
+import { BOT_RUN_SPEED, BotPathStatus, clearPath, followPath, newPathState, rollCombatJump, setPath, steerDirect, type BotPathStateT } from "./path_follow";
 import { canFire, evaluateSightGeometry, isAware, newAwareness, senseStep, shouldForget, soundAudible, type BotAwarenessT, type BotContactT } from "./senses";
 import { randomChance, randomIndex, randomRange, type BotRandomT } from "./rng";
 import {
@@ -83,6 +104,17 @@ export interface BotBrainConfigT {
   onChat?: (event: BotChatEventT) => void;
   /** Turns a weapons.txt `number` into the impulse that selects it. Quake 1's mapping lives in src/bots. */
   weaponImpulse?: (weaponNumber: number) => number;
+  /**
+   * An alternative to `weaponImpulse` for a game with no impulse-driven
+   * selection at all (Quake II's game module takes a direct weapon-select
+   * call instead). `weaponImpulse` wins when both are present, so the
+   * Quake 1 binding is untouched.
+   */
+  onWeaponSelect?: (weaponNumber: number) => void;
+  /** Units per second at a run. Defaults to path_follow.ts's `BOT_RUN_SPEED`. */
+  runSpeed?: number;
+  /** Units per second under `movement.walk_only`. Defaults to `BOT_WALK_SPEED`. */
+  walkSpeed?: number;
   /** True when a human teammate is nearby, for behaviors.defer_power_items_to_humans. */
   humanTeammateNear?: () => boolean;
 }
@@ -102,6 +134,14 @@ const REPLAN_SECONDS = 2.0;
 const STUCK_GIVE_UP = 3;
 /** How far a roaming bot is willing to be sent. */
 const ROAM_RADIUS = 4096;
+/**
+ * How long a goal the nav graph could not reach is left alone. Long enough
+ * that the bot stops thrashing against it, short enough that a door or plat
+ * opening a route later puts it back in play.
+ */
+const UNREACHABLE_SECONDS = 20;
+/** How long the sidestep-and-hop that breaks a wall contact runs for. */
+const UNSTICK_SECONDS = 0.6;
 
 export class BotBrain {
   readonly config: BotBrainConfigT;
@@ -113,6 +153,16 @@ export class BotBrain {
 
   private targetId = -1;
   private goalPoint: BotVec3 | null = null;
+  /** The entity the current goal belongs to, or -1 for a point goal. */
+  private goalEntityId = -1;
+  /** Entity id -> the server time it becomes choosable again. See the file header. */
+  private readonly unreachableUntil = new Map<number, number>();
+  /** Consecutive stuck trips on the current goal. See the file header. */
+  private stuckTrips = 0;
+  /** Server time the sidestep-and-hop that breaks a wall contact expires. */
+  private unstickUntil = 0;
+  /** Which way that sidestep goes, +1 right or -1 left. */
+  private unstickSide = 0;
   private explicitGoal: ExplicitGoalT | null = null;
   private explicitGoalDone = false;
   private explicitGoalFailed = false;
@@ -185,6 +235,10 @@ export class BotBrain {
     this.clearExplicitGoal();
     this.targetId = -1;
     this.goalPoint = null;
+    this.goalEntityId = -1;
+    this.unreachableUntil.clear();
+    this.stuckTrips = 0;
+    this.unstickUntil = 0;
     this.roamPoint = null;
     this.deadSince = -1;
     this.lastWeaponNumber = 0;
@@ -276,24 +330,55 @@ export class BotBrain {
     let moveTarget: BotVec3 | null = null;
     if (goal !== null) {
       this.ensurePath(world, goal, now);
-      const follow = followPath(this.pathState, { origin: self.origin, pitch: this.aim.pitch, yaw: this.aim.yaw, onGround: self.onGround, now, stuckTime: STUCK_SECONDS }, this.settings.movement, this.config.rng);
+
+      // A goal with a nav graph in the level and no plan to it is one this
+      // bot cannot walk to. Remembered, so the next frame picks something
+      // else instead of steering straight at the wall in front of it -- see
+      // the file header.
+      if (this.pathState.path === null && world.nav() !== null && this.goalEntityId >= 0) {
+        this.unreachableUntil.set(this.goalEntityId, now + UNREACHABLE_SECONDS);
+        this.abandonGoal();
+      }
+
+      const follow = followPath(
+        this.pathState,
+        { origin: self.origin, pitch: this.aim.pitch, yaw: this.aim.yaw, onGround: self.onGround, now, stuckTime: STUCK_SECONDS, runSpeed: this.config.runSpeed, walkSpeed: this.config.walkSpeed },
+        this.settings.movement,
+        this.config.rng,
+      );
 
       if (follow.status === BotPathStatus.Stuck) {
-        if (this.pathState.stuckCount >= STUCK_GIVE_UP) {
+        this.stuckTrips++;
+        // A bot that walked dead-on into a wall has no tangential velocity to
+        // slide along it with, so it presses there with forwardmove at full
+        // speed and does not move a unit -- and re-planning produces the same
+        // route into the same wall, forever. Breaking contact sideways (and
+        // hopping, for a step the follower misjudged) is what gets it back
+        // onto a route it can walk. See the file header.
+        this.unstickUntil = now + UNSTICK_SECONDS;
+        this.unstickSide = randomChance(this.config.rng, 50) ? 1 : -1;
+        if (this.stuckTrips >= STUCK_GIVE_UP) {
+          // Three trips in a row with no progress: this is not a route the
+          // bot can actually walk, whatever the graph says. The goal gets the
+          // same rest an unplannable one gets, so the next frame picks
+          // something else instead of re-planning into the same wall.
+          if (this.goalEntityId >= 0) this.unreachableUntil.set(this.goalEntityId, now + UNREACHABLE_SECONDS);
           this.abandonGoal();
+          this.stuckTrips = 0;
         } else {
           clearPath(this.pathState);
         }
       } else if (follow.status === BotPathStatus.Arrived) {
         this.reachGoal();
       } else if (follow.status === BotPathStatus.Moving) {
+        this.stuckTrips = 0; // real progress retires the tally
         cmd.forwardmove = follow.forwardmove;
         cmd.sidemove = follow.sidemove;
         if (follow.jump) cmd.buttons |= BOT_BUTTON_JUMP;
         moveTarget = follow.target;
       } else if (follow.status === BotPathStatus.NoPath) {
         // No graph, or none needed: walk straight at it.
-        const direct = steerDirect(self.origin, this.aim.yaw, goal, this.settings.movement.walkOnly);
+        const direct = steerDirect(self.origin, this.aim.yaw, goal, this.settings.movement.walkOnly, this.config.runSpeed, this.config.walkSpeed);
         cmd.forwardmove = direct.forwardmove;
         cmd.sidemove = direct.sidemove;
         moveTarget = goal;
@@ -303,6 +388,14 @@ export class BotBrain {
 
     if (target !== null && rollCombatJump(this.pathState, this.settings.movement, this.config.rng, now, self.onGround)) {
       cmd.buttons |= BOT_BUTTON_JUMP;
+    }
+
+    // The unstick window opened by a stuck trip, above.
+    if (now < this.unstickUntil) {
+      const speed = this.config.runSpeed ?? BOT_RUN_SPEED;
+      cmd.sidemove = this.unstickSide * speed;
+      cmd.forwardmove *= 0.5;
+      if (self.onGround) cmd.buttons |= BOT_BUTTON_JUMP;
     }
 
     //---- 6: aim -------------------------------------------------------------
@@ -331,6 +424,9 @@ export class BotBrain {
         const impulse = this.config.weaponImpulse?.(pick) ?? 0;
         if (impulse > 0) {
           cmd.impulse = impulse;
+          this.lastWeaponNumber = pick;
+        } else if (this.config.onWeaponSelect !== undefined) {
+          this.config.onWeaponSelect(pick);
           this.lastWeaponNumber = pick;
         }
       } else if (pick === self.currentWeapon) {
@@ -465,6 +561,8 @@ export class BotBrain {
   //--------------------------------------------------------------------------
 
   private selectGoal(world: BotWorldT, entities: readonly BotEntityT[], target: BotEntityT | null, now: number): BotVec3 | null {
+    this.goalEntityId = -1;
+
     // The QuakeC's own goal wins over everything the brain would pick.
     if (this.explicitGoal !== null && !this.explicitGoalDone && !this.explicitGoalFailed) {
       if (this.explicitGoal.kind === "entity") {
@@ -489,15 +587,19 @@ export class BotBrain {
       this.goalPoint = aw !== undefined ? aw.lastKnownOrigin : target.origin;
       // In combat the bot may still detour for an item, if the skill allows.
       if (this.settings.behaviors.allowGrabItemsInCombat) {
-        const item = this.bestItem(world, entities);
-        if (item !== null && bvecDistance(world.self().origin, item.origin) < 512) return item.origin;
+        const item = this.bestItem(world, entities, now);
+        if (item !== null && bvecDistance(world.self().origin, item.origin) < 512) {
+          this.goalEntityId = item.id;
+          return item.origin;
+        }
       }
       return this.goalPoint;
     }
 
     if (this.settings.behaviors.allowGrabItems) {
-      const item = this.bestItem(world, entities);
+      const item = this.bestItem(world, entities, now);
       if (item !== null) {
+        this.goalEntityId = item.id;
         this.goalPoint = item.origin;
         return this.goalPoint;
       }
@@ -506,7 +608,7 @@ export class BotBrain {
     return this.roamGoal(world, now);
   }
 
-  private bestItem(world: BotWorldT, entities: readonly BotEntityT[]): BotEntityT | null {
+  private bestItem(world: BotWorldT, entities: readonly BotEntityT[], now: number): BotEntityT | null {
     const self = world.self();
     const knowledge = this.config.knowledge;
     const deferPower = this.settings.behaviors.deferPowerItemsToHumans && (this.config.humanTeammateNear?.() ?? false);
@@ -516,6 +618,11 @@ export class BotBrain {
 
     for (const ent of entities) {
       if (ent.kind !== BotEntityKind.Item) continue;
+      const blockedUntil = this.unreachableUntil.get(ent.id);
+      if (blockedUntil !== undefined) {
+        if (blockedUntil > now) continue;
+        this.unreachableUntil.delete(ent.id);
+      }
       const item = knowledge.item(ent.classname);
       if (item === undefined) continue;
       if ((item.isPowerup || item.isMega) && deferPower) continue;
@@ -568,11 +675,13 @@ export class BotBrain {
     clearPath(this.pathState);
     this.roamPoint = null;
     this.goalPoint = null;
+    this.goalEntityId = -1;
     if (this.explicitGoal !== null) this.explicitGoalFailed = true;
   }
 
   private reachGoal(): void {
     clearPath(this.pathState);
+    this.stuckTrips = 0;
     this.roamPoint = null;
     if (this.explicitGoal !== null) this.explicitGoalDone = true;
   }
@@ -652,8 +761,8 @@ export class BotBrain {
       range: bvecDistance(self.origin, target.origin),
       heightDelta: target.origin.z - self.origin.z,
       inWater: self.waterLevel >= 2,
-      hasProtection: false,
-      targetInWater: false,
+      hasProtection: self.hasProtection,
+      targetInWater: target.waterLevel >= 2,
       allowMelee: this.settings.behaviors.allowMelee,
     });
     return pick === null ? null : pick.number;
