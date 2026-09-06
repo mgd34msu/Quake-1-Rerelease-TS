@@ -48,6 +48,14 @@ export interface InputBackend {
   // add additional movement on top of the keyboard move cmd
   IN_Move(cmd: UsercmdT): void;
 
+  // U43 (local splitscreen): the same move for a seat past 0, whose input is
+  // the controller gamepad_assign.ts routed to that player and nothing else
+  // -- no mouse, and no keyboard, both of which are seat 0's. Optional so a
+  // backend that has no controller support at all (and every test double)
+  // simply has no seats; src/client/cl_input.ts leaves the seat's usercmd
+  // zeroed when it is absent.
+  IN_MoveSeat?(cmd: UsercmdT, seat: number): void;
+
   // QW/client/cl_input.c's CL_SendCmd calls IN_Move on QW's own usercmd_t;
   // see this file's header
   IN_MoveQw(cmd: QwUsercmdT): void;

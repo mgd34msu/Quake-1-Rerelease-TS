@@ -62,6 +62,8 @@ import { cl, cls, KbuttonT, SIGNONS, UsercmdT } from "./client";
 import { CL_Disconnect, lookspring } from "./cl_main";
 // view.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { V_StartPitchDrift, V_StopPitchDrift } from "./view";
+import { SS_ActiveSeat, SS_SeatButtons, SS_TakeSeatImpulse } from "./splitscreen";
+import { inputBackend } from "./input";
 
 /*
 ===============================================================================
@@ -436,18 +438,32 @@ export function CL_SendMove(cmd: UsercmdT): void {
   //
   // send button bits
   //
+  // U43: seat 0's buttons are the bind system's kbuttons, as they always
+  // were. A splitscreen seat has no binds of its own (one bind table would
+  // resolve both players' +attack to the same button), so its attack/jump
+  // and its impulse are latched off its own controller -- see
+  // src/client/splitscreen.ts.
+  const seat = SS_ActiveSeat();
   let bits = 0;
+  let impulse: number;
 
-  if (in_attack.state & 3) bits |= 1;
-  in_attack.state &= ~2;
+  if (seat === 0) {
+    if (in_attack.state & 3) bits |= 1;
+    in_attack.state &= ~2;
 
-  if (in_jump.state & 3) bits |= 2;
-  in_jump.state &= ~2;
+    if (in_jump.state & 3) bits |= 2;
+    in_jump.state &= ~2;
+
+    impulse = in_impulse;
+    in_impulse = 0;
+  } else {
+    bits = SS_SeatButtons(seat);
+    impulse = SS_TakeSeatImpulse(seat);
+  }
 
   MSG_WriteByte(buf, bits);
 
-  MSG_WriteByte(buf, in_impulse);
-  in_impulse = 0;
+  MSG_WriteByte(buf, impulse);
 
   //
   // deliver the message
@@ -464,6 +480,32 @@ export function CL_SendMove(cmd: UsercmdT): void {
     Con_Printf("CL_SendMove: lost server connection\n");
     CL_Disconnect();
   }
+}
+
+/*
+==================
+CL_SeatMove
+
+CL_BaseMove for a splitscreen seat past 0: the keyboard's kbuttons and the
+mouse are seat 0's, so this seat starts from a zeroed usercmd and takes
+everything -- movement and look -- from the controller assigned to it.
+==================
+*/
+export function CL_SeatMove(cmd: UsercmdT, seat: number): void {
+  if (cls.signon !== SIGNONS) return;
+
+  cmd.viewangles[0] = 0;
+  cmd.viewangles[1] = 0;
+  cmd.viewangles[2] = 0;
+  cmd.forwardmove = 0;
+  cmd.sidemove = 0;
+  cmd.upmove = 0;
+
+  inputBackend.current?.IN_MoveSeat?.(cmd, seat);
+
+  if (cl.viewangles[PITCH] > 80) cl.viewangles[PITCH] = 80;
+  if (cl.viewangles[PITCH] < -70) cl.viewangles[PITCH] = -70;
+  cl.viewangles[YAW] = anglemod(cl.viewangles[YAW]);
 }
 
 /*

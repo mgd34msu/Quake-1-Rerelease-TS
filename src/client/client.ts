@@ -228,7 +228,7 @@ export class ClientStaticT {
   qw: QwClientStaticExtT = new QwClientStaticExtT();
 }
 
-export const cls = new ClientStaticT();
+export let cls = new ClientStaticT();
 
 //
 // the client_state_t structure is wiped completely at every
@@ -424,7 +424,7 @@ export class PromptChoiceT {
 export const MAX_TEMP_ENTITIES = 64; // lightning bolts, etc
 export const MAX_STATIC_ENTITIES = 4096; // torches, etc
 
-export const cl = new ClientStateT();
+export let cl = new ClientStateT();
 
 function makeArray<T>(n: number, make: () => T): T[] {
   const a: T[] = new Array<T>(n);
@@ -442,12 +442,12 @@ function makeArray<T>(n: number, make: () => T): T[] {
 // would strand entity objects other modules are still holding). `growEntities`
 // / `growStaticEntities` are the only writers; CL_EntityNum and CL_ParseStatic
 // call them.
-const CL_ENTITIES_INITIAL = 600; // WinQuake's own MAX_EDICTS
+export const CL_ENTITIES_INITIAL = 600; // WinQuake's own MAX_EDICTS
 const CL_STATIC_ENTITIES_INITIAL = 128; // WinQuake's own MAX_STATIC_ENTITIES
 
 // FIXME, allocate dynamically
 export const cl_efrags: EfragT[] = makeArray(MAX_EFRAGS, () => new EfragT());
-export const cl_entities: EntityT[] = makeArray(CL_ENTITIES_INITIAL, () => new EntityT());
+export let cl_entities: EntityT[] = makeArray(CL_ENTITIES_INITIAL, () => new EntityT());
 export const cl_static_entities: EntityT[] = makeArray(CL_STATIC_ENTITIES_INITIAL, () => new EntityT());
 
 // U16: U3's `cl_entity_ext`/`cl_static_entity_ext` side tables (alpha, scale,
@@ -476,9 +476,48 @@ export const cl_beams: BeamT[] = makeArray(MAX_BEAMS, () => new BeamT());
 //=============================================================================
 
 export const MAX_VISEDICTS = 4096;
-export const cl_visedicts: Array<EntityT | null> = new Array<EntityT | null>(MAX_VISEDICTS).fill(null);
+export let cl_visedicts: Array<EntityT | null> = new Array<EntityT | null>(MAX_VISEDICTS).fill(null);
 
 export const clState: { cl_numvisedicts: number } = { cl_numvisedicts: 0 };
+
+// U43 (ARCHITECTURE.md "Unified client and server", local splitscreen): the
+// four bindings above that hold ONE connection's state -- `cl`, `cls`,
+// `cl_entities` and `cl_visedicts` -- are `let` rather than `const` so
+// src/client/splitscreen.ts can point them at the seat whose message stream
+// is being parsed, whose usercmd is being built, or whose viewport is being
+// drawn. They are ESM live bindings: every module that wrote `import { cl }`
+// keeps reading whatever this module last assigned, so no call site changes
+// and a one-seat session is the pre-splitscreen path exactly. This module is
+// the only writer; `CL_BindSeat` below is the only way in, and only
+// splitscreen.ts calls it (seat 0's binding is the objects constructed here,
+// so a session that never raises `cl_splitscreen` never rebinds anything).
+//
+// NOT per seat, and deliberately: `cl_efrags`/`cl_static_entities` (the
+// efrag pool links static entities into the shared worldmodel's leaves --
+// one copy per map, which every seat's render walk then sees),
+// `cl_lightstyle`, `cl_dlights`, `cl_temp_entities`, `cl_beams` (every seat
+// receives the same events from the same server; CL_AllocDlight keys by
+// entity so the seats' copies collapse onto one slot) and `clState`
+// (cl_numvisedicts is one int, saved and restored across a seat switch by
+// splitscreen.ts rather than rebound).
+export interface SeatBindingT {
+  readonly cl: ClientStateT;
+  readonly cls: ClientStaticT;
+  readonly cl_entities: EntityT[];
+  readonly cl_visedicts: Array<EntityT | null>;
+}
+
+/** The objects this module constructed -- seat 0's binding. */
+export function CL_SeatBinding0(): SeatBindingT {
+  return { cl, cls, cl_entities, cl_visedicts };
+}
+
+export function CL_BindSeat(b: SeatBindingT): void {
+  cl = b.cl;
+  cls = b.cls;
+  cl_entities = b.cl_entities;
+  cl_visedicts = b.cl_visedicts;
+}
 
 //
 // cl_input

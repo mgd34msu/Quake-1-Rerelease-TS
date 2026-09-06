@@ -108,6 +108,7 @@ import type { QpicT } from "../common/wad";
 // src/ref_soft/draw.ts, both of which DO statically import this file, goes
 // through a lazy require() there; see that file's header).
 import { CL_LocalizeKey, SbarScale, Text_Draw, Text_Width } from "./kfont_text";
+import { SS_Canvas } from "./splitscreen";
 
 export const SBAR_HEIGHT = 24;
 
@@ -162,8 +163,47 @@ export const hsb_items: Array<QpicT | null> = new Array(2).fill(null);
 // required), so nothing is ported for that line.
 
 // menu.c's M_DrawPic; see file header deviation note.
+/*
+U43 (local splitscreen): the status bar, the scoreboards and the intermission
+overlays draw inside the ACTIVE SEAT's pane, not the whole screen. With one
+seat SS_Canvas() is (0, 0, vid.width, vid.height) and every formula below is
+the one the C wrote; with two to four seats each pane gets its own bar along
+its own bottom edge. The pane origin is ADDED to the C's own centering
+arithmetic -- never subtracted as an inset -- so a pane that happens to be the
+whole screen is indistinguishable from no pane at all.
+
+`scr_sbarscale`'s own clamp is against `vid.width/320` (kfont_text.ts's
+SbarScale, outside this unit's SCOPE); a seat additionally caps it at its own
+pane width, so a quarter-screen pane never scales its text past its own
+width the way a full-screen one may.
+*/
+function sbarCanvasX(): number {
+  return SS_Canvas().x;
+}
+
+function sbarCanvasWidth(): number {
+  return SS_Canvas().width;
+}
+
+function sbarCanvasBottom(): number {
+  const c = SS_Canvas();
+  return c.y + c.height;
+}
+
+/** The C's `(vid.width - 320) >> 1` centering, against this seat's pane. */
+function sbarCenterX(): number {
+  const c = SS_Canvas();
+  return c.x + ((c.width - 320) >> 1);
+}
+
+function sbarSeatScale(): number {
+  const s = SbarScale();
+  const cap = Math.max(1, sbarCanvasWidth() / 320);
+  return s > cap ? cap : s;
+}
+
 function M_DrawPic(x: number, y: number, pic: QpicT): void {
-  getRenderer().Draw_Pic(x + ((vid.width - 320) >> 1), y, pic);
+  getRenderer().Draw_Pic(x + sbarCenterX(), y, pic);
 }
 
 /*
@@ -351,8 +391,8 @@ export function Sbar_DrawPic(x: number, y: number, pic: QpicT | null): void {
   if (!pic) return;
   const r = getRenderer();
   if (cl.gametype === GAME_DEATHMATCH)
-    r.Draw_Pic(x /* + ((vid.width - 320)>>1) */, y + (vid.height - SBAR_HEIGHT), pic);
-  else r.Draw_Pic(x + ((vid.width - 320) >> 1), y + (vid.height - SBAR_HEIGHT), pic);
+    r.Draw_Pic(x + sbarCanvasX() /* + ((vid.width - 320)>>1) */, y + (sbarCanvasBottom() - SBAR_HEIGHT), pic);
+  else r.Draw_Pic(x + sbarCenterX(), y + (sbarCanvasBottom() - SBAR_HEIGHT), pic);
 }
 
 /*
@@ -364,8 +404,8 @@ export function Sbar_DrawTransPic(x: number, y: number, pic: QpicT | null): void
   if (!pic) return;
   const r = getRenderer();
   if (cl.gametype === GAME_DEATHMATCH)
-    r.Draw_TransPic(x /*+ ((vid.width - 320)>>1)*/, y + (vid.height - SBAR_HEIGHT), pic);
-  else r.Draw_TransPic(x + ((vid.width - 320) >> 1), y + (vid.height - SBAR_HEIGHT), pic);
+    r.Draw_TransPic(x + sbarCanvasX() /*+ ((vid.width - 320)>>1)*/, y + (sbarCanvasBottom() - SBAR_HEIGHT), pic);
+  else r.Draw_TransPic(x + sbarCenterX(), y + (sbarCanvasBottom() - SBAR_HEIGHT), pic);
 }
 
 /*
@@ -383,9 +423,9 @@ export function Sbar_DrawCharacter(x: number, y: number, num: number): void {
   // SbarScale()'s default (1) this is byte-identical to that formula. See
   // this unit's report for why the status bar's PIC-based elements
   // (Sbar_DrawPic/Sbar_DrawTransPic, sb_nums) are NOT scaled by this unit.
-  const s = SbarScale();
-  const anchorX = cl.gametype === GAME_DEATHMATCH ? 0 : (vid.width - 320) >> 1;
-  const anchorY = vid.height - SBAR_HEIGHT;
+  const s = sbarSeatScale();
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX();
+  const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
   Text_Draw(anchorX + (x + 4) * s, anchorY + y * s, String.fromCharCode(num & 0xff), false, s);
 }
 
@@ -396,9 +436,9 @@ Sbar_DrawString
 */
 export function Sbar_DrawString(x: number, y: number, str: string): void {
   // U19: see Sbar_DrawCharacter's own note just above.
-  const s = SbarScale();
-  const anchorX = cl.gametype === GAME_DEATHMATCH ? 0 : (vid.width - 320) >> 1;
-  const anchorY = vid.height - SBAR_HEIGHT;
+  const s = sbarSeatScale();
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX();
+  const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
   Text_Draw(anchorX + x * s, anchorY + y * s, str, false, s);
 }
 
@@ -719,8 +759,8 @@ export function Sbar_DrawFrags(): void {
   const l = scoreboardlines <= 4 ? scoreboardlines : 4;
 
   let x = 23;
-  const xofs = cl.gametype === GAME_DEATHMATCH ? 0 : (vid.width - 320) >> 1;
-  const y = vid.height - SBAR_HEIGHT - 23;
+  const xofs = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX();
+  const y = sbarCanvasBottom() - SBAR_HEIGHT - 23;
 
   const r = getRenderer();
 
@@ -774,11 +814,11 @@ export function Sbar_DrawFace(): void {
     top = Sbar_ColorForMap(top);
     bottom = Sbar_ColorForMap(bottom);
 
-    const xofs = cl.gametype === GAME_DEATHMATCH ? 113 : ((vid.width - 320) >> 1) + 113;
+    const xofs = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() + 113 : sbarCenterX() + 113;
 
     Sbar_DrawPic(112, 0, rsb_teambord);
-    r.Draw_Fill(xofs, vid.height - SBAR_HEIGHT + 3, 22, 9, top);
-    r.Draw_Fill(xofs, vid.height - SBAR_HEIGHT + 12, 22, 9, bottom);
+    r.Draw_Fill(xofs, sbarCanvasBottom() - SBAR_HEIGHT + 3, 22, 9, top);
+    r.Draw_Fill(xofs, sbarCanvasBottom() - SBAR_HEIGHT + 12, 22, 9, bottom);
 
     // draw number
     const f = s.frags;
@@ -843,8 +883,8 @@ export function Sbar_Draw(): void {
 
   sb_updates++;
 
-  if (scrState.sb_lines && vid.width > 320)
-    r.Draw_TileClear(0, vid.height - scrState.sb_lines, vid.width, scrState.sb_lines);
+  if (scrState.sb_lines && sbarCanvasWidth() > 320)
+    r.Draw_TileClear(sbarCanvasX(), sbarCanvasBottom() - scrState.sb_lines, sbarCanvasWidth(), scrState.sb_lines);
 
   if (scrState.sb_lines > 24) {
     Sbar_DrawInventory();
@@ -907,7 +947,7 @@ export function Sbar_Draw(): void {
     Sbar_DrawNum(248, 0, cl.stats[STAT_AMMO], 3, cl.stats[STAT_AMMO] <= 10 ? 1 : 0);
   }
 
-  if (vid.width > 320) {
+  if (sbarCanvasWidth() > 320) {
     if (cl.gametype === GAME_DEATHMATCH) Sbar_MiniDeathmatchOverlay();
   }
 }
@@ -961,7 +1001,7 @@ export function Sbar_DeathmatchOverlay(): void {
   // draw the text
   const l = scoreboardlines;
 
-  const x = 80 + ((vid.width - 320) >> 1);
+  const x = 80 + sbarCenterX();
   let y = 40;
   for (let i = 0; i < l; i++) {
     const k = fragsort[i];
@@ -1001,7 +1041,7 @@ Sbar_MiniDeathmatchOverlay
 ==================
 */
 export function Sbar_MiniDeathmatchOverlay(): void {
-  if (vid.width < 512 || !scrState.sb_lines) return;
+  if (sbarCanvasWidth() < 512 || !scrState.sb_lines) return;
 
   const r = getRenderer();
 
@@ -1013,7 +1053,7 @@ export function Sbar_MiniDeathmatchOverlay(): void {
 
   // draw the text
   const l = scoreboardlines;
-  let y = vid.height - scrState.sb_lines;
+  let y = sbarCanvasBottom() - scrState.sb_lines;
   const numlines = Math.trunc(scrState.sb_lines / 8);
   if (numlines < 3) return;
 
@@ -1031,7 +1071,7 @@ export function Sbar_MiniDeathmatchOverlay(): void {
   if (i < 0) i = 0;
 
   const x = 324;
-  for (; i < scoreboardlines && y < vid.height - 8; i++) {
+  for (; i < scoreboardlines && y < sbarCanvasBottom() - 8; i++) {
     const k = fragsort[i];
     const s: ScoreboardT = cl.scores[k];
     if (!s.name[0]) continue;
@@ -1119,7 +1159,7 @@ export function Sbar_FinaleOverlay(): void {
   scrState.scr_copyeverything = 1;
 
   const pic = r.Draw_CachePic("gfx/finale.lmp");
-  if (pic) r.Draw_TransPic(Math.trunc((vid.width - pic.width) / 2), 16, pic);
+  if (pic) r.Draw_TransPic(sbarCanvasX() + Math.trunc((sbarCanvasWidth() - pic.width) / 2), 16, pic);
 }
 
 hostClientHooks.sbarInit = Sbar_Init;

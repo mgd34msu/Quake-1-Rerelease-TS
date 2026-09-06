@@ -117,6 +117,7 @@ import {
   PROTOCOL_NETQUAKE,
   PROTOCOL_RMQ,
   SvcOpsT,
+  svc_setviews,
 } from "../common/protocol";
 import { getCodec } from "../common/protocol/registry";
 import { ClientdataT, EntityUpdateT, SoundMessageT } from "../common/protocol/codec";
@@ -174,12 +175,18 @@ export const svMainHooks: {
   isBot: ((client: ClientT) => boolean) | null;
   botThink: ((client: ClientT) => void) | null;
   spawnServer: ((mapname: string) => void) | null;
+  /** U43: how many LOCAL splitscreen seats the client on this machine is
+   *  running (src/client/splitscreen.ts installs it; 1 on a dedicated
+   *  server, which has no client at all). Read only by SV_SendServerinfo,
+   *  for the svc_setviews byte a loopback client is told. */
+  localSeatCount: (() => number) | null;
 } = {
   dropClient: null,
   scrCenterTimeOff: null,
   isBot: null,
   botThink: null,
   spawnServer: null,
+  localSeatCount: null,
 };
 
 // U38: the NetQuake half of src/common/profile.ts's one-server-at-a-time
@@ -500,6 +507,19 @@ export function SV_SendServerinfo(client: ClientT): void {
   MSG_WriteByte(client.message, SvcOpsT.svc_setview);
   if (client.edict === null) throw new SysError("SV_SendServerinfo: client has no edict");
   MSG_WriteShort(client.message, NUM_FOR_EDICT(client.edict));
+
+  // U43 (local splitscreen): tell a LOCAL (loopback) client how many local
+  // seats this machine is running, so it can tell "one of N views on one
+  // screen" from "one of N players on N machines". Our own semantics for the
+  // re-release's svc_setviews (45) -- see src/client/splitscreen.ts's header
+  // -- sent only to clients on the loopback driver and only when there is
+  // more than one seat, so a classic session's byte stream is unchanged and
+  // no remote client ever sees an opcode protocol 15 has no room for.
+  const localSeats = svMainHooks.localSeatCount?.() ?? 1;
+  if (localSeats > 1 && client.netconnection !== null && client.netconnection.address === "LOCAL") {
+    MSG_WriteByte(client.message, svc_setviews);
+    MSG_WriteByte(client.message, localSeats);
+  }
 
   MSG_WriteByte(client.message, SvcOpsT.svc_signonnum);
   MSG_WriteByte(client.message, 1);

@@ -137,6 +137,7 @@ import { CL_ParseServerMessage } from "./cl_parse";
 import { CL_InitTEnts, CL_UpdateTEnts } from "./cl_tent";
 import {
   CL_BaseMove,
+  CL_SeatMove,
   CL_InitInput,
   CL_SendMove,
   cl_anglespeedkey,
@@ -154,6 +155,18 @@ import { S_StopAllSounds } from "./snd_dma";
 // the single Cmd_AddCommand registration below, next to the other client
 // commands CL_Init already registers).
 import { Haptics_Vibrate_f } from "../platform/haptics";
+import {
+  SS_ActiveSeat,
+  SS_Init,
+  SS_IsPrimary,
+  SS_ReadFromServer,
+  SS_SeatColorCvar,
+  SS_SeatCount,
+  SS_SeatNameCvar,
+  SS_SendCmd,
+  SS_Shutdown,
+  seatDisconnectHooks,
+} from "./splitscreen";
 
 // we need to declare some mouse variables here, because the menu system
 // references them even when on a unix system.
@@ -224,7 +237,15 @@ function clearBeam(b: BeamT): void {
 }
 
 export function CL_ClearState(): void {
-  if (!sv.active) Host_ClearMemory();
+  // U43: a splitscreen seat past 0 owns its own `cl` and its own entity
+  // array and nothing else (src/client/splitscreen.ts's header). The efrag
+  // pool, the lightstyles, the dlights, the temp entities and the beams are
+  // one copy shared by every seat, linked into the one worldmodel -- wiping
+  // them from a seat's own signon would throw away the primary client's
+  // world half a level in.
+  const primary = SS_IsPrimary();
+
+  if (primary && !sv.active) Host_ClearMemory();
 
   // wipe the entire cl structure
   cl.clear();
@@ -232,8 +253,11 @@ export function CL_ClearState(): void {
   SZ_Clear(cls.message);
 
   // clear other arrays
-  for (const e of cl_efrags) clearEfrag(e);
   for (const e of cl_entities) e.clear();
+
+  if (!primary) return;
+
+  for (const e of cl_efrags) clearEfrag(e);
   for (const dl of cl_dlights) clearDlight(dl);
   for (const l of cl_lightstyle) clearLightstyle(l);
   for (const e of cl_temp_entities) e.clear();
@@ -257,6 +281,12 @@ This is also called on Host_Error, so it shouldn't cause any errors
 =====================
 */
 export function CL_Disconnect(): void {
+  // U43: the primary client leaving ends the session for every seat -- their
+  // connections are to the server this one is about to shut down. A seat's
+  // own disconnect (SS_DropSeat) reaches this function with that seat bound
+  // and must not recurse back into the seat table.
+  if (SS_IsPrimary() && SS_SeatCount() > 1) SS_Shutdown();
+
   // stop sounds (especially looping!)
   S_StopAllSounds(true);
 
@@ -276,7 +306,10 @@ export function CL_Disconnect(): void {
     NET_Close(cls.netcon);
 
     cls.state = CactiveT.ca_disconnected;
-    if (sv.active) Host_ShutdownServer(false);
+    // U43: only the PRIMARY client leaving ends the session. A splitscreen
+    // seat closing its own loopback connection frees one player slot on a
+    // server the other seats are still playing on.
+    if (sv.active && SS_IsPrimary()) Host_ShutdownServer(false);
   }
 
   cls.demoplayback = cls.timedemo = false;
@@ -284,8 +317,9 @@ export function CL_Disconnect(): void {
 
   // Unified client: with no connection open the client goes back to the boot
   // profile, so the next `connect` is decided by the rule again (and a `-qw`
-  // client stays QuakeWorld). See src/common/profile.ts.
-  resetClientProfile();
+  // client stays QuakeWorld). See src/common/profile.ts. The profile is one
+  // per process, so only the primary client's disconnect resets it (U43).
+  if (SS_IsPrimary()) resetClientProfile();
 }
 
 export function CL_Disconnect_f(): void {
@@ -591,12 +625,19 @@ export function CL_SignonReply(): void {
       MSG_WriteString(cls.message, "prespawn");
       break;
 
-    case 2:
-      MSG_WriteByte(cls.message, ClcOpsT.clc_stringcmd);
-      MSG_WriteString(cls.message, va('name "%s"\n', cl_name.string));
+    case 2: {
+      // U43: seat 0 signs on as `_cl_name`/`_cl_color`; a splitscreen seat
+      // signs on as its own cl_name_2.._4 / cl_color_2.._4.
+      const seatName = SS_SeatNameCvar(SS_ActiveSeat());
+      const seatColor = SS_SeatColorCvar(SS_ActiveSeat());
+      const name = seatName !== null ? seatName.string : cl_name.string;
+      const color = (seatColor !== null ? seatColor.value : cl_color.value) | 0;
 
       MSG_WriteByte(cls.message, ClcOpsT.clc_stringcmd);
-      MSG_WriteString(cls.message, va("color %i %i\n", (cl_color.value | 0) >> 4, (cl_color.value | 0) & 15));
+      MSG_WriteString(cls.message, va('name "%s"\n', name));
+
+      MSG_WriteByte(cls.message, ClcOpsT.clc_stringcmd);
+      MSG_WriteString(cls.message, va("color %i %i\n", color >> 4, color & 15));
 
       MSG_WriteByte(cls.message, ClcOpsT.clc_stringcmd);
       MSG_WriteString(cls.message, va("ex_flags %i\n", CL_ExFlags()));
@@ -604,6 +645,7 @@ export function CL_SignonReply(): void {
       MSG_WriteByte(cls.message, ClcOpsT.clc_stringcmd);
       MSG_WriteString(cls.message, va("spawn %s", cls.spawnparms));
       break;
+    }
 
     case 3:
       MSG_WriteByte(cls.message, ClcOpsT.clc_stringcmd);
@@ -962,11 +1004,16 @@ export function CL_SendCmd(): void {
   if (cls.state !== CactiveT.ca_connected) return;
 
   if (cls.signon === SIGNONS) {
-    // get basic movement from keyboard
-    CL_BaseMove(cmd);
+    if (SS_IsPrimary()) {
+      // get basic movement from keyboard
+      CL_BaseMove(cmd);
 
-    // allow mice or other external controllers to add to the move
-    inputBackend.current?.IN_Move(cmd);
+      // allow mice or other external controllers to add to the move
+      inputBackend.current?.IN_Move(cmd);
+    } else {
+      // U43: a splitscreen seat's whole move comes from its own controller.
+      CL_SeatMove(cmd, SS_ActiveSeat());
+    }
 
     // send the unreliable message
     CL_SendMove(cmd);
@@ -1042,6 +1089,8 @@ export function CL_Init(): void {
   // unscoped and is what this calls for the NetQuake arm).
   Cvar_RegisterVariable(cl_protocol);
   Cmd_AddCommand("connect", CL_Connect_f, "nq");
+
+  SS_Init();
 }
 
 //=============================================================================
@@ -1080,9 +1129,18 @@ function registerClMainHooks(): void {
   hostClientHooks.clDisconnectF = CL_Disconnect_f;
   hostClientHooks.clEstablishConnection = CL_EstablishConnection;
   hostClientHooks.clNextDemo = CL_NextDemo;
-  hostClientHooks.clSendCmd = CL_SendCmd;
+  // U43: host.c's two per-frame client entry points run once per SEAT (one
+  // full loopback client per local player); with one seat SS_SendCmd/
+  // SS_ReadFromServer call straight through to these two and nothing else
+  // happens. src/client/splitscreen.ts reaches them through its own hook
+  // holder rather than importing this module, which would close a cycle.
+  seatDisconnectHooks.disconnect = CL_Disconnect;
+  seatDisconnectHooks.establishConnection = CL_EstablishConnection;
+  seatDisconnectHooks.readFromServer = CL_ReadFromServer;
+  seatDisconnectHooks.sendCmd = CL_SendCmd;
+  hostClientHooks.clSendCmd = SS_SendCmd;
   hostClientHooks.clReadFromServer = () => {
-    CL_ReadFromServer();
+    SS_ReadFromServer();
   };
   hostClientHooks.clDecayLights = CL_DecayLights;
   hostClientHooks.clInit = CL_Init;

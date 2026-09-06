@@ -148,7 +148,7 @@ import { CactiveT, SIGNONS, cl, cls } from "./client";
 import { Con_CheckResize, Con_ClearNotify, Con_DrawConsole, Con_DrawNotify, Con_Printf, conState } from "./console";
 import { K_ESCAPE, KeydestT, keyState, key_lastpress } from "./keys";
 import { M_Draw } from "./menu";
-import { getRenderer } from "./render";
+import { getRenderer, r_refdef } from "./render";
 import { Sbar_Changed, Sbar_Draw, Sbar_FinaleOverlay, Sbar_IntermissionOverlay } from "./sbar";
 import { scrState, scr_vrect } from "./screen_types";
 import { S_ClearBuffer, S_StopAllSounds } from "./snd_dma";
@@ -157,6 +157,7 @@ import { VrectT, vid, vidBackend } from "./vid";
 // U19: a plain static import is safe here -- kfont_text.ts never statically
 // imports this file back (see that file's header).
 import { CL_LocalizeKey, KfontText_RegisterCvars, Text_Draw, Text_Width } from "./kfont_text";
+import { MAX_SEATS, SS_ActiveSeat, SS_ApplySeatRect, SS_Canvas, SS_SeatCount, SS_WithSeat } from "./splitscreen";
 
 let oldscreensize = 0;
 let oldfov = 0;
@@ -191,12 +192,28 @@ CENTER PRINTING
 ===============================================================================
 */
 
-let scr_centerstring = ""; // char scr_centerstring[1024]
-let scr_centertime_start = 0; // for slow victory printing
-let scr_centertime_off = 0;
-let scr_center_lines = 0;
-let scr_erase_lines = 0;
-let scr_erase_center = 0;
+/*
+U43 (local splitscreen): screen.c's six file-scope centerprint variables
+become one set PER SEAT. A centerprint is addressed to one client -- the
+server unicasts it -- so seat 1 being told "you got the key" must not wipe the
+message seat 0 is still reading, and each seat's copy is drawn inside its own
+pane. With one seat this is the C's own single set, reached through
+`center()`.
+*/
+class CenterPrintT {
+  text = ""; // char scr_centerstring[1024]
+  timeStart = 0; // for slow victory printing
+  timeOff = 0;
+  lines = 0;
+  eraseLines = 0;
+  eraseCenter = 0;
+}
+
+const scr_center: CenterPrintT[] = Array.from({ length: MAX_SEATS }, () => new CenterPrintT());
+
+function center(): CenterPrintT {
+  return scr_center[SS_ActiveSeat()] ?? scr_center[0];
+}
 
 // `start[l]` on a NUL-terminated char array: past the end reads the terminator
 function strAt(s: string, i: number): number {
@@ -217,30 +234,33 @@ export function SCR_CenterPrint(str: string): void {
   // kfont_text.ts's CL_LocalizeKey doc comment. A no-op for anything not
   // starting with '$' (every classic-ruleset centerprint).
   const localized = CL_LocalizeKey(str);
-  scr_centerstring = localized.slice(0, 1023); // strncpy (..., sizeof(scr_centerstring)-1)
-  scr_centertime_off = scr_centertime.value;
-  scr_centertime_start = cl.time;
+  const c = center();
+  c.text = localized.slice(0, 1023); // strncpy (..., sizeof(scr_centerstring)-1)
+  c.timeOff = scr_centertime.value;
+  c.timeStart = cl.time;
 
   // count the number of lines for centering
-  scr_center_lines = 1;
+  c.lines = 1;
   for (let i = 0; i < localized.length; i++) {
-    if (localized.charCodeAt(i) === 10) scr_center_lines++;
+    if (localized.charCodeAt(i) === 10) c.lines++;
   }
 }
 
 export function SCR_EraseCenterString(): void {
   let y: number;
+  const c = center();
+  const pane = SS_Canvas();
 
-  if (scr_erase_center++ > vid.numpages) {
-    scr_erase_lines = 0;
+  if (c.eraseCenter++ > vid.numpages) {
+    c.eraseLines = 0;
     return;
   }
 
-  if (scr_center_lines <= 4) y = (vid.height * 0.35) | 0;
-  else y = 48;
+  if (c.lines <= 4) y = pane.y + ((pane.height * 0.35) | 0);
+  else y = pane.y + 48;
 
   scrState.scr_copytop = 1;
-  getRenderer().SCR_SoftwareTileClear(0, y, vid.width, 8 * scr_erase_lines);
+  getRenderer().SCR_SoftwareTileClear(pane.x, y, pane.width, 8 * c.eraseLines);
 }
 
 export function SCR_DrawCenterString(): void {
@@ -249,15 +269,18 @@ export function SCR_DrawCenterString(): void {
   let y: number;
   let remaining: number;
 
+  const c = center();
+  const pane = SS_Canvas();
+
   // the finale prints the characters one at a time
-  if (cl.intermission) remaining = (scr_printspeed.value * (cl.time - scr_centertime_start)) | 0;
+  if (cl.intermission) remaining = (scr_printspeed.value * (cl.time - c.timeStart)) | 0;
   else remaining = 9999;
 
-  scr_erase_center = 0;
+  c.eraseCenter = 0;
   let start = 0;
 
-  if (scr_center_lines <= 4) y = (vid.height * 0.35) | 0;
-  else y = 48;
+  if (c.lines <= 4) y = pane.y + ((pane.height * 0.35) | 0);
+  else y = pane.y + 48;
 
   // U19: routed through kfont_text.ts's Text_Draw/Text_Width (con_font's
   // classic/kfont/ttf choice applies here too), still character-by-character
@@ -268,13 +291,13 @@ export function SCR_DrawCenterString(): void {
   for (;;) {
     // scan the width of the line
     for (l = 0; l < 40; l++) {
-      const c = strAt(scr_centerstring, start + l);
-      if (c === 10 || c === 0) break;
+      const ch = strAt(c.text, start + l);
+      if (ch === 10 || ch === 0) break;
     }
-    const line = scr_centerstring.slice(start, start + l);
-    x = ((vid.width - Text_Width(line)) / 2) | 0;
+    const line = c.text.slice(start, start + l);
+    x = pane.x + (((pane.width - Text_Width(line)) / 2) | 0);
     for (let j = 0; j < l; j++) {
-      const ch = String.fromCharCode(strAt(scr_centerstring, start + j));
+      const ch = String.fromCharCode(strAt(c.text, start + j));
       Text_Draw(x, y, ch, false, 1);
       x += Text_Width(ch);
       if (remaining-- === 0) return;
@@ -282,9 +305,9 @@ export function SCR_DrawCenterString(): void {
 
     y += 8;
 
-    while (strAt(scr_centerstring, start) !== 0 && strAt(scr_centerstring, start) !== 10) start++;
+    while (strAt(c.text, start) !== 0 && strAt(c.text, start) !== 10) start++;
 
-    if (strAt(scr_centerstring, start) === 0) break;
+    if (strAt(c.text, start) === 0) break;
     start++; // skip the \n
   }
 }
@@ -315,24 +338,26 @@ export function SCR_DrawPrompt(): void {
   // U19: routed through kfont_text.ts's Text_Draw/Text_Width, unscaled --
   // see SCR_DrawCenterString's own note on why the prompt overlay stays
   // scale 1 in this unit.
-  let y = ((vid.height - lines.length * 8) / 2) | 0;
-  if (y < 0) y = 0;
+  const pane = SS_Canvas();
+  let y = pane.y + (((pane.height - lines.length * 8) / 2) | 0);
+  if (y < pane.y) y = pane.y;
 
   for (const line of lines) {
     const truncated = line.slice(0, 40);
-    const x = ((vid.width - Text_Width(truncated)) / 2) | 0;
+    const x = pane.x + (((pane.width - Text_Width(truncated)) / 2) | 0);
     Text_Draw(x, y, truncated, false, 1);
     y += 8;
   }
 }
 
 export function SCR_CheckDrawCenterString(): void {
+  const c = center();
   scrState.scr_copytop = 1;
-  if (scr_center_lines > scr_erase_lines) scr_erase_lines = scr_center_lines;
+  if (c.lines > c.eraseLines) c.eraseLines = c.lines;
 
-  scr_centertime_off -= host.frametime;
+  c.timeOff -= host.frametime;
 
-  if (scr_centertime_off <= 0 && !cl.intermission) return;
+  if (c.timeOff <= 0 && !cl.intermission) return;
   if (keyState.key_dest !== KeydestT.key_game) return;
 
   SCR_DrawCenterString();
@@ -588,7 +613,7 @@ export function SCR_BeginLoadingPlaque(): void {
 
   // redraw with no console and the loading plaque
   Con_ClearNotify();
-  scr_centertime_off = 0;
+  for (const c of scr_center) c.timeOff = 0;
   scrState.scr_con_current = 0;
 
   scr_drawloading = true;
@@ -692,7 +717,7 @@ Brings the console down and fades the palettes back to normal
 ================
 */
 export function SCR_BringDownConsole(): void {
-  scr_centertime_off = 0;
+  for (const c of scr_center) c.timeOff = 0;
 
   for (let i = 0; i < 20 && scrState.scr_conlines !== scrState.scr_con_current; i++) SCR_UpdateScreen();
 
@@ -786,7 +811,22 @@ export function SCR_UpdateScreen(): void {
 
   vidBackend.current?.VID_LockBuffer();
 
-  V_RenderView();
+  const seats = SS_SeatCount();
+  if (seats <= 1) V_RenderView();
+  else {
+    // Seat 0 is rendered LAST on purpose: R_RenderView leaves r_origin/vpn/
+    // vright/vup holding the view it just drew, and host.c reads those
+    // straight afterwards as the SOUND LISTENER (_Host_Frame's S_Update).
+    // The listener is the primary player's ears -- see splitscreen.ts's
+    // limits -- so the primary player's view is the one left behind.
+    for (let seat = seats - 1; seat >= 0; seat--) {
+      SS_WithSeat(seat, () => {
+        SS_ApplySeatRect(scrState.sb_lines);
+        r_refdef.fov_y = CalcFov(r_refdef.fov_x, r_refdef.vrect.width, r_refdef.vrect.height);
+        V_RenderView();
+      });
+    }
+  }
 
   vidBackend.current?.VID_UnlockBuffer();
 
@@ -815,15 +855,26 @@ export function SCR_UpdateScreen(): void {
   } else if (cl.intermission === 3 && keyState.key_dest === KeydestT.key_game) {
     SCR_CheckDrawCenterString();
   } else {
-    re.SCR_DrawCrosshair();
+    // U43: the crosshair, the status bar, the centerprint and the prompt
+    // belong to a seat and are drawn once per seat, inside that seat's pane.
+    // The console, the menu and the net/turtle/ram/pause icons are the
+    // session's, drawn once with seat 0 bound -- there is one key_dest and
+    // one console for the machine. With one seat this is the C's own
+    // straight-line order, with the loop running exactly once.
+    for (let seat = 0; seat < seats; seat++) {
+      SS_WithSeat(seat, () => {
+        SS_ApplySeatRect(scrState.sb_lines);
+        re.SCR_DrawCrosshair();
+        SCR_CheckDrawCenterString();
+        SCR_DrawPrompt();
+        Sbar_Draw();
+      });
+    }
 
     SCR_DrawRam();
     SCR_DrawNet();
     SCR_DrawTurtle();
     SCR_DrawPause();
-    SCR_CheckDrawCenterString();
-    SCR_DrawPrompt();
-    Sbar_Draw();
     SCR_DrawConsole();
     M_Draw();
   }
@@ -866,7 +917,7 @@ export function registerScreenHooks(): void {
     scrState.scr_disabled_for_loading = true;
   };
   svMainHooks.scrCenterTimeOff = () => {
-    scr_centertime_off = 0;
+    for (const c of scr_center) c.timeOff = 0;
   };
 }
 

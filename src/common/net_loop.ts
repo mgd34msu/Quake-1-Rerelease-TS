@@ -14,12 +14,13 @@ Deviations from PORTING.md / the C source:
 - `sv.active`/`sv.name`/`svs.maxclients`/`cls.state == ca_dedicated` are
   reached through net_main.ts's `getNetHostHooks()` (see that file's header
   for the full hook contract this unit shares with net_dgrm.ts/net_vcr.ts).
-- `Loop_CheckNewConnections`'s C trusts `loop_server`/`loop_client` to be
-  non-NULL once `localconnectpending` is true (only `Loop_Connect` sets that
-  flag, and only after allocating both). This port's `loop_server`/
-  `loop_client` are typed `QsocketT | null`, so the same invariant is
-  expressed as an explicit (in practice unreachable) null check instead of
-  an unchecked dereference.
+- `loop_client`/`loop_server`/`localconnectpending` become a table of
+  connection pairs and a queue of not-yet-accepted server sockets; see the
+  note above that table for why, and for why one connection behaves exactly
+  as the C's does.
+- Loop_Connect stamps both sockets with this driver's own index in
+  `net_drivers` rather than leaving NET_NewQSocket's `net_driverlevel`
+  snapshot; see loop_driverIndex below for the case that distinguishes them.
 - `IntAlign`'s C body is `(value + (sizeof(int) - 1)) & (~(sizeof(int) - 1))`;
   ported as the unit brief's `(value + 3) & ~3` (`sizeof(int) == 4` on this
   port's only target).
@@ -27,13 +28,59 @@ Deviations from PORTING.md / the C source:
 
 import { QsocketT, NetDriverT, NET_MAXMESSAGE } from "./net";
 import { SizeBuf, net_message, SZ_Clear, SZ_Write } from "./sizebuf";
-import { NET_NewQSocket, net_activeconnections, net_driverlevel, hostcache, setHostCacheCount, hostname, getNetHostHooks } from "./net_main";
+import { NET_NewQSocket, NET_FreeQSocket, net_activeconnections, net_driverlevel, net_drivers, hostcache, setHostCacheCount, hostname, getNetHostHooks } from "./net_main";
 import { Sys_Error } from "../platform/sys";
 import { Con_Printf } from "../client/console";
 
-let localconnectpending = false;
-let loop_client: QsocketT | null = null;
-let loop_server: QsocketT | null = null;
+/*
+U43 (local splitscreen): WinQuake's loopback driver holds exactly ONE pair of
+qsockets (`loop_client`/`loop_server`) plus a single `localconnectpending`
+flag, because a WinQuake process has exactly one client. A splitscreen
+session is N local clients on one listen server, each with a full connection
+of its own (src/client/splitscreen.ts), so the pair becomes a table of pairs
+and the flag becomes the queue of server-side sockets Loop_CheckNewConnections
+has not handed to SV_ConnectClient yet. With one seat the table holds one
+pair and every function below behaves exactly as the C's does; the only
+observable change for a single connection is that a reconnect allocates a
+fresh qsocket from net_main's free list instead of reusing the previous one,
+which nothing outside this file can see (NET_NewQSocket hands back a socket
+that Loop_Connect resets in full either way).
+*/
+interface LoopPairT {
+  client: QsocketT;
+  server: QsocketT;
+}
+
+const loop_pairs: LoopPairT[] = [];
+const loop_pending: QsocketT[] = [];
+
+/*
+The index THIS driver occupies in net_main's `net_drivers`, which is what
+NET_Close/NET_GetMessage/NET_SendMessage dispatch a socket on (`sfunc(sock)`
+is `net_drivers[sock.driver]`).
+
+NET_NewQSocket stamps a new socket with the CURRENT `net_driverlevel`, which
+is correct while NET_Connect is walking the driver table -- and wrong for
+anyone who calls this driver's `Connect` directly, because every one of
+net_main's driver loops leaves `net_driverlevel` sitting at `net_numdrivers`,
+one past the end. A socket stamped with that index dispatches to
+`net_drivers[net_numdrivers]`, which is `undefined`, and the next NET_Close of
+it -- NET_Shutdown's sweep of `net_activeSockets`, say -- throws instead of
+closing. Stamping the socket with the index this driver actually occupies is
+identical on the engine's own path (there `net_driverlevel` IS this index) and
+correct on every other, so a loopback socket is always closable.
+*/
+function loop_driverIndex(): number {
+  const i = net_drivers.indexOf(netLoopDriver);
+  return i >= 0 ? i : net_driverlevel;
+}
+
+function loop_pairOf(sock: QsocketT): LoopPairT | null {
+  for (const pair of loop_pairs) {
+    if (pair.client === sock || pair.server === sock) return pair;
+  }
+  return null;
+}
 
 function Loop_Init(): number {
   if (getNetHostHooks()?.clsStateDedicated() ?? false) return -1;
@@ -41,7 +88,10 @@ function Loop_Init(): number {
 }
 
 function Loop_Shutdown(): void {
-  //
+  // The C's body is empty; the pair table (see the header note above) is
+  // dropped here so a re-Init does not inherit sockets from the last run.
+  loop_pairs.length = 0;
+  loop_pending.length = 0;
 }
 
 function Loop_Listen(_state: boolean): void {
@@ -65,52 +115,57 @@ function Loop_SearchForHosts(_xmit: boolean): void {
 function Loop_Connect(host: string | null): QsocketT | null {
   if (host !== "local") return null;
 
-  localconnectpending = true;
-
-  if (!loop_client) {
-    const s = NET_NewQSocket();
-    if (s === null) {
-      Con_Printf("Loop_Connect: no qsocket available\n");
-      return null;
-    }
-    loop_client = s;
-    loop_client.address = "localhost";
+  const client = NET_NewQSocket();
+  if (client === null) {
+    Con_Printf("Loop_Connect: no qsocket available\n");
+    return null;
   }
-  loop_client.receiveMessageLength = 0;
-  loop_client.sendMessageLength = 0;
-  loop_client.canSend = true;
-
-  if (!loop_server) {
-    const s = NET_NewQSocket();
-    if (s === null) {
-      Con_Printf("Loop_Connect: no qsocket available\n");
-      return null;
-    }
-    loop_server = s;
-    loop_server.address = "LOCAL";
+  const server = NET_NewQSocket();
+  if (server === null) {
+    Con_Printf("Loop_Connect: no qsocket available\n");
+    // Half a pair is no pair: hand the client side back rather than leaving
+    // it on the active list with nothing on the other end of it.
+    NET_FreeQSocket(client);
+    return null;
   }
-  loop_server.receiveMessageLength = 0;
-  loop_server.sendMessageLength = 0;
-  loop_server.canSend = true;
 
-  loop_client.driverdata = loop_server;
-  loop_server.driverdata = loop_client;
+  const driver = loop_driverIndex();
+  client.driver = driver;
+  server.driver = driver;
 
-  return loop_client;
+  client.address = "localhost";
+  client.receiveMessageLength = 0;
+  client.sendMessageLength = 0;
+  client.canSend = true;
+
+  server.address = "LOCAL";
+  server.receiveMessageLength = 0;
+  server.sendMessageLength = 0;
+  server.canSend = true;
+
+  client.driverdata = server;
+  server.driverdata = client;
+
+  loop_pairs.push({ client, server });
+  loop_pending.push(server);
+
+  return client;
 }
 
 function Loop_CheckNewConnections(): QsocketT | null {
-  if (!localconnectpending) return null;
-  if (!loop_server || !loop_client) return null; // see file header
+  const server = loop_pending.shift();
+  if (server === undefined) return null;
 
-  localconnectpending = false;
-  loop_server.sendMessageLength = 0;
-  loop_server.receiveMessageLength = 0;
-  loop_server.canSend = true;
-  loop_client.sendMessageLength = 0;
-  loop_client.receiveMessageLength = 0;
-  loop_client.canSend = true;
-  return loop_server;
+  const pair = loop_pairOf(server);
+  if (pair === null) return null;
+
+  pair.server.sendMessageLength = 0;
+  pair.server.receiveMessageLength = 0;
+  pair.server.canSend = true;
+  pair.client.sendMessageLength = 0;
+  pair.client.receiveMessageLength = 0;
+  pair.client.canSend = true;
+  return pair.server;
 }
 
 function IntAlign(value: number): number {
@@ -201,8 +256,12 @@ function Loop_Close(sock: QsocketT): void {
   sock.receiveMessageLength = 0;
   sock.sendMessageLength = 0;
   sock.canSend = true;
-  if (sock === loop_client) loop_client = null;
-  else loop_server = null;
+
+  const pair = loop_pairOf(sock);
+  if (pair === null) return;
+  const pendingAt = loop_pending.indexOf(pair.server);
+  if (pendingAt >= 0) loop_pending.splice(pendingAt, 1);
+  loop_pairs.splice(loop_pairs.indexOf(pair), 1);
 }
 
 export const netLoopDriver: NetDriverT = {

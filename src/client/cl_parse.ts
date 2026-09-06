@@ -159,7 +159,8 @@ import { CL_GetMessage } from "./cl_demo";
 import { CL_ParseTEnt } from "./cl_tent";
 import { Con_DPrintf, Con_Printf } from "./console";
 import { PromptChoiceT, SIGNONS, ScoreboardT, cl, cl_entities, cl_lightstyle, cl_static_entities, cls, growEntities, growStaticEntities } from "./client";
-import { BOTTOM_RANGE, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, TOP_RANGE, getRenderer, type EntityT } from "./render";
+import { BOTTOM_RANGE, EntityT, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, TOP_RANGE, getRenderer } from "./render";
+import { SS_IsPrimary } from "./splitscreen";
 // r_part.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { R_ParseParticleEffect } from "./r_part";
 // sbar.c (concurrent sibling, not yet landed -- absent-at-gate rule)
@@ -522,7 +523,12 @@ export function CL_ParseServerInfo(): void {
   cl.worldmodel = cl.model_precache[1];
   cl_entities[0].model = cl.worldmodel;
 
-  getRenderer().R_NewMap();
+  // U43: R_NewMap rebuilds the renderer's whole per-map state (lightmaps,
+  // the surface cache, the sky). The world is one world however many seats
+  // are looking at it, so only the primary client's signon builds it; a seat
+  // joining a running level would otherwise throw that work away and rebuild
+  // it mid-frame.
+  if (SS_IsPrimary()) getRenderer().R_NewMap();
 
   Hunk_Check(); // make sure nothing is hurt
 
@@ -846,7 +852,22 @@ export function CL_NewTranslation(slot: number): void {
 CL_ParseStatic
 =====================
 */
+/** Where a non-primary seat's svc_spawnstatic is read to and dropped; see
+ *  CL_ParseStatic. */
+const staticDiscard = new EntityT();
+
 export function CL_ParseStatic(version = 1): void {
+  // U43: static entities are linked into the SHARED worldmodel's leaves by
+  // R_AddEfrags, and every splitscreen seat's signon describes the same
+  // statics the primary client already linked -- a seat's copy would be a
+  // second entity in the same leaf chain, drawn on top of the first in every
+  // seat's leaf walk. The message is still read in full (it is part of this
+  // seat's signon stream) and then dropped.
+  if (!SS_IsPrimary()) {
+    CL_ParseBaseline(staticDiscard, version);
+    return;
+  }
+
   const i = cl.num_statics;
   if (!growStaticEntities(i)) Host_Error("Too many static entities");
   const ent = cl_static_entities[i];
