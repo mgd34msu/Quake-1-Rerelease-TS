@@ -182,7 +182,7 @@ import { D_FlushCaches, GL_ClearTextureState, R_Init as R_Init_rmisc, R_NewMap, 
 import { R_AddEfrags, R_RemoveEfrags } from "./gl_refrag";
 import { R_PushDlights } from "./gl_rlight";
 import { R_InitSky } from "./gl_warp";
-import { Fog_ParseServerMessage, Fog_ParseWorldspawn } from "./gl_fog";
+import { Fog_FogCommand_f, Fog_GetColor, Fog_GetDensity, Fog_ParseServerMessage, Fog_ParseWorldspawn } from "./gl_fog";
 import { Sky_LoadSkyBox } from "./gl_sky";
 import {
   draw_disc,
@@ -196,6 +196,7 @@ import {
   Draw_EndDisc,
   Draw_FadeScreen,
   Draw_Fill,
+  Draw_GlyphAtlas,
   Draw_Init,
   Draw_Pic,
   Draw_PicFromWad,
@@ -570,6 +571,7 @@ export const glRenderer: Renderer = {
 
   Draw_SubPic,
   Draw_Alt_String,
+  Draw_GlyphAtlas,
 
   D_StartParticles,
   D_DrawParticle,
@@ -604,6 +606,20 @@ export const glRenderer: Renderer = {
   fogParseServerMessage: Fog_ParseServerMessage,
   fogParseWorldspawn: Fog_ParseWorldspawn,
   skyLoadSkyBox: Sky_LoadSkyBox,
+
+  // U44 additions: render.ts's Renderer.fogCommand/fogGetState -- the shared
+  // 'fog' console command's dispatch half (src/client/fog_cmd.ts). `args` is
+  // unused: Fog_FogCommand_f reads the tokenized command line itself via
+  // Cmd_Argc/Cmd_Argv, which are still valid here (this call happens
+  // synchronously inside the same Cmd_ExecuteString invocation fog_cmd.ts's
+  // own handler is running inside of).
+  fogCommand(_args: readonly string[]): void {
+    Fog_FogCommand_f();
+  },
+  fogGetState(): { density: number; color: readonly [number, number, number] } {
+    const c = Fog_GetColor();
+    return { density: Fog_GetDensity(), color: [c[0], c[1], c[2]] };
+  },
 
   // render.ts's Renderer.Shutdown -- this port's own addition (Quake never
   // unloads a renderer). Releases what GL_VidInit/loadQGLFromSystem set up:

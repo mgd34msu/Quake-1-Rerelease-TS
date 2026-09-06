@@ -115,6 +115,12 @@ import { EntityT } from "../client/render";
 import { GlpolyT } from "./gl_model_types";
 import { GL_LINEAR } from "./qgl";
 import { CvarT } from "../common/cvar";
+// U44: r_nolerp_list/r_lerplightstyles moved to src/common/render_cvars.ts
+// (see that module's header) so a software-only process registers them too.
+// Re-exported here under their original names so every existing importer of
+// this module keeps compiling.
+import { r_lerplightstyles, r_nolerp_list } from "../common/render_cvars";
+export { r_lerplightstyles, r_nolerp_list };
 
 export { EntityT, ParticleT, PtypeT, RefdefT, r_refdef, r_origin, vpn, vright, vup } from "../client/render";
 
@@ -208,23 +214,23 @@ export const GL_MAX_SURFACE_EXTENTS = 2000;
 export const gl_coloredlight = new CvarT("gl_coloredlight", "1");
 
 // U16 additions, no WinQuake counterparts: QuakeSpasm's r_nolerp_list
-// (gl_rmain.c) and Ironwail's r_lerplightstyles (gl_rlight.c). Both are
-// read-only-by-the-GL-renderer cvars (unlike r_lerpmove/r_lerpmodels above
-// client.ts... see render.ts's header for those two), so they live beside
-// gl_coloredlight rather than in render.ts.
+// (gl_rmain.c) and Ironwail's r_lerplightstyles (gl_rlight.c). GL-only
+// readers (unlike r_lerpmove/r_lerpmodels -- see render.ts's header for
+// those two).
 //
 // r_nolerp_list: model names gl_rmain.ts's alias-frame setup treats as
 // MOD_NOLERP (Mod_SetExtraFlags's `nameInList` check, done here at draw time
 // by name instead of as a load-time model flag -- see gl_rmain.ts's own
 // header note on why).
-export const r_nolerp_list = new CvarT(
-  "r_nolerp_list",
-  "progs/flame.mdl,progs/flame2.mdl,progs/braztall.mdl,progs/brazshrt.mdl,progs/longtrch.mdl,progs/flame_pyre.mdl,progs/v_saw.mdl,progs/v_xfist.mdl,progs/h2stuff/newfire.mdl",
-);
+//
 // r_lerplightstyles: interpolate lightstyle values between animation frames
 // (gl_rlight.ts's R_AnimateLight); >= 2 also interpolates abrupt swings
 // (e.g. e1m1's flickering light), matching Ironwail exactly.
-export const r_lerplightstyles = new CvarT("r_lerplightstyles", "1");
+//
+// U44: both objects moved to src/common/render_cvars.ts (imported and
+// re-exported above) so a software-only process registers them too -- only
+// gl_rmisc.ts's R_Init ever called Cvar_RegisterVariable on them, leaving
+// both at CvarT's unregistered 0 value outside a GL session.
 
 // gl_vidnt.c:104's `glvert_t glv`, the GL_EXT_vertex_array staging vertex.
 export class GlvertT {

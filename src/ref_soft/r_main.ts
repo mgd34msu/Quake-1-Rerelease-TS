@@ -114,6 +114,11 @@ export { Fog_ParseServerMessage, Fog_ParseWorldspawn };
 // `from "./r_main"` imports (r_surf.ts) keep working.
 import { r_drawentities, r_drawviewmodel, r_fullbright, r_netgraph, r_speeds, EntityT } from "../client/render";
 export { r_drawentities, r_drawviewmodel, r_fullbright, r_speeds };
+// U44: r_fastsky/r_skyalpha moved to src/common/render_cvars.ts (see that
+// module's header), shared with src/ref_gl/gl_sky.ts. Re-exported below so
+// existing `from "./r_main"` imports (d_sky.ts) keep working.
+import { r_fastsky, r_skyalpha } from "../common/render_cvars";
+export { r_fastsky, r_skyalpha };
 import { Sys_Error, Sys_FloatTime, Sys_HighFPPrecision, Sys_LowFPPrecision } from "../platform/sys";
 import { DotProduct, Length, M_PI, PLANE_ANYZ, type Vec3, VectorCopy, VectorInverse, VectorNormalize, VectorSubtract, vec3 } from "../common/mathlib";
 import { Mod_LeafPVS } from "../common/model";
@@ -121,7 +126,7 @@ import type { MleafT, MnodeBaseT, MnodeT, ModelT } from "../common/model";
 import { ModtypeT } from "../common/model";
 import { MAX_DLIGHTS, cl, cl_dlights, cl_entities, cl_visedicts, clState } from "../client/client";
 import { IT_INVISIBILITY, STAT_HEALTH } from "../common/quakedef";
-import { qw } from "../common/quakedef";
+import { qwActive } from "../common/profile";
 import { STAT_ITEMS } from "../qw/bothdefs";
 import { Cam_DrawViewModel } from "../qw/client/cl_cam";
 import { cl_sbar } from "../qw/client/cl_main";
@@ -281,11 +286,10 @@ here instead of the classic scrolling texture. The 8-bit paletted path is
 UNCHANGED by this: it always draws the classic scrolling sky regardless of
 `softSkyBoxState.active`, the same "byte-identical classic output on that
 path" ruling r_fog.ts's header already made for fog. `r_fastsky`/
-`r_skyalpha` below are this port's own copies of gl_sky.ts's same-named
-cvars (see r_fog.ts's header, "`r_skyfog` IS NOT gl_sky.ts's SHARED
-OBJECT", for why a duplicate object rather than an import of gl_sky.ts's is
-the established way to do this without pulling GL's dependency chain into
-every software-only build/test); d_sky.ts reads both.
+`r_skyalpha` below are src/common/render_cvars.ts's shared objects (U44 --
+see that module's header; formerly this port's own duplicate copies of
+gl_sky.ts's same-named cvars, for the reason r_fog.ts's header used to give
+for `r_skyfog`, now resolved the same way); d_sky.ts reads both.
 =============================================================================
 */
 
@@ -298,11 +302,6 @@ export const softSkyBoxState: { name: string; faces: (SoftSkyBoxFaceT | null)[] 
   name: "",
   faces: [null, null, null, null, null, null],
 };
-
-// U34 additions -- see this section's header's "U34 UPDATE" paragraph. Same
-// names/defaults as gl_sky.ts's r_fastsky/r_skyalpha.
-export const r_fastsky = new CvarT("r_fastsky", "0");
-export const r_skyalpha = new CvarT("r_skyalpha", "1");
 
 function loadSoftSkyFace(name: string, suf: string): SoftSkyBoxFaceT | null {
   const tga = COM_LoadTempFile(`gfx/env/${name}${suf}.tga`);
@@ -388,7 +387,7 @@ export function R_Init(): void {
   R_InitTurb();
 
   Cmd_AddCommand("timerefresh", R_TimeRefresh_f);
-  Cmd_AddCommand("pointfile", qw.active ? qwRPartMod().R_ReadPointFile_f : R_ReadPointFile_f);
+  Cmd_AddCommand("pointfile", qwActive() ? qwRPartMod().R_ReadPointFile_f : R_ReadPointFile_f);
 
   Cvar_RegisterVariable(r_draworder);
   Cvar_RegisterVariable(r_speeds);
@@ -414,19 +413,18 @@ export function R_Init(): void {
   // U25: this port's own cvar, the software mirror of ref_gl's
   // gl_coloredlight (src/ref_soft/r_coloredlight.ts)
   Cvar_RegisterVariable(r_coloredlight);
-  // U27: registers r_fog/r_skyfog, mirroring gl_rmisc.ts's own Fog_Init()
-  // call. Does not register a 'fog' console command -- see r_fog.ts's
-  // header ("THE 'fog' CONSOLE COMMAND") for why.
+  // U27: registers r_fog (r_skyfog is registered once, at module load, by
+  // src/common/render_cvars.ts -- U44). Does not register a 'fog' console
+  // command -- see r_fog.ts's header ("THE 'fog' CONSOLE COMMAND") for why.
   Fog_Init();
-  // U34: this port's own r_fastsky/r_skyalpha -- see the SOFTWARE SKYBOX
-  // LOADING section's header.
-  Cvar_RegisterVariable(r_fastsky);
-  Cvar_RegisterVariable(r_skyalpha);
+  // U34: r_fastsky/r_skyalpha -- see the SOFTWARE SKYBOX LOADING section's
+  // header. U44: also registered once, at module load, by
+  // src/common/render_cvars.ts.
 
   // QW r_main.c registers these two unconditionally; WinQuake's R_Init has no
   // such call, so the registration itself is gated to keep WinQuake behavior
   // byte-identical when the flag is off.
-  if (qw.active) {
+  if (qwActive()) {
     Cvar_RegisterVariable(r_netgraph);
     Cvar_RegisterVariable(r_zgraph);
     // QW r_main.c: `cvar_t r_graphheight = {"r_graphheight","15"};` (WinQuake:
@@ -446,7 +444,7 @@ export function R_Init(): void {
   r_refdef.xOrigin = XCENTERING;
   r_refdef.yOrigin = YCENTERING;
 
-  if (qw.active) qwRPartMod().R_InitParticles();
+  if (qwActive()) qwRPartMod().R_InitParticles();
   else R_InitParticles();
 
   D_Init();
@@ -465,7 +463,7 @@ export function R_NewMap(): void {
 
   // QW r_main.c (new): `memset(&r_worldentity, 0, sizeof(r_worldentity));
   // r_worldentity.model = cl.worldmodel;`
-  if (qw.active) {
+  if (qwActive()) {
     r_worldentity.clear();
     r_worldentity.model = worldmodel;
   }
@@ -475,7 +473,7 @@ export function R_NewMap(): void {
   for (i = 0; i < worldmodel.numleafs; i++) worldmodel.leafs[i].efrags = null;
 
   rState.r_viewleaf = null;
-  if (qw.active) qwRPartMod().R_ClearParticles();
+  if (qwActive()) qwRPartMod().R_ClearParticles();
   else R_ClearParticles();
 
   // U27 additions: no WinQuake counterparts (see gl_rmisc.ts's own R_NewMap
@@ -532,7 +530,7 @@ export function R_SetVrect(pvrectin: VrectT, pvrect: VrectT, lineadj: number): v
   // rules below can special-case it. WinQuake has no such flag.
   let full = false;
 
-  if (qw.active) {
+  if (qwActive()) {
     if (scr_viewsize.value >= 100.0) {
       size = 100.0;
       full = true;
@@ -544,19 +542,19 @@ export function R_SetVrect(pvrectin: VrectT, pvrect: VrectT, lineadj: number): v
   }
 
   if (cl.intermission) {
-    if (qw.active) full = true;
+    if (qwActive()) full = true;
     size = 100;
     lineadj = 0;
   }
   size /= 100;
 
-  if (qw.active) {
+  if (qwActive()) {
     h = !cl_sbar.value && full ? pvrectin.height : pvrectin.height - lineadj;
   } else {
     h = pvrectin.height - lineadj;
   }
 
-  if (qw.active && full) {
+  if (qwActive() && full) {
     pvrect.width = pvrectin.width;
   } else {
     pvrect.width = (pvrectin.width * size) | 0;
@@ -567,7 +565,7 @@ export function R_SetVrect(pvrectin: VrectT, pvrect: VrectT, lineadj: number): v
   }
   pvrect.width &= ~7;
   pvrect.height = (pvrectin.height * size) | 0;
-  if (qw.active) {
+  if (qwActive()) {
     if (cl_sbar.value || !full) {
       if (pvrect.height > pvrectin.height - lineadj) pvrect.height = pvrectin.height - lineadj;
     } else if (pvrect.height > pvrectin.height) {
@@ -580,7 +578,7 @@ export function R_SetVrect(pvrectin: VrectT, pvrect: VrectT, lineadj: number): v
   pvrect.height &= ~1;
 
   pvrect.x = ((pvrectin.width - pvrect.width) / 2) | 0;
-  if (qw.active && full) {
+  if (qwActive() && full) {
     pvrect.y = 0;
   } else {
     pvrect.y = ((h - pvrect.height) / 2) | 0;
@@ -588,7 +586,7 @@ export function R_SetVrect(pvrectin: VrectT, pvrect: VrectT, lineadj: number): v
 
   // QW r_main.c drops this `lcd_x` block entirely (it never existed in that
   // file's R_SetVrect).
-  if (!qw.active) {
+  if (!qwActive()) {
     if (lcd_x.value) {
       pvrect.y >>= 1;
       pvrect.height >>= 1;
@@ -825,11 +823,11 @@ export function R_DrawViewModel(): void {
 
   // QW r_main.c adds `|| !Cam_DrawViewModel()` (spectator/chase-cam suppresses
   // the view model; src/qw/client/cl_cam.ts).
-  if (!r_drawviewmodel.value || rState.r_fov_greater_than_90 || (qw.active && !Cam_DrawViewModel())) return;
+  if (!r_drawviewmodel.value || rState.r_fov_greater_than_90 || (qwActive() && !Cam_DrawViewModel())) return;
 
   // QW reads the invisibility bit from the stats array (`cl.stats[STAT_ITEMS]`,
   // how QW's cl_parse.c delivers item flags) instead of WinQuake's `cl.items`.
-  if (qw.active ? cl.stats[STAT_ITEMS] & IT_INVISIBILITY : cl.items & IT_INVISIBILITY) return;
+  if (qwActive() ? cl.stats[STAT_ITEMS] & IT_INVISIBILITY : cl.items & IT_INVISIBILITY) return;
 
   if (cl.stats[STAT_HEALTH] <= 0) return;
 
@@ -1151,7 +1149,7 @@ export function R_RenderView_(): void {
 
   // QW r_main.c checks `r_worldentity.model` (this file's own, set in
   // R_NewMap) instead of `cl_entities[0].model`.
-  if ((qw.active ? !r_worldentity.model : !cl_entities[0].model) || !cl.worldmodel) Sys_Error("R_RenderView: NULL worldmodel");
+  if ((qwActive() ? !r_worldentity.model : !cl_entities[0].model) || !cl.worldmodel) Sys_Error("R_RenderView: NULL worldmodel");
 
   if (!r_dspeeds.value) {
     vidBackend.current?.VID_UnlockBuffer();
@@ -1186,7 +1184,7 @@ export function R_RenderView_(): void {
     rState.dp_time1 = Sys_FloatTime();
   }
 
-  if (qw.active) qwRPartMod().R_DrawParticles();
+  if (qwActive()) qwRPartMod().R_DrawParticles();
   else R_DrawParticles();
 
   if (r_dspeeds.value) rState.dp_time2 = Sys_FloatTime();
@@ -1215,8 +1213,8 @@ export function R_RenderView_(): void {
   if (r_reportedgeout.value && rState.r_outofedges) Con_Printf("Short roughly %d edges\n", ((rState.r_outofedges * 2) / 3) | 0);
 
   // QW r_main.c (new): the r_netgraph/r_zgraph debug overlays.
-  if (qw.active && r_netgraph.value) R_NetGraph();
-  if (qw.active && r_zgraph.value) R_ZGraph();
+  if (qwActive() && r_netgraph.value) R_NetGraph();
+  if (qwActive() && r_zgraph.value) R_ZGraph();
 
   // back to high floating-point precision
   Sys_HighFPPrecision();
@@ -1239,7 +1237,7 @@ export function R_InitTurb(): void {
   // is unchanged between WinQuake and QW): a genuine QW bug that leaves
   // sintable/intsintable[1280..1407] at their zero-initialized value. Kept
   // exactly as the original per PORTING.md.
-  const bound = qw.active ? 1280 : SIN_BUFFER_SIZE;
+  const bound = qwActive() ? 1280 : SIN_BUFFER_SIZE;
   for (i = 0; i < bound; i++) {
     sintable[i] = (AMP + Math.sin((i * 3.14159 * 2) / CYCLE) * AMP) | 0;
     intsintable[i] = (AMP2 + Math.sin((i * 3.14159 * 2) / CYCLE) * AMP2) | 0; // AMP2, not 20

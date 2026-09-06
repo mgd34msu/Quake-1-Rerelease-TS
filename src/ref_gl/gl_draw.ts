@@ -219,7 +219,7 @@ import { d_15to8table, VID_Is8bit } from "./gl_vid";
 // U19: type-only, erased at compile time -- no runtime import-cycle risk
 // (see src/client/kfont_text.ts's own header for why the runtime call goes
 // through a lazy require() there instead of a static import of this file).
-import type { GlyphAtlasSourceT } from "../client/kfont_text";
+import type { GlyphAtlasSourceT } from "../client/render";
 import { clientProfile } from "../common/profile";
 
 // cvar_t gl_nobind = {"gl_nobind", "0"}; etc.

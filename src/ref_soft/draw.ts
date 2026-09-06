@@ -144,7 +144,7 @@ import { Con_Printf } from "../client/console";
 // U19: type-only, erased at compile time -- no runtime import-cycle risk
 // (see src/client/kfont_text.ts's own header for why the runtime call goes
 // through a lazy require() there instead of a static import of this file).
-import type { GlyphAtlasSourceT } from "../client/kfont_text";
+import type { GlyphAtlasSourceT } from "../client/render";
 import { clientProfile } from "../common/profile";
 
 /*

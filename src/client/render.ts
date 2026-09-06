@@ -197,6 +197,16 @@ import { type Vec3, vec3 } from "../common/mathlib";
 import { ENTALPHA_DEFAULT, ENTSCALE_DEFAULT } from "../common/protocol";
 import { Sys_Error } from "../platform/sys";
 import { VrectT } from "./vid";
+// U44: r_lerpmove/r_lerpmodels moved to src/common/render_cvars.ts (the same
+// home r_enhancedmodels already uses) so a software-only process registers
+// them too -- see that module's header. Re-exported under their original
+// names so every existing importer of "../client/render" keeps compiling.
+import { r_lerpmodels, r_lerpmove } from "../common/render_cvars";
+export { r_lerpmodels, r_lerpmove };
+// U44: the shared 'fog' console command -- see fog_cmd.ts's own header.
+// Imported here purely for its module-load side effect (Cmd_AddCommand),
+// so the command exists the moment anything imports this seam module.
+import "./fog_cmd";
 
 export const TOP_RANGE = 16; // soldier uniform colors
 export const BOTTOM_RANGE = 96;
@@ -439,9 +449,8 @@ export const r_netgraph = new CvarT("r_netgraph", "0");
 // rather than in a renderer module because cl_main.ts is a client file and
 // PORTING.md's renderer-seam rule forbids a client module importing either
 // renderer -- the same reason r_netgraph above is declared here instead of
-// in gl_rmain.ts. Registered by gl_rmisc.ts's R_Init, mirroring r_netgraph.
-export const r_lerpmove = new CvarT("r_lerpmove", "1");
-
+// in gl_rmain.ts.
+//
 // U16 addition, no WinQuake counterpart: QuakeSpasm/Ironwail's r_lerpmodels
 // (gl_rmain.c's `cvar_t r_lerpmodels = {"r_lerpmodels", "1", CVAR_NONE};`).
 // The GL renderer's alias-frame pose blend (gl_rmain.ts's R_SetupAliasFrame/
@@ -449,8 +458,16 @@ export const r_lerpmove = new CvarT("r_lerpmove", "1");
 // EF_MUZZLEFLASH handling also tests it directly (`r_lerpmodels.value != 2`
 // skips the reset-anim-for-two-frames hack when a shader-side lerp would
 // otherwise smear the flash across the model-swap), so this needs the same
-// client-readable-without-a-renderer-import home as r_lerpmove above.
-export const r_lerpmodels = new CvarT("r_lerpmodels", "1");
+// client-readable-without-a-renderer-import home as r_lerpmove.
+//
+// U44: both objects (and their Cvar_RegisterVariable call) moved to
+// src/common/render_cvars.ts -- see this file's import block above. Only
+// gl_rmisc.ts's R_Init ever registered them, so a software-only process
+// (dedicated server, or a session that never installs the GL renderer) left
+// both at CvarT's unregistered 0 value (cvar.ts's own header: "a cvar is 0
+// until registered, same as the C"), silently disabling interpolation.
+// Registering them at module load here, like r_enhancedmodels, fixes that
+// regardless of which renderer (if any) is installed.
 
 //=============================================================================
 // d_iface.h / glquake.h
@@ -482,6 +499,17 @@ export class ParticleT {
 export const PARTICLE_Z_CLIP = 8.0;
 
 //=============================================================================
+
+// U19/U44 addition, not from draw.h: the source rect for Draw_GlyphAtlas
+// below (src/client/kfont_text.ts's Text_Draw is the one caller). "classic"
+// reuses each renderer's own already-loaded 128x128/8x8-cell char_texture/
+// draw_chars grid (kfont_text.ts computes srcX/srcY as col*8/row*8 for that
+// case); "custom" is an RGBA8 atlas (a decoded fonts/qfont.png, or a
+// rasterized TTF atlas from src/lib/ttf.ts's buildFontAtlas), registered
+// once per `id` by each renderer's own atlas cache. Declared here, next to
+// the Renderer member that uses it, per this unit's brief -- kfont_text.ts
+// imports it type-only from here instead of owning it.
+export type GlyphAtlasSourceT = { kind: "classic" } | { kind: "custom"; id: string; width: number; height: number; pixels: Uint8Array };
 
 export interface Renderer {
   // model.c / gl_model.c's renderer half, installed with the renderer so a
@@ -543,6 +571,34 @@ export interface Renderer {
   // sbar.c's Sbar_DrawSubPic and Sbar_DeathmatchOverlay read both.
   Draw_SubPic(x: number, y: number, pic: QpicT, srcx: number, srcy: number, width: number, height: number): void;
   Draw_Alt_String(x: number, y: number, str: string): void;
+
+  // U19/U44 addition, not from draw.h: src/client/kfont_text.ts's one
+  // cross-renderer text-drawing primitive (that file's Text_Draw is the only
+  // caller). Both real renderers implement it (src/ref_gl/gl_draw.ts,
+  // src/ref_soft/draw.ts); this member replaces kfont_text.ts's own pair of
+  // lazy require()s that reached those two modules directly (a documented,
+  // temporary crossing of the "nothing outside src/ref_soft and src/ref_gl
+  // imports either renderer" rule -- see that file's header, now closed).
+  // Optional (unlike the other Draw_* members above, which render.h
+  // declares): several test files outside this unit's SCOPE build their own
+  // fake `Renderer` objects predating this member (console.test.ts's own
+  // makeFakeRenderer() shape and its copies) -- making it required would
+  // have forced an unrelated edit to every one of those files. Both REAL
+  // renderers (src/ref_gl/ref_gl.ts, src/ref_soft/ref_soft.ts) implement it
+  // unconditionally; kfont_text.ts falls back to its old isGL-keyed direct
+  // dispatch only when this member is absent -- see that file's header.
+  Draw_GlyphAtlas?(
+    dstX: number,
+    dstY: number,
+    dstW: number,
+    dstH: number,
+    source: GlyphAtlasSourceT,
+    srcX: number,
+    srcY: number,
+    srcW: number,
+    srcH: number,
+    tint: readonly [number, number, number] | null,
+  ): void;
 
   //
   // the particle drawing half of r_part.c's R_DrawParticles
@@ -621,6 +677,20 @@ export interface Renderer {
   // entity-lump text (model_t.entities); the renderer does its own key scan
   // so no client module needs a worldspawn key parser of its own.
   fogParseWorldspawn?(entities: string): void;
+
+  // U44 additions, not from render.h: the 'fog' console command's dispatch
+  // half -- see src/client/fog_cmd.ts's header. `fogCommand` is the renderer's
+  // own Fog_FogCommand_f body (GL: gl_fog.ts's; software: r_fog.ts's -- both
+  // already read the tokenized command line themselves via Cmd_Argc/Cmd_Argv,
+  // so `args` -- the same argv array fog_cmd.ts's own Cmd_Argc/Cmd_Argv loop
+  // already produced -- is carried for a future body that prefers it, not
+  // read by either renderer's current one). `fogGetState` reports the
+  // renderer's current density/color without a test needing to know which
+  // renderer is active or import its module directly. Optional because
+  // src/ref_soft leaves neither undefined today, but a hypothetical future
+  // renderer with no fog at all may.
+  fogCommand?(args: readonly string[]): void;
+  fogGetState?(): { density: number; color: readonly [number, number, number] };
 
   // worldspawn's "sky"/"skyname" key (QuakeSpasm's Sky_NewMap) -- also the
   // `loadsky`/`sky` console commands' target. Loading a skybox is a no-op

@@ -190,7 +190,8 @@ import {
 import { MplaneT } from "../common/mathlib";
 import { Mod_Extradata, Mod_PointInLeaf, ModtypeT } from "../common/model";
 import { SPR_ORIENTED, SpriteframetypeT } from "../common/spritegn";
-import { IT_INVISIBILITY, STAT_HEALTH, qw } from "../common/quakedef";
+import { IT_INVISIBILITY, STAT_HEALTH } from "../common/quakedef";
+import { qwActive } from "../common/profile";
 import { Q_atoi } from "../common/common";
 import { Info_ValueForKey } from "../qw/common";
 import { STAT_ITEMS } from "../qw/bothdefs";
@@ -223,6 +224,11 @@ import { r_drawentities, r_drawviewmodel, r_fullbright, r_lerpmodels, r_lerpmove
 export { r_netgraph };
 export { r_drawentities, r_drawviewmodel, r_fullbright, r_speeds };
 export { r_lerpmodels, r_lerpmove };
+// r_wateralpha and its per-content-type overrides moved to
+// src/common/render_cvars.ts (U44 -- see that module's header); re-exported
+// below so existing `from "./gl_rmain"` imports (gl_rsurf.ts) keep working.
+import { r_lavaalpha, r_slimealpha, r_telealpha, r_wateralpha } from "../common/render_cvars";
+export { r_lavaalpha, r_slimealpha, r_telealpha, r_wateralpha };
 import { d_8to24table, vid } from "../client/vid";
 import { chase_active } from "../client/chase";
 import { gl_cshiftpercent, V_SetContentsColor } from "../client/view";
@@ -289,14 +295,13 @@ export const r_norefresh = new CvarT("r_norefresh", "0");
 export const r_lightmap = new CvarT("r_lightmap", "0");
 export const r_shadows = new CvarT("r_shadows", "0");
 export const r_mirroralpha = new CvarT("r_mirroralpha", "1");
-export const r_wateralpha = new CvarT("r_wateralpha", "1");
-// U21 additions: QuakeSpasm's per-content-type overrides of r_wateralpha
-// (gl_rmain.c's r_lavaalpha/r_slimealpha/r_telealpha). 0 means "not
-// overridden, fall back to r_wateralpha" -- see R_WaterAlphaForTextureName
-// below, this file's own port of QuakeSpasm's GL_WaterAlphaForTextureType.
-export const r_lavaalpha = new CvarT("r_lavaalpha", "0");
-export const r_slimealpha = new CvarT("r_slimealpha", "0");
-export const r_telealpha = new CvarT("r_telealpha", "0");
+// r_wateralpha and its U21 per-content-type overrides (r_lavaalpha/
+// r_slimealpha/r_telealpha -- 0 means "not overridden, fall back to
+// r_wateralpha"; see R_WaterAlphaForTextureName below, this file's own port
+// of QuakeSpasm's GL_WaterAlphaForTextureType) moved to
+// src/common/render_cvars.ts (U44 -- see that module's header and this
+// file's own import block above). Re-exported under their original names so
+// existing `from "./gl_rmain"` imports (gl_rsurf.ts) keep working.
 export const r_dynamic = new CvarT("r_dynamic", "1");
 export const r_novis = new CvarT("r_novis", "0");
 // QW/client/gl_rmain.c / QW/client/r_main.c -- registered by gl_rmisc.ts's
@@ -499,7 +504,7 @@ export function R_DrawSpriteModel(e: EntityT): void {
   qgl().qglEnable(GL_ALPHA_TEST);
   if (entAlpha < 1) qgl().qglEnable(GL_BLEND);
   qgl().qglBegin(GL_QUADS);
-  if (qw.active) {
+  if (qwActive()) {
     // QW/client/gl_rmain.c has this pair twice in a row -- a shipped
     // duplicate-statement bug (see file header), kept exactly as the C has it.
     qgl().qglEnable(GL_ALPHA_TEST);
@@ -922,7 +927,7 @@ export function R_DrawAliasModel(e: EntityT): void {
 
   // ZOID: never allow players to go totally black
   let i = cl_entities.indexOf(currententity);
-  if (qw.active) {
+  if (qwActive()) {
     // QW/client/gl_rmain.c: one if/else-if keyed on the model name (see file
     // header) instead of WinQuake's index-range + separate flame check.
     if (clmodel.name === "progs/player.mdl") {
@@ -969,7 +974,7 @@ export function R_DrawAliasModel(e: EntityT): void {
     if (ambientc > 128) ambientc = 128;
     if (ambientc + shadec > 192) shadec = 192 - ambientc;
 
-    if (qw.active) {
+    if (qwActive()) {
       if (clmodel.name === "progs/player.mdl") {
         if (ambientc < 8) ambientc = shadec = 8;
       } else if (clmodel.name === "progs/flame2.mdl" || clmodel.name === "progs/flame.mdl") {
@@ -1025,7 +1030,7 @@ export function R_DrawAliasModel(e: EntityT): void {
     // md5Skin's output is already real model-space floats -- no
     // scale_origin/scale byte-decompression translate/scale on top (see
     // this function's own U29 comment above).
-  } else if (clmodel.name === "progs/eyes.mdl" && (qw.active || gl_doubleeyes.value)) {
+  } else if (clmodel.name === "progs/eyes.mdl" && (qwActive() || gl_doubleeyes.value)) {
     // QW/client/gl_rmain.c drops the gl_doubleeyes guard entirely (see file
     // header) -- the eyes.mdl special case always applies when qw.active.
     qgl().qglTranslatef(paliashdr.scale_origin[0], paliashdr.scale_origin[1], paliashdr.scale_origin[2] - (22 + 8));
@@ -1046,7 +1051,7 @@ export function R_DrawAliasModel(e: EntityT): void {
     // rule loads exactly mdl.numskins .lmp files and nothing else -- so
     // this whole block, and its own texture bind, is skipped on that path;
     // GL_DrawMd5AliasFrame below binds the MD5 skin unconditionally.)
-    if (qw.active) {
+    if (qwActive()) {
       // QW/client/gl_rmain.c replaces this whole block's condition and body
       // (see file header)
       if (currententity.scoreboard !== null && !gl_nocolors.value) {
@@ -1245,7 +1250,7 @@ export function R_DrawViewModel(): void {
   // QW/client/gl_rmain.c folds the chase_active check into
   // `!Cam_DrawViewModel()` (cl_cam.c, spectator/chase camera logic) instead
   // of reading chase_active directly.
-  if (qw.active) {
+  if (qwActive()) {
     if (!r_drawviewmodel.value || !Cam_DrawViewModel()) return;
   } else {
     if (!r_drawviewmodel.value) return;
@@ -1260,7 +1265,7 @@ export function R_DrawViewModel(): void {
   // QW/client/gl_rmain.c reads cl.stats[STAT_ITEMS] instead of cl.items
   // (cl.items is not maintained under QW; STAT_ITEMS mirrors the server's
   // stat array both ways, see src/qw/bothdefs.ts).
-  if (qw.active ? cl.stats[STAT_ITEMS] & IT_INVISIBILITY : cl.items & IT_INVISIBILITY) return;
+  if (qwActive() ? cl.stats[STAT_ITEMS] & IT_INVISIBILITY : cl.items & IT_INVISIBILITY) return;
 
   if (cl.stats[STAT_HEALTH] <= 0) return;
 
@@ -1374,7 +1379,7 @@ R_SetupFrame
 ===============
 */
 export function R_SetupFrame(): void {
-  if (qw.active) {
+  if (qwActive()) {
     // QW/client/gl_rmain.c: unconditional, plus r_lightmap and a
     // serverinfo-driven r_wateralpha default (see file header).
     r_fullbright.value = 0;
@@ -1526,7 +1531,7 @@ export function R_RenderScene(): void {
 
   R_RenderDlights();
 
-  if (qw.active) qwRPartMod().R_DrawParticles();
+  if (qwActive()) qwRPartMod().R_DrawParticles();
   else R_DrawParticles();
 }
 
@@ -1687,7 +1692,7 @@ export function R_RenderView(): void {
   // render mirror view
   // QW/client/gl_rmain.c: R_Mirror's whole body is #if 0'd out and this call
   // is commented out (see file header) -- mirrors are disabled under QW.
-  if (!qw.active) R_Mirror();
+  if (!qwActive()) R_Mirror();
 
   R_PolyBlend();
 

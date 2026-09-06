@@ -103,7 +103,7 @@ import { hostBasepal } from "../common/host";
 import { d_8to24table, vid, vidBackend, VrectT } from "../client/vid";
 import { scrState } from "../client/screen_types";
 import { lcd_x } from "../client/view";
-import { qw } from "../common/quakedef";
+import { qwActive } from "../common/profile";
 import { NetchanT } from "../qw/net_chan";
 // QW cl_parse.c: CL_CalcNet/packet_latency (R_NetGraph's packet-loss source).
 // cl_parse.c is one of the wholesale-different QW client files (client-side
@@ -161,7 +161,7 @@ let oldbright = 0; // static float oldbright
 export function R_CheckVariables(): void {
   // QW r_misc.c: R_CheckVariables's whole body is #if 0'd out -- QW never
   // flushes the surface cache on an r_fullbright change.
-  if (qw.active) return;
+  if (qwActive()) return;
   if (r_fullbright.value !== oldbright) {
     oldbright = r_fullbright.value;
     D_FlushCaches(); // so all lighting changes
@@ -247,7 +247,7 @@ export function R_LineGraph(x: number, y: number, h: number): void {
   // QW r_misc.c: the vrect offset is commented out (netgraph/zgraph pass
   // already-absolute screen coordinates); WinQuake's R_TimeGraph still wants
   // the vrect-relative offset.
-  if (!qw.active) {
+  if (!qwActive()) {
     x += r_refdef.vrect.x;
     y += r_refdef.vrect.y;
   }
@@ -259,7 +259,7 @@ export function R_LineGraph(x: number, y: number, h: number): void {
   // QW r_misc.c: R_NetGraph/R_ZGraph pass special sentinel heights (dropped
   // packet, choked packet, invalid delta) that pick a fixed color instead of
   // drawing the WinQuake two-tone (0xff/0x30) bar.
-  if (qw.active) {
+  if (qwActive()) {
     if (h === 10000) color = 0x6f; // yellow
     else if (h === 9999) color = 0x4f; // red
     else if (h === 9998) color = 0xd0; // blue
@@ -275,7 +275,7 @@ export function R_LineGraph(x: number, y: number, h: number): void {
   // (src/ref_soft/r_coloredlight.ts)
   const out32 = rState.r_truecolor ? vid.buffer32 : null;
 
-  if (qw.active) {
+  if (qwActive()) {
     for (i = 0; i < h; i++, dest -= vid.rowbytes * 2) {
       buffer[dest] = color;
       if (out32 !== null) out32[dest] = d_8to24table[color];
@@ -402,7 +402,7 @@ export function R_TimeGraph(): void {
   // QW r_misc.c adds `a = graphval;` after the same commented-out debug
   // expressions WinQuake has, unconditionally overwriting the elapsed-time
   // sample above.
-  if (qw.active) a = graphval;
+  if (qwActive()) a = graphval;
   r_timings[timex] = a;
   a = timex;
 
@@ -593,7 +593,7 @@ export function R_SetupFrame(): void {
     // QW r_misc.c writes the cvars' numeric fields directly, bypassing
     // Cvar_Set (and whatever userinfo-propagation side effect Cvar_Set
     // carries under qw.active -- see src/common/cvar.ts's qw fold).
-    if (qw.active) {
+    if (qwActive()) {
       r_draworder.value = 0;
       r_fullbright.value = 0;
       r_ambient.value = 0;
@@ -626,7 +626,7 @@ export function R_SetupFrame(): void {
 
   // QW r_misc.c: this whole check is commented out -- qwcl never zeroes
   // r_draworder here (there is no local sv to be active in a QW client).
-  if (!qw.active && !sv.active) r_draworder.value = 0; // don't let cheaters look behind walls
+  if (!qwActive() && !sv.active) r_draworder.value = 0; // don't let cheaters look behind walls
 
   R_CheckVariables();
 
@@ -650,7 +650,7 @@ export function R_SetupFrame(): void {
   rState.r_dowarp = r_waterwarp.value !== 0 && rState.r_viewleaf.contents <= CONTENTS_WATER;
 
   // QW r_misc.c drops the `|| lcd_x.value` disjunct entirely.
-  if (rState.r_dowarp !== rState.r_dowarpold || rState.r_viewchanged || (!qw.active && lcd_x.value)) {
+  if (rState.r_dowarp !== rState.r_dowarpold || rState.r_viewchanged || (!qwActive() && lcd_x.value)) {
     if (rState.r_dowarp) {
       if (vid.width <= vid.maxwarpwidth && vid.height <= vid.maxwarpheight) {
         vrect.x = 0;

@@ -20,9 +20,15 @@ What each group proves:
     detail test/ref_gl_fog.test.ts already covers the GL twin at, not
     exhaustively re-proven line by line.
   - Fog_Init does not register a global 'fog' console command (r_fog.ts's
-    header explains why, empirically, and this is the fix for the collision
-    this unit found against test/ref_gl_fog.test.ts).
-  - the seam members exist on softRenderer and forward to r_fog.ts/r_main.ts.
+    header explains why, empirically, and U44's src/client/fog_cmd.ts is the
+    real fix: ONE shared 'fog' command, dispatching through
+    src/client/render.ts's Renderer.fogCommand/fogGetState seam members).
+  - the seam members exist on softRenderer and forward to r_fog.ts/r_main.ts,
+    including fogCommand/fogGetState (U44) and the shared 'fog' command
+    (registered once by fog_cmd.ts) reaching softRenderer's own state.
+  - U44 coordinator addendum: r_lerpmodels registers (value === 1) even in
+    this file's software-only boot, which never calls the GL renderer's
+    R_Init.
   - Fog_PostPass against a real rendered frame of a synthetic BSP: density 0
     leaves the frame byte-for-byte unchanged; a dense fog moves a far
     surface's pixels toward the fog color more than a near surface's,
@@ -57,12 +63,12 @@ import {
   setStaticRegistered,
   static_registered,
 } from "../src/common/common";
-import { Cmd_Exists, Cmd_TokenizeString } from "../src/common/cmd";
+import { Cmd_Exists, Cmd_ExecuteString, CmdSourceT, Cmd_TokenizeString } from "../src/common/cmd";
 import { Mod_ClearAll, Mod_ForName, Mod_Init, type ModelT, getModelLoaderHooks, setModelLoaderHooks } from "../src/common/model";
 import { hostClientHooks } from "../src/common/host";
 import { qw } from "../src/common/quakedef";
 import { cl, cl_entities, cl_lightstyle, clState } from "../src/client/client";
-import { r_refdef, re } from "../src/client/render";
+import { r_lerpmodels, r_refdef, re } from "../src/client/render";
 import { VID_GRADES, d_8to24table, vid, vidBackend, type VidBackend, VrectT } from "../src/client/vid";
 import { scrState } from "../src/client/screen_types";
 import { CalcFov, scr_fov, scr_viewsize } from "../src/client/screen";
@@ -521,15 +527,60 @@ describe("Fog_Init and the shared 'fog' console command name", () => {
     // R_Init (called in this file's own beforeAll) has already run Fog_Init
     // at least once by the time this test runs. Calling it again here must
     // not touch the shared command table at all -- see r_fog.ts's header,
-    // "THE 'fog' CONSOLE COMMAND": registering it, guarded or not, was proven
-    // (empirically, verifying this unit) to steal the name away from
-    // whichever renderer's OWN dedicated test suite runs later in the same
-    // `bun test` process, since Cmd_AddCommand has no reclaim path outside a
-    // real vid_ref switch. Fog_FogCommand_f is still fully implemented and
-    // directly callable, as every other test in this file does.
+    // "THE 'fog' CONSOLE COMMAND": neither renderer's own Init has ever
+    // registered "fog" since U44 -- src/client/fog_cmd.ts does, exactly
+    // once, at module load, dispatching through the Renderer seam.
+    // Fog_FogCommand_f is still fully implemented and directly callable, as
+    // every other test in this file does.
     const before = Cmd_Exists("fog");
     Fog_Init();
     expect(Cmd_Exists("fog")).toBe(before);
+  });
+
+  // U44: the ONE shared 'fog' command (src/client/fog_cmd.ts) dispatches
+  // through getRenderer().fogCommand?.(args) -- this file's own beforeAll
+  // sets `re.current = softRenderer` for the whole suite, so the command
+  // reaches THIS renderer's Fog_FogCommand_f/r_fog.ts state.
+  test("the shared 'fog' command reaches softRenderer's own Fog_FogCommand_f", () => {
+    Cmd_ExecuteString("fog 0.55 0 1 0", CmdSourceT.src_command);
+    expect(Fog_GetDensity()).toBeCloseTo(0.55, 5);
+    const c = Fog_GetColor();
+    expect(c[1]).toBeCloseTo(1, 2);
+  });
+
+  test("softRenderer.fogCommand forwards to Fog_FogCommand_f directly", () => {
+    // Fog_FogCommand_f reads Cmd_Argc()/Cmd_Argv() itself (see this file's
+    // header note on `args` going unused); Cmd_TokenizeString sets those,
+    // matching this file's own "Fog_FogCommand_f" describe's own recipe.
+    Cmd_TokenizeString("fog 0.22 1 0 0");
+    softRenderer.fogCommand?.(["fog", "0.22", "1", "0", "0"]);
+    expect(Fog_GetDensity()).toBeCloseTo(0.22, 5);
+  });
+
+  test("softRenderer.fogGetState reports the same density/color Fog_GetDensity/Fog_GetColor do", () => {
+    Fog_Update(0.4, 0.1, 0.2, 0.3, 0);
+    const state = softRenderer.fogGetState?.();
+    expect(state).toBeDefined();
+    expect(state?.density).toBeCloseTo(Fog_GetDensity(), 6);
+    expect(state?.color[0]).toBeCloseTo(Fog_GetColor()[0], 6);
+    expect(state?.color[1]).toBeCloseTo(Fog_GetColor()[1], 6);
+    expect(state?.color[2]).toBeCloseTo(Fog_GetColor()[2], 6);
+  });
+});
+
+//============================================================================
+// U44 coordinator addendum: r_lerpmodels/r_lerpmove/r_nolerp_list/
+// r_lerplightstyles moved to src/common/render_cvars.ts, registered once at
+// module load (like r_enhancedmodels), because only gl_rmisc.ts's R_Init
+// used to register them -- leaving a software-only process's CvarT at its
+// unregistered 0 value (cvar.ts's own header) and interpolation silently
+// off. This file's beforeAll never calls the GL renderer's R_Init (only
+// softRenderer's), so it is exactly that software-only case.
+//============================================================================
+
+describe("r_lerpmodels registration (U44)", () => {
+  test("a software-only boot (no GL R_Init ever called) still sees r_lerpmodels.value === 1", () => {
+    expect(r_lerpmodels.value).toBe(1);
   });
 });
 

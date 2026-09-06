@@ -12,24 +12,30 @@ see that file's header). Covers Fog_ParseServerMessage's wire normalization
 short clamped >=0), Fog_ParseWorldspawn's "fog" worldspawn key and its
 sscanf-style partial-match reset semantics, Fog_Update's fade math (a linear
 blend between the old and new color/density over `time` seconds of
-cl.time), Fog_GetColor's fade blend + clamp + 24-bit rounding, and the
-'fog' console command's argc branches.
+cl.time), Fog_GetColor's fade blend + clamp + 24-bit rounding, Fog_FogCommand_f's
+argc branches called directly, and (U44) the ONE shared 'fog' console command
+(src/client/fog_cmd.ts) reaching this renderer through
+src/client/render.ts's Renderer.fogCommand/fogGetState seam members when
+`re.current` is the GL renderer.
 
 Self-sufficient per standing order 13: every shared singleton this file
-writes (qglHolder.current, cl.time, and every module-private fog_* value
-gl_fog.ts keeps, reset indirectly through Fog_ParseWorldspawn("") in
-afterAll rather than reached into directly since they are not exported) is
-restored in afterAll.
+writes (qglHolder.current, cl.time, re.current, and every module-private
+fog_* value gl_fog.ts keeps, reset indirectly through
+Fog_ParseWorldspawn("") in afterAll rather than reached into directly since
+they are not exported) is restored in afterAll.
 */
 
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 
-import { Cmd_ExecuteString, CmdSourceT } from "../src/common/cmd";
+import { Cmd_ExecuteString, CmdSourceT, Cmd_TokenizeString } from "../src/common/cmd";
 import { cl } from "../src/client/client";
+import { re } from "../src/client/render";
+import { glRenderer } from "../src/ref_gl/ref_gl";
 import { GL_EXP2, GL_FOG, GL_FOG_COLOR, GL_FOG_DENSITY, GL_FOG_MODE, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
 import {
   Fog_DisableGFog,
   Fog_EnableGFog,
+  Fog_FogCommand_f,
   Fog_GetColor,
   Fog_GetDensity,
   Fog_Init,
@@ -45,6 +51,7 @@ const rec = new QGLRecording();
 const saved = {
   qgl: qglHolder.current,
   time: cl.time,
+  renderer: re.current,
 };
 
 // gl_fog.ts's fog_* state is module-private; the only reset surface it
@@ -60,11 +67,17 @@ beforeEach(() => {
   rec.clear();
   SetQGL(rec);
   resetFog();
+  // U44: the shared 'fog' console command (src/client/fog_cmd.ts) dispatches
+  // through getRenderer().fogCommand -- this file's density/color assertions
+  // only make sense when the active renderer is the GL one whose gl_fog.ts
+  // state this file reads.
+  re.current = glRenderer;
 });
 
 afterAll(() => {
   SetQGL(saved.qgl);
   cl.time = saved.time;
+  re.current = saved.renderer;
   resetFog();
 });
 
@@ -266,10 +279,13 @@ describe("Fog_SetupState", () => {
 
 describe("fog console command", () => {
   beforeEach(() => {
-    // Cmd_AddCommand no-ops (a harmless Con_Printf) once "fog" is already
-    // registered -- calling Fog_Init() repeatedly across this describe's
-    // tests is therefore safe, and there is no Cmd_RemoveCommand to undo it
-    // with (src/common/cmd.ts has none).
+    // U44: Fog_Init no longer touches the shared command table at all (the
+    // ONE 'fog' command is registered once, at module load, by
+    // src/client/fog_cmd.ts -- see this file's header). Calling Fog_Init()
+    // here just re-runs Fog_SetupState (harmless, idempotent); every "fog
+    // ..." command below reaches this file's own Fog_FogCommand_f through
+    // fog_cmd.ts's shared dispatch + glRenderer.fogCommand, since the outer
+    // beforeEach set `re.current = glRenderer`.
     Fog_Init();
   });
 
@@ -320,5 +336,46 @@ describe("fog console command", () => {
     expect(c[0]).toBe(1);
     expect(c[1]).toBe(0);
     expect(c[2]).toBe(1);
+  });
+});
+
+//============================================================================
+// U44: the renderer seam (src/client/render.ts's Renderer.fogCommand/
+// fogGetState) reaches THIS renderer's Fog_FogCommand_f/Fog_GetDensity/
+// Fog_GetColor when it is the active one, without the caller (fog_cmd.ts,
+// or a test) needing to know or import which renderer that is.
+//============================================================================
+
+describe("glRenderer.fogCommand / fogGetState (U44 seam)", () => {
+  const exec = (text: string): void => Cmd_ExecuteString(text, CmdSourceT.src_command);
+
+  test("fogCommand forwards to this renderer's own Fog_FogCommand_f", () => {
+    // Fog_FogCommand_f reads Cmd_Argc()/Cmd_Argv() itself (see this file's
+    // header note on `args` going unused); Cmd_TokenizeString sets those.
+    Cmd_TokenizeString("fog 0.6 1 0 0");
+    glRenderer.fogCommand?.(["fog", "0.6", "1", "0", "0"]);
+    expect(Fog_GetDensity()).toBeCloseTo(0.6, 5);
+    const c = Fog_GetColor();
+    expect(c[0]).toBeCloseTo(1, 2);
+  });
+
+  test("fogGetState reports the same density/color Fog_GetDensity/Fog_GetColor do", () => {
+    Fog_Update(0.33, 0.2, 0.4, 0.6, 0);
+    const state = glRenderer.fogGetState?.();
+    expect(state).toBeDefined();
+    expect(state?.density).toBeCloseTo(Fog_GetDensity(), 6);
+    expect(state?.color[0]).toBeCloseTo(Fog_GetColor()[0], 6);
+    expect(state?.color[1]).toBeCloseTo(Fog_GetColor()[1], 6);
+    expect(state?.color[2]).toBeCloseTo(Fog_GetColor()[2], 6);
+  });
+
+  test("the shared 'fog' console command reaches this renderer through re.current, not a direct import", () => {
+    // re.current is set to glRenderer by this file's own beforeEach; the
+    // "fog" command itself is registered exactly once, at module load, by
+    // src/client/fog_cmd.ts -- neither this test nor gl_fog.ts's own
+    // Fog_Init ever calls Cmd_AddCommand("fog", ...) (see this file's
+    // header note on U44).
+    exec("fog 0.77 0 1 0");
+    expect(glRenderer.fogGetState?.()?.density).toBeCloseTo(0.77, 5);
   });
 });

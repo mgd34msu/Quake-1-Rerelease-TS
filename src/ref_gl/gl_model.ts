@@ -267,7 +267,7 @@ import { GL_MakeAliasModelDisplayLists } from "./gl_mesh";
 // attach hook -- see gl_md5.ts's own header.
 import { attachMd5GlReplacementIfAny } from "./gl_md5";
 // QuakeWorld track: gl_model.c's player.mdl/eyes.mdl CRC -> cls.qw.userinfo fold.
-import { qw } from "../common/quakedef";
+import { qwActive } from "../common/profile";
 import { cl, cls, CactiveT } from "../client/client";
 import { CRC_Block } from "../common/crc";
 import { com_filesize } from "../common/common";
@@ -407,7 +407,7 @@ export function afterBrushLoad(mod: ModelT): void {
   // QW/client/gl_model.c: brush models that are not the current map (per
   // cl.qw.serverinfo's "map" key) get every marksurface flagged
   // SURF_DONTWARP, so gl_rsurf.c's underwater-warp gating below skips them.
-  const isnotmap = qw.active && `maps/${Info_ValueForKey(cl.qw.serverinfo, "map")}.bsp` !== mod.name;
+  const isnotmap = qwActive() && `maps/${Info_ValueForKey(cl.qw.serverinfo, "map")}.bsp` !== mod.name;
 
   for (const leaf of mod.leafs) {
     if (leaf.contents !== CONTENTS_EMPTY) {
@@ -686,7 +686,7 @@ export function Mod_LoadAllSkins(mod: ModelT, hdr: AliashdrT, buffer: Uint8Array
 
       // save 8 bit texels for the player model to remap
       const pixelsStart = pskintype + DALIASSKINTYPE_T_SIZE;
-      if (qw.active) {
+      if (qwActive()) {
         // QW/client/gl_model.c: only player.mdl's texels are kept, into the
         // fixed-size player_8bit_texels global -- hdr.texels[i] is not set.
         if (mod.name === "progs/player.mdl") {
@@ -720,7 +720,7 @@ export function Mod_LoadAllSkins(mod: ModelT, hdr: AliashdrT, buffer: Uint8Array
       for (; j < groupskins; j++) {
         Mod_FloodFillSkin(skin, hdr.skinwidth, hdr.skinheight);
         // QW/client/gl_model.c drops this group-skin texel save entirely.
-        if (!qw.active && j === 0) {
+        if (!qwActive() && j === 0) {
           const texels = Hunk_AllocName(s, loadState.loadname);
           texels.set(buffer.subarray(pskintype, pskintype + s));
           hdr.texels[i] = texels;
@@ -758,7 +758,7 @@ export function Mod_LoadAliasModel(mod: ModelT, buffer: Uint8Array): void {
 
   // QW/client/gl_model.c: player.mdl/eyes.mdl CRC -> cls.userinfo "pmodel"/"emodel",
   // so the server can verify the skin the client says it is using.
-  if (qw.active && (mod.name === "progs/player.mdl" || mod.name === "progs/eyes.mdl")) {
+  if (qwActive() && (mod.name === "progs/player.mdl" || mod.name === "progs/eyes.mdl")) {
     // CRC_Block(buffer, com_filesize): com_filesize is the exact on-disk
     // length COM_LoadStackFile just set, WITHOUT the trailing 0 byte
     // COM_LoadFile appends to `buffer` -- CRC_Block(buffer) alone would hash

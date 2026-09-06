@@ -35,12 +35,13 @@ import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 
 import { COM_AddGameDirectory, COM_InitArgv, COM_InitFilesystem, com_gamedir, com_searchpaths, setComGamedir, setComSearchpaths } from "../src/common/common";
-import { re, type Renderer } from "../src/client/render";
+import { re, type GlyphAtlasSourceT, type Renderer } from "../src/client/render";
 import { TextureT } from "../src/common/model";
 import { vid } from "../src/client/vid";
 import { glState } from "../src/ref_gl/glquake";
 import { GL_QUADS, GL_TEXTURE_2D, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
 import * as softDrawModule from "../src/ref_soft/draw";
+import * as glDrawModule from "../src/ref_gl/gl_draw";
 import { ZipArchive } from "../src/lib/zipfile";
 import { ParseKfont, kfontHasGlyph } from "../src/lib/kfont";
 import { PakFile } from "./support/pak_reader";
@@ -57,9 +58,14 @@ import {
 // ---------------------------------------------------------------------------
 // Fake Renderer -- console.test.ts's own makeFakeRenderer() shape, reused
 // here (self-sufficient per standing order 13, so re-declared rather than
-// imported from another test file) with an `isGL` toggle: kfont_text.ts's
-// Text_Draw dispatches to src/ref_soft/draw.ts or src/ref_gl/gl_draw.ts
-// based on exactly this flag.
+// imported from another test file) with an `isGL` toggle. U44: kfont_text.ts's
+// Text_Draw now reaches the renderer purely through
+// `getRenderer().Draw_GlyphAtlas(...)` (src/client/render.ts's Renderer
+// seam member), so this fake's own `Draw_GlyphAtlas` forwards to the REAL
+// src/ref_soft/draw.ts or src/ref_gl/gl_draw.ts function based on `isGL`,
+// which is what lets a `spyOn` on either real module's own export observe
+// the call (spyOn patches the module namespace object; a value captured by
+// direct reference at construction time would miss it).
 // ---------------------------------------------------------------------------
 function makeFakeRenderer(isGL: boolean): { renderer: Renderer; draws: Array<{ x: number; y: number; num: number }> } {
   const draws: Array<{ x: number; y: number; num: number }> = [];
@@ -124,6 +130,21 @@ function makeFakeRenderer(isGL: boolean): { renderer: Renderer; draws: Array<{ x
     SCR_DrawCrosshair: () => {},
     Draw_SubPic: () => {},
     Draw_Alt_String: () => {},
+    Draw_GlyphAtlas: (
+      dstX: number,
+      dstY: number,
+      dstW: number,
+      dstH: number,
+      source: GlyphAtlasSourceT,
+      srcX: number,
+      srcY: number,
+      srcW: number,
+      srcH: number,
+      tint: readonly [number, number, number] | null,
+    ) => {
+      const mod = isGL ? glDrawModule : softDrawModule;
+      mod.Draw_GlyphAtlas(dstX, dstY, dstW, dstH, source, srcX, srcY, srcW, srcH, tint);
+    },
     isGL,
     SCR_ScreenShot_f: () => {},
   };

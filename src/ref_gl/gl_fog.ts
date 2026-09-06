@@ -48,12 +48,22 @@ Deviations from the reference:
   are not ported: no ported .ts file in this unit's SCOPE calls them
   (r_part.ts's particle drawing is out of SCOPE), so there is no call site to
   wire them into. Follow-up, not a silent drop.
+- U44: Fog_Init no longer calls `Cmd_AddCommand("fog", ...)`. WinQuake links
+  one renderer; this port compiles both in, and having both this file and
+  src/ref_soft/r_fog.ts register the same command name from their own R_Init
+  broke whichever renderer's test suite ran second in a shared `bun test`
+  process (r_fog.ts's own header documents the empirical finding). The 'fog'
+  command is now registered exactly once, at module load, by
+  src/client/fog_cmd.ts, which dispatches through the active renderer's
+  `Renderer.fogCommand` seam member (src/ref_gl/ref_gl.ts's `fogCommand` is
+  the thin passthrough to Fog_FogCommand_f below). Fog_FogCommand_f itself is
+  unchanged and still directly callable.
 */
 
 import { type Vec3, vec3 } from "../common/mathlib";
 import { type ParseState, COM_Parse, Q_atof } from "../common/common";
 import { cl } from "../client/client";
-import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv } from "../common/cmd";
+import { Cmd_Argc, Cmd_Argv } from "../common/cmd";
 import { Con_Printf } from "../client/console";
 import { GL_EXP2, GL_FOG, GL_FOG_COLOR, GL_FOG_DENSITY, GL_FOG_MODE, qgl } from "./qgl";
 
@@ -363,11 +373,11 @@ export function Fog_SetupState(): void {
 =============
 Fog_Init
 
-called when quake initializes -- registers the 'fog' console command. Called
-from gl_rmisc.ts's R_Init.
+called when quake initializes. Called from gl_rmisc.ts's R_Init. Does NOT
+register a 'fog' console command -- see this file's header (U44): that is
+now src/client/fog_cmd.ts's job, dispatched through the Renderer seam.
 =============
 */
 export function Fog_Init(): void {
-  Cmd_AddCommand("fog", Fog_FogCommand_f);
   Fog_SetupState();
 }

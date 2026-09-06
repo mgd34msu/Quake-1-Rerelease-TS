@@ -51,7 +51,8 @@ import { CvarT, Cvar_RegisterVariable } from "../common/cvar";
 import { Con_Printf, Con_DPrintf } from "../client/console";
 import type { UsercmdT } from "../server/server";
 import type { QwUsercmdT } from "../qw/protocol";
-import { PITCH, YAW, qw } from "../common/quakedef";
+import { PITCH, YAW } from "../common/quakedef";
+import { qwActive } from "../common/profile";
 import { COM_CheckParm, COM_LoadTempFile } from "../common/common";
 import { noclip_anglehack } from "../common/host_cmd";
 import { cl } from "../client/client";
@@ -59,6 +60,7 @@ import { host } from "../common/host";
 import { in_strafe, in_mlook, cl_forwardspeed, cl_sidespeed } from "../client/cl_input";
 import { lookstrafe, sensitivity, m_pitch, m_yaw, m_forward, m_side } from "../client/cl_main";
 import { V_StopPitchDrift } from "../client/view";
+import { SS_QueueSeatImpulse, SS_SetSeatButtons } from "../client/splitscreen";
 import { hostClientHooks } from "../common/host";
 import { inputBackend, qwInputHooks, type InputBackend, type QwInputRefs } from "../client/input";
 import { ParseGameControllerDbMappings, IN_ApplyDeadzone, IN_ApplyEasing, type AxisValueT } from "../lib/gamepad_map";
@@ -1092,12 +1094,27 @@ class GamepadDeviceT {
   leftY = 0;
   rightX = 0;
   rightY = 0;
+  /** U43: SDL_CONTROLLER_BUTTON_* currently held, as a bit per button.
+   *  Player 1's pad still turns its buttons into Key_Event for the bind
+   *  system; a splitscreen seat has no binds of its own and reads this. */
+  heldButtons = 0;
+  /** Trigger axes, normalized 0..1, latched for every device (player 1's
+   *  also become K_LTRIGGER/K_RTRIGGER key events). */
+  leftTrigger = 0;
+  rightTrigger = 0;
+  /** Shoulder-button state the seat's weapon cycling was last edge-detected
+   *  against. */
+  prevShoulders = 0;
 
   clearState(): void {
     this.leftX = 0;
     this.leftY = 0;
     this.rightX = 0;
     this.rightY = 0;
+    this.heldButtons = 0;
+    this.leftTrigger = 0;
+    this.rightTrigger = 0;
+    this.prevShoulders = 0;
   }
 }
 
@@ -1528,7 +1545,7 @@ const winquakeInputRefs: QwInputRefs = { in_strafe, in_mlook, lookstrafe, sensit
 
 function inputRefs(): QwInputRefs {
   const qwRefs = qwInputHooks.current;
-  return qw.active && qwRefs !== null ? qwRefs : winquakeInputRefs;
+  return qwActive() && qwRefs !== null ? qwRefs : winquakeInputRefs;
 }
 
 export function IN_Move(cmd: UsercmdT): void {
@@ -1606,6 +1623,66 @@ function IN_JoyMove_(cmd: InMoveCmd): void {
   }
 }
 
+/*
+==================
+IN_MoveSeat
+
+U43 (local splitscreen): one seat's entire move, from the one controller
+gamepad_assign.ts routed to that player. Seat 0 never comes here -- it has the
+keyboard, the mouse and the bind system, and goes through IN_Move above. A
+seat past 0 has none of those: one bind table cannot tell two players'
+`+attack` apart, so the pad map is fixed here and the buttons are latched
+straight onto the seat (src/client/splitscreen.ts) instead of being turned
+into key events.
+
+  left stick    forward/side, at cl_forwardspeed/cl_sidespeed
+  right stick   yaw/pitch, at this player's own in_playerN_* tuning
+  right trigger attack        A  jump
+  LB / RB       previous / next weapon (impulse 12 / 10), edge-triggered
+
+`cl.viewangles` here is the SEAT's own viewangles: client.ts's `cl` is bound
+to the seat whose usercmd CL_SendCmd is building (splitscreen.ts's header).
+==================
+*/
+export function IN_MoveSeat(cmd: InMoveCmd, seat: number): void {
+  if (seat <= 0) return;
+  if (!joy_enable.value) return;
+  if (!(hostClientHooks.keyDestIsGame?.() ?? true)) return;
+
+  const pad = gpDeviceForPlayer(seat);
+  if (!pad) return;
+
+  const tuning = PlayerTuning(seat);
+
+  const swap = joy_swapmovelook.value !== 0;
+  const moveRaw: AxisValueT = swap ? { x: pad.rightX, y: pad.rightY } : { x: pad.leftX, y: pad.leftY };
+  const lookRaw: AxisValueT = swap ? { x: pad.leftX, y: pad.leftY } : { x: pad.rightX, y: pad.rightY };
+
+  const moveDeadzone = IN_ApplyDeadzone(moveRaw, joy_deadzone_move.value, joy_outer_threshold_move.value);
+  const lookDeadzone = IN_ApplyDeadzone(lookRaw, tuning.deadzone, joy_outer_threshold_look.value);
+  const moveEased = IN_ApplyEasing(moveDeadzone, joy_exponent_move.value);
+  const lookEased = IN_ApplyEasing(lookDeadzone, joy_exponent.value);
+
+  cmd.sidemove += cl_sidespeed.value * moveEased.x;
+  cmd.forwardmove -= cl_forwardspeed.value * moveEased.y;
+
+  if (lookEased.x !== 0 || lookEased.y !== 0) {
+    cl.viewangles[YAW] -= lookEased.x * tuning.yawsensitivity * host.frametime;
+    cl.viewangles[PITCH] += lookEased.y * tuning.pitchsensitivity * tuning.pitchsign * host.frametime;
+  }
+
+  let bits = 0;
+  if (pad.rightTrigger > joy_deadzone_trigger.value) bits |= 1;
+  if (pad.heldButtons & (1 << SDL_CONTROLLER_BUTTON_A)) bits |= 2;
+  SS_SetSeatButtons(seat, bits);
+
+  const shoulders = pad.heldButtons & ((1 << SDL_CONTROLLER_BUTTON_LEFTSHOULDER) | (1 << SDL_CONTROLLER_BUTTON_RIGHTSHOULDER));
+  const pressed = shoulders & ~pad.prevShoulders;
+  pad.prevShoulders = shoulders;
+  if (pressed & (1 << SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)) SS_QueueSeatImpulse(seat, 10);
+  else if (pressed & (1 << SDL_CONTROLLER_BUTTON_LEFTSHOULDER)) SS_QueueSeatImpulse(seat, 12);
+}
+
 function IN_Move_(cmd: InMoveCmd): void {
   IN_JoyMove_(cmd);
 
@@ -1661,7 +1738,7 @@ export function IN_ClearStates(): void {
   }
 }
 
-const inputBackendImpl: InputBackend = { IN_Init, IN_Shutdown, IN_Commands, IN_Move, IN_MoveQw, IN_ModeChanged, IN_ClearStates };
+const inputBackendImpl: InputBackend = { IN_Init, IN_Shutdown, IN_Commands, IN_Move, IN_MoveSeat, IN_MoveQw, IN_ModeChanged, IN_ClearStates };
 inputBackend.current = inputBackendImpl;
 hostClientHooks.inInit = IN_Init;
 hostClientHooks.inShutdown = IN_Shutdown;
@@ -1767,7 +1844,15 @@ export function SDL_PumpInput(): void {
         // section's own header. An event from a device we never opened is
         // dropped rather than treated as player 1's.
         const dev = gpDeviceByInstance(eventView.getInt32(CBUTTONEVENT_WHICH, true));
-        if (!dev || dev !== gpDeviceForPlayer(0)) break;
+        if (!dev) break;
+        // U43: latch the held state on the device whichever player it drives
+        // -- a splitscreen seat reads it directly (IN_MoveSeat below), since
+        // one bind table cannot tell two players' +attack apart.
+        if (button < 32) {
+          if (down) dev.heldButtons |= 1 << button;
+          else dev.heldButtons &= ~(1 << button);
+        }
+        if (dev !== gpDeviceForPlayer(0)) break;
         const key = SDL_GamepadButtonToKeynum(button);
         if (key !== 0) Key_Event(key, down);
         break;
@@ -1788,7 +1873,13 @@ export function SDL_PumpInput(): void {
         else if (axis === SDL_CONTROLLER_AXIS_LEFTY) dev.leftY = normalizedStick;
         else if (axis === SDL_CONTROLLER_AXIS_RIGHTX) dev.rightX = normalizedStick;
         else if (axis === SDL_CONTROLLER_AXIS_RIGHTY) dev.rightY = normalizedStick;
-        else if (dev === gpDeviceForPlayer(0) && (axis === SDL_CONTROLLER_AXIS_TRIGGERLEFT || axis === SDL_CONTROLLER_AXIS_TRIGGERRIGHT)) {
+        else if (axis === SDL_CONTROLLER_AXIS_TRIGGERLEFT || axis === SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+          // U43: latched on the device for every player (a seat's attack is
+          // its own right trigger); only player 1's becomes a key event.
+          if (axis === SDL_CONTROLLER_AXIS_TRIGGERLEFT) dev.leftTrigger = value / 32768.0;
+          else dev.rightTrigger = value / 32768.0;
+        }
+        if (dev === gpDeviceForPlayer(0) && (axis === SDL_CONTROLLER_AXIS_TRIGGERLEFT || axis === SDL_CONTROLLER_AXIS_TRIGGERRIGHT)) {
           // Player 1's trigger axes: edge-triggered Key_Event using
           // joy_deadzone_trigger as the threshold (Ironwail in_sdl.c:969's
           // own `triggerthreshold`), strictly-greater-than on both edges --
@@ -2212,6 +2303,44 @@ export function SDL_InjectFakeGamepadForTests(instanceId: number, guid: string, 
   gpDevices.push(dev);
   gpDeviceGeneration++;
   gpResolve();
+}
+
+/*
+The second half of that seam, for the SPLITSCREEN seats (U43). SDL_PushEvent
+validates a controller event's `which` against its own open-joystick table and
+this process never has a genuinely open one, so every pushed event comes back
+with `which == -1` and can only ever be routed to a SOLE open device
+(gpDeviceByInstance's fallback -- see test/gamepad.test.ts's own note). A seat
+test needs a SECOND pad with state of its own, which no pushed event can
+address. This sets exactly the fields SDL_PumpInput's own
+SDL_CONTROLLERAXISMOTION / SDL_CONTROLLERBUTTONDOWN cases latch on the device,
+by instance id, so everything downstream of the latch -- gpDeviceForPlayer,
+PlayerTuning, the deadzone and easing math, IN_MoveSeat's whole body -- is the
+real code path.
+*/
+export interface FakeGamepadStateT {
+  leftX?: number;
+  leftY?: number;
+  rightX?: number;
+  rightY?: number;
+  leftTrigger?: number;
+  rightTrigger?: number;
+  /** SDL_CONTROLLER_BUTTON_* held, one bit per button. */
+  heldButtons?: number;
+}
+
+export function SDL_SetFakeGamepadStateForTests(instanceId: number, state: FakeGamepadStateT): void {
+  for (const dev of gpDevices) {
+    if (dev.instanceId !== instanceId) continue;
+    if (state.leftX !== undefined) dev.leftX = state.leftX;
+    if (state.leftY !== undefined) dev.leftY = state.leftY;
+    if (state.rightX !== undefined) dev.rightX = state.rightX;
+    if (state.rightY !== undefined) dev.rightY = state.rightY;
+    if (state.leftTrigger !== undefined) dev.leftTrigger = state.leftTrigger;
+    if (state.rightTrigger !== undefined) dev.rightTrigger = state.rightTrigger;
+    if (state.heldButtons !== undefined) dev.heldButtons = state.heldButtons;
+    return;
+  }
 }
 
 /** Undoes SDL_InjectFakeGamepadForTests -- removes the fake device and

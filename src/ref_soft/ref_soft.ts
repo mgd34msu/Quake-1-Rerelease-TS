@@ -130,7 +130,7 @@ import { R_BuildShiftRamps } from "./r_coloredlight";
 import { CalcFov, scr_fov, scr_viewsize } from "../client/screen";
 import { Sbar_Changed } from "../client/sbar";
 import { cl_crossx, cl_crossy, crosshair, gammatable, V_CalcPowerupCshift, V_CheckGamma } from "../client/view";
-import { qw } from "../common/quakedef";
+import { qwActive } from "../common/profile";
 
 // host.c's `byte *host_basepal` is one global; this port has two holders for
 // it -- src/common/host.ts on the WinQuake track, and src/qw/client/cl_main.ts
@@ -141,6 +141,7 @@ import { qw } from "../common/quakedef";
 import { registerRenderer } from "../platform/vid";
 import { dState } from "./d_local";
 import { Fog_ParseServerMessage, Fog_ParseWorldspawn, R_Init, R_NewMap, R_RenderView, R_SetVrect, R_ViewChanged, SoftSky_LoadSkyBox } from "./r_main";
+import { Fog_FogCommand_f, Fog_GetColor, Fog_GetDensity } from "./r_fog";
 // siblings, each imported by its C name from the module its .c file maps to
 import { R_InitTextures, softModelHooks } from "./model";
 import { D_DisableBackBufferAccess, D_EnableBackBufferAccess, D_UpdateRects } from "./d_init";
@@ -161,6 +162,7 @@ import {
   Draw_EndDisc,
   Draw_FadeScreen,
   Draw_Fill,
+  Draw_GlyphAtlas,
   Draw_Init,
   Draw_Pic,
   Draw_PicFromWad,
@@ -262,7 +264,7 @@ function V_DrawCrosshair(): void {
     // QW/client/view.c:1019 factors the same site out into draw.c's
     // Draw_Crosshair, which adds the crosshair.value==2 dot and the -4
     // centering offset.
-    if (qw.active) {
+    if (qwActive()) {
       Draw_Crosshair();
       return;
     }
@@ -538,6 +540,7 @@ export const softRenderer: Renderer = {
 
   Draw_SubPic,
   Draw_Alt_String,
+  Draw_GlyphAtlas,
 
   D_StartParticles,
   D_DrawParticle,
@@ -572,6 +575,16 @@ export const softRenderer: Renderer = {
   fogParseServerMessage: Fog_ParseServerMessage,
   fogParseWorldspawn: Fog_ParseWorldspawn,
   skyLoadSkyBox: SoftSky_LoadSkyBox,
+
+  // U44 additions: render.ts's Renderer.fogCommand/fogGetState -- see
+  // ref_gl.ts's own copy of this comment for why `args` goes unused here.
+  fogCommand(_args: readonly string[]): void {
+    Fog_FogCommand_f();
+  },
+  fogGetState(): { density: number; color: readonly [number, number, number] } {
+    const c = Fog_GetColor();
+    return { density: Fog_GetDensity(), color: [c[0], c[1], c[2]] };
+  },
 };
 
 registerRenderer("soft", () => softRenderer);

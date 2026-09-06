@@ -90,7 +90,7 @@ import { Mod_Extradata, ModtypeT } from "../common/model";
 import { cl, cl_entities } from "../client/client";
 import { BOTTOM_RANGE, TOP_RANGE, r_refdef } from "../client/render";
 import { d_8to24table } from "../client/vid";
-import { qw } from "../common/quakedef";
+import { qwActive } from "../common/profile";
 import { MAX_CLIENTS } from "../qw/protocol";
 import { Info_ValueForKey } from "../qw/common";
 import { Skin_Cache, Skin_Find } from "../qw/client/skin";
@@ -99,7 +99,7 @@ import { R_InitBubble } from "./gl_rlight";
 import { ngraphState } from "./gl_ngraph";
 import { R_ClearParticles, R_InitParticles, R_ReadPointFile_f } from "../client/r_part";
 import type * as QwRPartModule from "../qw/client/r_part";
-import { d_lightstylevalue, gl_coloredlight, glState, r_lerplightstyles, r_nolerp_list, r_worldentity } from "./glquake";
+import { d_lightstylevalue, gl_coloredlight, glState, r_worldentity } from "./glquake";
 import { AliashdrT } from "./gl_model_types";
 import {
   GL_BACK,
@@ -172,19 +172,13 @@ import {
   r_drawviewmodel,
   r_dynamic,
   r_fullbright,
-  r_lavaalpha,
-  r_lerpmodels,
-  r_lerpmove,
   r_lightmap,
   r_mirroralpha,
   r_netgraph,
   r_norefresh,
   r_novis,
   r_shadows,
-  r_slimealpha,
   r_speeds,
-  r_telealpha,
-  r_wateralpha,
 } from "./gl_rmain";
 import { gl_overbright_models, gl_fullbrights, gl_texture_anisotropy } from "./gl_draw";
 import { Fog_Init, Fog_ParseWorldspawn } from "./gl_fog";
@@ -314,7 +308,7 @@ R_Init
 export function R_Init(): void {
   Cmd_AddCommand("timerefresh", R_TimeRefresh_f);
   Cmd_AddCommand("envmap", R_Envmap_f);
-  Cmd_AddCommand("pointfile", qw.active ? qwRPartMod().R_ReadPointFile_f : R_ReadPointFile_f);
+  Cmd_AddCommand("pointfile", qwActive() ? qwRPartMod().R_ReadPointFile_f : R_ReadPointFile_f);
 
   Cvar_RegisterVariable(r_norefresh);
   Cvar_RegisterVariable(r_lightmap);
@@ -323,23 +317,16 @@ export function R_Init(): void {
   Cvar_RegisterVariable(r_drawviewmodel);
   Cvar_RegisterVariable(r_shadows);
   Cvar_RegisterVariable(r_mirroralpha);
-  Cvar_RegisterVariable(r_wateralpha);
-  // U21 additions: no WinQuake counterparts (see this unit's headers).
-  Cvar_RegisterVariable(r_lavaalpha);
-  Cvar_RegisterVariable(r_slimealpha);
-  Cvar_RegisterVariable(r_telealpha);
   Cvar_RegisterVariable(r_dynamic);
   Cvar_RegisterVariable(r_novis);
   Cvar_RegisterVariable(r_speeds);
-  // U16 additions: no WinQuake counterparts (see render.ts's and glquake.ts's
-  // header notes on why r_lerpmove/r_lerpmodels live in render.ts while
-  // r_nolerp_list/r_lerplightstyles live in glquake.ts).
-  Cvar_RegisterVariable(r_lerpmove);
-  Cvar_RegisterVariable(r_lerpmodels);
-  Cvar_RegisterVariable(r_nolerp_list);
-  Cvar_RegisterVariable(r_lerplightstyles);
+  // U21's r_wateralpha/r_lavaalpha/r_slimealpha/r_telealpha and U16's
+  // r_lerpmove/r_lerpmodels/r_nolerp_list/r_lerplightstyles are registered
+  // once, at module load, by src/common/render_cvars.ts (U44 -- see that
+  // module's header: only this R_Init ever registered them before, leaving
+  // a software-only process's CvarT.value at 0).
   // QW/client/gl_rmisc.c / r_misc.c: r_netgraph (see gl_rmain.ts's header).
-  if (qw.active) Cvar_RegisterVariable(r_netgraph);
+  if (qwActive()) Cvar_RegisterVariable(r_netgraph);
 
   Cvar_RegisterVariable(gl_finish);
   Cvar_RegisterVariable(gl_clear);
@@ -359,7 +346,7 @@ export function R_Init(): void {
   // QW/client/gl_rmain.c: gl_keeptjunctions defaults to 1, not 0 (see
   // gl_rmain.ts's header note on why this is a post-registration override
   // rather than a different construction-time default).
-  if (qw.active) gl_keeptjunctions.value = 1;
+  if (qwActive()) gl_keeptjunctions.value = 1;
   Cvar_RegisterVariable(gl_reporttjunctions);
 
   Cvar_RegisterVariable(gl_doubleeyes);
@@ -377,11 +364,11 @@ export function R_Init(): void {
   Fog_Init();
   Sky_Init();
 
-  if (qw.active) qwRPartMod().R_InitParticles();
+  if (qwActive()) qwRPartMod().R_InitParticles();
   else R_InitParticles();
   R_InitParticleTexture();
 
-  if (qw.active) {
+  if (qwActive()) {
     // QW/client/gl_rmisc.c:207 (see gl_rlight.ts's header note).
     R_InitBubble();
     // QW/client/gl_rmisc.c:216-218: netgraphtexture gets its own slot before
@@ -393,7 +380,7 @@ export function R_Init(): void {
   glState.playertextures = glState.texture_extension_number;
   // QW reserves MAX_CLIENTS (32) player-skin texture slots; WinQuake reserves
   // a fixed 16 (gl_rmain.c's R_Init, see gl_rmain.ts's header note).
-  glState.texture_extension_number += qw.active ? MAX_CLIENTS : 16;
+  glState.texture_extension_number += qwActive() ? MAX_CLIENTS : 16;
 }
 
 /*
@@ -412,7 +399,7 @@ export function R_TranslatePlayerSkin(playernum: number): void {
 
   GL_DisableMultitexture();
 
-  if (qw.active) {
+  if (qwActive()) {
     // QW/client/gl_rmisc.c's full rewrite (see file header): cl.players[]
     // instead of cl.scores[], Skin_Find/Skin_Cache instead of the alias
     // model's own texels, a 296x194 real-model size distinct from the
@@ -656,7 +643,7 @@ export function R_NewMap(): void {
   for (i = 0; i < worldmodel.numleafs; i++) worldmodel.leafs[i].efrags = null;
 
   glState.r_viewleaf = null;
-  if (qw.active) qwRPartMod().R_ClearParticles();
+  if (qwActive()) qwRPartMod().R_ClearParticles();
   else R_ClearParticles();
 
   // U21 additions: no WinQuake counterparts. Fog_ParseWorldspawn resets to

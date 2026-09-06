@@ -39,55 +39,38 @@ WinQuake links one renderer; this port compiles both in, and in a REAL
 process only one renderer's R_Init ever runs (`hostClientHooks.rInit = () =>
 { re.current?.R_Init(); }`, src/ref_soft/ref_soft.ts / src/ref_gl/gl_rmisc.ts
 -- `re.current` names exactly one renderer), so gl_fog.ts's Fog_Init and this
-file's own Fog_Init were never both going to run in one real client, and the
-brief's "register only if the GL module hasn't" (`Cmd_Exists("fog")`, the
-real command table as the guard rather than a private flag) is a correct
-description of that one-real-process case. This file does NOT call
-`Cmd_AddCommand("fog", ...)` from Fog_Init, though, for a reason found
-empirically while verifying this unit: `bun test`'s own file-scheduling order
-in this repo did not match the order test files were given on the command
-line (confirmed by swapping the argument order and by forcing
-`--max-concurrency=1`; the actual order it used was not evident from the
-CLI), and in EVERY ordering tried, some ref_soft test file's ordinary R_Init
-call (unrelated to fog -- every ref_soft suite calls R_Init as routine setup)
-ran before test/ref_gl_fog.test.ts's own "fog console command" describe.
-Cmd_AddCommand has no removal/reclaim path outside `cmdHost.rendererSwitch`
-(a real vid_ref-switch window neither test file opens), so whichever module's
-Cmd_AddCommand("fog", ...) call happened to run FIRST in that shared `bun
-test` process kept "fog" bound to its own Fog_FogCommand_f for the rest of
-the process -- the Cmd_Exists guard only stops a SECOND caller from printing
-"already defined" over an existing registration, it does not make the
-outcome depend on WHICH renderer's tests the caller "should" belong to. So
-registering "fog" here at all, guarded or not, broke test/ref_gl_fog.test.ts's
-own command tests -- a file outside this unit's SCOPE, and one standing
-order 14 forbids leaving broken. Production correctness does not depend on
-this registration (see above: only one Fog_Init ever runs there), so this
-unit stops short of it. Fog_ParseServerMessage/Fog_ParseWorldspawn -- the
-actual svc_fog/worldspawn-key paths real gameplay uses -- and
-Fog_FogCommand_f itself (callable directly; this unit's own test does
-exactly that via Cmd_TokenizeString + a direct call, bypassing the shared
-table entirely) are unaffected. Follow-up: a real fix needs ONE 'fog' command
-implementation that dispatches through `re.current`, which needs a home
-outside both renderer directories (render.ts, out of this unit's SCOPE) --
-the same shape render.ts's shared-cvar block already gives `r_fullbright`.
+file's own Fog_Init were never both going to run in one real client. U27
+still found, empirically, that having BOTH files call
+`Cmd_AddCommand("fog", ...)` from their own Init broke whichever renderer's
+test suite happened to run second in a shared `bun test` process (no
+Cmd_RemoveCommand exists outside a real vid_ref switch, so the first
+registration wins for the rest of the process), and stopped registering it
+here at all as the least-bad fix available inside this file's own SCOPE.
 
-`r_skyfog` IS NOT gl_sky.ts's SHARED OBJECT
+U44 (src/client/fog_cmd.ts) is the real fix that follow-up asked for: ONE
+'fog' command, registered once at module load, that dispatches through
+`getRenderer().fogCommand?.(args)` (src/client/render.ts's Renderer seam) --
+gl_fog.ts no longer registers "fog" either now, and neither renderer's own
+Fog_Init touches the shared command table at all. Fog_FogCommand_f itself is
+still fully implemented and directly callable (this unit's own tests do
+exactly that via Cmd_TokenizeString + a direct call, bypassing the shared
+command entirely), and src/ref_soft/ref_soft.ts's `fogCommand` member is the
+thin passthrough to it that fog_cmd.ts's dispatch reaches.
+
+`r_skyfog` -- NOW gl_sky.ts's SHARED OBJECT
 
 render.ts's shared-cvar block (r_fullbright, r_drawentities, ...) is the
 established way two renderers agree on one cvar's live value: one `CvarT`
-object, imported by both R_Init functions. `r_skyfog` is not in that block --
-it is gl_sky.ts's own module-private export, declared for the GL skybox's
-sky-tint blend (U21-era) with no ref_soft reader before this unit. Importing
-it here would mean this file (and therefore every software-only build/test)
-pulling in gl_sky.ts's own glquake.ts/gl_draw.ts/qgl.ts dependency chain --
-the same self-sufficiency problem the section above avoids for gl_fog.ts.
-This file therefore declares its OWN `r_skyfog` CvarT, default 0.5 to match
-gl_sky.ts's. Documented deviation/limitation: while both renderers are
-loaded, `r_skyfog <value>` at the console only reaches whichever CvarT
-object's owner (Cvar_RegisterVariable's list is keyed by name, first
-registration wins) got there first -- the OTHER renderer's own object stays
-at its compiled-in default until a follow-up moves `r_skyfog` into
-render.ts's shared block the way `r_fullbright` already lives there.
+object, imported by both R_Init functions. U27 could not put `r_skyfog` there
+because doing so meant this file (and therefore every software-only build/
+test) pulling in gl_sky.ts's own glquake.ts/gl_draw.ts/qgl.ts dependency
+chain, so this file declared its own private `r_skyfog` CvarT instead
+(documented deviation: while both renderers were loaded, `r_skyfog <value>`
+at the console only reached whichever object's owner registered first).
+src/common/render_cvars.ts (U44) is a GL-independent home for exactly this
+kind of cvar -- it imports nothing but cvar.ts -- so `r_skyfog` now lives
+there, one object, imported by both this file and gl_sky.ts, with no
+GL-dependency cost to a software-only build.
 
 DEPTH RECONSTRUCTION, AND THE UNIT CHECK AGAINST gl_fog.ts
 
@@ -168,6 +151,13 @@ import { Cmd_Argc, Cmd_Argv } from "../common/cmd";
 import { Con_Printf } from "../client/console";
 import { CvarT, Cvar_RegisterVariable } from "../common/cvar";
 import { r_refdef, rState } from "./r_shared";
+// U44: r_skyfog moved to src/common/render_cvars.ts (see that module's
+// header and this file's own header, "r_skyfog -- NOW gl_sky.ts's SHARED
+// OBJECT") -- one object, shared with src/ref_gl/gl_sky.ts, registered once
+// at module load. Re-exported under its original name so any existing
+// importer of this module keeps compiling.
+import { r_skyfog } from "../common/render_cvars";
+export { r_skyfog };
 
 const DEFAULT_DENSITY = 0.0;
 const DEFAULT_GRAY = 0.3;
@@ -188,10 +178,6 @@ let fade_done = 0; // time when fade will be done
 // U27 addition (this file's header): the software post-pass's own on/off
 // switch, independent of `r_truecolor`/color depth.
 export const r_fog = new CvarT("r_fog", "1");
-
-// U27 addition, this file's own object -- see this file's header on why it
-// is not gl_sky.ts's `r_skyfog`. Same default (0.5).
-export const r_skyfog = new CvarT("r_skyfog", "0.5");
 
 /*
 =============
@@ -438,7 +424,8 @@ callable (Cmd_TokenizeString + a direct call, as this file's own test does).
 */
 export function Fog_Init(): void {
   Cvar_RegisterVariable(r_fog);
-  Cvar_RegisterVariable(r_skyfog);
+  // U44: r_skyfog is registered once, at module load, by
+  // src/common/render_cvars.ts -- see this file's import block above.
 }
 
 /*

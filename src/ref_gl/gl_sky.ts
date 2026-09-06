@@ -56,7 +56,6 @@ fidelity requirement, since the classic engine has no skybox at all):
   SkyTintColor's own comment.
 */
 
-import { CvarT, Cvar_RegisterVariable } from "../common/cvar";
 import { Cmd_AddCommand, Cmd_Argc, Cmd_Argv } from "../common/cmd";
 import { COM_LoadTempFile, COM_Parse, type ParseState } from "../common/common";
 import { Con_Printf } from "../client/console";
@@ -67,18 +66,13 @@ import { glState } from "./glquake";
 import { GL_Bind, GL_Upload32 } from "./gl_draw";
 import { GL_BLEND, GL_QUADS, qgl } from "./qgl";
 import { Fog_GetColor, Fog_GetDensity } from "./gl_fog";
-
-// gl_sky.c:50 -- default 0.5, blends the classic warp toward the fog color
-// as density rises (see SkyTintColor).
-export const r_skyfog = new CvarT("r_skyfog", "0.5");
-
-// gl_rmain.c-era "don't bother with the moving cloud layer" cvar, ported
-// here (not gl_rmain.ts) because both the skybox and the classic warp path
-// read it to decide whether to draw the "slow" textured sky at all.
-export const r_fastsky = new CvarT("r_fastsky", "0");
-
-// QuakeSpasm's r_skyalpha (gl_sky.c) -- alpha for the skybox/cloud draw.
-export const r_skyalpha = new CvarT("r_skyalpha", "1");
+// U44: r_skyfog/r_fastsky/r_skyalpha moved to src/common/render_cvars.ts (see
+// that module's header) so src/ref_soft/r_fog.ts's/r_main.ts's own copies of
+// these names become the SAME object instead of a per-renderer duplicate.
+// Re-exported here under their original names so every existing importer of
+// this module (gl_warp.ts's r_fastsky) keeps compiling.
+import { r_fastsky, r_skyalpha, r_skyfog } from "../common/render_cvars";
+export { r_fastsky, r_skyalpha, r_skyfog };
 
 const SUF = ["rt", "bk", "lf", "ft", "up", "dn"] as const;
 
@@ -309,7 +303,6 @@ export function Sky_SkyCommand_f(): void {
 
 export function Sky_Init(): void {
   Cmd_AddCommand("sky", Sky_SkyCommand_f);
-  Cvar_RegisterVariable(r_fastsky);
-  Cvar_RegisterVariable(r_skyalpha);
-  Cvar_RegisterVariable(r_skyfog);
+  // U44: r_fastsky/r_skyalpha/r_skyfog are registered once, at module load,
+  // by src/common/render_cvars.ts -- see this file's import block above.
 }

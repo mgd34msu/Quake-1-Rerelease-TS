@@ -21,34 +21,40 @@ scale 1. This module is the POLICY layer the re-release adds on top of that:
 
 GLYPH PROVIDER / RENDERER SEAM (see this unit's report for the full writeup):
 `Text_Width`/`Text_Draw` below are the renderer-neutral entry points every
-caller (console.ts, sbar.ts, screen.ts) uses. Internally they call a new
-`Draw_GlyphAtlas` primitive this unit adds to BOTH src/ref_gl/gl_draw.ts and
-src/ref_soft/draw.ts -- a primitive `interface Renderer`
-(src/client/render.ts, PORTING.md's "Renderer seam", NOT in this unit's
-SCOPE) does not yet declare. Per the unit brief, this file reaches those two
-renderer modules DIRECTLY (`glDrawMod()`/`softDrawMod()` below) rather than
-through `getRenderer()`, and picks between them with `getRenderer().isGL` --
-a deliberate, temporary crossing of PORTING.md's "nothing outside
-src/ref_soft and src/ref_gl imports either renderer except
-src/platform/vid.ts" rule, for the coordinator to close by adding a
-`Draw_GlyphAtlas` member to `interface Renderer` and deleting these two
-direct imports. The proposed signature (identical in both renderers):
+caller (console.ts, sbar.ts, screen.ts) uses. Internally they call
+`getRenderer().Draw_GlyphAtlas(...)` -- a member src/client/render.ts's
+`interface Renderer` declares (PORTING.md's "Renderer seam"), implemented by
+both src/ref_gl/gl_draw.ts and src/ref_soft/draw.ts's own `Draw_GlyphAtlas`
+functions and wired onto each renderer object in src/ref_gl/ref_gl.ts /
+src/ref_soft/ref_soft.ts (U44). Before U44 landed that member, this file
+reached those two renderer modules DIRECTLY through a pair of lazy
+`require()`s (matching console.ts's own established pattern for the
+identical reason: gl_draw.ts statically imports Con_Printf from console.ts
+and Sbar_Changed from sbar.ts, and draw.ts statically imports Con_Printf
+from console.ts too, so a static import of either renderer file here,
+combined with console.ts/sbar.ts/screen.ts statically importing THIS file,
+would have closed a load-order cycle), picking between them with
+`getRenderer().isGL` -- a documented, temporary crossing of PORTING.md's
+"nothing outside src/ref_soft and src/ref_gl imports either renderer except
+src/platform/vid.ts" rule. `getRenderer().Draw_GlyphAtlas(...)` needs neither
+import nor the isGL branch for either real renderer: both carry the member
+directly (src/ref_gl/ref_gl.ts's and src/ref_soft/ref_soft.ts's own
+`Draw_GlyphAtlas`). `GlyphAtlasSourceT` moved to render.ts, next to the
+interface member that uses it; this file imports it type-only from there.
 
-  Draw_GlyphAtlas(dstX: number, dstY: number, dstW: number, dstH: number,
-    source: GlyphAtlasSourceT, srcX: number, srcY: number, srcW: number,
-    srcH: number, tint: readonly [number, number, number] | null): void
-
-Both direct imports are done through Node's lazy `require()` (matching
-console.ts's own established pattern for the identical reason): gl_draw.ts
-statically imports Con_Printf from console.ts and Sbar_Changed from sbar.ts,
-and draw.ts statically imports Con_Printf from console.ts too, so a static
-import of either renderer file here, combined with console.ts/sbar.ts/
-screen.ts statically importing THIS file (which they do, for Text_Width/
-Text_Draw/the scale cvars), would close a load-order cycle. Everything else
-this file needs (cvar.ts, common.ts, src/lib/*, render.ts) is a proven-safe
-leaf with no path back to this module, so those stay ordinary static
-imports and this file itself is safe for console.ts/sbar.ts/screen.ts to
-import statically.
+`Renderer.Draw_GlyphAtlas` is declared OPTIONAL (unlike every other draw.h
+member), and `drawGlyphAtlas` below keeps the old isGL-keyed lazy-require
+dispatch as a FALLBACK for when it is absent, for one reason outside this
+unit's SCOPE to fix directly: several test files elsewhere in this repo
+(console.test.ts's own makeFakeRenderer() shape and its copies, none of
+which this unit's brief lists) build a fake `Renderer` object satisfying the
+interface as it stood before this member existed, and requiring it would
+have broken every one of them for a member most never exercise (some do --
+test/screen_scale.test.ts spies on the real src/ref_soft/draw.ts export and
+needs a real call to reach it). The fallback reproduces this file's exact
+PRE-U44 behavior (reach the real module directly, keyed on `isGL`) so every
+such fixture keeps working unchanged. A real renderer (or any fake one built
+against this member, e.g. this file's own tests) never falls into it.
 
 SCALING RULES (QuakeSpasm gl_screen.c names/semantics, this unit's SCOPE):
 - `scr_conscale`: console virtual width = `scr_conscale.value > 0 ?
@@ -94,11 +100,11 @@ import { decodePNG } from "../lib/png";
 import { ParseKfont, kfontGlyph, Kfont_FromTTF, TtfKfont_Lookup, type KfontT, type TtfKfontT } from "../lib/kfont";
 import { parseFont, buildFontAtlas, latin1Codepoints, type ParsedFontT } from "../lib/ttf";
 import { Loc_Localize, Loc_ReloadFile } from "../lib/loc";
-import { getRenderer } from "./render";
+import { getRenderer, type GlyphAtlasSourceT } from "./render";
 import { vid } from "./vid";
-// see this file's header: lazy require() to avoid a load-order cycle
-// (gl_draw.ts/draw.ts both statically import console.ts, which statically
-// imports this file).
+// see this file's header's "Renderer.Draw_GlyphAtlas is declared OPTIONAL"
+// paragraph: fallback-only lazy require()s, reached only when the active
+// Renderer omits the member.
 import type * as GlDrawModule from "../ref_gl/gl_draw";
 import type * as SoftDrawModule from "../ref_soft/draw";
 
@@ -334,12 +340,16 @@ export function test_ResetGlyphCache(): void {
 }
 
 //=============================================================================
-// Renderer dispatch (see this file's header for the seam deviation)
+// Renderer dispatch (see this file's header: U44 closed the seam deviation)
 //=============================================================================
 
-export type GlyphAtlasSourceT = { kind: "classic" } | { kind: "custom"; id: string; width: number; height: number; pixels: Uint8Array };
+// Re-exported for callers that used to import the type from here (its home
+// before U44 moved the declaration next to Renderer.Draw_GlyphAtlas).
+export type { GlyphAtlasSourceT } from "./render";
 
-// see this file's header's import-cycle note (console.ts's own established pattern)
+// Fallback-only: see this file's header. Reached only when
+// `getRenderer().Draw_GlyphAtlas` is undefined (a test's fake Renderer built
+// before this member existed).
 function glDrawMod(): typeof GlDrawModule {
   return require("../ref_gl/gl_draw");
 }
@@ -359,7 +369,12 @@ function drawGlyphAtlas(
   srcH: number,
   tint: readonly [number, number, number] | null,
 ): void {
-  const mod = getRenderer().isGL ? glDrawMod() : softDrawMod();
+  const r = getRenderer();
+  if (r.Draw_GlyphAtlas) {
+    r.Draw_GlyphAtlas(dstX, dstY, dstW, dstH, source, srcX, srcY, srcW, srcH, tint);
+    return;
+  }
+  const mod = r.isGL ? glDrawMod() : softDrawMod();
   mod.Draw_GlyphAtlas(dstX, dstY, dstW, dstH, source, srcX, srcY, srcW, srcH, tint);
 }
 
