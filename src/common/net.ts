@@ -81,7 +81,14 @@ import type { SizeBuf } from "./sizebuf";
 
 export const NET_NAMELEN = 64;
 
-export const NET_MAXMESSAGE = 8192;
+// Ironwail net_defs.h: 65535, the most NETFLAG_LENGTH_MASK can carry, because
+// MAX_MSGLEN is 64000 under the wide protocols (was WinQuake's 8192).
+export const NET_MAXMESSAGE = 65535;
+// The reliable-fragment size WinQuake's datagram driver used (its MAX_DATAGRAM).
+// Kept as the per-socket default so protocol 15 traffic stays wire-identical
+// to vanilla; a wide session raises QsocketT.fragmentSize to its codec's
+// datagram size, as Ironwail fragments at its own MAX_DATAGRAM.
+export const NET_FRAGMENT_NQ15 = 1024;
 export const NET_HEADERSIZE = 2 * 4; // 2 * sizeof(unsigned int)
 export const NET_DATAGRAMSIZE = MAX_DATAGRAM + NET_HEADERSIZE;
 
@@ -126,6 +133,8 @@ export class QsocketT {
   disconnected = false;
   canSend = false;
   sendNext = false;
+  // Reliable-message fragment size for this socket (see NET_FRAGMENT_NQ15).
+  fragmentSize = NET_FRAGMENT_NQ15;
 
   driver = 0;
   landriver = 0;

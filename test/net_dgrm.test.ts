@@ -481,4 +481,23 @@ describe("reliable fragmentation, ack sequencing, duplicate rejection, unreliabl
     expect(ret).toBe(2);
     expect(Array.from(net_message.data.subarray(0, net_message.cursize))).toEqual(Array.from(payload));
   });
+
+  test("a wide socket (fragmentSize 64000) sends a 2000-byte reliable in one EOM fragment", () => {
+    if (!handshakeServerSock) throw new Error("handshake test must run first");
+    const wideSock = new QsocketT();
+    wideSock.socket = handshakeClientSocket;
+    wideSock.landriver = 0;
+    wideSock.driver = 1;
+    fakeFillAddr(wideSock.addr, handshakeAcceptedPort);
+    wideSock.fragmentSize = 64000;
+    const payload = new Uint8Array(2000);
+    for (let i = 0; i < 2000; i++) payload[i] = i & 0xff;
+    sentLog.length = 0;
+    expect(netDatagramDriver.QSendMessage(wideSock, makeSizeBuf(payload))).toBe(1);
+    expect(sentLog.length).toBe(1);
+    const header = readBigEndianU32(sentLog[0].bytes, 0);
+    expect(header & NETFLAG_LENGTH_MASK).toBe(NET_HEADERSIZE + 2000);
+    expect((header & NETFLAG_EOM) !== 0).toBe(true);
+    sentLog.length = 0;
+  });
 });

@@ -90,7 +90,7 @@ import {
   CCREP_PLAYER_INFO,
   CCREP_RULE_INFO,
 } from "./net";
-import { MAX_DATAGRAM, MAX_SCOREBOARD } from "./quakedef";
+import { MAX_SCOREBOARD } from "./quakedef";
 import { SizeBuf, net_message, SZ_Clear, SZ_Write, MSG_BeginReading, MSG_ReadLong, MSG_ReadByte, MSG_ReadString, MSG_WriteLong, MSG_WriteByte, MSG_WriteString } from "./sizebuf";
 import { BigLong, COM_CheckParm, Q_atoi, Q_strcasecmp } from "./common";
 import { CvarT, Cvar_FindVar, cvar_vars } from "./cvar";
@@ -255,11 +255,11 @@ function Datagram_SendMessage(sock: QsocketT, data: SizeBuf): number {
 
   let dataLen: number;
   let eom: number;
-  if (data.cursize <= MAX_DATAGRAM) {
+  if (data.cursize <= sock.fragmentSize) {
     dataLen = data.cursize;
     eom = NETFLAG_EOM;
   } else {
-    dataLen = MAX_DATAGRAM;
+    dataLen = sock.fragmentSize;
     eom = 0;
   }
   const packetLen = NET_HEADERSIZE + dataLen;
@@ -280,11 +280,11 @@ function Datagram_SendMessage(sock: QsocketT, data: SizeBuf): number {
 function SendMessageNext(sock: QsocketT): number {
   let dataLen: number;
   let eom: number;
-  if (sock.sendMessageLength <= MAX_DATAGRAM) {
+  if (sock.sendMessageLength <= sock.fragmentSize) {
     dataLen = sock.sendMessageLength;
     eom = NETFLAG_EOM;
   } else {
-    dataLen = MAX_DATAGRAM;
+    dataLen = sock.fragmentSize;
     eom = 0;
   }
   const packetLen = NET_HEADERSIZE + dataLen;
@@ -305,11 +305,11 @@ function SendMessageNext(sock: QsocketT): number {
 function ReSendMessage(sock: QsocketT): number {
   let dataLen: number;
   let eom: number;
-  if (sock.sendMessageLength <= MAX_DATAGRAM) {
+  if (sock.sendMessageLength <= sock.fragmentSize) {
     dataLen = sock.sendMessageLength;
     eom = NETFLAG_EOM;
   } else {
-    dataLen = MAX_DATAGRAM;
+    dataLen = sock.fragmentSize;
     eom = 0;
   }
   const packetLen = NET_HEADERSIZE + dataLen;
@@ -418,9 +418,9 @@ function Datagram_GetMessage(sock: QsocketT): number {
         Con_DPrintf("Duplicate ACK received\n");
         continue;
       }
-      sock.sendMessageLength -= MAX_DATAGRAM;
+      sock.sendMessageLength -= sock.fragmentSize;
       if (sock.sendMessageLength > 0) {
-        sock.sendMessage.set(sock.sendMessage.subarray(MAX_DATAGRAM, MAX_DATAGRAM + sock.sendMessageLength), 0);
+        sock.sendMessage.set(sock.sendMessage.subarray(sock.fragmentSize, sock.fragmentSize + sock.sendMessageLength), 0);
         sock.sendNext = true;
       } else {
         sock.sendMessageLength = 0;
