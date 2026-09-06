@@ -6,20 +6,15 @@
 // Boot recipe deviation from every other family's a_lib.ts/b_lib.ts/n_lib.ts:
 // this family issues its very first `map <name>` via `Cmd_ExecuteString`
 // directly, BEFORE any `runFrames` call, instead of `Cbuf_AddText("map
-// <name>\n")` followed by a pump loop. That difference is load-bearing, not
-// style -- see this file's own "ENGINE DEFECT" note below and this unit's
-// report: queuing the map command through Cbuf_AddText the way a_lib.ts does
-// works under a classic basedir (the queued command lands right behind the
-// "playdemo demo1" text Host_Startdemos_f/CL_NextDemo insert ahead of it, and
-// both run in the same first Cbuf_Execute drain, so `map` wins and disconnects
-// the demo before it reads a single frame) but NEVER runs under a re-release
-// basedir -- confirmed to at least 3000 frames, cycling demo1 -> demo2 ->
-// demo3 -> demo1 forever. Calling Cmd_ExecuteString directly, before quake.rc
-// has even been read (it is queued via Cbuf_InsertText during Host_Init and
-// only executed on the first Host_Frame), spawns the server synchronously and
-// makes Host_Startdemos_f's own `if (!sv.active && ...)` guard (host_cmd.ts)
-// skip the demo loop entirely once it does run -- reliable under both roots,
-// which is why every driver in this family boots this way.
+// <name>\n")` followed by a pump loop. A queued `map` does run -- on frame 0,
+// right behind the `playdemo demo1` Host_Startdemos_f/CL_NextDemo insert, in
+// the same Cbuf_Execute drain (F8 verified this byte-for-byte against
+// WinQuake's cmd.c under a re-release basedir too). What bit this family
+// was a harness race, not the engine: the demo reaches SIGNONS first, so a
+// waitInGame() poll can return true on demo1.dem's own map while the queued
+// `map` is still in flight. Spawning the server synchronously before the
+// first frame sidesteps the race, and Host_Startdemos_f's own
+// `if (!sv.active && ...)` guard then skips the demo loop entirely.
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { Sys_Main_Init, runFrames } from "../../src/main";
 import { Cbuf_AddText, Cmd_ExecuteString, CmdSourceT } from "../../src/common/cmd";
@@ -343,6 +338,10 @@ export async function pickUp(item: EdictT): Promise<void> {
   SV_LinkEdict(p, false);
   await frames(10);
   p.v.movetype = savedMovetype;
+  // One walking frame so SV_CheckStuck refreshes oldorigin: a save taken
+  // straight after a noclip hop carries the stale oldorigin and a load
+  // then puts the player back there (F8's finding on the ctf leg).
+  await frames(1);
 }
 
 export function ammoSnapshot(p: EdictT): { shells: number; nails: number; rockets: number; cells: number; health: number } {

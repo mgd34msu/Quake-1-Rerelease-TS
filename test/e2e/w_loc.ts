@@ -97,17 +97,15 @@ QEX_LoadLocalization();
 const overlayViaEngine = Loc_Localize("$m_quake", false, null, 0);
 check('QEX_LoadLocalization merges the _mod.txt overlay ("m_quake" -> our override)', overlayViaEngine === "E2E_MOD_OVERRIDE", `got="${overlayViaEngine}"`);
 
-// DEVIATION/FINDING (documented, not asserted as a failure of this test):
-// re-opening the New Game/Options screens after QEX_LoadLocalization ran
-// reloads the table via the menu's OWN loader again, which has no overlay
-// support -- so a mod's menu-screen text override is invisible on those
-// screens even though the identical key is honored in real gameplay text.
+// F3 routed the menu's own loader through the same ordered loader the
+// server uses (Loc_LoadOrderedForCurrentLanguage), so re-opening the New
+// Game/Options screens must keep the mod's override.
 LoadMenuLocalization();
 const afterMenuReload = Loc_Localize("$m_quake", false, null, 0);
 check(
-  "DEVIATION (menu_content.ts's LoadMenuLocalization has no _mod.txt support -- see this driver's header): the New Game/Options screens revert to the base string even with the same overlay still mounted",
-  afterMenuReload === "Quake",
-  `got="${afterMenuReload}" (engine-side QEX_LoadLocalization would have read "${overlayViaEngine}")`,
+  "the New Game/Options screens keep the _mod.txt override after their own reload (F3)",
+  afterMenuReload === "E2E_MOD_OVERRIDE",
+  `got="${afterMenuReload}" (engine-side QEX_LoadLocalization read "${overlayViaEngine}")`,
 );
 
 summary("W5 loc");
