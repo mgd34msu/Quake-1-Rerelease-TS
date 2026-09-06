@@ -6,7 +6,30 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Milestone 2026-09-06
+- Every retail map in all ten trees (classic id1/hipnotic/rogue and the
+  re-release id1/hipnotic/rogue/mg1/mg3/dopa/ctf) boots headless under its
+  own progs with the player entering, except the icon-preview `b_*` BSPs,
+  which have no spawn point in any engine. `test/sweep_maps.test.ts` holds
+  the exact residual baseline and passes with `Q1TS_DATA`.
+
 ### Added
+- One QuakeC VM with host profiles; re-release `ex_*` builtins, extensions,
+  rulesets, QEX opcodes, prompts, setcolor; localized prints.
+- Protocol codecs 15/666/999 with wide limits; every coord and angle on the
+  wire honours the 999 flags; demos re-derive their protocol.
+- BSP2/2PSB, .lit, BSPX directory, .ent overrides, external texture wads,
+  textures of any size, 2000-texel surfaces, 8192 known models.
+- Re-release root detection, QuakeEX.kpf mounting, episode flags, runtime
+  `game`, `-homedir`, `-norerelease`.
+- OpenGL: colored lightmaps and entity lighting, fog, skyboxes, water and
+  entity alpha, anisotropy. Software: colored lighting through a true-color
+  frame (r_coloredlight), presented raw through SDL.
+- 44.1 kHz sound; KEX savegames and autosave; SDL game controllers and
+  .bnvib haptics; menus from mapdb.json with rulesets and add-ons.
+- src/lib: zip, PNG, JPG, TGA, TTF, kfont, loc, mapdb, wwheel, bot data,
+  NAV2, MD5 model loader, BSPX walker; a compat spawn table for re-release
+  classnames under classic progs; the map-by-progs sweep harness.
 - `ARCHITECTURE.md`: the design contract and phase plan for the re-release
   engine, with the four open rulings.
 - `.orch/preferences.md`: standing orders for agent briefs (local, untracked).
