@@ -43,7 +43,7 @@ offsetof program; they are ABI-stable across SDL2's lifetime because SDL2
 freezes its public struct layouts.
 */
 
-import { dlopen, type Pointer, CString } from "bun:ffi";
+import { dlopen, type Pointer, CString, read } from "bun:ffi";
 import { currentLibrarySearch, openLibrary } from "./libs";
 import { VID_CalcBlitRect } from "./vid_scale";
 import { setKeyEventPump, Sys_Quit } from "./sys";
@@ -335,6 +335,11 @@ type SdlLib = ReturnType<typeof dlopen<typeof symbols>>;
 let enabled = false;
 let library: SdlLib | null = null;
 let libraryFailed = false;
+// The resolved library file's path, remembered once `lib()` succeeds so the
+// locale probe below (SDL_QueryPreferredLocales) can re-dlopen the SAME
+// file for one symbol not in the main `symbols` table -- see that probe's
+// own header comment for why it isn't just added there.
+let libraryPath: string | null = null;
 
 export function SDL_SetBackendEnabled(value: boolean): void {
   enabled = value;
@@ -358,6 +363,7 @@ function lib(): SdlLib | null {
     return null;
   }
   library = opened.lib;
+  libraryPath = opened.name;
 
   // JS-side env writes (Bun.env/process.env) do not reliably reach the C
   // runtime's getenv(), which is how SDL selects its drivers. Propagate
@@ -413,6 +419,88 @@ function cstr(s: string): Uint8Array {
   const out = new Uint8Array(bytes.length + 1);
   out.set(bytes);
   return out;
+}
+
+// SDL_GetPreferredLocales (SDL_locale.h) is 2.0.14+ only. It is deliberately
+// NOT in the main `symbols` table above: bun:ffi's dlopen resolves every
+// listed symbol eagerly, so a system SDL2 older than 2.0.14 missing this one
+// symbol would fail the WHOLE library open -- windowing, audio and
+// controllers along with it -- rather than just leaving locale detection
+// unavailable. Instead this re-dlopens the SAME already-resolved library
+// file (libraryPath, set by `lib()` above) with just these two symbols, in
+// its own try/catch, so an old SDL2 only loses `language auto`'s system
+// detection (src/common/loc_host.ts falls back to LANG/LC_ALL/LC_MESSAGES
+// when this reports nothing).
+const localeSymbols = {
+  SDL_GetPreferredLocales: { args: [], returns: "ptr" },
+  SDL_free: { args: ["ptr"], returns: "void" },
+} as const;
+
+type LocaleLib = ReturnType<typeof dlopen<typeof localeSymbols>>;
+
+let localeLibrary: LocaleLib | null = null;
+let localeLibraryFailed = false;
+
+function localeLib(): LocaleLib | null {
+  if (lib() === null) return null; // SDL disabled, or missing outright
+  if (localeLibraryFailed) return null;
+  if (localeLibrary) return localeLibrary;
+  if (libraryPath === null) return null;
+
+  try {
+    localeLibrary = dlopen(libraryPath, localeSymbols);
+    return localeLibrary;
+  } catch {
+    // SDL2 present but older than 2.0.14: this one symbol isn't there.
+    localeLibraryFailed = true;
+    return null;
+  }
+}
+
+// SDL_Locale (SDL_locale.h): `{ const char *language; const char *country; }`
+// -- two pointers, 16 bytes on every 64-bit host Bun supports (this project
+// targets little-endian 64-bit only -- see src/common/common.ts's own
+// header on bigendien). SDL_GetPreferredLocales returns an SDL_free()-able
+// array of these, terminated by an entry whose `language` is NULL.
+const SDL_LOCALE_STRUCT_SIZE = 16;
+
+/** Every locale SDL reports, most-preferred first, as raw `language` tags
+ * ("en", "fr", ...) straight off SDL_Locale -- empty when SDL is disabled,
+ * missing, older than 2.0.14, or reports nothing. */
+export function SDL_QueryPreferredLocales(): string[] {
+  const l = localeLib();
+  if (l === null) return [];
+
+  const arrayPtr = l.symbols.SDL_GetPreferredLocales();
+  if (!arrayPtr) return [];
+
+  const tags: string[] = [];
+  for (let i = 0; ; i++) {
+    const langPtr = read.ptr(arrayPtr, i * SDL_LOCALE_STRUCT_SIZE);
+    if (!langPtr) break;
+    tags.push(new CString(langPtr));
+  }
+  l.symbols.SDL_free(arrayPtr); // one allocation backs the whole array plus its strings -- Ironwail's own LOC_GetSystemLanguage frees it the same single way.
+  return tags;
+}
+
+/*
+================
+SDL_QueryPreferredLocale
+
+The single best-guess locale/language tag for `language auto`
+(src/common/loc_host.ts's Loc_ResolveLanguage): SDL's own most-preferred
+locale when SDL_GetPreferredLocales resolved anything, else the POSIX
+locale environment variables in the order glibc itself consults them
+(LC_ALL overrides LC_MESSAGES overrides LANG). Empty when none of that is
+available either -- src/lib/loc.ts's Loc_LanguageFromLocale treats an empty
+tag the same as an unrecognized one and resolves to "english".
+================
+*/
+export function SDL_QueryPreferredLocale(): string {
+  const [first] = SDL_QueryPreferredLocales();
+  if (first) return first;
+  return process.env.LC_ALL || process.env.LC_MESSAGES || process.env.LANG || "";
 }
 
 //=============================================================================

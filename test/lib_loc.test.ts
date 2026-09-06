@@ -27,7 +27,18 @@
 
 import { describe, test, expect } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
-import { Loc_Localize, Loc_ReloadFile, Loc_Unload, type LocReloadOptions } from "../src/lib/loc";
+import {
+  Loc_Localize,
+  Loc_ReloadFile,
+  Loc_MergeFile,
+  Loc_LoadOrdered,
+  Loc_LanguageFromLocale,
+  Loc_Unload,
+  Loc_TableSize,
+  LOC_KNOWN_LANGUAGES,
+  type LocReloadOptions,
+  type LocLoadTier,
+} from "../src/lib/loc";
 import type { LibLog } from "../src/lib/errors";
 
 // ---------------------------------------------------------------------------
@@ -152,6 +163,178 @@ describe("loc.ts -- Loc_ReloadFile (bytes-in API, no filesystem)", () => {
     expect(Loc_Localize("$x", true, [], 0)).toBe("y");
     Loc_Unload();
     expect(Loc_Localize("$x", true, [], 0)).toBe("x");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U30: Loc_MergeFile -- adds to/overwrites the table instead of clearing it,
+// for the re-release's `loc_<lang>_mod.txt` overlay convention.
+// ---------------------------------------------------------------------------
+
+describe("loc.ts -- Loc_MergeFile (add/override without clearing)", () => {
+  test("merging into an empty table adds every key, same as a fresh Loc_ReloadFile", () => {
+    Loc_Unload();
+    const count = Loc_MergeFile(enc.encode(`a = "1"`));
+    expect(count).toBe(1);
+    expect(Loc_Localize("$a", true, [], 0)).toBe("1");
+  });
+
+  test("does not clear existing keys the way Loc_ReloadFile does", () => {
+    Loc_Unload();
+    Loc_ReloadFile(enc.encode(`base_only = "kept"`));
+    const count = Loc_MergeFile(enc.encode(`extra = "added"`));
+    expect(count).toBe(1);
+    expect(Loc_Localize("$base_only", true, [], 0)).toBe("kept");
+    expect(Loc_Localize("$extra", true, [], 0)).toBe("added");
+  });
+
+  test("overwrites a key an earlier Loc_ReloadFile already set", () => {
+    Loc_Unload();
+    Loc_ReloadFile(enc.encode(`greeting = "Hello"`));
+    Loc_MergeFile(enc.encode(`greeting = "Bonjour"`));
+    expect(Loc_Localize("$greeting", true, [], 0)).toBe("Bonjour");
+  });
+
+  test("bytes === null is a no-op, returns 0, leaves the table untouched", () => {
+    Loc_Unload();
+    Loc_ReloadFile(enc.encode(`x = "y"`));
+    const count = Loc_MergeFile(null);
+    expect(count).toBe(0);
+    expect(Loc_Localize("$x", true, [], 0)).toBe("y");
+  });
+
+  test("first occurrence within the merged file wins, same convention as Loc_ReloadFile", () => {
+    Loc_Unload();
+    const count = Loc_MergeFile(enc.encode([`dup = "first"`, `dup = "second"`, ``].join("\n")));
+    expect(count).toBe(1);
+    expect(Loc_Localize("$dup", true, [], 0)).toBe("first");
+  });
+
+  test("a later Loc_MergeFile call overwrites a key an earlier merge call set (last CALL wins, not last line)", () => {
+    Loc_Unload();
+    Loc_MergeFile(enc.encode(`k = "tier1"`));
+    Loc_MergeFile(enc.encode(`k = "tier2"`));
+    expect(Loc_Localize("$k", true, [], 0)).toBe("tier2");
+  });
+
+  test("info callback reports the merged count under its own wording", () => {
+    Loc_Unload();
+    const infos: string[] = [];
+    Loc_MergeFile(enc.encode(`a = "1"`), { log: { warn: () => undefined, info: (m) => infos.push(m) } });
+    expect(infos).toEqual(["Merged 1 localization strings"]);
+  });
+
+  test("a malformed entry is skipped (warned, not fatal), the rest of the merged file still loads", () => {
+    Loc_Unload();
+    Loc_ReloadFile(enc.encode(`base = "kept"`));
+    const warnings: string[] = [];
+    const locFile = [`bad_mixed = "{0} and {}"`, `after_bad = "still parses"`, ``].join("\n");
+    const count = Loc_MergeFile(enc.encode(locFile), { log: { warn: (m) => warnings.push(m) } });
+    expect(count).toBe(1); // only after_bad
+    expect(Loc_Localize("$base", true, [], 0)).toBe("kept");
+    expect(Loc_Localize("$after_bad", true, [], 0)).toBe("still parses");
+    expect(warnings.some((w) => w.includes("bad_mixed"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U30: Loc_LoadOrdered -- base file + `_mod.txt` overlays lowest-to-highest
+// priority, falling back to a WHOLE different tier when the primary base
+// file is missing (Ironwail's own LOC_Load: a tier swap, not a per-key
+// merge across languages).
+// ---------------------------------------------------------------------------
+
+describe("loc.ts -- Loc_LoadOrdered (base + mods, low-to-high, whole-tier fallback)", () => {
+  const emptyTier: LocLoadTier = { base: null, mods: [] };
+
+  test("base file alone, no mods", () => {
+    Loc_Unload();
+    const count = Loc_LoadOrdered({ base: enc.encode(`a = "1"`), mods: [] }, emptyTier);
+    expect(count).toBe(1);
+    expect(Loc_Localize("$a", true, [], 0)).toBe("1");
+  });
+
+  test("mods apply low to high priority: the LAST array entry wins a key shared with an earlier one", () => {
+    Loc_Unload();
+    const base = enc.encode(`greeting = "base"`);
+    const low = enc.encode(`greeting = "low-mod"`);
+    const high = enc.encode(`greeting = "high-mod"`);
+    const count = Loc_LoadOrdered({ base, mods: [low, high] }, emptyTier);
+    expect(count).toBe(1);
+    expect(Loc_Localize("$greeting", true, [], 0)).toBe("high-mod");
+  });
+
+  test("a mod file adds a key the base file never had (the real retail placeholder_mod shape)", () => {
+    Loc_Unload();
+    const base = enc.encode(`a = "1"`);
+    const mod = enc.encode(`placeholder_mod = "overwrite me"`);
+    const count = Loc_LoadOrdered({ base, mods: [mod] }, emptyTier);
+    expect(count).toBe(2);
+    expect(Loc_Localize("$placeholder_mod", true, [], 0)).toBe("overwrite me");
+  });
+
+  test("primary base missing falls back to the WHOLE fallback tier, including its own mods -- the primary tier's own mods are never applied", () => {
+    Loc_Unload();
+    const fallbackBase = enc.encode(`only_in_fallback = "fb"`);
+    const fallbackMod = enc.encode(`fb_mod_key = "fbmod"`);
+    const primaryMod = enc.encode(`never_applied = "nope"`);
+    const count = Loc_LoadOrdered({ base: null, mods: [primaryMod] }, { base: fallbackBase, mods: [fallbackMod] });
+    expect(count).toBe(2);
+    expect(Loc_Localize("$only_in_fallback", true, [], 0)).toBe("fb");
+    expect(Loc_Localize("$fb_mod_key", true, [], 0)).toBe("fbmod");
+    expect(Loc_Localize("$never_applied", true, [], 0)).toBe("never_applied"); // never loaded -- a miss
+  });
+
+  test("clears whatever was loaded before, same as a single Loc_ReloadFile", () => {
+    Loc_Unload();
+    Loc_ReloadFile(enc.encode(`stale = "leftover"`));
+    Loc_LoadOrdered({ base: enc.encode(`fresh = "new"`), mods: [] }, emptyTier);
+    expect(Loc_Localize("$stale", true, [], 0)).toBe("stale"); // gone -- table was cleared
+    expect(Loc_Localize("$fresh", true, [], 0)).toBe("new");
+  });
+
+  test("both tiers empty (no base anywhere) loads nothing, warns nothing", () => {
+    Loc_Unload();
+    const count = Loc_LoadOrdered(emptyTier, emptyTier);
+    expect(count).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U30: Loc_LanguageFromLocale -- the pure locale-tag -> one-of-six-names
+// mapper behind `language auto`.
+// ---------------------------------------------------------------------------
+
+describe("loc.ts -- Loc_LanguageFromLocale (`language auto`'s pure mapper)", () => {
+  test.each([
+    ["en", "english"],
+    ["en_US", "english"],
+    ["en-GB", "english"],
+    ["EN", "english"],
+    ["fr", "french"],
+    ["fr_FR", "french"],
+    ["de", "german"],
+    ["de-DE", "german"],
+    ["it", "italian"],
+    ["it_IT.UTF-8", "italian"],
+    ["ru", "russian"],
+    ["ru_RU", "russian"],
+    ["es", "spanish"],
+    ["es_MX", "spanish"],
+    ["pt_BR", "english"], // an unlisted language falls back to english
+    ["zh_CN", "english"],
+    ["", "english"],
+  ] as const)("Loc_LanguageFromLocale(%p) === %p", (tag, expected) => {
+    expect(Loc_LanguageFromLocale(tag)).toBe(expected);
+  });
+
+  test("null/undefined both fall back to english", () => {
+    expect(Loc_LanguageFromLocale(null)).toBe("english");
+    expect(Loc_LanguageFromLocale(undefined)).toBe("english");
+  });
+
+  test("LOC_KNOWN_LANGUAGES lists exactly the six names the retail data ships", () => {
+    expect([...LOC_KNOWN_LANGUAGES].sort()).toEqual(["english", "french", "german", "italian", "russian", "spanish"].sort());
   });
 });
 
@@ -430,5 +613,67 @@ describe.skipIf(!HAVE_RERELEASE_PAK0)("loc.ts -- real Quake 1 re-release localiz
     // platform override wins regardless of file order, against genuine
     // retail data, not just the synthetic fixture above.
     expect(Loc_Localize("$m_vibration", true, [], 0)).toBe("Vibration Feature");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U30 guarded end-to-end: the real loc_<lang>_mod.txt overlay files, and
+// every one of the six languages the retail rerelease/id1/pak0.pak actually
+// ships (english, french, german, italian, russian, spanish -- verified by
+// this unit against the real pak; not the 5-entry table the specific
+// Ironwail checkout in this unit's own brief carries).
+// ---------------------------------------------------------------------------
+
+describe.skipIf(!HAVE_RERELEASE_PAK0)("loc.ts -- real Quake 1 re-release loc_<lang>_mod.txt overlays and all six languages", () => {
+  test("english + loc_english_mod.txt merge over the retail pak yields 1636 keys (1635 base + placeholder_mod)", () => {
+    Loc_Unload();
+    const base = readPakEntry(RERELEASE_PAK0, "localization/loc_english.txt");
+    const mod = readPakEntry(RERELEASE_PAK0, "localization/loc_english_mod.txt");
+    expect(base).not.toBeNull();
+    expect(mod).not.toBeNull();
+
+    const baseCount = Loc_ReloadFile(base);
+    expect(baseCount).toBe(1635);
+    const mergedCount = Loc_MergeFile(mod);
+    expect(mergedCount).toBe(1); // placeholder_mod, the file's only key
+
+    expect(Loc_Localize("$placeholder_mod", true, [], 0)).toBe("Overwrite me in a mod with mod-specific terms!");
+    // every base key is still there -- the merge added, it did not clear.
+    expect(Loc_Localize("$m_on", true, [], 0)).toBe("On");
+  });
+
+  test("Loc_LoadOrdered against the real base + mod file reaches the same 1636-key total in one call", () => {
+    Loc_Unload();
+    const base = readPakEntry(RERELEASE_PAK0, "localization/loc_english.txt");
+    const mod = readPakEntry(RERELEASE_PAK0, "localization/loc_english_mod.txt");
+    const count = Loc_LoadOrdered({ base, mods: mod ? [mod] : [] }, { base: null, mods: [] });
+    expect(count).toBe(1636);
+  });
+
+  test.each([...LOC_KNOWN_LANGUAGES])("localization/loc_%s.txt loads with no warnings and a non-trivial key count", (lang) => {
+    Loc_Unload();
+    const bytes = readPakEntry(RERELEASE_PAK0, `localization/loc_${lang}.txt`);
+    expect(bytes).not.toBeNull();
+
+    const warnings: string[] = [];
+    const count = Loc_ReloadFile(bytes!, { log: { warn: (m) => warnings.push(m) } });
+    expect(warnings).toEqual([]);
+    expect(count).toBeGreaterThan(1000);
+  });
+
+  test.each([...LOC_KNOWN_LANGUAGES])("localization/loc_%s_mod.txt is present and merges cleanly", (lang) => {
+    Loc_Unload();
+    const base = readPakEntry(RERELEASE_PAK0, `localization/loc_${lang}.txt`);
+    const mod = readPakEntry(RERELEASE_PAK0, `localization/loc_${lang}_mod.txt`);
+    expect(base).not.toBeNull();
+    expect(mod).not.toBeNull();
+
+    const baseCount = Loc_ReloadFile(base);
+    const warnings: string[] = [];
+    const mergedCount = Loc_MergeFile(mod, { log: { warn: (m) => warnings.push(m) } });
+    expect(warnings).toEqual([]);
+    expect(mergedCount).toBeGreaterThan(0);
+    // the merge added to the table, it did not replace it.
+    expect(Loc_TableSize()).toBeGreaterThanOrEqual(baseCount);
   });
 });

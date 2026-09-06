@@ -83,6 +83,18 @@
 // from quake-2-re-ts, whose own header explains each of those choices; see
 // the inline comments below (kept from that file) for the loc.c line
 // references.
+//
+// U30 additions (none of this exists in q2repro, whose retail loc file has
+// no mod-overlay convention and whose engine has no `language auto`):
+// Loc_MergeFile (adds to/overwrites the table instead of clearing it, for
+// the re-release's `loc_<lang>_mod.txt` overlay files), Loc_LoadOrdered
+// (base file + overlays lowest-to-highest priority, with a whole-tier
+// fallback to a different language when the primary base file is missing --
+// see its own comment for why that's a tier swap, not a per-key merge), and
+// Loc_LanguageFromLocale (the pure locale-tag -> one-of-six-names mapping
+// behind `language auto`; the engine-side probe and cvar resolution live in
+// src/common/loc_host.ts and src/platform/sdl.ts, kept out of this file per
+// the "no engine imports in src/lib" rule above).
 
 import type { LibLog } from "./errors";
 
@@ -552,13 +564,28 @@ fall back to the base string).
 Returns the number of strings loaded (0 for a missing or empty file).
 ================
 */
-export function Loc_ReloadFile(bytes: Uint8Array | null, opts: LocReloadOptions = {}): number {
-  Loc_Unload();
+// The minimal Map-shaped interface Loc_ParseInto writes through. `locTable`
+// itself (a plain Map) satisfies this directly; Loc_MergeFile below passes a
+// small adapter instead, so its own "first occurrence in THIS file wins"
+// bookkeeping can live in a private Set rather than reusing locTable's
+// pre-existing keys as the dedup check (see Loc_MergeFile's own comment).
+interface LocEntrySink {
+  has(key: string): boolean;
+  set(key: string, value: LocString): void;
+}
 
-  if (!bytes) {
-    return 0;
-  }
+/*
+================
+Loc_ParseInto
 
+The shared tokenizer loop behind both Loc_ReloadFile and Loc_MergeFile --
+loc.c:329-393's own parse loop, factored out so "clear first" (reload) and
+"leave existing keys from other files alone" (merge) are just two different
+`sink`s over the same parsing logic, not two copies of it. Returns the
+number of keys the sink accepted.
+================
+*/
+function Loc_ParseInto(bytes: Uint8Array, opts: LocReloadOptions, sink: LocEntrySink): number {
   const platform = opts.platform?.toLowerCase();
 
   // loc.c's own parser is a byte-indexed scanner where every parsing
@@ -615,7 +642,7 @@ export function Loc_ReloadFile(bytes: Uint8Array | null, opts: LocReloadOptions 
       // platform-tagged line unconditionally (loc.c:362-364); this port
       // honors one when the caller asks for a specific platform.
       if (platform !== undefined && platformTags.includes(platform)) {
-        locTable.set(key, { format, arguments: parsed.arguments });
+        sink.set(key, { format, arguments: parsed.arguments });
         numLocs++;
       }
       continue;
@@ -626,14 +653,117 @@ export function Loc_ReloadFile(bytes: Uint8Array | null, opts: LocReloadOptions 
     // see this file's header comment. Verified moot on real data (both the
     // Quake II and Quake 1 retail loc files have zero duplicate
     // unconditional keys).
-    if (!locTable.has(key)) {
-      locTable.set(key, { format, arguments: parsed.arguments });
+    if (!sink.has(key)) {
+      sink.set(key, { format, arguments: parsed.arguments });
       numLocs++;
     }
   }
 
+  return numLocs;
+}
+
+export function Loc_ReloadFile(bytes: Uint8Array | null, opts: LocReloadOptions = {}): number {
+  Loc_Unload();
+
+  if (!bytes) {
+    return 0;
+  }
+
+  const numLocs = Loc_ParseInto(bytes, opts, locTable);
   opts.log?.info?.(`Loaded ${numLocs} localization strings`);
   return numLocs;
+}
+
+/*
+================
+Loc_MergeFile
+
+U30 addition: the `loc_<lang>_mod.txt` overlay convention (the retail
+loc_english_mod.txt's own comment: "Overwrite me in a mod with mod-specific
+terms!") needs a second entry point that adds to and overwrites the current
+table instead of clearing it first -- Loc_ReloadFile always calls
+Loc_Unload(), which is exactly wrong for layering a mod's terms on top of a
+base language file already loaded by a separate call.
+
+Within THIS file, the same "first occurrence wins" rule as Loc_ReloadFile
+applies (tracked in a private `seenThisFile` set, not locTable's own
+pre-existing keys -- a key this file's OWN duplicate line loses to is still
+different from a key an EARLIER merge/reload call already set, which this
+call is meant to overwrite). Across calls, ordinary last-write-wins: a
+second Loc_MergeFile for the same key replaces the first's value, which is
+what lets a caller stack multiple mod files by priority (src/lib/loc.ts's
+own Loc_LoadOrdered below, lowest priority first).
+
+Returns the number of keys this file contributed (added or overwritten),
+0 for a missing file.
+================
+*/
+export function Loc_MergeFile(bytes: Uint8Array | null, opts: LocReloadOptions = {}): number {
+  if (!bytes) {
+    return 0;
+  }
+
+  const seenThisFile = new Set<string>();
+  const sink: LocEntrySink = {
+    has: (key) => seenThisFile.has(key),
+    set: (key, value) => {
+      seenThisFile.add(key);
+      locTable.set(key, value);
+    },
+  };
+
+  const numLocs = Loc_ParseInto(bytes, opts, sink);
+  opts.log?.info?.(`Merged ${numLocs} localization strings`);
+  return numLocs;
+}
+
+/** The current table's key count. Exported for the same reason Loc_Unload
+ * is (unlike q2repro's private original): a caller composing several
+ * Loc_MergeFile calls (Loc_LoadOrdered below, or a test) needs the running
+ * total, which none of Loc_ReloadFile/Loc_MergeFile's own per-call return
+ * values give on their own. */
+export function Loc_TableSize(): number {
+  return locTable.size;
+}
+
+/** One tier of loc files: a base `loc_<lang>.txt` plus every same-language
+ * `loc_<lang>_mod.txt` overlay found across the search path, already read
+ * into bytes by the engine (src/lib is free of engine imports -- see this
+ * file's header comment) and ordered LOWEST priority first, so applying
+ * them in order makes the highest-priority one win last. `mods` empty is
+ * "no overlay found anywhere," not an error. */
+export interface LocLoadTier {
+  base: Uint8Array | null;
+  mods: readonly Uint8Array[];
+}
+
+/*
+================
+Loc_LoadOrdered
+
+The composed load order U30's brief calls for: the resolved language's base
+file, then every one of its `_mod.txt` overlays lowest-to-highest priority,
+falling back to an ENTIRELY DIFFERENT tier (a different language's own base
++ its own overlays) when `primary.base` is null -- i.e. the primary
+language's base file could not be found at all. This mirrors Ironwail's own
+LOC_Load (`if (!LOC_LoadFile(loc_<userlang>)) LOC_LoadFile(loc_english)`):
+the fallback swaps the whole tier, it does not patch in individual pieces
+from both languages at once.
+
+Clears the table first (Loc_ReloadFile's own Loc_Unload), so this is a full
+replacement of whatever was loaded before, same as a single-file reload.
+Returns the final number of distinct keys loaded, across every merged file.
+================
+*/
+export function Loc_LoadOrdered(primary: LocLoadTier, fallback: LocLoadTier, opts: LocReloadOptions = {}): number {
+  const tier = primary.base !== null ? primary : fallback;
+
+  Loc_ReloadFile(tier.base, opts);
+  for (const modBytes of tier.mods) {
+    Loc_MergeFile(modBytes, opts);
+  }
+
+  return locTable.size;
 }
 
 /*
@@ -651,4 +781,56 @@ FS_LoadFile, then hands the bytes here.
 */
 export function Loc_Init(bytes: Uint8Array | null, opts?: LocReloadOptions): number {
   return Loc_ReloadFile(bytes, opts);
+}
+
+// ---------------------------------------------------------------------------
+// Loc_LanguageFromLocale -- `language auto` (U30). Ironwail's own
+// LOC_GetSystemLanguage matches SDL_GetPreferredLocales' `language` field
+// against a table (Quake/common.c:3973-3981 in the checkout this unit's own
+// brief names) of five entries -- en/fr/de/it/es -> english/french/german/
+// italian/spanish -- and falls back to "english" for anything else. This
+// project's own retail data (rerelease/id1/pak0.pak's localization/
+// directory, verified by this unit against the real files) ships SIX
+// languages: that same five plus loc_russian.txt/loc_russian_mod.txt. This
+// port's table below therefore has six entries, one more than that specific
+// Ironwail checkout's -- a deviation in the direction the actually-shipped
+// data requires (a Russian system locale, which the narrower 5-entry table
+// would otherwise silently resolve to "english" despite retail Russian loc
+// data existing to serve it).
+// ---------------------------------------------------------------------------
+
+const LOCALE_LANGUAGE_TABLE: ReadonlyMap<string, string> = new Map([
+  ["en", "english"],
+  ["fr", "french"],
+  ["de", "german"],
+  ["it", "italian"],
+  ["ru", "russian"],
+  ["es", "spanish"],
+]);
+
+/** Every language this project's retail loc files ship, in table order --
+ * the set `Loc_LanguageFromLocale` resolves into, and the set a `language`
+ * console-completion or menu list should offer. */
+export const LOC_KNOWN_LANGUAGES: readonly string[] = ["english", "french", "german", "italian", "russian", "spanish"];
+
+/*
+================
+Loc_LanguageFromLocale
+
+Maps a locale/language tag to one of LOC_KNOWN_LANGUAGES. Accepts an
+SDL_Locale's own bare `language` field ("en", "fr") as well as a POSIX
+locale string ("en_US.UTF-8", "fr_FR", "de-DE", "pt_BR") -- only the primary
+language subtag (before the first "_"/"-", and before any trailing
+".encoding" or "@modifier") is matched, case-insensitively, mirroring
+Ironwail's own q_strcasecmp against SDL's two-letter field. A regional
+variant of an unlisted language ("pt_BR"), an empty/missing tag, or no match
+at all falls back to "english" -- the same answer Ironwail's own
+LOC_GetSystemLanguage gives when SDL is unavailable or nothing matches.
+================
+*/
+export function Loc_LanguageFromLocale(tag: string | null | undefined): string {
+  if (!tag) return "english";
+  const stripped = tag.split(".")[0]!.split("@")[0]!;
+  const primary = stripped.split(/[-_]/)[0]!.toLowerCase();
+  return LOCALE_LANGUAGE_TABLE.get(primary) ?? "english";
 }

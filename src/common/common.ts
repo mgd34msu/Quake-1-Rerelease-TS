@@ -1134,6 +1134,81 @@ export function COM_FindFilePath(filename: string): string | null {
 
 //===========================================================
 //
+// COM_LoadAllFiles (additive, U30: localization mod-file overlays)
+//
+// COM_FindFile/COM_LoadFile only ever return the highest-priority match for
+// a name. The re-release's `loc_<lang>_mod.txt` overlay convention (a mod
+// directory's own mod-specific loc terms, meant to be layered on top of the
+// base language file rather than replace it -- see src/lib/loc.ts's
+// Loc_MergeFile) needs every match across the whole search path, not just
+// the first, so the engine can apply them in priority order itself.
+//
+// Mirrors COM_FindFile's own per-node walk (pack directory scan, zip
+// archive lookup, on-disk dir probe with the same not-statically-registered
+// loose-path restriction and cache-dir mirroring) but collects every match
+// instead of stopping at the first one. Returns each match's bytes ordered
+// from LOWEST priority (the tail of com_searchpaths, e.g. id1) to HIGHEST
+// (the head, e.g. a mod directory mounted with -game) -- the order a caller
+// applies them in so the highest-priority one is merged, and therefore
+// wins, last. Like COM_FindFileTier/COM_FindFilePath above, this never
+// touches com_filesize and never prints.
+//===========================================================
+
+export function COM_LoadAllFiles(filename: string): Uint8Array[] {
+  const matches: Uint8Array[] = [];
+
+  for (let search = com_searchpaths; search; search = search.next) {
+    if (search.kind === "pack") {
+      const pak = search.pack;
+      for (let i = 0; i < pak.numfiles; i++) {
+        if (pak.files[i].name !== filename) continue;
+        // Shared pak descriptor, same seek-then-read convention as
+        // COM_FindFile's own "handle" branch -- see this file's header note
+        // on the one shared-descriptor handle table.
+        Sys_FileSeek(pak.handle, pak.files[i].filepos);
+        const buf = new Uint8Array(pak.files[i].filelen);
+        Sys_FileRead(pak.handle, buf, pak.files[i].filelen);
+        matches.push(buf);
+        break;
+      }
+    } else if (search.kind === "zip") {
+      const data = search.zip.archive.readFile(filename);
+      if (data !== null) matches.push(data);
+    } else {
+      if (!static_registered && (filename.includes("/") || filename.includes("\\"))) continue;
+
+      const netpath = `${search.filename}/${filename}`;
+      const findtime = sysFileTime(netpath);
+      if (findtime === -1) continue;
+
+      let finalPath = netpath;
+      if (com_cachedir) {
+        const cachepath = `${com_cachedir}${netpath}`;
+        const cachetime = sysFileTime(cachepath);
+        if (cachetime < findtime) COM_CopyFile(netpath, cachepath);
+        finalPath = cachepath;
+      }
+
+      let length: number;
+      try {
+        length = statSync(finalPath).size;
+      } catch {
+        continue;
+      }
+
+      const buf = new Uint8Array(length);
+      const { handle: fd } = Sys_FileOpenRead(finalPath);
+      Sys_FileRead(fd, buf, length);
+      Sys_FileClose(fd);
+      matches.push(buf);
+    }
+  }
+
+  return matches.reverse();
+}
+
+//===========================================================
+//
 // COM_OpenFile
 //
 // filename never has a leading slash, but may contain directory walks

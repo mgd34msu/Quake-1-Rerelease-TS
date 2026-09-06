@@ -40,9 +40,10 @@ effect is not misread as a colored dynlight.
 */
 
 import { CvarT, Cvar_RegisterVariable, Cvar_VariableValue } from "../../common/cvar";
-import { COM_LoadTempFile } from "../../common/common";
+import { COM_LoadAllFiles, COM_LoadTempFile } from "../../common/common";
 import { Con_DPrintf, Con_Printf } from "../../client/console";
-import { Loc_ReloadFile } from "../../lib/loc";
+import { Loc_LoadOrdered, Loc_ReloadFile, type LocLoadTier } from "../../lib/loc";
+import { Loc_ResolveLanguage } from "../../common/loc_host";
 import { EtypeT, DEF_SAVEGLOBAL } from "../pr_comp";
 import { ED_FindFunction, ED_FindGlobal } from "../pr_edict";
 import { pr } from "../progs";
@@ -63,7 +64,10 @@ export const sv_cheats = new CvarT("sv_cheats", "0");
 export const campaign = new CvarT("campaign", "0");
 export const pr_checkextension = new CvarT("pr_checkextension", "1");
 export const horde = new CvarT("horde", "0");
-export const language = new CvarT("language", "english", true);
+// U30: default moves from "english" to "auto" (Ironwail's own default,
+// resolved through the system locale by src/common/loc_host.ts's
+// Loc_ResolveLanguage). Naming a language still forces it outright.
+export const language = new CvarT("language", "auto", true);
 
 let detectedRuleset: RulesetT = RULESET_CLASSIC;
 let effectsMask = ~(EF_QEX_QUADLIGHT | EF_QEX_PENTALIGHT | EF_QEX_CANDLELIGHT);
@@ -71,9 +75,10 @@ let campaignEngineSet = false;
 let locStrings = 0;
 
 /** Whether a loc table is loaded, the gate Ironwail's LOC_HasPlaceholders makes
- * with `localization.numindices` (Quake/common.c:4149). src/lib/loc.ts does not
- * export its table size, and this module is the only caller of Loc_ReloadFile,
- * so the count it returned is the answer. */
+ * with `localization.numindices` (Quake/common.c:4149). Tracked locally rather
+ * than read back from src/lib/loc.ts's own Loc_TableSize because this module
+ * is the only caller of the load path (Loc_LoadOrdered/Loc_ReloadFile) and
+ * already has the count on hand from every call it makes. */
 export function QEX_LocTableLoaded(): boolean {
   return locStrings > 0;
 }
@@ -172,6 +177,19 @@ export function QEX_DetectRuleset(): RulesetT {
   return hasEx && !hasClassic ? RULESET_RERELEASE : RULESET_CLASSIC;
 }
 
+const LOC_FALLBACK_LANGUAGE = "english";
+
+/** Reads a language's base file plus every `_mod.txt` overlay for it found
+ * across the whole search path (COM_LoadAllFiles, lowest priority first --
+ * see that function's own header), the two pieces src/lib/loc.ts's
+ * Loc_LoadOrdered needs for one tier. */
+function loadLocTier(lang: string): LocLoadTier {
+  return {
+    base: COM_LoadTempFile(`localization/loc_${lang}.txt`),
+    mods: COM_LoadAllFiles(`localization/loc_${lang}_mod.txt`),
+  };
+}
+
 /*
 ===============
 QEX_LoadLocalization
@@ -182,14 +200,29 @@ server VM; cl_parse.c's svc_print/svc_centerprint handlers never localize), so
 the loc table has to be loaded here rather than by the client. Ironwail's own
 LOC_Init (Quake/common.c:4055-4074) is called unconditionally from Host_Init
 for the same reason.
+
+U30: `language` resolves through src/common/loc_host.ts's Loc_ResolveLanguage
+("auto" -> the system locale, a name -> itself), then loads that language's
+base file plus every `_mod.txt` overlay on the search path, falling back to
+the English tier outright (base + its own overlays) when the resolved
+language's base file isn't found anywhere -- src/lib/loc.ts's Loc_LoadOrdered
+owns the actual load-order/fallback logic; this function only resolves the
+two tiers' bytes and reports which one was used.
 ===============
 */
 export function QEX_LoadLocalization(): number {
-  const lang = language.string.trim().toLowerCase() || "english";
-  let bytes = COM_LoadTempFile(`localization/loc_${lang}.txt`);
-  if (bytes === null && lang !== "english") bytes = COM_LoadTempFile("localization/loc_english.txt");
-  const count = QEX_LoadLocTable(bytes);
-  if (count > 0) Con_DPrintf("Localization: %i strings (%s)\n", count, lang);
+  // Loc_ResolveLanguage itself prints the "auto" -> resolved-name line under
+  // `developer` (once, cached) -- see src/common/loc_host.ts.
+  const lang = Loc_ResolveLanguage();
+
+  const primary = loadLocTier(lang);
+  const fallback = lang === LOC_FALLBACK_LANGUAGE ? primary : loadLocTier(LOC_FALLBACK_LANGUAGE);
+
+  const count = Loc_LoadOrdered(primary, fallback);
+  locStrings = count;
+
+  const usedLang = primary.base !== null ? lang : LOC_FALLBACK_LANGUAGE;
+  if (count > 0) Con_DPrintf("Localization: %i strings (%s)\n", count, usedLang);
   return count;
 }
 
