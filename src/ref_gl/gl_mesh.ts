@@ -70,20 +70,20 @@ exist yet -- WinQuake relies on gl_vidlinuxglx.c's VID_Init having already
 created it, per this file's header note above), QW retries after creating
 that directory itself (`sprintf(gldir,"%s/glquake",com_gamedir);
 Sys_mkdir(gldir); f = fopen(fullpath,"wb");`) before falling through to the
-existing `if (f)` write. Ported below as a second Sys_FileOpenWrite attempt
-after Sys_mkdir, only when qw.active and the first attempt threw.
+existing `if (f)` write. This port goes one step further for every profile:
+COM_CreatePath makes the cache file's own directory (glquake/rogue/ for
+mg3's progs/rogue/*.mdl) before the single Sys_FileOpenWrite attempt.
 */
 
-import { COM_FClose, COM_FOpenFile, COM_FRead, COM_StripExtension, com_gamedir } from "../common/common";
+import { COM_CreatePath, COM_FClose, COM_FOpenFile, COM_FRead, com_gamedir, COM_StripExtension } from "../common/common";
 import { TrivertxT } from "../common/modelgen";
 import type { ModelT } from "../common/model";
 import { Hunk_Alloc } from "../common/zone";
 import { Con_DPrintf, Con_Printf } from "../client/console";
 import { qw } from "../common/quakedef";
-import { Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite, Sys_mkdir } from "../platform/sys";
+import { Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite } from "../platform/sys";
 import type { AliashdrT } from "./gl_model_types";
 import { pheader, poseverts, stverts, triangles } from "./gl_model";
-import { clientProfile } from "../common/profile";
 
 /*
 =================================================================
@@ -364,21 +364,18 @@ export function GL_MakeAliasModelDisplayLists(m: ModelT, hdr: AliashdrT): void {
     // save out the cached version
     //
     const fullpath = `${com_gamedir}/${cache}`;
+    // The cache file's own directory is created first, for every profile:
+    // a model under a progs/ subdirectory (mg3's progs/rogue/sphere.mdl)
+    // needs glquake/rogue/, which neither VID_Init's glquake/ mkdir nor
+    // QW's one-level retry (see file header) provides; and Sys_Error tears
+    // the host down before it throws, so the catch below cannot recover a
+    // failed open the way the C's NULL fopen could.
+    COM_CreatePath(fullpath);
     let handle = -1;
     try {
       handle = Sys_FileOpenWrite(fullpath);
     } catch {
       handle = -1; // the C's fopen(fullpath, "wb") returning NULL
-    }
-    if (handle === -1 && clientProfile() === "qw") {
-      // QW/client/gl_mesh.c: create com_gamedir/glquake/ and retry once
-      // (see file header) instead of relying on VID_Init having done it.
-      Sys_mkdir(`${com_gamedir}/glquake`);
-      try {
-        handle = Sys_FileOpenWrite(fullpath);
-      } catch {
-        handle = -1;
-      }
     }
     if (handle !== -1) {
       const out = new Uint8Array(8 + (glMeshState.numcommands + glMeshState.numorder) * 4);

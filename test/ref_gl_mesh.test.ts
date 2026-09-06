@@ -146,6 +146,7 @@ beforeAll(() => {
   ensureDir(gameDir);
   ensureDir(join(gameDir, "glquake"));
   writeGameFile(baseDir, "id1/progs/mesh4.mdl", buildFanMdl(4));
+  writeGameFile(baseDir, "id1/progs/rogue/mesh4b.mdl", buildFanMdl(4)); // a progs/ subdirectory, like mg3's rogue/
 
   // gfx/pop.lmp inside id1/pak0.pak: without the registered-version check
   // COM_FindFile never searches loose directories for a path containing a
@@ -232,6 +233,15 @@ describe("GL_MakeAliasModelDisplayLists", () => {
 
     expect(view.getInt32(8, true)).toBe(-6); // commands[0]
     for (let i = 0; i < numorder; i++) expect(view.getInt32(8 + (numcommands + i) * 4, true)).toBe(i);
+  });
+
+  test("a model under a progs/ subdirectory gets its cache directory created (glquake/rogue/NAME.ms2)", () => {
+    loadMesh("progs/rogue/mesh4b.mdl");
+    const cachePath = join(gameDir, "glquake", "rogue", "mesh4b.ms2");
+    const raw = readFileSync(cachePath);
+    const view = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+    expect(view.getInt32(0, true)).toBe(14);
+    expect(view.getInt32(4, true)).toBe(6);
   });
 
   test("reads the cached version back instead of rebuilding it", () => {
