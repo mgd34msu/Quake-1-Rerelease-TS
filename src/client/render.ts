@@ -613,13 +613,27 @@ export interface Renderer {
   // TRANSPARENT_COLOR (255) is skipped, exactly like Draw_TransPic vs
   // Draw_Pic.
   //
-  // Optional for the same reason Draw_GlyphAtlas is (see that member's own
-  // comment just above): wiring these two onto the live
-  // glRenderer/softRenderer object literals (src/ref_gl/ref_gl.ts,
-  // src/ref_soft/ref_soft.ts -- one line each) is outside this unit's
-  // SCOPE. sbar.ts falls back to a lazy require()-based direct dispatch,
-  // keyed on isGL, exactly like kfont_text.ts's own drawGlyphAtlas did for
-  // Draw_GlyphAtlas before U44 closed that identical seam gap.
+  // F2b: wired onto both live renderer objects (src/ref_gl/ref_gl.ts's
+  // glRenderer, src/ref_soft/ref_soft.ts's softRenderer -- the ONLY two
+  // object literals in this codebase that build a full, real `Renderer`;
+  // every other `: Renderer`-typed object is a test fixture). Left OPTIONAL
+  // anyway, NOT required as this unit's brief asked once both did: `grep -rn
+  // ": Renderer\b" src test` (this unit's report has the full list) turns up
+  // ~25 more object literals across test files outside this unit's SCOPE
+  // (console.test.ts, qwcl_*.test.ts, vid_menu.test.ts, vid_platform.test.ts,
+  // vid_restart.test.ts, view.test.ts, client_types.test.ts, cl_parse.test.ts,
+  // menu.test.ts, splitscreen.test.ts, screen.test.ts,
+  // alias_newtranslation.test.ts, r_part.test.ts, and more) that satisfy
+  // `Renderer` as it stood before this member existed -- exactly the
+  // situation Draw_GlyphAtlas's own comment above describes, at much larger
+  // scale. Making this member required would fail every one of those files'
+  // typecheck for a member almost none of them exercise, none of which this
+  // unit may touch (standing order 6). sbar.ts therefore KEEPS its lazy
+  // require()-based direct-dispatch fallback (keyed on isGL, exactly like
+  // kfont_text.ts's own drawGlyphAtlas did for Draw_GlyphAtlas before U44
+  // closed that identical seam gap) instead of dropping it -- reached only
+  // when a fake `Renderer` omits this member; a real renderer never falls
+  // into it.
   Draw_ScaledPic?(x: number, y: number, pic: QpicT, scale: number): void;
   Draw_ScaledTransPic?(x: number, y: number, pic: QpicT, scale: number): void;
 

@@ -129,6 +129,7 @@ import { SWimp_QuantizeFrame32 } from "../platform/swimp";
 import { R_BuildShiftRamps } from "./r_coloredlight";
 import { CalcFov, scr_fov, scr_viewsize } from "../client/screen";
 import { Sbar_Changed } from "../client/sbar";
+import { SbarScale } from "../client/kfont_text";
 import { cl_crossx, cl_crossy, crosshair, gammatable, V_CalcPowerupCshift, V_CheckGamma } from "../client/view";
 import { qwActive } from "../common/profile";
 
@@ -166,6 +167,8 @@ import {
   Draw_Init,
   Draw_Pic,
   Draw_PicFromWad,
+  Draw_ScaledPic,
+  Draw_ScaledTransPic,
   Draw_String,
   Draw_SubPic,
   Draw_TileClear,
@@ -311,9 +314,16 @@ function SCR_CalcRefdef(): void {
   if (cl.intermission) size = 120;
   else size = scr_viewsize.value;
 
+  // F2b, not from screen.c: Ironwail's gl_screen.c multiplies sb_lines by
+  // its own CANVAS_SBAR scale (`CLAMP(1, scr_sbarscale, glwidth/320)`,
+  // ported as kfont_text.ts's SbarScale()) so a scaled (taller) status bar
+  // still reserves the room it actually draws into instead of the 3D view
+  // painting over the bottom of it -- see this file's header. Byte-identical
+  // to pre-F2b at scr_sbarscale's default (SbarScale() === 1).
+  const sbarScale = SbarScale();
   if (size >= 120) scrState.sb_lines = 0; // no status bar at all
-  else if (size >= 110) scrState.sb_lines = 24; // no inventory
-  else scrState.sb_lines = 24 + 16 + 8;
+  else if (size >= 110) scrState.sb_lines = 24 * sbarScale; // no inventory
+  else scrState.sb_lines = (24 + 16 + 8) * sbarScale;
 
   // these calculations mirror those in R_Init() for r_refdef, but take no
   // account of water warping
@@ -541,6 +551,12 @@ export const softRenderer: Renderer = {
   Draw_SubPic,
   Draw_Alt_String,
   Draw_GlyphAtlas,
+  // F2b: see render.ts's own Draw_ScaledPic/Draw_ScaledTransPic comment --
+  // wires the two F2-added scaled-pic primitives onto the live renderer so
+  // sbar.ts's drawScaledPic reaches them directly instead of its lazy
+  // require() fallback.
+  Draw_ScaledPic,
+  Draw_ScaledTransPic,
 
   D_StartParticles,
   D_DrawParticle,

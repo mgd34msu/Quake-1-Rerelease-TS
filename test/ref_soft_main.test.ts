@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeAll, afterAll, spyOn } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll, afterEach, spyOn } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { COM_CheckRegistered, COM_InitArgv, COM_InitFilesystem, pop } from "../src/common/common";
@@ -13,6 +13,7 @@ import { VID_GRADES, vid, vidBackend, type VidBackend, VrectT } from "../src/cli
 import { scr_vrect, scrState } from "../src/client/screen_types";
 import { getRegisteredRenderer, registerRenderer, unregisterRenderer } from "../src/platform/vid";
 import { CalcFov, scr_fov, scr_viewsize } from "../src/client/screen";
+import { scr_sbarscale } from "../src/client/kfont_text";
 import { lcd_x } from "../src/client/view";
 import { AMP, AMP2, SIN_BUFFER_SIZE, intsintable, modelorg, r_frustum_indexes, rState, screenedge, sintable, view_clipplanes } from "../src/ref_soft/r_local";
 import { dState } from "../src/ref_soft/d_local";
@@ -562,6 +563,76 @@ describe("softRenderer", () => {
     expect(v.forward).toBe(vpn);
     expect(v.right).toBe(vright);
     expect(v.up).toBe(vup);
+  });
+});
+
+/*
+F2b: SCR_CalcRefdef now multiplies `scrState.sb_lines` by `SbarScale()`
+(kfont_text.ts's own `CLAMP(1, scr_sbarscale, vid.width/320)`, matching
+Ironwail's gl_screen.c `sb_lines = 24 * scale` / `48 * scale`) instead of
+leaving it always 0/24/48 -- so the 3D view (this same function's own
+r_refdef.vrect height) reserves room for a scr_sbarscale-taller status bar.
+See src/ref_soft/ref_soft.ts's own comment at this call site and
+src/client/sbar.ts's file header's F2b note for the full account.
+*/
+describe("SCR_CalcRefdef -- F2b sb_lines scaling", () => {
+  const savedViewsize = { string: scr_viewsize.string, value: scr_viewsize.value };
+  const savedSbarscale = { string: scr_sbarscale.string, value: scr_sbarscale.value };
+  const savedSbLines = scrState.sb_lines;
+
+  // NOT a `vid.width`/`r_refdef.vrect` snapshot taken here at collection
+  // time (before the outer beforeAll's own `setMode320x200()` has run) --
+  // that would restore to whatever `vid` defaulted to before this suite's
+  // own baseline was established, not to the 320x200 mode every OTHER
+  // describe below this one assumes is live. Restored to that same literal
+  // baseline instead, in afterEach so a mid-suite failure here cannot leave
+  // it on a value later tests (`R_RenderView`'s own 320x200 buffer) were
+  // never sized for.
+  afterEach(() => {
+    setCvar(scr_viewsize, savedViewsize.value);
+    setCvar(scr_sbarscale, savedSbarscale.value);
+    vid.width = 320;
+    r_refdef.vrect.width = 320;
+    r_refdef.vrect.height = 200;
+    scrState.sb_lines = savedSbLines;
+  });
+
+  test("scr_sbarscale at its default (1) leaves sb_lines on the unscaled 0/24/48 ladder -- byte-identical to pre-F2b", () => {
+    vid.width = 320;
+    r_refdef.vrect.width = 320;
+    r_refdef.vrect.height = 200;
+    setCvar(scr_sbarscale, 1);
+
+    setCvar(scr_viewsize, 100); // < 110 -> with inventory
+    softRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe(24 + 16 + 8);
+
+    setCvar(scr_viewsize, 110); // [110,120) -> no inventory
+    softRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe(24);
+
+    setCvar(scr_viewsize, 120); // >= 120 -> no bar at all
+    softRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe(0);
+  });
+
+  test("scr_sbarscale 2 (vid.width wide enough that SbarScale's own CLAMP does not reduce it) scales every rung of the ladder", () => {
+    vid.width = 640; // SbarScale(): CLAMP(1, scr_sbarscale, vid.width/320) = CLAMP(1, 2, 2) = 2
+    r_refdef.vrect.width = 640;
+    r_refdef.vrect.height = 480;
+    setCvar(scr_sbarscale, 2);
+
+    setCvar(scr_viewsize, 100);
+    softRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe((24 + 16 + 8) * 2);
+
+    setCvar(scr_viewsize, 110);
+    softRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe(24 * 2);
+
+    setCvar(scr_viewsize, 120);
+    softRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe(0); // no bar at all -- scale is irrelevant to a zero bar
   });
 });
 

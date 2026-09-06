@@ -167,7 +167,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   active work end to end. A missing optional pic never aborts the engine.
 - `scr_sbarscale` scales the picture-based status bar elements in both
   renderers (numbers, faces, weapon and item icons, backgrounds), not only
-  the kfont text, and a scale change redraws the bar.
+  the kfont text, and a scale change redraws the bar. The scaled bar is
+  anchored at the bottom centre so the whole of it stays on screen, and the
+  3D view reserves the scaled bar height (`sb_lines`) in both renderers, as
+  Ironwail does; the viewsize tiers are read from the cvar, not from
+  `sb_lines`.
 - A game-directory switch from the menu no longer reverts the chosen
   ruleset or protocol. The `game` command re-execs `quake.rc` with
   `Cbuf_InsertText` instead of appending it, so the new gamedir's archived

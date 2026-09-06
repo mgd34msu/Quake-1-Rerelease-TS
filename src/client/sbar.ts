@@ -106,8 +106,89 @@ scale 1, as a documented follow-up. This unit closes that follow-up:
   deathmatch/mini-deathmatch scoreboard overlays ... are explicitly out of
   this unit's scope"), since Ironwail's own `GL_SetCanvas(CANVAS_SBAR)` does
   not cover them either (they are `CANVAS_MENU`-equivalent draws).
+
+F2b (bottom-centre anchor + 3D view reservation): F2 scaled every status-bar
+element around the SAME FIXED anchor point Sbar_DrawCharacter/Sbar_DrawString
+already used pre-F2 (`(vid.width-320)>>1`, `vid.height-SBAR_HEIGHT`) -- at
+scale 1 that anchor and the scaled bar's top-left corner coincide, but at
+scale 2 the 24-row main bar becomes 48 real rows drawn from that SAME
+unscaled anchor downward, so half of it lands past `vid.height` (off the
+bottom of the screen), and the bar's now-640-wide footprint at scale 2 is
+left-aligned on the old (unscaled) 320-wide centering instead of centred on
+its own width. This unit closes THAT gap -- ties the anchor itself to the
+scale so the WHOLE scaled bar stays centred and glued to the bottom, matching
+Ironwail's own `GL_SetCanvas(CANVAS_SBAR)` (`Draw_Transform` with
+`CANVAS_ALIGN_CENTERX`/`CANVAS_ALIGN_BOTTOM` against a 320x48 virtual canvas,
+`CANVAS_ALIGN_LEFT` in deathmatch -- checked against
+~/Projects/qsrc/ironwail/Quake/gl_draw.c's `Draw_GetCanvasTransform`):
+- `sbarCenterX(s)` and the new `sbarAnchorY(s)` replace the old fixed
+  `sbarCenterX()`/`sbarCanvasBottom() - SBAR_HEIGHT` pair everywhere a draw
+  function computes its anchor: `sbarCenterX(s)` is `pane.x + (pane.width -
+  320*s)/2` (`Math.floor`, reproducing the C's `>>1` truncation exactly at
+  `s === 1`) instead of centring on the unscaled 320; `sbarAnchorY(s)` is
+  `pane.bottom - SBAR_HEIGHT*s` instead of the fixed `pane.bottom -
+  SBAR_HEIGHT`. Both take the SAME `sbarSeatScale()` value each call site
+  already computes for its own `x*s`/`y*s` offsets, so passing `s` costs
+  nothing new to compute. Byte-identical to pre-F2b at scale 1 (`sbarCenterX(1)`
+  and `sbarAnchorY(1)` reduce to the exact old formulas). `sbarCenterX()`'s
+  zero-arg form (default `s = 1`) stays exactly as it was for
+  Sbar_DeathmatchOverlay's own unrelated, deliberately-unscaled use (see the
+  F2 note above: deathmatch/intermission overlays are out of every scaling
+  unit's scope).
+- `scrState.sb_lines` is now scaled: each renderer's own `SCR_CalcRefdef`
+  (src/ref_gl/ref_gl.ts, src/ref_soft/ref_soft.ts, both this unit's SCOPE)
+  multiplies it by `SbarScale()` (kfont_text.ts's own GLOBAL
+  `CLAMP(1, scr_sbarscale, vid.width/320)`, matching Ironwail's own gl_screen.c
+  `sb_lines = 24 * scale` / `48 * scale` exactly) instead of leaving it always
+  24/0/48 -- closing the gap the F2 note above flagged as "a genuine,
+  proven-out-of-SCOPE gap". The 3D view's own `r_refdef.vrect` height
+  calculation already treats `sb_lines` as a generic "reserved bottom margin
+  in real pixels" (src/ref_soft/r_main.ts's `R_SetVrect`, outside this unit's
+  SCOPE, takes it as a plain `lineadj` parameter with no baked-in 24/48
+  assumption), so scaling it there is enough to make the 3D view stop above
+  the now-taller bar with no further change needed in that function.
+- Sbar_Draw's own `Draw_TileClear` call no longer re-multiplies
+  `scrState.sb_lines` by `sbarSeatScale()` (the F2 comment's own "computed
+  here, not written back" -- now stale): `scrState.sb_lines` already carries
+  the (global, not seat-capped) scale from SCR_CalcRefdef, so re-multiplying
+  by the seat-capped `sbarSeatScale()` would double-scale the clear region in
+  the common single-seat case (where the two scales are numerically equal) and
+  read the wrong margin in a genuinely capped seat. Reading it directly is
+  exactly Ironwail's own `Draw_TileClear(0, glheight - sb_lines, glwidth,
+  sb_lines)` -- no local rescale at the call site at all.
+- One WinQuake sbar.c comparison broke once `sb_lines` could be scaled:
+  `if (sb_lines > 24)` (this file's own Sbar_Draw, deciding whether the
+  current viewsize tier draws the inventory row) assumed the only two nonzero
+  values were the unscaled 24 (no inventory) and 48 (with inventory) -- at
+  scale 2 the NO-inventory tier's `24*2 === 48`, indistinguishable from the
+  unscaled WITH-inventory tier's own 48, so the comparison would wrongly draw
+  the inventory row at the no-inventory viewsize once scaled. Ironwail hit
+  the identical break and fixed it the identical way (gl_screen.c/sbar.c's
+  own "johnfitz -- check viewsize instead of sb_lines" comment, at three call
+  sites): read the VIEWSIZE TIER directly (`sbarViewsizeTier()` below,
+  mirroring both renderers' own `SCR_CalcRefdef` tier logic including the
+  `cl.intermission` forced-full-screen case) instead of inferring it from the
+  now scale-dependent drawn height. The plain truthy `scrState.sb_lines`
+  checks elsewhere in this file (Sbar_Draw's "any bar visible" branch,
+  Sbar_MiniDeathmatchOverlay's own guard) need no such fix: zero times any
+  positive scale is still zero and a positive value times any positive scale
+  is still positive, so those checks are scale-invariant already -- matching
+  Ironwail, which leaves its own analogous truthy `if (sb_lines && ...)` (its
+  TileClear guard) unchanged while fixing only the three tier COMPARISONS.
+- render.ts's `Draw_ScaledPic`/`Draw_ScaledTransPic` are wired onto both live
+  renderer objects (`glRenderer`, `softRenderer`) by this unit but are kept
+  OPTIONAL rather than made required as F2's own note above proposed: `grep
+  -rn ": Renderer\b" src test` (this unit's report has the full list) turns up
+  roughly two dozen `Renderer`-typed object literals in test files outside
+  every scaling unit's SCOPE, built against the interface as it stood before
+  either member existed -- exactly the situation render.ts's own
+  Draw_GlyphAtlas comment describes for that member, at much larger scale.
+  `drawScaledPic` below therefore KEEPS its lazy-require fallback rather than
+  dropping it, for the same reason. See render.ts's own comment on these two
+  members for the full account and the deviation from F2's proposed follow-up.
 */
 
+import { Cvar_FindVar } from "../common/cvar";
 import { cl } from "./client";
 import type { ScoreboardT } from "./client";
 import { getRenderer } from "./render";
@@ -260,16 +341,58 @@ function sbarCanvasBottom(): number {
   return c.y + c.height;
 }
 
-/** The C's `(vid.width - 320) >> 1` centering, against this seat's pane. */
-function sbarCenterX(): number {
+/** The C's `(vid.width - 320) >> 1` centering, against this seat's pane,
+ * generalized to `(pane.width - 320*s)/2` for `s !== 1` -- see this file's
+ * header's F2b note: the WHOLE scaled bar must stay centred and on screen,
+ * not just centred at its own unscaled (320-wide) footprint while a wider,
+ * scaled footprint overflows either edge. `Math.floor` reproduces the exact
+ * `>>1` truncation the C used at `s === 1` (both floor identically for any
+ * width this project's `vid` ever reports), so scale 1 stays byte-identical.
+ * The default `s = 1` is for Sbar_DeathmatchOverlay's own unrelated,
+ * deliberately-unscaled use (see this file's header's F2/F2b notes:
+ * deathmatch/intermission overlays are out of every scaling unit's scope). */
+function sbarCenterX(s = 1): number {
   const c = SS_Canvas();
-  return c.x + ((c.width - 320) >> 1);
+  return c.x + Math.floor((c.width - 320 * s) / 2);
+}
+
+/** F2b: the bottom-of-the-main-bar y anchor at the given scale --
+ * `pane.bottom - SBAR_HEIGHT*s` instead of the fixed pre-F2b `pane.bottom -
+ * SBAR_HEIGHT` -- so a taller (scaled) bar still ends flush with the bottom
+ * of the pane instead of extending past it. Byte-identical to the pre-F2b
+ * formula at `s === 1`. */
+function sbarAnchorY(s = 1): number {
+  return sbarCanvasBottom() - SBAR_HEIGHT * s;
 }
 
 function sbarSeatScale(): number {
   const s = SbarScale();
   const cap = Math.max(1, sbarCanvasWidth() / 320);
   return s > cap ? cap : s;
+}
+
+/** F2b: WinQuake's sbar.c compares `sb_lines > 24` directly to tell the
+ * with-inventory viewsize tier (size < 110) from the no-inventory one (size
+ * in [110,120)) apart -- true only because `sb_lines` was never anything but
+ * 0/24/48 there. Now that `scr_sbarscale` can scale `scrState.sb_lines`
+ * (this file's header's F2b note; each renderer's own SCR_CalcRefdef), a
+ * scaled 24 (e.g. 48 at scale 2) reads exactly like the unscaled
+ * with-inventory 48 and would wrongly draw the inventory row at a viewsize
+ * that should not have one. Ironwail hit the identical problem and fixed it
+ * the identical way (gl_screen.c/sbar.c's own "johnfitz -- check viewsize
+ * instead of sb_lines" comment): read the VIEWSIZE TIER directly instead of
+ * inferring it from the now scale-dependent drawn height. Mirrors both
+ * renderers' own SCR_CalcRefdef tier logic exactly, including the
+ * `cl.intermission` forced-full-screen (size 120) case.
+ * `Cvar_FindVar` instead of a static import of screen.ts's own
+ * `scr_viewsize` avoids a load-order cycle (screen.ts already statically
+ * imports this file for Sbar_Draw/Sbar_Changed/Sbar_FinaleOverlay/
+ * Sbar_IntermissionOverlay) -- the same technique kfont_text.ts's own
+ * `currentLanguage` uses for `language`, for the identical reason. */
+function sbarViewsizeTier(): number {
+  if (cl.intermission) return 120;
+  const cv = Cvar_FindVar("viewsize");
+  return cv ? cv.value : 100; // "viewsize" defaults to "100" (screen.ts's own scr_viewsize) if not yet registered
 }
 
 function M_DrawPic(x: number, y: number, pic: QpicT): void {
@@ -484,13 +607,13 @@ Sbar_DrawPic
 export function Sbar_DrawPic(x: number, y: number, pic: QpicT | null): void {
   if (!pic) return;
   const r = getRenderer();
-  // F2: scaled around the SAME anchor point Sbar_DrawCharacter/
+  // F2/F2b: scaled around the SAME anchor point Sbar_DrawCharacter/
   // Sbar_DrawString already use -- see this file's header. At SbarScale()'s
   // default (1) this is byte-identical to the pre-F2 formula (`x +
   // sbarCanvasX()/sbarCenterX()`, `y + (sbarCanvasBottom() - SBAR_HEIGHT)`).
   const s = sbarSeatScale();
-  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() /* + ((vid.width - 320)>>1) */ : sbarCenterX();
-  const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() /* + ((vid.width - 320*s)/2) */ : sbarCenterX(s);
+  const anchorY = sbarAnchorY(s);
   if (s === 1) {
     r.Draw_Pic(anchorX + x, anchorY + y, pic);
     return;
@@ -506,10 +629,10 @@ Sbar_DrawTransPic
 export function Sbar_DrawTransPic(x: number, y: number, pic: QpicT | null): void {
   if (!pic) return;
   const r = getRenderer();
-  // F2: see Sbar_DrawPic's own note just above.
+  // F2/F2b: see Sbar_DrawPic's own note just above.
   const s = sbarSeatScale();
-  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() /*+ ((vid.width - 320)>>1)*/ : sbarCenterX();
-  const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() /*+ ((vid.width - 320*s)/2)*/ : sbarCenterX(s);
+  const anchorY = sbarAnchorY(s);
   if (s === 1) {
     r.Draw_TransPic(anchorX + x, anchorY + y, pic);
     return;
@@ -525,16 +648,15 @@ Draws one solid graphics character
 ================
 */
 export function Sbar_DrawCharacter(x: number, y: number, num: number): void {
-  // U19: routed through kfont_text.ts's Text_Draw and scaled by
-  // `scr_sbarscale` (SbarScale()) around the SAME anchor point
-  // (`(vid.width-320)>>1`/`vid.height-SBAR_HEIGHT`, or (0, that) in
-  // deathmatch) the pre-U19 renderer.Draw_Character call used -- at
-  // SbarScale()'s default (1) this is byte-identical to that formula. See
-  // this unit's report for why the status bar's PIC-based elements
-  // (Sbar_DrawPic/Sbar_DrawTransPic, sb_nums) are NOT scaled by this unit.
+  // U19/F2b: routed through kfont_text.ts's Text_Draw and scaled by
+  // `scr_sbarscale` (SbarScale()) around the SAME scale-tied anchor point
+  // (`sbarCenterX(s)`/`sbarAnchorY(s)`, or (0, that) in deathmatch) every
+  // other status-bar draw function uses -- see this file's header's F2b
+  // note. At SbarScale()'s default (1) this is byte-identical to the pre-U19
+  // formula (`(vid.width-320)>>1`/`vid.height-SBAR_HEIGHT`).
   const s = sbarSeatScale();
-  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX();
-  const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX(s);
+  const anchorY = sbarAnchorY(s);
   Text_Draw(anchorX + (x + 4) * s, anchorY + y * s, String.fromCharCode(num & 0xff), false, s);
 }
 
@@ -544,10 +666,10 @@ Sbar_DrawString
 ================
 */
 export function Sbar_DrawString(x: number, y: number, str: string): void {
-  // U19: see Sbar_DrawCharacter's own note just above.
+  // U19/F2b: see Sbar_DrawCharacter's own note just above.
   const s = sbarSeatScale();
-  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX();
-  const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX(s);
+  const anchorY = sbarAnchorY(s);
   Text_Draw(anchorX + x * s, anchorY + y * s, str, false, s);
 }
 
@@ -868,15 +990,15 @@ export function Sbar_DrawFrags(): void {
   const l = scoreboardlines <= 4 ? scoreboardlines : 4;
 
   let x = 23;
-  // F2: scaled around the same anchor as Sbar_DrawCharacter's own calls just
-  // below -- see this file's header. `anchorX`/`anchorY` are the same
-  // unscaled anchor Sbar_DrawPic/Sbar_DrawCharacter use; the -23/+4 offsets
+  // F2/F2b: scaled around the same anchor as Sbar_DrawCharacter's own calls
+  // just below -- see this file's header. `anchorX`/`anchorY` are the same
+  // scale-tied anchor Sbar_DrawPic/Sbar_DrawCharacter use; the -23/+4 offsets
   // and the 28/4/28/3 box size are the pre-F2 constants, all multiplied by
   // `scale` here since Draw_Fill has no scaled-primitive Renderer member of
   // its own (a scaled solid rectangle needs none -- see this file's header).
   const scale = sbarSeatScale();
-  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX();
-  const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
+  const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX(scale);
+  const anchorY = sbarAnchorY(scale);
 
   const r = getRenderer();
 
@@ -936,11 +1058,11 @@ export function Sbar_DrawFace(): void {
     top = Sbar_ColorForMap(top);
     bottom = Sbar_ColorForMap(bottom);
 
-    // F2: scaled around the same anchor as Sbar_DrawPic/Sbar_DrawCharacter --
-    // see this file's header and Sbar_DrawFrags's own identical note above.
+    // F2/F2b: scaled around the same anchor as Sbar_DrawPic/Sbar_DrawCharacter
+    // -- see this file's header and Sbar_DrawFrags's own identical note above.
     const scale = sbarSeatScale();
-    const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX();
-    const anchorY = sbarCanvasBottom() - SBAR_HEIGHT;
+    const anchorX = cl.gametype === GAME_DEATHMATCH ? sbarCanvasX() : sbarCenterX(scale);
+    const anchorY = sbarAnchorY(scale);
     const xofs = anchorX + 113 * scale;
 
     Sbar_DrawPic(112, 0, rsb_teambord);
@@ -1023,16 +1145,19 @@ export function Sbar_Draw(): void {
 
   sb_updates++;
 
-  // F2: the height read here is scaled LOCALLY (see this file's header) so
-  // the clear region matches the now-possibly-taller-at-scale drawn bar;
-  // `scrState.sb_lines` itself is left untouched (owned by each renderer's
-  // own SCR_CalcRefdef, outside this unit's SCOPE -- see this file's header
-  // and this unit's report for the proven-out-of-SCOPE follow-up).
-  const sbLinesDrawn = Math.round(scrState.sb_lines * sbarSeatScale());
+  // F2b: `scrState.sb_lines` is now scaled by each renderer's own
+  // SCR_CalcRefdef (see this file's header) -- no local re-scale here
+  // (re-multiplying by `sbarSeatScale()` would double-scale the common
+  // single-seat case, where the two scales are numerically equal). Matches
+  // Ironwail's own `Draw_TileClear(0, glheight - sb_lines, glwidth,
+  // sb_lines)`, no local rescale at the call site at all.
+  const sbLinesDrawn = Math.round(scrState.sb_lines);
   if (sbLinesDrawn && sbarCanvasWidth() > 320)
     r.Draw_TileClear(sbarCanvasX(), sbarCanvasBottom() - sbLinesDrawn, sbarCanvasWidth(), sbLinesDrawn);
 
-  if (scrState.sb_lines > 24) {
+  // F2b: viewsize TIER, not the now scale-dependent `scrState.sb_lines`
+  // magnitude -- see `sbarViewsizeTier`'s own doc comment above.
+  if (sbarViewsizeTier() < 110) {
     Sbar_DrawInventory();
     if (cl.maxclients !== 1) Sbar_DrawFrags();
   }

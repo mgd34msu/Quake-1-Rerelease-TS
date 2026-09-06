@@ -74,15 +74,21 @@ SCALING RULES (QuakeSpasm gl_screen.c names/semantics, this unit's SCOPE):
   Draw_GlyphAtlas for a destination rect scaled by `vid.width/vid.conwidth`
   -- see ConsoleScale() below.
 - `scr_sbarscale`: `CLAMP(1, scr_sbarscale.value, vid.width/320)`, ported as
-  SbarScale() below. Applied narrowly, per this unit's SCOPE: only the
-  status bar's TEXT (Sbar_DrawCharacter/Sbar_DrawString in sbar.ts, which
-  this unit routes through Text_Draw) scales; the status bar's PIC-based
-  elements (health/ammo digit pics, weapon/item icons, `Sbar_DrawPic`) do
-  not, because scaling those too means rewriting sbar.ts's whole coordinate
-  convention from "real screen pixels with `(vid.width-320)>>1` centering
-  baked into each wrapper" to QuakeSpasm's modern "virtual 320-space,
-  GL_SetCanvas(CANVAS_SBAR) does the centering/scaling" convention, which is
-  a much larger refactor than fits this unit -- reported as a follow-up.
+  SbarScale() below. This unit (U19) applied it narrowly: only the status
+  bar's TEXT (Sbar_DrawCharacter/Sbar_DrawString in sbar.ts, which this unit
+  routes through Text_Draw) scaled; the status bar's PIC-based elements
+  (health/ammo digit pics, weapon/item icons, `Sbar_DrawPic`) did not, since
+  scaling those too meant rewriting sbar.ts's whole coordinate convention
+  from "real screen pixels with `(vid.width-320)>>1` centering baked into
+  each wrapper" to QuakeSpasm's modern "virtual 320-space,
+  GL_SetCanvas(CANVAS_SBAR) does the centering/scaling" convention -- too
+  large a refactor for this unit, reported as a follow-up. F2 closed that
+  follow-up (Sbar_DrawPic/Sbar_DrawTransPic now scale too, through
+  render.ts's own Draw_ScaledPic/Draw_ScaledTransPic), and F2b closed the
+  gap F2 left open: the anchor those wrappers scale AROUND is now itself
+  tied to the scale (`(vid.width-320*s)/2`, `vid.height-24*s`) instead of
+  staying fixed at the scale-1 position while the drawn footprint grows past
+  it -- see sbar.ts's own header for the full account of both.
 - `scr_crosshairscale`: `CLAMP(1, scr_crosshairscale.value, 10)`, ported as
   CrosshairScale() below and exported for use, but NOT wired to an actual
   crosshair draw call: `SCR_DrawCrosshair`/`V_DrawCrosshair` are `Renderer`

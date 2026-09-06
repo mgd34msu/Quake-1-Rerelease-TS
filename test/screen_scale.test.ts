@@ -195,7 +195,7 @@ describe("kfont_text.ts -- SbarScale/CrosshairScale (QuakeSpasm CLAMP formulas)"
   });
 });
 
-describe("sbar.ts -- Sbar_DrawCharacter/Sbar_DrawString scale around the pre-U19 anchor", () => {
+describe("sbar.ts -- Sbar_DrawCharacter/Sbar_DrawString scale around the F2b scale-tied anchor", () => {
   const savedGametype = cl.gametype;
   const savedClsState = cls.state;
 
@@ -229,7 +229,7 @@ describe("sbar.ts -- Sbar_DrawCharacter/Sbar_DrawString scale around the pre-U19
     }
   });
 
-  test("at scale 2, the anchor and the glyph cell both double, and the (x,y) sbar-local offset scales around that anchor", () => {
+  test("at scale 2, the anchor itself moves with the scale (stays centred/bottom-glued) and the (x,y) sbar-local offset scales around THAT anchor", () => {
     scr_sbarscale.value = 2;
     expect(SbarScale()).toBe(2); // vid.width/320 = 2, so CLAMP(1,2,2) = 2
 
@@ -238,11 +238,15 @@ describe("sbar.ts -- Sbar_DrawCharacter/Sbar_DrawString scale around the pre-U19
       Sbar_DrawCharacter(10, 5, "Q".charCodeAt(0));
       expect(spy).toHaveBeenCalledTimes(1);
 
-      const anchorX = (vid.width - 320) >> 1; // 160
-      const anchorY = vid.height - SBAR_HEIGHT; // 456
+      // F2b: `(vid.width - 320*s)/2` (0: 640 - 320*2 == 0, so the scaled bar
+      // exactly fills the 640-wide screen) and `vid.height - SBAR_HEIGHT*s`
+      // (432: the taller bar still ends flush with the bottom) -- see
+      // sbar.ts's own header's F2b note.
+      const anchorX = Math.floor((vid.width - 320 * 2) / 2); // 0
+      const anchorY = vid.height - SBAR_HEIGHT * 2; // 432
       const [dstX, dstY, dstW, dstH] = spy.mock.calls[0]!;
-      expect(dstX).toBe(anchorX + (10 + 4) * 2); // 160 + 28 = 188
-      expect(dstY).toBe(anchorY + 5 * 2); // 456 + 10 = 466
+      expect(dstX).toBe(anchorX + (10 + 4) * 2); // 0 + 28 = 28
+      expect(dstY).toBe(anchorY + 5 * 2); // 432 + 10 = 442
       expect(dstW).toBe(16); // 8 * scale
       expect(dstH).toBe(16);
     } finally {
@@ -250,7 +254,7 @@ describe("sbar.ts -- Sbar_DrawCharacter/Sbar_DrawString scale around the pre-U19
     }
   });
 
-  test("deathmatch drops the (vid.width-320)>>1 centering term, at any scale", () => {
+  test("deathmatch drops the (vid.width-320*s)/2 centering term but still glues the bottom to the SCALED height", () => {
     cl.gametype = GAME_DEATHMATCH;
     scr_sbarscale.value = 2;
 
@@ -259,10 +263,10 @@ describe("sbar.ts -- Sbar_DrawCharacter/Sbar_DrawString scale around the pre-U19
       Sbar_DrawString(0, 0, "Q");
       const [dstX, dstY] = spy.mock.calls[0]!;
       expect(dstX).toBe(0);
-      // anchorY (vid.height - SBAR_HEIGHT) is NOT itself scaled -- only the
-      // (x, y) sbar-local offset scales around it (Sbar_DrawString's own
-      // `anchorY + y * s`); at y=0 that's just the unscaled anchor.
-      expect(dstY).toBe(vid.height - SBAR_HEIGHT);
+      // F2b: anchorY (`vid.height - SBAR_HEIGHT*s`) IS scaled now -- only the
+      // deathmatch x-centering term is dropped; at y=0 the y offset is just
+      // the (now scaled) anchor itself.
+      expect(dstY).toBe(vid.height - SBAR_HEIGHT * 2);
     } finally {
       spy.mockRestore();
     }

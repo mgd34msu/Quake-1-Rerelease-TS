@@ -26,6 +26,14 @@ import { QpicT } from "../src/common/wad";
 import { STAT_HEALTH } from "../src/common/quakedef";
 import { GAME_DEATHMATCH } from "../src/common/protocol";
 import { scr_sbarscale } from "../src/client/kfont_text";
+import { scr_viewsize } from "../src/client/screen";
+// F2b: "a seat rect" test below -- see that test's own header note for why
+// this is the minimal-footprint way to raise the seat count (no server, no
+// coop-cvar side effect) rather than test/splitscreen.test.ts's own heavier
+// SS_Init/NET_Init setup.
+import { SPLIT_LAYOUT_SIDE_BY_SIDE, SS_ActivateSeat, SS_Canvas, SS_SetSeats, cl_splitscreen_layout } from "../src/client/splitscreen";
+import { sv, svs } from "../src/server/server";
+import { Cvar_FindVar, Cvar_RegisterVariable } from "../src/common/cvar";
 
 import {
   Sbar_Changed,
@@ -194,6 +202,15 @@ re.current = fake.renderer;
 // back the same pic objects.
 Sbar_Init();
 
+// F2b: sbar.ts's Sbar_Draw reads `scr_viewsize` through `Cvar_FindVar("viewsize")`
+// (sbar.ts's own `sbarViewsizeTier`, a load-order-cycle workaround -- see its
+// doc comment), which only sees this file's own `scr_viewsize.value` writes
+// once the SAME cvar object is registered under that name. Idempotent, like
+// every other suite's own "register if nothing has claimed the name yet"
+// guard, so a full-suite run where some other file already registered it is
+// unaffected.
+if (!Cvar_FindVar("viewsize")) Cvar_RegisterVariable(scr_viewsize);
+
 beforeEach(() => {
   cl.clear();
   fake.calls.length = 0;
@@ -290,8 +307,21 @@ describe("Sbar_SortFrags", () => {
 });
 
 describe("Sbar_Draw", () => {
-  test("with sb_lines 48 and a flashing item draws inventory pics", () => {
-    scrState.sb_lines = 48; // > 24 -> Sbar_DrawInventory runs
+  const savedViewsize = { value: scr_viewsize.value, string: scr_viewsize.string };
+  afterAll(() => {
+    scr_viewsize.value = savedViewsize.value;
+    scr_viewsize.string = savedViewsize.string;
+  });
+
+  test("with a with-inventory viewsize (<110) and a flashing item draws inventory pics", () => {
+    // F2b: Sbar_Draw now reads the VIEWSIZE TIER (sbarViewsizeTier(), this
+    // file's own doc comment), not `scrState.sb_lines`'s magnitude, to decide
+    // whether to draw the inventory row -- see sbar.ts's own header's F2b
+    // note. `scrState.sb_lines` is set to what the real SCR_CalcRefdef would
+    // compute for this same tier (24+16+8 unscaled), kept for Sbar_Draw's own
+    // Draw_TileClear pixel math even though it no longer gates the ladder.
+    scr_viewsize.value = 100; // < 110 -> Sbar_DrawInventory runs
+    scrState.sb_lines = 48;
     cl.maxclients = 1; // skip Sbar_DrawFrags
     cl.stats[STAT_HEALTH] = 50;
     cl.items = 1; // IT_SHOTGUN
@@ -308,8 +338,27 @@ describe("Sbar_Draw", () => {
     expect(flash?.y).toBe(160); // -16 + (vid.height - SBAR_HEIGHT) = -16 + 176
 
     expect(sb_updates).toBe(0); // flashon > 1 forces sb_updates back to 0
-    // Also drew the base status bar pics, proving the >24 ladder ran.
+    // Also drew the base status bar pics, proving the with-inventory ladder ran.
     expect(pics.some((p) => p.picName === "ibar")).toBe(true);
+  });
+
+  test("a viewsize >= 110 (no-inventory tier) skips Sbar_DrawInventory even when scrState.sb_lines reads a with-inventory magnitude", () => {
+    // F2b's own regression case: at scr_sbarscale 2 a no-inventory tier's
+    // scaled sb_lines (24*2 = 48) reads exactly like the unscaled
+    // with-inventory tier's own 48 -- proving the fix reads viewsize, not
+    // scrState.sb_lines, for this decision. See sbarViewsizeTier's own doc
+    // comment in sbar.ts.
+    scr_viewsize.value = 115; // >= 110, < 120 -> no inventory, bar still drawn
+    scrState.sb_lines = 48; // what a scale-2 no-inventory tier would read (24*2)
+    cl.maxclients = 1;
+    cl.stats[STAT_HEALTH] = 50;
+    cl.items = 1; // IT_SHOTGUN -- would draw a weapon pic if Sbar_DrawInventory ran
+
+    Sbar_Draw();
+
+    const pics = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_Pic" }> => c.fn === "Draw_Pic");
+    expect(pics.some((p) => p.picName === "inva2_shotgun")).toBe(false); // Sbar_DrawInventory did NOT run
+    expect(pics.some((p) => p.picName === "sbar")).toBe(true); // the base bar itself still draws (viewsize < 120)
   });
 });
 
@@ -329,7 +378,7 @@ describe("Sbar_IntermissionOverlay", () => {
   });
 });
 
-describe("Sbar_DrawPic / Sbar_DrawTransPic scr_sbarscale (F2)", () => {
+describe("Sbar_DrawPic / Sbar_DrawTransPic scr_sbarscale (F2/F2b)", () => {
   const savedSbarscale = scr_sbarscale.value;
   const savedGametype = cl.gametype;
 
@@ -356,7 +405,7 @@ describe("Sbar_DrawPic / Sbar_DrawTransPic scr_sbarscale (F2)", () => {
     ]);
   });
 
-  test("at scale 2 (vid.width 640, scr_sbarscale 2), position and size both scale around the SAME fixed anchor Sbar_DrawCharacter uses", () => {
+  test("at scale 2 (vid.width 640, scr_sbarscale 2), position and size both scale around a scale-tied anchor that stays centred and on screen", () => {
     vid.width = 640;
     scr_sbarscale.value = 2;
     cl.gametype = 0; // not GAME_DEATHMATCH
@@ -364,8 +413,13 @@ describe("Sbar_DrawPic / Sbar_DrawTransPic scr_sbarscale (F2)", () => {
     Sbar_DrawPic(10, 5, sb_scorebar);
     Sbar_DrawTransPic(20, -16, sb_scorebar);
 
-    const anchorX = (vid.width - 320) >> 1; // 160
-    const anchorY = vid.height - SBAR_HEIGHT; // the anchor itself is NOT scaled -- see this suite's own header note and sbar.ts's file header
+    // F2b: the anchor now moves WITH the scale -- `(vid.width - 320*s)/2` (0
+    // here: 640 - 320*2 == 0, so the 640-wide scaled bar exactly fills the
+    // 640-wide screen) and `vid.height - SBAR_HEIGHT*s` (152: the taller,
+    // scaled bar still ends flush with the bottom) -- see sbar.ts's own
+    // header's F2b note and this suite's own header just above.
+    const anchorX = Math.floor((vid.width - 320 * 2) / 2); // 0
+    const anchorY = vid.height - SBAR_HEIGHT * 2; // 152
 
     expect(fake.calls).toEqual([
       { fn: "Draw_ScaledPic", x: anchorX + 10 * 2, y: anchorY + 5 * 2, picName: "scorebar", scale: 2 },
@@ -373,13 +427,57 @@ describe("Sbar_DrawPic / Sbar_DrawTransPic scr_sbarscale (F2)", () => {
     ]);
   });
 
-  test("deathmatch drops the (vid.width-320)>>1 centering term, at scale 2", () => {
+  test("deathmatch drops the (vid.width-320*s)/2 centering term but still glues the bottom to the SCALED height, at scale 2", () => {
     vid.width = 640;
     scr_sbarscale.value = 2;
     cl.gametype = GAME_DEATHMATCH;
 
     Sbar_DrawPic(0, 0, sb_scorebar);
 
-    expect(fake.calls).toEqual([{ fn: "Draw_ScaledPic", x: 0, y: vid.height - SBAR_HEIGHT, picName: "scorebar", scale: 2 }]);
+    expect(fake.calls).toEqual([{ fn: "Draw_ScaledPic", x: 0, y: vid.height - SBAR_HEIGHT * 2, picName: "scorebar", scale: 2 }]);
+  });
+
+  test("a seat's own rect: two side-by-side seats, the active (right) seat centres within its OWN pane at its OWN scale, not the whole screen's", () => {
+    // F2b: "the seat's rect" case the unit brief asks for -- SS_Canvas()
+    // returns a genuinely offset, narrower pane once more than one seat is
+    // live (src/client/splitscreen.ts's own SS_Layout), and sbarCenterX/
+    // sbarAnchorY must add the scaled centering to the PANE's own origin, not
+    // vid.width/vid.height's. `sv.active = true` with `svs.maxclients` already
+    // at the seat count sidesteps SS_SetSeats' `SS_WidenServer` branch
+    // entirely (no server, no coop-cvar side effect) -- the minimal-footprint
+    // path; test/splitscreen.test.ts's own SS_Init/NET_Init setup exercises
+    // the heavier "no server yet" path, out of this unit's SCOPE to touch.
+    const savedVidWidth = vid.width;
+    const savedSvActive = sv.active;
+    const savedMaxclients = svs.maxclients;
+    const savedLayout = cl_splitscreen_layout.value;
+    try {
+      vid.width = 1280; // two 640-wide side-by-side panes
+      scr_sbarscale.value = 2;
+      cl.gametype = 0;
+      cl_splitscreen_layout.value = SPLIT_LAYOUT_SIDE_BY_SIDE;
+      sv.active = true;
+      svs.maxclients = 2; // >= the seat count asked for -- SS_SetSeats sets seatCount directly, no SS_WidenServer call
+      SS_SetSeats(2);
+      SS_ActivateSeat(1); // the right-hand pane: x = halfW, width = vid.width - halfW
+
+      const pane = SS_Canvas();
+      expect(pane).toEqual({ x: 640, y: 0, width: 640, height: 200 });
+
+      Sbar_DrawPic(10, 5, sb_scorebar);
+
+      // pane cap = max(1, pane.width/320) = 2, so scr_sbarscale 2 is NOT
+      // capped down here (unlike a quarter-screen pane would be) -- anchor is
+      // pane.x + (pane.width - 320*2)/2 = 640 + 0 = 640, pane.bottom -
+      // SBAR_HEIGHT*2 = 200 - 48 = 152.
+      expect(fake.calls).toEqual([{ fn: "Draw_ScaledPic", x: 640 + 10 * 2, y: 152 + 5 * 2, picName: "scorebar", scale: 2 }]);
+    } finally {
+      SS_ActivateSeat(0);
+      SS_SetSeats(1);
+      vid.width = savedVidWidth;
+      sv.active = savedSvActive;
+      svs.maxclients = savedMaxclients;
+      cl_splitscreen_layout.value = savedLayout;
+    }
   });
 });

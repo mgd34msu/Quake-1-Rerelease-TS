@@ -19,7 +19,7 @@ r_origin, cl, d_8to24table, cmdHost.initialized, the gl_rmain cvars) is saved
 in beforeAll and restored in afterAll, per standing orders 13 and 15.
 */
 
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 
 import { Cmd_Exists, cmdHost } from "../src/common/cmd";
 import { Cvar_FindVar, Cvar_VariableValue } from "../src/common/cvar";
@@ -72,6 +72,17 @@ import {
   v_blend,
 } from "../src/ref_gl/gl_rmain";
 import { R_Init } from "../src/ref_gl/gl_rmisc";
+// F2b: this unit's own "and for sb_lines" test coverage. Not otherwise this
+// file's territory (its own header scopes it to gl_rmain.ts/gl_rmisc.ts --
+// src/ref_gl/ref_gl.ts's own SCR_CalcRefdef/glRenderer live in
+// test/ref_gl_assembly.test.ts, outside this unit's SCOPE), but
+// SCR_CalcRefdef itself makes no qgl call (pure cvar-clamping and
+// r_refdef.vrect/scrState arithmetic), so no QGLRecording ceremony is needed
+// to exercise it here -- see the describe block below for the full account.
+import { glRenderer } from "../src/ref_gl/ref_gl";
+import { scr_fov, scr_viewsize } from "../src/client/screen";
+import { scr_sbarscale } from "../src/client/kfont_text";
+import { scrState } from "../src/client/screen_types";
 
 // QGLRecording stores every pointer argument by reference, and the C reuses one
 // `vec3_t point` across all four sprite corners / every shadow vertex. This
@@ -271,6 +282,99 @@ describe("R_Init (gl_rmisc.c)", () => {
     expect(glState.particletexture).toBe(beforeExt);
     expect(glState.playertextures).toBe(beforeExt + 1);
     expect(glState.texture_extension_number).toBe(beforeExt + 17);
+  });
+});
+
+/*
+F2b: SCR_CalcRefdef now multiplies `scrState.sb_lines` by `SbarScale()`
+(kfont_text.ts's own `CLAMP(1, scr_sbarscale, vid.width/320)`, matching
+Ironwail's gl_screen.c `sb_lines = 24 * scale` / `48 * scale`) instead of
+leaving it always 0/24/48 -- so the 3D view (this same function's own
+r_refdef.vrect height) reserves room for a scr_sbarscale-taller status bar.
+See src/ref_gl/ref_gl.ts's own comment at this call site and
+src/client/sbar.ts's file header's F2b note for the full account. Each test
+below saves/restores its OWN pre-test snapshot in beforeEach/afterEach
+(rather than a single collection-time snapshot) so this block cannot leave
+`vid`/`scrState` on a value some OTHER describe in this file did not expect,
+whatever order bun runs them in.
+*/
+describe("SCR_CalcRefdef (gl_screen.c) -- F2b sb_lines scaling", () => {
+  let savedViewsize: { value: number; string: string };
+  let savedSbarscale: { value: number; string: string };
+  let savedFov: { value: number; string: string };
+  let savedVidWidth: number;
+  let savedVidHeight: number;
+  let savedSbLines: number;
+
+  beforeEach(() => {
+    savedViewsize = { value: scr_viewsize.value, string: scr_viewsize.string };
+    savedSbarscale = { value: scr_sbarscale.value, string: scr_sbarscale.string };
+    savedFov = { value: scr_fov.value, string: scr_fov.string };
+    savedVidWidth = vid.width;
+    savedVidHeight = vid.height;
+    savedSbLines = scrState.sb_lines;
+  });
+
+  afterEach(() => {
+    scr_viewsize.value = savedViewsize.value;
+    scr_viewsize.string = savedViewsize.string;
+    scr_sbarscale.value = savedSbarscale.value;
+    scr_sbarscale.string = savedSbarscale.string;
+    scr_fov.value = savedFov.value;
+    scr_fov.string = savedFov.string;
+    vid.width = savedVidWidth;
+    vid.height = savedVidHeight;
+    scrState.sb_lines = savedSbLines;
+  });
+
+  function setViewsize(v: number): void {
+    scr_viewsize.value = v;
+    scr_viewsize.string = String(v);
+  }
+
+  function setSbarscale(v: number): void {
+    scr_sbarscale.value = v;
+    scr_sbarscale.string = String(v);
+  }
+
+  test("scr_sbarscale at its default (1) leaves sb_lines on the unscaled 0/24/48 ladder -- byte-identical to pre-F2b", () => {
+    vid.width = 320;
+    vid.height = 200;
+    scr_fov.value = 90; // CalcFov's own denominator -- 0 (this cvar's un-set default) is a Sys_Error
+    scr_fov.string = "90";
+    setSbarscale(1);
+
+    setViewsize(100); // < 110 -> with inventory
+    glRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe(24 + 16 + 8);
+
+    setViewsize(110); // [110,120) -> no inventory
+    glRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe(24);
+
+    setViewsize(120); // >= 120 -> no bar at all
+    glRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe(0);
+  });
+
+  test("scr_sbarscale 2 (vid.width wide enough that SbarScale's own CLAMP does not reduce it) scales every rung of the ladder", () => {
+    vid.width = 640; // SbarScale(): CLAMP(1, scr_sbarscale, vid.width/320) = CLAMP(1, 2, 2) = 2
+    vid.height = 480;
+    scr_fov.value = 90;
+    scr_fov.string = "90";
+    setSbarscale(2);
+
+    setViewsize(100);
+    glRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe((24 + 16 + 8) * 2);
+
+    setViewsize(110);
+    glRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe(24 * 2);
+
+    setViewsize(120);
+    glRenderer.SCR_CalcRefdef();
+    expect(scrState.sb_lines).toBe(0); // no bar at all -- scale is irrelevant to a zero bar
   });
 });
 

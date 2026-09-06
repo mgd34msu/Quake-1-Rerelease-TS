@@ -158,6 +158,7 @@ import { d_8to24table, vid, vidBackend } from "../client/vid";
 import { scr_vrect, scrState } from "../client/screen_types";
 import { CalcFov, scr_fov, scr_viewsize } from "../client/screen";
 import { Sbar_Changed } from "../client/sbar";
+import { SbarScale } from "../client/kfont_text";
 import { crosshair, gammatable, V_CalcPowerupCshift, V_CheckGamma } from "../client/view";
 import { qw } from "../common/quakedef";
 
@@ -200,6 +201,8 @@ import {
   Draw_Init,
   Draw_Pic,
   Draw_PicFromWad,
+  Draw_ScaledPic,
+  Draw_ScaledTransPic,
   Draw_String,
   Draw_SubPic,
   Draw_TileClear,
@@ -338,9 +341,15 @@ function SCR_CalcRefdef(): void {
   if (cl.intermission) size = 120;
   else size = scr_viewsize.value;
 
+  // F2b, not from gl_screen.c: see src/ref_soft/ref_soft.ts's own identical
+  // note and this file's header -- Ironwail's own `sb_lines = 24 * scale` /
+  // `48 * scale` (gl_screen.c's SCR_CalcRefdef), ported here via
+  // kfont_text.ts's SbarScale(). Byte-identical to pre-F2b at
+  // scr_sbarscale's default (SbarScale() === 1).
+  const sbarScale = SbarScale();
   if (size >= 120) scrState.sb_lines = 0; // no status bar at all
-  else if (size >= 110) scrState.sb_lines = 24; // no inventory
-  else scrState.sb_lines = 24 + 16 + 8;
+  else if (size >= 110) scrState.sb_lines = 24 * sbarScale; // no inventory
+  else scrState.sb_lines = (24 + 16 + 8) * sbarScale;
 
   if (scr_viewsize.value >= 100.0) {
     full = true;
@@ -572,6 +581,12 @@ export const glRenderer: Renderer = {
   Draw_SubPic,
   Draw_Alt_String,
   Draw_GlyphAtlas,
+  // F2b: see render.ts's own Draw_ScaledPic/Draw_ScaledTransPic comment --
+  // wires the two F2-added scaled-pic primitives onto the live renderer so
+  // sbar.ts's drawScaledPic reaches them directly instead of its lazy
+  // require() fallback.
+  Draw_ScaledPic,
+  Draw_ScaledTransPic,
 
   D_StartParticles,
   D_DrawParticle,
