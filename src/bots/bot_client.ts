@@ -18,7 +18,16 @@ it is why the three places the C reaches for the socket need to know:
     the process.
   - SV_DropClient (host.c) closes the socket and decrements
     net_activeconnections. A bot never incremented it, so `kickbot` does its
-    own teardown here rather than borrowing that function.
+    own teardown here rather than borrowing that function, and host.ts's own
+    SV_DropClient only gives a connection back when there was one.
+
+A BOT IS NOT ITS CLIENT SLOT. Host_ShutdownServer runs between every pair of
+levels: it drops every client and then replaces svs.clients wholesale. So the
+thing that says a bot is meant to be playing cannot live in that array. The
+ROSTER below does -- one entry per bot, with the name, colours and skill it
+was created with -- and `Bot_Suspend` (from Host_ShutdownServer) takes the
+bots out of the client array while keeping it, so `Bot_SpawnServer` seats the
+same bots into the next map.
 
 Everything else about a bot is a player. ClientConnect and PutClientInServer
 run for it exactly as they do for a human -- the QuakeC has no bot branch in
@@ -42,12 +51,13 @@ import { CvarT, Cvar_RegisterVariable, Cvar_VariableValue } from "../common/cvar
 import { COM_LoadTempFile } from "../common/common";
 import { MSG_WriteByte, MSG_WriteShort, MSG_WriteString, SZ_Clear } from "../common/sizebuf";
 import { SvcOpsT } from "../common/protocol";
-import { EDICT_TO_PROG, EDICT_NUM, PR_GetString, PR_SetEngineStringRef, pr, type EdictT } from "../progs/progs";
+import { EDICT_TO_PROG, EDICT_NUM, PROG_TO_EDICT, PR_GetString, PR_SetEngineStringRef, pr, type EdictT } from "../progs/progs";
 import { PR_ExecuteProgram } from "../progs/pr_exec";
-import { NUM_SPAWN_PARMS, sv, svs, svState, type ClientT } from "../server/server";
+import { FL_MONSTER, NUM_SPAWN_PARMS, sv, svs, svState, type ClientT } from "../server/server";
 import { SV_ConnectClient } from "../server/sv_main";
 import { GLOBAL_OFS, type GlobalVars } from "../progs/progdefs";
 import { deathmatch, host } from "../common/host";
+import { QEX_LocGetString } from "../progs/ext/qex_print";
 import { parseMapdb } from "../lib/mapdb";
 import {
   BOT_BUTTON_ATTACK,
@@ -56,8 +66,11 @@ import {
   BOT_RUN_SPEED,
   BOT_WALK_SPEED,
   BotBrain,
+  ITEM_FLAG,
   Xorshift32,
+  randomIndex,
   type BotChatEventT,
+  type BotGameModeT,
 } from "../lib/bot_brain";
 import { IT_AXE, IT_GRENADE_LAUNCHER, IT_LIGHTNING, IT_NAILGUN, IT_ROCKET_LAUNCHER, IT_SHOTGUN, IT_SUPER_NAILGUN, IT_SUPER_SHOTGUN } from "../common/quakedef";
 import { Bot_ClearNav, Bot_Knowledge, Bot_LoadNav } from "./bot_data";
@@ -67,6 +80,8 @@ import { BotServerWorld, FL_ISBOT, toEngineVec } from "./bot_world";
 
 export const bot_skill = new CvarT("bot_skill", "medium", true);
 export const bot_count = new CvarT("bot_count", "0", true);
+/** 0 silences bot chat entirely; 1 is the shipped behaviour. */
+export const bot_chat = new CvarT("bot_chat", "1", true);
 
 /** The order settings_*.txt lists the skills in is the order they get harder. */
 const DEFAULT_SKILLS = ["practice", "easy", "medium", "hard", "expert", "nightmare"] as const;
@@ -98,6 +113,11 @@ export class BotSlot {
   colors: number;
   /** Chat lines the brain asked for, with the server time they become due. */
   pendingChats: Array<{ at: number; event: BotChatEventT }> = [];
+  /** The frag count, death state and view offset the last frame left behind. */
+  lastFrags = 0;
+  spawnedFrags = false;
+  wasDead = false;
+  sawIntermission = false;
 
   constructor(clientnum: number, name: string, colors: number, brain: BotBrain, world: BotServerWorld) {
     this.clientnum = clientnum;
@@ -108,12 +128,42 @@ export class BotSlot {
   }
 }
 
+/**
+ * One bot as the server operator asked for it, kept for as long as that bot
+ * is meant to be playing. Host_ShutdownServer drops every client and
+ * replaces svs.clients wholesale between levels, so the client slot cannot
+ * be what remembers a bot; this can, and Bot_SpawnServer seats the same
+ * names, colours and skills into the next map.
+ */
+export interface BotRosterEntryT {
+  /** characters.txt `name`, or "" for a name the operator invented. */
+  character: string;
+  /** The fun_name every other client sees. */
+  name: string;
+  colors: number;
+  skill: string;
+  /**
+   * True for a bot `bot_count`'s auto-fill put there. Only those are taken
+   * away again when `bot_count` drops: a bot an operator asked for by hand
+   * with `addbot` stays until they say `kickbot`.
+   */
+  auto: boolean;
+}
+
 const botState: {
   slots: Map<number, BotSlot>;
+  roster: BotRosterEntryT[];
   nextSeed: number;
   usedCharacters: Set<string>;
   registered: boolean;
-} = { slots: new Map<number, BotSlot>(), nextSeed: 0x5eed1234, usedCharacters: new Set<string>(), registered: false };
+  /** Server time the live roster was last reconciled against `bot_count`. */
+  reconciledAt: number;
+} = { slots: new Map<number, BotSlot>(), roster: [], nextSeed: 0x5eed1234, usedCharacters: new Set<string>(), registered: false, reconciledAt: -1 };
+
+/** The bots that are meant to be playing, whether or not a level is running. */
+export function Bot_Roster(): readonly BotRosterEntryT[] {
+  return botState.roster;
+}
 
 /** Every live bot, keyed by client slot number. */
 export function Bot_Slots(): ReadonlyMap<number, BotSlot> {
@@ -174,28 +224,66 @@ export function Bot_SkillName(explicit?: string): string {
 
 //============================================================================
 
-function pickCharacter(request: string): { funName: string; colors: number } {
+/**
+ * game_rules.txt's own rule, over a cvar reader that answers one question the
+ * shipped data asks and this engine has no cvar for. ctf/bots/game_rules.txt
+ * selects `game_type ctf` on `ctf 1`, but nothing here registers a `ctf`
+ * cvar: the CTF gamedir is chosen with `game ctf` and the New Game menu sets
+ * `teamplay 1` beside it. The level itself is the honest answer -- a map
+ * running the team-owned objectives ctf's own items.txt describes, on two
+ * different teams, is a capture-the-flag match -- and an operator who does
+ * set a `ctf` cvar still wins, because a real value is used as it stands.
+ */
+export function Bot_GameMode(): BotGameModeT {
+  const knowledge = Bot_Knowledge();
+  if (knowledge === null) return { gameType: "deathmatch", weaponStay: false };
+  return knowledge.gameMode((name) => {
+    const value = Cvar_VariableValue(name);
+    if (name === "ctf" && value === 0 && Bot_LevelHasTeamObjectives()) return 1;
+    return value;
+  });
+}
+
+/** Two or more team-owned `objective` items, per the loaded items.txt. */
+function Bot_LevelHasTeamObjectives(): boolean {
+  const knowledge = Bot_Knowledge();
+  if (knowledge === null || !sv.active) return false;
+  const teams = new Set<number>();
+  for (let i = 1; i < sv.num_edicts; i++) {
+    const ent = EDICT_NUM(i);
+    if (ent.free || ent.v.classname === 0) continue;
+    const item = knowledge.item(PR_GetString(ent.v.classname));
+    if (item === undefined || !item.flags.includes(ITEM_FLAG.objective)) continue;
+    const team = item.team ?? (ent.v.team | 0);
+    if (team > 0) teams.add(team);
+  }
+  return teams.size >= 2;
+}
+
+//============================================================================
+
+function pickCharacter(request: string): { character: string; funName: string; colors: number } {
   const knowledge = Bot_Knowledge();
   if (knowledge === null || knowledge.characters.length === 0) {
-    return { funName: request !== "" && request !== "random" ? request : `bot${botState.slots.size + 1}`, colors: 0 };
+    return { character: "", funName: request !== "" && request !== "random" ? request : `bot${botState.slots.size + 1}`, colors: 0 };
   }
 
   if (request !== "" && request !== "random") {
     const named = knowledge.character(request);
     if (named !== undefined) {
       botState.usedCharacters.add(named.name);
-      return { funName: named.funName, colors: ((named.shirtColor & 15) << 4) | (named.pantsColor & 15) };
+      return { character: named.name, funName: named.funName, colors: ((named.shirtColor & 15) << 4) | (named.pantsColor & 15) };
     }
     // A name that is not in characters.txt is used verbatim, so a server
     // operator can call a bot whatever they like.
-    return { funName: request, colors: 0 };
+    return { character: "", funName: request, colors: 0 };
   }
 
   const unused = knowledge.characters.filter((c) => !botState.usedCharacters.has(c.name));
   const pool = unused.length > 0 ? unused : knowledge.characters;
   const pick = pool[Math.floor(seedRandom() * pool.length) % pool.length]!;
   botState.usedCharacters.add(pick.name);
-  return { funName: pick.funName, colors: ((pick.shirtColor & 15) << 4) | (pick.pantsColor & 15) };
+  return { character: pick.name, funName: pick.funName, colors: ((pick.shirtColor & 15) << 4) | (pick.pantsColor & 15) };
 }
 
 /** A deterministic stream for the choices `addbot` itself makes, separate from each bot's own. */
@@ -213,10 +301,11 @@ function seedRandom(): number {
 //============================================================================
 
 /**
- * Puts a bot into a free client slot. Returns the slot number, or -1 when
- * there is no room, no server, or no bots/ data in this game directory.
+ * Seats one roster entry in a free client slot. Returns the slot number, or
+ * -1 when there is no room, no server, or no bots/ data in this game
+ * directory.
  */
-export function Bot_Add(nameRequest: string, skillRequest: string): number {
+function botSeat(entry: BotRosterEntryT): number {
   if (!sv.active) {
     Con_Printf("addbot: no server running\n");
     return -1;
@@ -241,8 +330,6 @@ export function Bot_Add(nameRequest: string, skillRequest: string): number {
   }
 
   const client = svs.clients[clientnum]!;
-  const character = pickCharacter(nameRequest);
-  const skill = Bot_SkillName(skillRequest === "" ? undefined : skillRequest);
 
   // The C's own connect path, with a null socket. SV_ConnectClient resets
   // every client_t field, runs SetNewParms and stages the serverinfo; a bot
@@ -252,16 +339,16 @@ export function Bot_Add(nameRequest: string, skillRequest: string): number {
   SZ_Clear(client.message);
   client.sendsignon = false;
 
-  client.name = character.funName;
-  client.colors = character.colors;
+  client.name = entry.name;
+  client.colors = entry.colors;
 
   const world = new BotServerWorld(clientnum + 1);
   const brain = new BotBrain({
     knowledge,
-    skill,
+    skill: entry.skill,
     rng: new Xorshift32(Math.floor(seedRandom() * 0x7fffffff) ^ (clientnum * 2654435761)),
-    gameMode: knowledge.gameMode((name) => Cvar_VariableValue(name)),
-    character: knowledge.character(nameRequest),
+    gameMode: Bot_GameMode(),
+    character: entry.character === "" ? undefined : knowledge.character(entry.character),
     maxHealth: 100,
     weaponImpulse,
     // BotBrainConfigT.runSpeed/walkSpeed default to these anyway; passed
@@ -272,12 +359,30 @@ export function Bot_Add(nameRequest: string, skillRequest: string): number {
     humanTeammateNear: () => Bot_HumanTeammateNear(clientnum),
   });
 
-  const slot = new BotSlot(clientnum, character.funName, character.colors, brain, world);
+  const slot = new BotSlot(clientnum, entry.name, entry.colors, brain, world);
   botState.slots.set(clientnum, slot);
 
   Bot_PutInServer(clientnum);
+  return clientnum;
+}
 
-  Con_Printf("%s entered the game (bot, %s)\n", client.name, skill);
+/**
+ * Puts a bot into a free client slot and onto the roster, so it comes back
+ * on the next level too. Returns the slot number, or -1.
+ */
+export function Bot_Add(nameRequest: string, skillRequest: string, auto = false): number {
+  const character = pickCharacter(nameRequest);
+  const entry: BotRosterEntryT = {
+    character: character.character,
+    name: character.funName,
+    colors: character.colors,
+    skill: Bot_SkillName(skillRequest === "" ? undefined : skillRequest),
+    auto,
+  };
+  const clientnum = botSeat(entry);
+  if (clientnum < 0) return -1;
+  botState.roster.push(entry);
+  Con_Printf("%s entered the game (bot, %s)\n", entry.name, entry.skill);
   return clientnum;
 }
 
@@ -342,11 +447,16 @@ export function Bot_PutInServer(clientnum: number): void {
  * socket: no svc_disconnect (nobody is listening), no NET_Close, and no
  * net_activeconnections decrement, because a bot never incremented it.
  */
-export function Bot_Remove(clientnum: number): boolean {
+export function Bot_Remove(clientnum: number, forget = true): boolean {
   const slot = botState.slots.get(clientnum);
   if (slot === undefined) return false;
   const client = svs.clients[clientnum];
   if (client === undefined) return false;
+
+  if (forget) {
+    const at = botState.roster.findIndex((e) => e.name === slot.name);
+    if (at >= 0) botState.roster.splice(at, 1);
+  }
 
   if (client.edict !== null && client.spawned) {
     const saveSelf = globalStruct().self;
@@ -359,7 +469,7 @@ export function Bot_Remove(clientnum: number): boolean {
 
   if (client.edict !== null) client.edict.v.flags = (client.edict.v.flags | 0) & ~FL_ISBOT;
 
-  Con_Printf("%s removed (bot)\n", client.name);
+  if (forget) Con_Printf("%s removed (bot)\n", client.name);
 
   client.active = false;
   client.spawned = false;
@@ -387,10 +497,24 @@ export function Bot_Remove(clientnum: number): boolean {
   return true;
 }
 
-/** Drops every bot; called when the server shuts down or changes level. */
+/** Drops every bot and forgets the roster: `kickbot all`. */
 export function Bot_RemoveAll(): void {
   for (const clientnum of [...botState.slots.keys()]) Bot_Remove(clientnum);
+  botState.roster.length = 0;
   botState.usedCharacters.clear();
+}
+
+/**
+ * Takes every bot out of svs.clients but keeps the roster. Host_ShutdownServer
+ * calls this before it drops the human clients and replaces the client array:
+ * a bot left in that array is dropped by SV_DropClient (which closes a socket
+ * it never had) and then replaced by a fresh, empty client_t, while the slot
+ * map still points at the old one -- so Bot_SpawnServer skipped it as
+ * inactive and `bot_count`'s auto-fill saw a full roster and added nothing,
+ * which is how a `map` change used to lose every bot on the server.
+ */
+export function Bot_Suspend(): void {
+  for (const clientnum of [...botState.slots.keys()]) Bot_Remove(clientnum, false);
 }
 
 //============================================================================
@@ -428,6 +552,19 @@ export function Bot_Think(client: ClientT): void {
 
   const ent = client.edict;
   if (ent === null) return;
+
+  // `bot_count` applies while the level is running, not only at the next
+  // SV_SpawnServer: raising it seats bots now, lowering it kicks the ones
+  // added last. Once a frame, off the first bot to think.
+  if (botState.reconciledAt !== sv.time) {
+    botState.reconciledAt = sv.time;
+    const want = Math.trunc(bot_count.value);
+    const grow = want > botState.roster.length;
+    const governs = want > 0 || Bot_AutoCount() > 0;
+    if (governs && want !== botState.roster.length && deathmatch.value !== 0 && (!grow || Bot_MapAllowsBots(sv.name))) Bot_Reconcile();
+  }
+
+  Bot_ChatEvents(slot, ent);
 
   // `fixangle` is cleared by SV_WriteClientdataToMessage once the angle has
   // been sent to the client that owns the edict. A bot is skipped by
@@ -470,9 +607,46 @@ function hostFrameTime(): number {
 // chat
 
 function Bot_QueueChat(clientnum: number, event: BotChatEventT): void {
+  if (bot_chat.value === 0) return;
   const slot = botState.slots.get(clientnum);
   if (slot === undefined) return;
   slot.pendingChats.push({ at: sv.time + event.delayMs / 1000, event });
+}
+
+/**
+ * The loc table's value for one key, or null when the table does not have it.
+ * Loc_Localize answers the key text without its leading '$' on a miss and
+ * QEX_LocGetString hands the whole `$key` back when no table is loaded at
+ * all (src/progs/ext/qex_print.ts), so both of those are the miss.
+ */
+function locValue(key: string): string | null {
+  const resolved = QEX_LocGetString(`$${key}`);
+  if (resolved === `$${key}` || resolved === key) return null;
+  return resolved;
+}
+
+/** No chats.txt key has more numbered variants than this in the retail loc. */
+const MAX_CHAT_VARIANTS = 64;
+
+/**
+ * What a bot actually says. chats.txt names one `locstring` per chat type and
+ * localization/loc_english.txt holds a numbered family under it --
+ * `m_bot_chat_connected_0` .. `_10`, eleven ways of saying hello -- so the
+ * key itself is never in the table and picking one of the variants is what
+ * makes two bots greet each other differently. A mod whose loc has the plain
+ * key and no variants gets the plain key's value; a tree with no loc table at
+ * all gets the key text, which is what the print path would have shown anyway.
+ */
+function Bot_ChatText(slot: BotSlot, locstring: string): string {
+  const key = locstring.startsWith("$") ? locstring.slice(1) : locstring;
+  const variants: string[] = [];
+  for (let i = 0; i < MAX_CHAT_VARIANTS; i++) {
+    const value = locValue(`${key}_${i}`);
+    if (value === null) break;
+    variants.push(value);
+  }
+  if (variants.length > 0) return variants[randomIndex(slot.brain.config.rng, variants.length)]!;
+  return locValue(key) ?? key;
 }
 
 function Bot_FlushChats(slot: BotSlot): void {
@@ -482,10 +656,10 @@ function Bot_FlushChats(slot: BotSlot): void {
   slot.pendingChats = slot.pendingChats.filter((c) => c.at > sv.time);
 
   for (const c of due) {
-    // chats.txt gives a `$key`; the re-release's own `ex_bprint` resolves it
-    // against the loc table, so this goes out the same way any server print
-    // does and localizes on the client that has the table.
-    const line = `${slot.name}: ${c.event.locstring}\n`;
+    // The server resolves the loc, exactly as PF_bprint does through
+    // QEX_VarString: no svc_print handler in any engine localizes anything,
+    // so a `$key` put on the wire reaches the player as a `$key`.
+    const line = `${slot.name}: ${Bot_ChatText(slot, c.event.locstring)}\n`;
     for (let i = 0; i < svs.maxclients; i++) {
       const other = svs.clients[i]!;
       if (!other.active || other.netconnection === null) continue;
@@ -497,6 +671,57 @@ function Bot_FlushChats(slot: BotSlot): void {
       MSG_WriteString(other.message, line);
     }
   }
+}
+
+/**
+ * The chats a bot says about what just happened to it, read off the same
+ * entvars a scoreboard is read off:
+ *
+ *   - `frags` going up is a kill; the weapon in hand says whether it was the
+ *     axe, which chats.txt gives its own type to.
+ *   - `frags` going down is the QuakeC's own suicide penalty (client.qc's
+ *     ClientObituary, "killed self").
+ *   - dying names its killer through `dmg_inflictor`, which T_Damage writes
+ *     on every client it hurts (combat.qc). A missile's `owner` is the player
+ *     who fired it; everything else is the attacker itself.
+ *   - `view_ofs` going to the origin is the QuakeC putting the player into
+ *     the intermission camera (client.qc's intermission loop), which is the
+ *     end of the match.
+ */
+function Bot_ChatEvents(slot: BotSlot, ent: EdictT): void {
+  const dead = ent.v.health <= 0 || ent.v.deadflag !== 0;
+  const frags = ent.v.frags;
+
+  if (slot.lastFrags !== frags && slot.spawnedFrags) {
+    if (frags > slot.lastFrags) slot.brain.emitChat((ent.v.weapon | 0) === IT_AXE ? "axe_murder" : "fragged_enemy");
+    else slot.brain.emitChat("fragged_self");
+  }
+  slot.lastFrags = frags;
+  slot.spawnedFrags = true;
+
+  if (dead && !slot.wasDead) slot.brain.emitChat(Bot_DeathChatType(ent));
+  slot.wasDead = dead;
+
+  const intermission = ent.v.view_ofs[0] === 0 && ent.v.view_ofs[1] === 0 && ent.v.view_ofs[2] === 0;
+  if (intermission && !slot.sawIntermission) slot.brain.emitChat("match_end");
+  slot.sawIntermission = intermission;
+}
+
+function Bot_DeathChatType(ent: EdictT): string {
+  let killer = PROG_TO_EDICT(ent.v.dmg_inflictor);
+  if (killer.index === 0 || killer === ent) return "fragged_self";
+  if (killer.index > svs.maxclients && killer.v.owner !== 0) {
+    const owner = PROG_TO_EDICT(killer.v.owner);
+    if (owner.index !== 0) killer = owner;
+  }
+  if (killer === ent) return "fragged_self";
+  if (((killer.v.flags | 0) & FL_MONSTER) !== 0) return "kia_monster";
+  if (killer.index >= 1 && killer.index <= svs.maxclients) {
+    const team = ent.v.team | 0;
+    if (team > 0 && (killer.v.team | 0) === team) return "kia_friendly";
+    return "kia_human";
+  }
+  return "fragged_self";
 }
 
 function Bot_HumanTeammateNear(clientnum: number): boolean {
@@ -518,25 +743,44 @@ function Bot_HumanTeammateNear(clientnum: number): boolean {
 //============================================================================
 // level transitions
 
-/** Called at the end of SV_SpawnServer: reload the nav, and re-seat every bot. */
+/**
+ * Called at the end of SV_SpawnServer: reload the nav, re-seat every bot the
+ * roster still holds, and let `bot_count` top the roster up.
+ */
 export function Bot_SpawnServer(mapname: string): void {
   Bot_ClearNav();
   Bot_LoadNav(mapname);
-  for (const clientnum of botState.slots.keys()) {
+
+  const mode = Bot_GameMode();
+  for (const [clientnum, slot] of botState.slots) {
     const client = svs.clients[clientnum];
     if (client === undefined || !client.active) continue;
     // The old level's nav graph and entity ids are gone.
-    botState.slots.get(clientnum)?.brain.resetForLevel();
+    slot.brain.setGameMode(mode);
+    slot.brain.resetForLevel();
+    slot.pendingChats.length = 0;
     Bot_PutInServer(clientnum);
   }
+
+  // Anything on the roster that lost its client slot to Host_ShutdownServer
+  // comes back with the name, colours and skill it had.
+  const seated = new Set<string>();
+  for (const slot of botState.slots.values()) seated.add(slot.name);
+  for (const entry of botState.roster) {
+    if (seated.has(entry.name)) continue;
+    if (botSeat(entry) < 0) break;
+  }
+
   Bot_AutoFill(mapname);
+  botState.reconciledAt = sv.time;
 }
 
 /**
  * `bot_count` auto-fill. Only on a deathmatch server, and only on a map
  * mapdb.json flags `bots` -- a map with no nav gives bots nothing to walk
  * along, and mapdb's own flag is the retail data's statement of which maps
- * were authored for them.
+ * were authored for them. `addbot` is not gated by either: an operator who
+ * asks for a bot by hand gets one on any map.
  */
 export function Bot_AutoFill(mapname: string): void {
   const want = Math.trunc(bot_count.value);
@@ -546,15 +790,44 @@ export function Bot_AutoFill(mapname: string): void {
     Con_Printf("bot_count: %s is not flagged for bots in mapdb.json\n", mapname);
     return;
   }
+  Bot_Reconcile();
+}
 
-  while (botState.slots.size < want) {
-    if (Bot_Add("random", "") < 0) break;
+/**
+ * Brings the roster to whatever `bot_count` says right now: raising it puts
+ * bots in this frame, lowering it kicks the ones added last.
+ */
+export function Bot_Reconcile(): void {
+  const want = Math.trunc(bot_count.value);
+  if (want < 0) return;
+  while (botState.roster.length < want) {
+    if (Bot_Add("random", "", true) < 0) break;
   }
-  while (botState.slots.size > want) {
-    const last = [...botState.slots.keys()].pop();
-    if (last === undefined) break;
-    Bot_Remove(last);
+  while (botState.roster.length > want) {
+    let at = -1;
+    for (let i = botState.roster.length - 1; i >= 0; i--) {
+      if (botState.roster[i]!.auto) {
+        at = i;
+        break;
+      }
+    }
+    if (at < 0) return; // nothing left but bots an operator asked for
+    const entry = botState.roster[at]!;
+    let clientnum = -1;
+    for (const [num, slot] of botState.slots) if (slot.name === entry.name) clientnum = num;
+    if (clientnum < 0) {
+      botState.roster.splice(at, 1);
+      continue;
+    }
+    Bot_Remove(clientnum);
   }
+}
+
+/** How many of the roster `bot_count`'s auto-fill is responsible for. */
+function Bot_AutoCount(): number {
+  let n = 0;
+  for (const e of botState.roster) if (e.auto) n++;
+  return n;
 }
 
 const mapdbCache: { loaded: boolean; bots: Set<string> } = { loaded: false, bots: new Set<string>() };
@@ -615,6 +888,7 @@ export function Bot_RegisterCommands(): void {
   botState.registered = true;
   Cvar_RegisterVariable(bot_skill);
   Cvar_RegisterVariable(bot_count);
+  Cvar_RegisterVariable(bot_chat);
   Cmd_AddCommand("addbot", Bot_AddBot_f);
   Cmd_AddCommand("kickbot", Bot_KickBot_f);
 }

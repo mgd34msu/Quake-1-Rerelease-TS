@@ -22,6 +22,7 @@ import { Cvar_FindVar, Cvar_VariableValue, setCvarServerHooks } from "../src/com
 import { LUMPINFO_T_SIZE, WADINFO_T_SIZE } from "../src/common/wad";
 import { QuakeParmsT } from "../src/common/quakedef";
 import { SvcOpsT } from "../src/common/protocol";
+import { QsocketT } from "../src/common/net";
 import type { SizeBuf } from "../src/common/sizebuf";
 import { setHostShutdown, sysState } from "../src/platform/sys";
 import {
@@ -177,7 +178,7 @@ beforeAll(() => {
   writeGameFile(baseDir, "id1/maps/world.bsp", buildBsp());
 
   // sys_linux.c's main(): COM_InitArgv, then the quakeparms_t, then Host_Init.
-  const argv = ["quake", "-basedir", baseDir, "-dedicated"];
+  const argv = ["quake", "-basedir", baseDir, "-dedicated", "-nohomedir"];
   COM_InitArgv(argv);
   cmdHost.initialized = false; // a previous suite in this process may have set it
 
@@ -425,6 +426,11 @@ describe.skipIf(!HAVE_PROGS106)("SV_DropClient", () => {
     dropped.spawned = false; // no ClientDisconnect progs call
     dropped.name = "victim";
     dropped.old_frags = 7;
+    // A real client has a socket. NET_Close leaves an already-disconnected
+    // one alone, which is all this needs from it.
+    const sock = new QsocketT();
+    sock.disconnected = true;
+    dropped.netconnection = sock;
     watcher.active = true;
     setNetActiveConnections(2);
 
@@ -452,6 +458,36 @@ describe.skipIf(!HAVE_PROGS106)("SV_DropClient", () => {
     ]);
     // the dropped client is no longer active, so it gets nothing
     expect(dropped.message.cursize).toBe(0);
+
+    svState.host_client = null;
+    setNetActiveConnections(saveConnections);
+    svs.clients = saveClients;
+    svs.maxclients = saveMax;
+  });
+
+  test("a client with no socket gives no connection back, because it never took one", () => {
+    // src/bots: a bot is a client_t whose netconnection is null. It never
+    // went through NET_CheckNewConnections, so it never incremented
+    // net_activeconnections -- and Host_ShutdownServer drops every client on
+    // every level change, which took the counter negative one bot at a time.
+    const saveClients = svs.clients;
+    const saveMax = svs.maxclients;
+    const saveConnections = net_activeconnections;
+
+    svs.clients = [freshClient()];
+    svs.maxclients = 1;
+    const dropped = svs.clients[0];
+    dropped.active = true;
+    dropped.spawned = false;
+    dropped.name = "socketless";
+    dropped.netconnection = null;
+    setNetActiveConnections(0);
+
+    svState.host_client = dropped;
+    SV_DropClient(false);
+
+    expect(dropped.active).toBe(false);
+    expect(net_activeconnections).toBe(0);
 
     svState.host_client = null;
     setNetActiveConnections(saveConnections);

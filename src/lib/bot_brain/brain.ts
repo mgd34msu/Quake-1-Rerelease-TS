@@ -44,6 +44,26 @@
 // route into the same wall. Every stuck trip opens a short sidestep-and-hop
 // window (`unstickUntil`/`unstickSide`) to break contact with the wall.
 //
+// THE WEDGE TIMER. The unstick window above is opened by the path follower,
+// which only watches a path -- and forgives itself every time a point is
+// retired or a plan is replaced. A bot bouncing between two points, or one
+// steering straight at a goal with no path at all, therefore never tripped it
+// and leaned on the same wall for the rest of the level. `wedgeOrigin` is a
+// second, plainer test that belongs to the brain: displacement over time,
+// whatever the path state is. An oscillation is as stuck as a standstill.
+//
+// OBJECTIVES. In a game with team-owned `objective` items (Quake 1's CTF
+// flags), the enemy's is a goal, a team's own is one only when it has been
+// dropped, and a bot carrying one runs it home to where its own objective
+// spawned -- which has to be REMEMBERED, because a carried flag stops being
+// an entity the world reports at all. Bots split into attackers and
+// defenders at the level's start.
+//
+// COOP. A bot that wanders off never meets the monsters the human is
+// fighting, and one pinned to them never clears anything: so it hunts what is
+// still standing near the human, and regroups with them on a clock. What it
+// may SHOOT is still gated by senses.ts; the hunt only decides where it walks.
+//
 // Determinism: every random decision goes through the injected
 // `BotRandomT`. Two brains with the same seed, fed the same worlds, emit
 // the same usercmds.
@@ -51,7 +71,7 @@
 import type { BotSkillSettings, CharacterEntry } from "../botdata";
 import { aimError, aimLeadPoint, aimStep, newAimState, type BotAimStateT } from "./aim";
 import { angleMod, bvec, bvecAdd, bvecDistance, bvecSub, type BotVec3 } from "./math";
-import { BotGameType, chooseWeapon, itemValue, type BotGameModeT, type BotKnowledge, type BotWeaponT } from "./knowledge";
+import { BotGameType, ITEM_FLAG, chooseWeapon, itemValue, type BotGameModeT, type BotKnowledge, type BotWeaponT } from "./knowledge";
 import { defaultTraverseCaps, type NavPathT, type NavTraverseCapsT } from "./nav_graph";
 import { BOT_RUN_SPEED, BotPathStatus, clearPath, followPath, newPathState, rollCombatJump, setPath, steerDirect, type BotPathStateT } from "./path_follow";
 import { canFire, evaluateSightGeometry, isAware, newAwareness, senseStep, shouldForget, soundAudible, type BotAwarenessT, type BotContactT } from "./senses";
@@ -128,7 +148,7 @@ interface ExplicitGoalT {
 
 //============================================================================
 
-const STUCK_SECONDS = 1.0;
+const STUCK_SECONDS = 0.6;
 const REPLAN_SECONDS = 2.0;
 /** Give up on a goal after this many consecutive stuck trips. */
 const STUCK_GIVE_UP = 3;
@@ -140,8 +160,57 @@ const ROAM_RADIUS = 4096;
  * opening a route later puts it back in play.
  */
 const UNREACHABLE_SECONDS = 20;
+/**
+ * The same, for a goal that is alive. A pickup that could not be reached sits
+ * exactly where it was and will still be unreachable in a second's time; a
+ * monster walks about, wakes up, opens the door it is standing behind, and is
+ * worth another try soon.
+ */
+const UNREACHABLE_LIVE_SECONDS = 4;
 /** How long the sidestep-and-hop that breaks a wall contact runs for. */
-const UNSTICK_SECONDS = 0.6;
+const UNSTICK_SECONDS = 0.5;
+/**
+ * How long a bot may press a move without getting anywhere before the unstick
+ * window is opened regardless of what the path follower thinks. The follower
+ * only watches a path, and it forgives itself every time a point is retired
+ * or a plan is replaced -- so a bot bouncing between two points, or steering
+ * straight at a goal with no path at all, never trips it and leans on the
+ * same wall for the rest of the level. This is displacement over time, not a
+ * per-frame step: an oscillation is as stuck as a standstill.
+ */
+const WEDGED_SECONDS = 1.2;
+/** And how long before the goal itself is given up as unreachable. */
+const WEDGED_GIVE_UP_SECONDS = 2.5;
+/** Getting this far from where the timer started counts as going somewhere. */
+const WEDGED_DISPLACEMENT = 96;
+/** How far a roaming bot is sent when the map has no navigation to roam over. */
+const BLIND_ROAM_RADIUS = 640;
+/** And how long it walks at one blind roam point before picking another. */
+const BLIND_ROAM_SECONDS = 4;
+/**
+ * Coop regrouping. A bot pinned to the human never meets the monsters the
+ * team is there to kill, and one that never comes back is not playing coop
+ * either -- so instead of a leash it works on a clock: every
+ * COOP_REGROUP_SECONDS it walks back to the human, and once it is within
+ * COOP_REGROUP_NEAR it goes back to clearing the level. A regroup it cannot
+ * finish inside COOP_REGROUP_GIVE_UP is abandoned rather than retried
+ * forever, because the human may be somewhere the bot cannot walk to.
+ */
+const COOP_REGROUP_SECONDS = 15;
+const COOP_REGROUP_NEAR = 250;
+const COOP_REGROUP_GIVE_UP = 12;
+/**
+ * How far from the human a monster may be and still be worth going after. A
+ * coop bot with nothing else to do hunts, rather than walking the map at
+ * random and meeting a monster by accident: clearing the level is what the
+ * team is there for. Kept inside the follow distance so hunting never fights
+ * the "get back to the player" rule.
+ */
+const COOP_HUNT_RADIUS = 2000;
+/** How close to a team's own objective base counts as defending it. */
+const OBJECTIVE_GUARD_RADIUS = 384;
+/** How far an objective has to be from where it spawned to count as dropped. */
+const OBJECTIVE_AWAY = 96;
 
 export class BotBrain {
   readonly config: BotBrainConfigT;
@@ -159,6 +228,8 @@ export class BotBrain {
   private readonly unreachableUntil = new Map<number, number>();
   /** Consecutive stuck trips on the current goal. See the file header. */
   private stuckTrips = 0;
+  /** True when the current goal entity is something alive rather than a pickup. */
+  private goalIsLive = false;
   /** Server time the sidestep-and-hop that breaks a wall contact expires. */
   private unstickUntil = 0;
   /** Which way that sidestep goes, +1 right or -1 left. */
@@ -167,9 +238,30 @@ export class BotBrain {
   private explicitGoalDone = false;
   private explicitGoalFailed = false;
 
+  /** Where the bot was when the wedge timer last reset, and when that was. */
+  private wedgeOrigin: BotVec3 | null = null;
+  private wedgeSince = -1;
+
+  /** Where each objective was standing the first time this level showed it. */
+  private readonly objectiveHome = new Map<number, BotVec3>();
+  private ownObjectiveHome: BotVec3 | null = null;
+  private enemyObjectiveHome: BotVec3 | null = null;
+  /** "attack" or "defend" in a game with objectives; "" everywhere else. */
+  private objectiveRole = "";
+  /** True while a coop bot is on its way back to the human it plays with. */
+  private coopRegrouping = false;
+  /** Server time the next regroup becomes due, and when this one gives up. */
+  private coopRegroupAt = 0;
+  private coopRegroupUntil = 0;
+  /** Chat types already said once this level. */
+  private readonly saidThisLevel = new Set<string>();
+  private levelStarted = false;
+
   private checkSixUntil = 0;
   private checkSixNextAt = 0;
   private roamPoint: BotVec3 | null = null;
+  /** Server time the current no-navigation roam point expires. */
+  private roamUntil = 0;
   private lastCmd: BotUsercmdT = emptyUsercmd();
   private spawnedOnce = false;
   private lastWeaponNumber = 0;
@@ -240,9 +332,31 @@ export class BotBrain {
     this.stuckTrips = 0;
     this.unstickUntil = 0;
     this.roamPoint = null;
+    this.roamUntil = 0;
     this.deadSince = -1;
     this.lastWeaponNumber = 0;
     this.lastCmd = emptyUsercmd();
+    this.wedgeOrigin = null;
+    this.wedgeSince = -1;
+    this.objectiveHome.clear();
+    this.ownObjectiveHome = null;
+    this.enemyObjectiveHome = null;
+    this.objectiveRole = "";
+    this.coopRegrouping = false;
+    this.coopRegroupAt = 0;
+    this.coopRegroupUntil = 0;
+    this.saidThisLevel.clear();
+    this.levelStarted = false;
+  }
+
+  /**
+   * The game mode the brain is playing under. The binding re-reads its own
+   * rules at every level change (a `game ctf` server does not become a CTF
+   * server until a map with the flags on it is running), so this is settable
+   * rather than fixed at construction.
+   */
+  setGameMode(mode: BotGameModeT): void {
+    this.config.gameMode = mode;
   }
 
   //--------------------------------------------------------------------------
@@ -263,6 +377,13 @@ export class BotBrain {
   }
 
   //--------------------------------------------------------------------------
+
+  /** Says one of this type's lines the first time in a level, and no more. */
+  private emitChatOnce(type: string): void {
+    if (this.saidThisLevel.has(type)) return;
+    this.saidThisLevel.add(type);
+    this.emitChat(type);
+  }
 
   /** Says one of the chats.txt lines of this type, if its `chance` rolls true. */
   emitChat(type: string): void {
@@ -286,6 +407,10 @@ export class BotBrain {
     if (!this.spawnedOnce) {
       this.spawnedOnce = true;
       this.emitChat("connected");
+    }
+    if (!this.levelStarted) {
+      this.levelStarted = true;
+      this.emitChat("match_start");
     }
 
     this.aim.pitch = self.viewAngles.x;
@@ -320,8 +445,13 @@ export class BotBrain {
 
     //---- 1/2: senses and target selection -----------------------------------
     this.updateSenses(world, self, entities, sounds, dt, now);
+    this.updateObjectives(entities, self, now);
     const target = this.selectTarget(entities, self.team);
     this.targetId = target === null ? -1 : target.id;
+
+    // Pressing into geometry without moving, whether or not there is a path
+    // to blame. See the file header.
+    const wedged = this.updateWedge(self.origin, now);
 
     //---- 3: goal ------------------------------------------------------------
     const goal = this.selectGoal(world, entities, target, now);
@@ -336,7 +466,7 @@ export class BotBrain {
       // else instead of steering straight at the wall in front of it -- see
       // the file header.
       if (this.pathState.path === null && world.nav() !== null && this.goalEntityId >= 0) {
-        this.unreachableUntil.set(this.goalEntityId, now + UNREACHABLE_SECONDS);
+        this.unreachableUntil.set(this.goalEntityId, now + this.unreachableRest());
         this.abandonGoal();
       }
 
@@ -362,7 +492,7 @@ export class BotBrain {
           // bot can actually walk, whatever the graph says. The goal gets the
           // same rest an unplannable one gets, so the next frame picks
           // something else instead of re-planning into the same wall.
-          if (this.goalEntityId >= 0) this.unreachableUntil.set(this.goalEntityId, now + UNREACHABLE_SECONDS);
+          if (this.goalEntityId >= 0) this.unreachableUntil.set(this.goalEntityId, now + this.unreachableRest());
           this.abandonGoal();
           this.stuckTrips = 0;
         } else {
@@ -388,6 +518,20 @@ export class BotBrain {
 
     if (target !== null && rollCombatJump(this.pathState, this.settings.movement, this.config.rng, now, self.onGround)) {
       cmd.buttons |= BOT_BUTTON_JUMP;
+    }
+
+    if (wedged) {
+      if (this.unstickUntil <= now) {
+        this.unstickUntil = now + UNSTICK_SECONDS;
+        this.unstickSide = randomChance(this.config.rng, 50) ? 1 : -1;
+        clearPath(this.pathState);
+      }
+      if (now - this.wedgeSince >= WEDGED_GIVE_UP_SECONDS) {
+        if (this.goalEntityId >= 0) this.unreachableUntil.set(this.goalEntityId, now + this.unreachableRest());
+        this.abandonGoal();
+        this.wedgeOrigin = { x: self.origin.x, y: self.origin.y, z: self.origin.z };
+        this.wedgeSince = now;
+      }
     }
 
     // The unstick window opened by a stuck trip, above.
@@ -560,8 +704,185 @@ export class BotBrain {
 
   //--------------------------------------------------------------------------
 
+  /**
+   * True when the bot has spent `WEDGED_SECONDS` pressing a move into the
+   * world without going anywhere. The path follower's own stuck test only
+   * watches a path, and the branch that steers straight at a goal with no
+   * path has none at all.
+   */
+  private updateWedge(origin: BotVec3, now: number): boolean {
+    const cmd = this.lastCmd;
+    const pressing = cmd.forwardmove !== 0 || cmd.sidemove !== 0;
+    if (this.wedgeOrigin === null || !pressing || bvecDistance(origin, this.wedgeOrigin) > WEDGED_DISPLACEMENT) {
+      this.wedgeOrigin = { x: origin.x, y: origin.y, z: origin.z };
+      this.wedgeSince = now;
+      return false;
+    }
+    return now - this.wedgeSince >= WEDGED_SECONDS;
+  }
+
+  /**
+   * Where each objective on this level lives, and which side of it this bot
+   * is on. A carried flag stops being an entity the world reports at all, so
+   * where it spawned has to be remembered rather than looked up: that point
+   * is the base a carrier runs to, a defender guards, and an attacker camps.
+   */
+  private updateObjectives(entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, now: number): void {
+    const knowledge = this.config.knowledge;
+    for (const ent of entities) {
+      if (ent.kind !== BotEntityKind.Item) continue;
+      const item = knowledge.item(ent.classname);
+      if (item === undefined || !item.flags.includes(ITEM_FLAG.objective)) continue;
+      if (!this.objectiveHome.has(ent.id)) this.objectiveHome.set(ent.id, { x: ent.origin.x, y: ent.origin.y, z: ent.origin.z });
+      const team = item.team ?? ent.team;
+      if (team <= 0 || self.team <= 0) continue;
+      const home = this.objectiveHome.get(ent.id)!;
+      if (team === self.team) this.ownObjectiveHome = home;
+      else this.enemyObjectiveHome = home;
+    }
+
+    if (this.objectiveRole === "" && this.ownObjectiveHome !== null && this.enemyObjectiveHome !== null) {
+      // A quarter of the roster stays home; the rest go for the enemy flag.
+      this.objectiveRole = randomChance(this.config.rng, 25) ? "defend" : "attack";
+      this.emitChatOnce(this.objectiveRole === "defend" ? "ctf_on_defense" : "ctf_on_offense");
+    }
+
+    if (this.objectiveRole === "attack" && this.enemyObjectiveHome !== null && now > 0) {
+      if (bvecDistance(self.origin, this.enemyObjectiveHome) < OBJECTIVE_GUARD_RADIUS) this.emitChatOnce("ctf_camping_enemy_base");
+    }
+  }
+
+  /** The objective entity the bot should be walking to, or null. */
+  private objectiveGoal(entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, target: BotEntityT | null): BotVec3 | null {
+    if (this.ownObjectiveHome === null && this.enemyObjectiveHome === null) return null;
+    const knowledge = this.config.knowledge;
+
+    // Carrying the enemy's: nothing else matters until it is home.
+    if (self.carryingObjective === true && this.ownObjectiveHome !== null) {
+      this.emitChatOnce("ctf_delivering_flag");
+      this.goalEntityId = -1;
+      return this.ownObjectiveHome;
+    }
+
+    let enemyFlag: BotEntityT | null = null;
+    for (const ent of entities) {
+      if (ent.kind !== BotEntityKind.Item) continue;
+      const item = knowledge.item(ent.classname);
+      if (item === undefined || !item.flags.includes(ITEM_FLAG.objective)) continue;
+      const team = item.team ?? ent.team;
+      if (team <= 0 || self.team <= 0) continue;
+      const home = this.objectiveHome.get(ent.id);
+      if (team === self.team) {
+        // Ours, lying in the field: touching it is what sends it back.
+        if (home !== undefined && bvecDistance(ent.origin, home) > OBJECTIVE_AWAY) {
+          this.emitChatOnce("ctf_returning_dropped_flag");
+          this.goalEntityId = ent.id;
+          return ent.origin;
+        }
+        continue;
+      }
+      enemyFlag = ent;
+    }
+
+    if (this.objectiveRole === "defend") {
+      if (target !== null) return null; // an enemy in the base outranks the base
+      if (this.ownObjectiveHome === null) return null;
+      if (bvecDistance(self.origin, this.ownObjectiveHome) < OBJECTIVE_GUARD_RADIUS) return null;
+      this.goalEntityId = -1;
+      return this.ownObjectiveHome;
+    }
+
+    if (target !== null && target.kind === BotEntityKind.Player && target.team > 0 && target.team !== self.team) {
+      this.emitChatOnce("ctf_attacking_enemy_carrier");
+    }
+
+    if (enemyFlag !== null) {
+      this.goalEntityId = enemyFlag.id;
+      return enemyFlag.origin;
+    }
+    // Somebody is carrying it: their base is where it has to come back to.
+    if (this.enemyObjectiveHome === null) return null;
+    this.goalEntityId = -1;
+    return this.enemyObjectiveHome;
+  }
+
+  /** In coop, the human the bot regroups with. See COOP_REGROUP_SECONDS. */
+  private coopRegroupGoal(entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, now: number): BotVec3 | null {
+    if (this.config.gameMode.gameType !== BotGameType.Coop) return null;
+    let nearest: BotEntityT | null = null;
+    let best = Infinity;
+    for (const ent of entities) {
+      if (ent.kind !== BotEntityKind.Player || ent.isBot || ent.dead) continue;
+      const d = bvecDistance(self.origin, ent.origin);
+      if (d < best) {
+        best = d;
+        nearest = ent;
+      }
+    }
+    if (nearest === null) {
+      this.coopRegrouping = false;
+      return null;
+    }
+
+    if (!this.coopRegrouping && now >= this.coopRegroupAt) {
+      this.coopRegrouping = true;
+      this.coopRegroupUntil = now + COOP_REGROUP_GIVE_UP;
+    }
+    if (this.coopRegrouping && (best <= COOP_REGROUP_NEAR || now >= this.coopRegroupUntil)) {
+      this.coopRegrouping = false;
+      this.coopRegroupAt = now + COOP_REGROUP_SECONDS;
+    }
+    if (!this.coopRegrouping) return null;
+
+    this.goalEntityId = -1;
+    return nearest.origin;
+  }
+
+  /**
+   * In coop, the monster to go and kill. Only monsters near the human count,
+   * so the bots clear the ground the team is actually on. What the bot may
+   * SHOOT is still gated by senses.ts -- this only decides where it walks.
+   */
+  private coopHuntGoal(entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, now: number): BotVec3 | null {
+    if (this.config.gameMode.gameType !== BotGameType.Coop) return null;
+
+    let human: BotEntityT | null = null;
+    let humanRange = Infinity;
+    for (const ent of entities) {
+      if (ent.kind !== BotEntityKind.Player || ent.isBot || ent.dead) continue;
+      const d = bvecDistance(self.origin, ent.origin);
+      if (d < humanRange) {
+        humanRange = d;
+        human = ent;
+      }
+    }
+
+    let best: BotEntityT | null = null;
+    let bestRange = Infinity;
+    for (const ent of entities) {
+      if (ent.kind !== BotEntityKind.Monster || ent.dead) continue;
+      if (this.friendly(ent, self.team)) continue;
+      const blocked = this.unreachableUntil.get(ent.id);
+      if (blocked !== undefined) {
+        if (blocked > now) continue;
+        this.unreachableUntil.delete(ent.id);
+      }
+      if (human !== null && bvecDistance(human.origin, ent.origin) > COOP_HUNT_RADIUS) continue;
+      const d = bvecDistance(self.origin, ent.origin);
+      if (d < bestRange) {
+        bestRange = d;
+        best = ent;
+      }
+    }
+    if (best === null) return null;
+    this.goalEntityId = best.id;
+    this.goalIsLive = true;
+    return best.origin;
+  }
+
   private selectGoal(world: BotWorldT, entities: readonly BotEntityT[], target: BotEntityT | null, now: number): BotVec3 | null {
     this.goalEntityId = -1;
+    this.goalIsLive = false;
 
     // The QuakeC's own goal wins over everything the brain would pick.
     if (this.explicitGoal !== null && !this.explicitGoalDone && !this.explicitGoalFailed) {
@@ -580,6 +901,16 @@ export class BotBrain {
       }
     }
 
+    const self = world.self();
+
+    // An objective is the whole point of the game it belongs to, so it wins
+    // over the item run -- and over the fight, for a bot carrying one.
+    const objective = this.objectiveGoal(entities, self, target);
+    if (objective !== null) {
+      this.goalPoint = objective;
+      return this.goalPoint;
+    }
+
     const inCombat = target !== null;
 
     if (inCombat) {
@@ -588,11 +919,28 @@ export class BotBrain {
       // In combat the bot may still detour for an item, if the skill allows.
       if (this.settings.behaviors.allowGrabItemsInCombat) {
         const item = this.bestItem(world, entities, now);
-        if (item !== null && bvecDistance(world.self().origin, item.origin) < 512) {
+        if (item !== null && bvecDistance(self.origin, item.origin) < 512) {
           this.goalEntityId = item.id;
           return item.origin;
         }
       }
+      return this.goalPoint;
+    }
+
+    // Coop is one team clearing one level. Killing what is still standing
+    // near the human comes first, then keeping up with them, and the item run
+    // is what a bot does when there is nothing left to do either of those on
+    // -- an ammo box the bot has room for is always worth something, so an
+    // item run that outranks the fight is an item run that never ends.
+    const regroup = this.coopRegroupGoal(entities, self, now);
+    if (regroup !== null) {
+      this.goalPoint = regroup;
+      return this.goalPoint;
+    }
+
+    const hunt = this.coopHuntGoal(entities, self, now);
+    if (hunt !== null) {
+      this.goalPoint = hunt;
       return this.goalPoint;
     }
 
@@ -627,6 +975,7 @@ export class BotBrain {
       if (item === undefined) continue;
       if ((item.isPowerup || item.isMega) && deferPower) continue;
 
+      const home = this.objectiveHome.get(ent.id);
       const value = itemValue(item, {
         spawnflags: ent.spawnflags,
         health: self.health,
@@ -637,6 +986,9 @@ export class BotBrain {
         weaponStay: this.config.gameMode.weaponStay,
         allowPowerItems: this.settings.behaviors.allowGrabPowerItems,
         weapons: knowledge.weapons,
+        team: self.team,
+        itemTeam: item.team ?? ent.team,
+        objectiveAtHome: home === undefined || bvecDistance(ent.origin, home) <= OBJECTIVE_AWAY,
       });
       if (value <= 0) continue;
 
@@ -653,10 +1005,7 @@ export class BotBrain {
 
   private roamGoal(world: BotWorldT, now: number): BotVec3 | null {
     const nav = world.nav();
-    if (nav === null || nav.nodeCount === 0) {
-      this.roamPoint = null;
-      return null;
-    }
+    if (nav === null || nav.nodeCount === 0) return this.blindRoamGoal(world, now);
     const self = world.self();
     if (this.roamPoint !== null && bvecDistance(self.origin, this.roamPoint) > 64 && this.pathState.path !== null) return this.roamPoint;
 
@@ -671,9 +1020,33 @@ export class BotBrain {
     return this.roamPoint;
   }
 
+  /**
+   * Roaming on a map with no navigation at all. A bot with no goal presses no
+   * movement key and stands on its spawn point for the whole match, which is
+   * worse than walking into a wall: the wedge timer at least gets a bot that
+   * is trying somewhere. The point is re-picked when it is reached, when it
+   * expires, and whenever the goal is given up.
+   */
+  private blindRoamGoal(world: BotWorldT, now: number): BotVec3 | null {
+    const self = world.self();
+    if (this.roamPoint !== null && now < this.roamUntil && bvecDistance(self.origin, this.roamPoint) > 64) return this.roamPoint;
+
+    const angle = (randomIndex(this.config.rng, 360) * Math.PI) / 180;
+    const reach = BLIND_ROAM_RADIUS / 2 + randomIndex(this.config.rng, BLIND_ROAM_RADIUS / 2);
+    this.roamPoint = { x: self.origin.x + Math.cos(angle) * reach, y: self.origin.y + Math.sin(angle) * reach, z: self.origin.z };
+    this.roamUntil = now + BLIND_ROAM_SECONDS;
+    return this.roamPoint;
+  }
+
+  /** How long the goal just given up on is left alone. */
+  private unreachableRest(): number {
+    return this.goalIsLive ? UNREACHABLE_LIVE_SECONDS : UNREACHABLE_SECONDS;
+  }
+
   private abandonGoal(): void {
     clearPath(this.pathState);
     this.roamPoint = null;
+    this.roamUntil = 0;
     this.goalPoint = null;
     this.goalEntityId = -1;
     if (this.explicitGoal !== null) this.explicitGoalFailed = true;
@@ -683,6 +1056,7 @@ export class BotBrain {
     clearPath(this.pathState);
     this.stuckTrips = 0;
     this.roamPoint = null;
+    this.roamUntil = 0;
     if (this.explicitGoal !== null) this.explicitGoalDone = true;
   }
 

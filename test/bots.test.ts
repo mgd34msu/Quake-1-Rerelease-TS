@@ -55,6 +55,7 @@ import {
   Bot_Slots,
   Bot_WalkPathToGoal,
   FL_ISBOT,
+  bot_chat,
 } from "../src/bots";
 import { PATH_ERROR, PATH_IN_PROGRESS, PATH_MOVE_BLOCKED, PATH_REACHED_GOAL, PATH_REACHED_PATH_END, BOT_GOAL_ERROR, BOT_GOAL_IN_PROGRESS } from "../src/progs/ext/qex_hooks";
 import { defaultTraverseCaps } from "../src/lib/bot_brain/nav_graph";
@@ -596,6 +597,92 @@ describe.skipIf(!HAVE_PROGS106)("bot client slots on a synthetic dedicated serve
     Cvar_SetValue("bot_count", 0);
     Cvar_SetValue("deathmatch", 1);
     Bot_RemoveAll();
+  });
+
+  test("the bots survive a map change with their names, colours and skill", () => {
+    Bot_RemoveAll();
+    Cvar_SetValue("deathmatch", 1);
+    Cvar_SetValue("bot_count", 0);
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+
+    const first = Bot_Add("testbot", "hard");
+    expect(first).toBeGreaterThanOrEqual(0);
+    const before = [...Bot_Slots().values()].map((slot) => ({ name: slot.name, colors: slot.colors, skill: slot.brain.config.skill }));
+    expect(before.length).toBe(1);
+
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+
+    const after = [...Bot_Slots().values()].map((slot) => ({ name: slot.name, colors: slot.colors, skill: slot.brain.config.skill }));
+    expect(after).toEqual(before);
+    const clientnum = [...Bot_Slots().keys()][0]!;
+    expect(svs.clients[clientnum]!.active).toBe(true);
+    expect(svs.clients[clientnum]!.spawned).toBe(true);
+    expect(svs.clients[clientnum]!.edict).not.toBeNull();
+    Bot_RemoveAll();
+  });
+
+  test("a map change with bots on the server leaves net_activeconnections alone", () => {
+    Bot_RemoveAll();
+    Cvar_SetValue("deathmatch", 1);
+    Cvar_SetValue("bot_count", 0);
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+    Bot_Add("testbot", "");
+    Bot_Add("otherbot", "");
+    expect(Bot_Count()).toBe(2);
+
+    const before = net_activeconnections;
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+    expect(net_activeconnections).toBe(before);
+    expect(Bot_Count()).toBe(2);
+    Bot_RemoveAll();
+  });
+
+  test("bot_count applies while the level is running", () => {
+    Bot_RemoveAll();
+    Cvar_SetValue("deathmatch", 1);
+    Cvar_SetValue("bot_count", 1);
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+    expect(Bot_Count()).toBe(1);
+
+    host.frametime = 0.05;
+    Cvar_SetValue("bot_count", 3);
+    for (let f = 0; f < 4; f++) {
+      sv.time += 0.05;
+      SV_RunClients();
+    }
+    expect(Bot_Count()).toBe(3);
+
+    Cvar_SetValue("bot_count", 1);
+    for (let f = 0; f < 4; f++) {
+      sv.time += 0.05;
+      SV_RunClients();
+    }
+    expect(Bot_Count()).toBe(1);
+
+    Cvar_SetValue("bot_count", 0);
+    Bot_RemoveAll();
+  });
+
+  test("bot_count never takes away a bot an operator added by hand", () => {
+    Bot_RemoveAll();
+    Cvar_SetValue("deathmatch", 1);
+    Cvar_SetValue("bot_count", 0);
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+    Bot_Add("testbot", "");
+    expect(Bot_Count()).toBe(1);
+
+    host.frametime = 0.05;
+    for (let f = 0; f < 6; f++) {
+      sv.time += 0.05;
+      SV_RunClients();
+    }
+    expect(Bot_Count()).toBe(1);
+    Bot_RemoveAll();
+  });
+
+  test("bot_chat is a registered archived cvar, on by default", () => {
+    expect(bot_chat.archive).toBe(true);
+    expect(bot_chat.value).toBe(1);
   });
 
   test("progs106 has no Bot_PreThink/Bot_PostThink, and the bots run anyway", () => {

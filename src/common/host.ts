@@ -770,6 +770,12 @@ export function SV_DropClient(crash: boolean): void {
     Sys_Printf("Client %s removed\n", host_client.name);
   }
 
+  // A bot is a client_t with no socket (src/bots/bot_client.ts): it never
+  // went through NET_CheckNewConnections, so it never incremented
+  // net_activeconnections and must not decrement it here. Dropping one bot
+  // per level change is how that counter went negative.
+  const hadConnection = host_client.netconnection !== null;
+
   // break the net connection
   NET_Close(host_client.netconnection);
   host_client.netconnection = null;
@@ -778,7 +784,7 @@ export function SV_DropClient(crash: boolean): void {
   host_client.active = false;
   host_client.name = "";
   host_client.old_frags = -999999;
-  setNetActiveConnections(net_activeconnections - 1);
+  if (hadConnection) setNetActiveConnections(net_activeconnections - 1);
 
   // send notification to all clients
   const clientnum = svs.clients.indexOf(host_client); // host_client - svs.clients
@@ -806,6 +812,13 @@ This only happens at the end of a game, not between levels
 */
 export function Host_ShutdownServer(crash: boolean): void {
   if (!sv.active) return;
+
+  // The bot slots come out of svs.clients before anything below touches
+  // them: they have no socket to flush, no svc_disconnect to receive and no
+  // net_activeconnections to give back, and the client array this function
+  // replaces at the end is not where a bot's identity lives. The roster
+  // survives, so SV_SpawnServer seats the same bots into the next level.
+  svMainMod().svMainHooks.shutdownServer?.();
 
   sv.active = false;
 

@@ -404,6 +404,22 @@ export interface BotItemContextT {
   allowPowerItems: boolean;
   /** The weapon table, for scoring a weapon pickup by what it would unlock. */
   weapons: readonly BotWeaponT[];
+  /** The bot's own team value, or 0 outside a team game. */
+  team: number;
+  /**
+   * The team this pickup belongs to, or 0 for one that belongs to nobody.
+   * ctf's items.txt gives item_flag_team1 `team 5` and item_flag_team2
+   * `team 14`, the two values quakec_ctf/teamplay.qc's TEAM_COLOR1 and
+   * TEAM_COLOR2 hold.
+   */
+  itemTeam: number;
+  /**
+   * True when the objective is standing where it spawned. A team's own flag
+   * at its own base is not something to walk to -- that is the camping every
+   * bot on the map used to do -- but the same flag lying in the field is,
+   * because touching it is what returns it.
+   */
+  objectiveAtHome: boolean;
 }
 
 /**
@@ -455,7 +471,15 @@ export function itemValue(item: BotItemT, ctx: BotItemContextT): number {
   }
 
   if (item.flags.includes(ITEM_FLAG.backpack)) return 120;
-  if (item.flags.includes(ITEM_FLAG.objective) || item.flags.includes(ITEM_FLAG.rune)) return 900;
+
+  if (item.flags.includes(ITEM_FLAG.objective)) {
+    // Nobody's objective, or a game with no teams: it is simply the goal.
+    if (ctx.itemTeam <= 0 || ctx.team <= 0) return 900;
+    if (ctx.itemTeam !== ctx.team) return 900; // the enemy's, so take it
+    return ctx.objectiveAtHome ? 0 : 950; // ours: worth fetching only once it has been dropped
+  }
+
+  if (item.flags.includes(ITEM_FLAG.rune)) return 900;
 
   return 0;
 }

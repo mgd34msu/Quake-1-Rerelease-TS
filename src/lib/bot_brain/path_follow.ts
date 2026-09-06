@@ -52,6 +52,21 @@ export function newPathState(): BotPathStateT {
 export function setPath(state: BotPathStateT, path: NavPathT | null, origin: BotVec3, now: number): void {
   state.path = path;
   state.index = 0;
+  // Skip the points the bot has already walked past. A fresh plan starts at
+  // the graph node nearest the bot, which is as often behind it as in front,
+  // and every stuck trip throws the old plan away and makes a new one -- so a
+  // bot that trips near the far end of a path used to be sent back to the
+  // beginning of it, walk forward again, trip again, and oscillate between
+  // two points for the rest of the level.
+  if (path !== null) {
+    while (state.index + 1 < path.points.length) {
+      const here = path.points[state.index]!;
+      const next = path.points[state.index + 1]!;
+      const back = (here.x - origin.x) * (next.x - origin.x) + (here.y - origin.y) * (next.y - origin.y);
+      if (back >= 0) break;
+      state.index++;
+    }
+  }
   state.stuckOrigin = { x: origin.x, y: origin.y, z: origin.z };
   state.stuckSince = now;
   state.stuckCount = 0;

@@ -854,6 +854,9 @@ describe("item value ordering", () => {
     weaponStay: false,
     allowPowerItems: true,
     weapons: knowledge.weapons,
+    team: 0,
+    itemTeam: 0,
+    objectiveAtHome: true,
   };
 
   test("a powerup outranks a weapon, which outranks armor, which outranks health", () => {
@@ -879,6 +882,61 @@ describe("item value ordering", () => {
     const ssg = knowledge.item("weapon_supershotgun")!;
     expect(itemValue(ssg, { ...ctx, items: 2, weaponStay: true })).toBe(0);
     expect(itemValue(ssg, { ...ctx, items: 2, weaponStay: false })).toBeGreaterThan(0);
+  });
+});
+
+describe("objective value", () => {
+  // ctf/bots/items.txt: item_flag_team1 is `team 5`, item_flag_team2 is
+  // `team 14`, and both carry the `objective` flag.
+  const knowledge = new BotKnowledge({
+    characters: "",
+    weapons: WEAPONS_TXT,
+    items: `{\n  name "item_flag_team1"\n  team 5\n  flags objective\n}\n{\n  name "item_flag_team2"\n  team 14\n  flags objective\n}\n`,
+    monsters: "",
+    interactables: "",
+    gameRules: "",
+    teams: "",
+    chats: "",
+    settings: SETTINGS_TXT,
+  });
+  const flag = knowledge.item("item_flag_team1")!;
+  const ctx = {
+    spawnflags: 0,
+    health: 100,
+    maxHealth: 100,
+    armor: 0,
+    items: 0,
+    ammo: {},
+    weaponStay: false,
+    allowPowerItems: true,
+    weapons: knowledge.weapons,
+    team: 14,
+    itemTeam: 5,
+    objectiveAtHome: true,
+  };
+
+  test("items.txt's team field is parsed onto the objective", () => {
+    expect(flag.team).toBe(5);
+    expect(knowledge.item("item_flag_team2")!.team).toBe(14);
+  });
+
+  test("the enemy's objective is worth taking wherever it is standing", () => {
+    expect(itemValue(flag, ctx)).toBe(900);
+    expect(itemValue(flag, { ...ctx, objectiveAtHome: false })).toBe(900);
+  });
+
+  test("a team's own objective at its own base is worth nothing", () => {
+    expect(itemValue(flag, { ...ctx, team: 5 })).toBe(0);
+  });
+
+  test("a team's own objective away from base outranks the enemy's", () => {
+    const dropped = itemValue(flag, { ...ctx, team: 5, objectiveAtHome: false });
+    expect(dropped).toBeGreaterThan(itemValue(flag, ctx));
+  });
+
+  test("an objective nobody owns, or one in a game with no teams, is simply a goal", () => {
+    expect(itemValue(flag, { ...ctx, itemTeam: 0 })).toBe(900);
+    expect(itemValue(flag, { ...ctx, team: 0 })).toBe(900);
   });
 });
 
@@ -1053,12 +1111,14 @@ function makeBrain(seed: number): BotBrain {
 }
 
 describe("brain", () => {
-  test("with no target and no nav it produces a neutral usercmd", () => {
+  test("with no target and no nav it walks somewhere rather than standing still", () => {
+    // A map with no navigation at all is still a map to play on: a bot with
+    // no goal presses nothing and stands on its spawn point for the whole
+    // match, which is what the blind roam in brain.ts's roamGoal replaces.
     const world = new StubWorld(bvec(0, 0, 0));
     const cmd = makeBrain(1).think(world);
-    expect(cmd.forwardmove).toBe(0);
-    expect(cmd.sidemove).toBe(0);
-    expect(cmd.buttons).toBe(0);
+    expect(Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove)).toBeGreaterThan(0);
+    expect(cmd.impulse).toBe(0);
   });
 
   test("becomes aware of a visible enemy and then fires at it", () => {
@@ -1300,13 +1360,13 @@ describe("brain", () => {
     expect(stuckTrips).toBe(3); // an externally-held tally survives all three clears
   });
 
-  test("a stuck trip does not give up the goal before STUCK_GIVE_UP, and the goal keeps retrying", () => {
-    // BotBrain.think()'s own give-up threshold (STUCK_GIVE_UP = 3) checked
-    // end to end: a bot walled off from a goal it cannot physically reach re-
-    // plans the identical route every time the nav graph says it is fine, so
-    // the escalation this file's header describes is, in practice, rarely
-    // reached this way -- but it must never fire EARLY (on the first or
-    // second trip) and the retry loop must not misbehave across many trips.
+  test("a goal the bot cannot move toward is kept for a moment and then given up", () => {
+    // The escalation end to end. The bot's origin never changes, so it is
+    // pressing a move into the world and going nowhere: it must not give up
+    // on the first frame (a door may still be opening), and it must not hold
+    // the goal for the rest of the level either -- the wedge timer in
+    // brain.ts gives it up once the bot has been going nowhere for
+    // WEDGED_GIVE_UP_SECONDS.
     const positions = [bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0), bvec(768, 0, 0), bvec(1024, 0, 0)];
     const world = new StubWorld(bvec(0, 0, 0));
     world.graph = navGraphFromNav2(buildNav(positions, chainLinks(5)));
@@ -1315,11 +1375,21 @@ describe("brain", () => {
     brain.requestMoveToPoint(bvec(1024, 0, 0));
     expect(brain.goalStatus()).toBe(BotGoalStatus.InProgress);
 
-    for (let i = 0; i < 200; i++) {
+    // A second of going nowhere is not enough to abandon a goal.
+    for (let i = 0; i < 20; i++) {
       world.now += 0.05;
       brain.think(world);
-      expect(brain.goalStatus()).toBe(BotGoalStatus.InProgress);
     }
+    expect(brain.goalStatus()).toBe(BotGoalStatus.InProgress);
+
+    let gaveUpAt = -1;
+    for (let i = 0; i < 200 && gaveUpAt < 0; i++) {
+      world.now += 0.05;
+      brain.think(world);
+      if (brain.goalStatus() === BotGoalStatus.Error) gaveUpAt = world.now;
+    }
+    expect(gaveUpAt).toBeGreaterThan(0);
+    expect(gaveUpAt).toBeLessThan(5);
   });
 
   test("the unstick window produces sidestep/jump input", () => {

@@ -97,6 +97,14 @@ export interface BotSelfT {
   dead: boolean;
   /** True when the bot holds the Pentagram, which weapons.txt's electric-in-water rule exempts. */
   hasProtection: boolean;
+  /**
+   * True while the bot is carrying an objective it has to deliver -- the
+   * enemy flag in capture the flag. The game says so, because what counts as
+   * carrying one is the game's own rule (Quake 1's CTF progs writes the
+   * enemy team's key bit into `items`); a binding for a game with no
+   * objectives leaves it out.
+   */
+  carryingObjective?: boolean;
 }
 
 //============================================================================

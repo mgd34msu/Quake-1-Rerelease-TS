@@ -107,7 +107,12 @@ export function Bot_LoadNav(mapname: string): NavGraph | null {
 
   const bytes = COM_LoadTempFile(`bots/navigation/${mapname}.nav`);
   if (bytes === null) {
-    Con_DPrintf("bots: no navigation for %s\n", mapname);
+    // A tree with bots/ data is one where navigation is expected, so the
+    // absence of it is worth saying out loud: bots on such a map wander
+    // rather than path, and an operator who typed `addbot` deserves to know
+    // why. A classic install has no bots/ data at all and says nothing.
+    if (Bot_Knowledge() === null) Con_DPrintf("bots: no navigation for %s\n", mapname);
+    else Con_Printf("bots: no navigation for %s; bots will wander instead of pathing\n", mapname);
     return null;
   }
 

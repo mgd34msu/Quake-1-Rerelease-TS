@@ -33,12 +33,12 @@ exercised directly by test/bots.test.ts rather than through a progs that
 cannot reach it.
 */
 
-import type { EdictT } from "../progs/progs";
+import { EDICT_TO_PROG, pr, type EdictT } from "../progs/progs";
 import { SV_StepDirection } from "../server/sv_move";
 import { FL_FLY, FL_SWIM, sv, svs } from "../server/server";
 import { MOVE_NOMONSTERS, SV_Move, SV_PointContents } from "../server/world";
 import { CONTENTS_LAVA, CONTENTS_SLIME } from "../common/bspfile";
-import { vec3, type Vec3 } from "../common/mathlib";
+import { anglemod, vec3, type Vec3 } from "../common/mathlib";
 import {
   BOT_GOAL_ERROR,
   BOT_GOAL_IN_PROGRESS,
@@ -91,6 +91,12 @@ interface MonsterPathT {
   index: number;
   goal: BotVec3;
   plannedAt: number;
+  /** Calls in a row that answered PATH_MOVE_BLOCKED on this plan. */
+  blocked: number;
+  /** Calls in a row spent turning onto the current segment. */
+  turning: number;
+  /** Server time until which the QuakeC's own movetogoal has the monster. */
+  yieldUntil: number;
 }
 
 const monsterPaths = new Map<number, MonsterPathT>();
@@ -98,9 +104,38 @@ const monsterPaths = new Map<number, MonsterPathT>();
 /** How far the goal may drift before the path is thrown away. */
 const MONSTER_GOAL_DRIFT = 128;
 /** How long a monster path survives before it is re-planned regardless. */
-const MONSTER_REPLAN_SECONDS = 3;
+const MONSTER_REPLAN_SECONDS = 10;
 /** Within this of a path point, move on to the next. */
 const MONSTER_POINT_REACHED = 40;
+/**
+ * How many blocked calls in a row throw the plan away. SV_StepDirection can
+ * refuse the same segment for as long as whatever is in the way stays there,
+ * and a monster that keeps answering PATH_MOVE_BLOCKED off one stale plan
+ * never gets a route round the obstruction.
+ */
+const MONSTER_BLOCKED_REPLAN = 4;
+/** Under this much movement in one call the step did not happen. */
+const MONSTER_MOVED_EPSILON = 0.5;
+/**
+ * SV_StepDirection undoes a step the monster has not turned far enough to
+ * take, so a segment that needs a big turn costs `yaw_speed`-sized ticks
+ * before any ground is covered. Those are progress, not a blockage -- but
+ * only for as long as a monster turning at the stock 10-20 degrees a tick
+ * would still be turning.
+ */
+const MONSTER_TURN_TICKS = 12;
+/**
+ * Yaw offsets tried around the straight line to the next path point, in
+ * order. 45 is the widest that SV_StepDirection's "not turned far enough"
+ * test still takes in one call.
+ */
+const STEP_FAN: readonly number[] = [0, 45, -45, 22.5, -22.5];
+/** How many points past the current one may be steered toward directly. */
+const MONSTER_LOOKAHEAD = 4;
+/** How long a blocked segment leaves the monster to the QuakeC's movetogoal. */
+const MONSTER_YIELD_SECONDS = 0.3;
+/** sv_phys.c's STEPSIZE: how far up a walking monster may step in one move. */
+const STEP_HEIGHT = 18;
 
 export function Bot_ClearMonsterPaths(): void {
   monsterPaths.clear();
@@ -159,26 +194,56 @@ function walkPathToGoal(self: EdictT, movedist: number, goalVec: Vec3): number {
       return bad;
     };
 
+    // String-pulling asks "could this monster walk straight from here to
+    // there", so the trace is the monster's own box lifted by the step
+    // height it can walk up -- a zero-width line clears door frames and
+    // stair rails a 32-unit-wide grunt cannot, and every shortcut it takes
+    // becomes a segment SV_movestep then refuses.
+    const boxMins = vec3(self.v.mins[0]!, self.v.mins[1]!, self.v.mins[2]! + STEP_HEIGHT);
+    const boxMaxs = vec3(self.v.maxs[0]!, self.v.maxs[1]!, self.v.maxs[2]!);
     const visible = (from: BotVec3, to: BotVec3): boolean =>
-      SV_Move(vec3(from.x, from.y, from.z + 16), vec3(), vec3(), vec3(to.x, to.y, to.z + 16), MOVE_NOMONSTERS, self).fraction >= 1;
+      SV_Move(vec3(from.x, from.y, from.z), boxMins, boxMaxs, vec3(to.x, to.y, to.z), MOVE_NOMONSTERS, self).fraction >= 1;
 
     const path = nav.planPath(origin, goal, { caps, visible });
     if (path === null || path.points.length === 0) {
       monsterPaths.delete(self.index);
       return PATH_ERROR; // "no nav nodes, no nearby nodes, no path"
     }
-    cached = { path, index: 0, goal, plannedAt: sv.time };
+    // The blocked tally survives a re-plan on purpose: a monster that cannot
+    // get moving must reach the give-up threshold, and re-planning is one of
+    // the escalation steps rather than a reason to start counting again.
+    cached = { path, index: 0, goal, plannedAt: sv.time, blocked: previous?.blocked ?? 0, turning: 0, yieldUntil: previous?.yieldUntil ?? 0 };
     monsterPaths.set(self.index, cached);
   }
 
-  // Retire reached points.
+  // Retire reached points. A point the monster is standing directly under or
+  // over is retired too: walking cannot close a purely vertical gap, and
+  // holding it as the steering point answers PATH_IN_PROGRESS with a zero
+  // move vector for as long as the monster lives.
   while (cached.index < cached.path.points.length) {
     const point = cached.path.points[cached.index]!;
-    if (bvecDistance2D(origin, point) <= MONSTER_POINT_REACHED && Math.abs(origin.z - point.z) <= 72) {
+    const flat = bvecDistance2D(origin, point);
+    if (flat <= MONSTER_POINT_REACHED && Math.abs(origin.z - point.z) <= 72) {
+      cached.index++;
+      continue;
+    }
+    if (flat <= MONSTER_MOVED_EPSILON) {
       cached.index++;
       continue;
     }
     break;
+  }
+
+  // And retire a point the monster has already walked past. A fresh plan
+  // starts at the graph node nearest the monster, which is as often behind
+  // it as in front, and walking back to it only to turn round again is the
+  // whole of the "walked 4000 units and closed 0" case.
+  while (cached.index + 1 < cached.path.points.length) {
+    const here = cached.path.points[cached.index]!;
+    const next = cached.path.points[cached.index + 1]!;
+    const back = (here.x - origin.x) * (next.x - origin.x) + (here.y - origin.y) * (next.y - origin.y);
+    if (back >= 0) break;
+    cached.index++;
   }
 
   if (cached.index >= cached.path.points.length) {
@@ -194,15 +259,92 @@ function walkPathToGoal(self: EdictT, movedist: number, goalVec: Vec3): number {
     return PATH_REACHED_PATH_END;
   }
 
-  const target = cached.path.points[cached.index]!;
-  const dx = target.x - origin.x;
-  const dy = target.y - origin.y;
-  if (dx === 0 && dy === 0) return PATH_IN_PROGRESS;
+  // A blocked segment hands the monster to movetogoal for a short window
+  // rather than for one tick: alternating between the two every tick has
+  // each undo the other's step, and SV_MoveToGoal's own chase direction
+  // needs a few ticks in a row to be worth anything.
+  if (sv.time < cached.yieldUntil) return PATH_MOVE_BLOCKED;
 
-  const yaw = (Math.atan2(dy, dx) * 180) / Math.PI;
-  if (!SV_StepDirection(self, yaw, movedist)) return PATH_MOVE_BLOCKED; // "something ( or someone ) is in our way"
+  // SV_StepDirection turns the monster with PF_changeyaw, which reads the
+  // `self` global rather than taking an entity: a caller that reaches this
+  // builtin without `self` set to the monster turns some other entity and
+  // leaves this one facing its spawn angle, where SV_StepDirection's own
+  // "not turned far enough, so don't take the step" test undoes every step.
+  const gs = pr.global_struct;
+  const saveSelf = gs === null ? 0 : gs.self;
+  const saveIdealYaw = self.v.ideal_yaw;
+  const saveAngleYaw = self.v.angles[1]!;
+  if (gs !== null) gs.self = EDICT_TO_PROG(self);
 
-  return PATH_IN_PROGRESS;
+  // The straight line to the next path point, then a fan either side of it,
+  // then the same for the point after that: a string-pulled segment is a
+  // zero-width line and a monster is 32 units wide, so the door frame the
+  // line clears is one SV_movestep refuses, and the point past it is often
+  // reachable when the point itself is not. SV_NewChaseDir fans the same
+  // way around its own straight line; this one stays biased toward the plan.
+  let moved = 0;
+  let turning = false;
+  let reached = cached.index;
+  // Never as far as the last point: that one IS the goal, and stepping onto
+  // it is what PATH_REACHED_PATH_END means. Only the retire loop, which asks
+  // where the monster actually is, may claim that.
+  const last = Math.min(cached.index + MONSTER_LOOKAHEAD, cached.path.points.length - 2);
+  for (let candidate = cached.index; candidate <= last && moved <= MONSTER_MOVED_EPSILON && !turning; candidate++) {
+    const point = cached.path.points[candidate]!;
+    const yaw = (Math.atan2(point.y - origin.y, point.x - origin.x) * 180) / Math.PI;
+    for (const offset of STEP_FAN) {
+      const before = toBotVec(self.v.origin);
+      const wanted = anglemod(yaw + offset);
+      const stepped = SV_StepDirection(self, wanted, movedist);
+      moved = bvecDistance(before, toBotVec(self.v.origin));
+      if (moved > MONSTER_MOVED_EPSILON) {
+        reached = candidate;
+        break;
+      }
+      // SV_StepDirection's own "not turned far enough, so don't take the
+      // step": on the straight line to the next point that is the monster
+      // turning onto the segment, which is progress and keeps its turn.
+      const facing = anglemod(self.v.angles[1]! - wanted);
+      if (candidate === cached.index && offset === 0 && stepped && facing > 45 && facing < 315) {
+        turning = true;
+        break;
+      }
+    }
+  }
+  if (gs !== null) gs.self = saveSelf;
+
+  if (moved > MONSTER_MOVED_EPSILON) {
+    cached.index = reached;
+    cached.blocked = 0;
+    cached.turning = 0;
+    return PATH_IN_PROGRESS;
+  }
+
+  if (turning && cached.turning < MONSTER_TURN_TICKS) {
+    cached.turning++;
+    return PATH_IN_PROGRESS;
+  }
+  cached.turning = 0;
+
+  // "something ( or someone ) is in our way". A step that was refused -- or
+  // one SV_StepDirection took and then undid -- must not be reported as
+  // progress, or ai.qc never gets its movetogoal fallback and the monster
+  // stands still for the rest of the level. The facing this function was
+  // handed goes back exactly as it was, because movetogoal steers off
+  // `ideal_yaw` and reuses it for three ticks out of four: a blocked
+  // walkpathtogoal that leaves its own dead-end direction behind makes the
+  // fallback worse than no path at all. Every few of those the plan is
+  // thrown away as well, so the route round the obstruction gets a chance.
+  self.v.ideal_yaw = saveIdealYaw;
+  self.v.angles[1] = saveAngleYaw;
+  cached.blocked++;
+  cached.yieldUntil = sv.time + MONSTER_YIELD_SECONDS;
+  // A point the monster cannot step toward from here is one to give up on:
+  // the next point along is a different direction, and the plan as a whole
+  // is thrown away every few blocked calls anyway.
+  if (cached.index + 1 < cached.path.points.length) cached.index++;
+  if (cached.blocked % MONSTER_BLOCKED_REPLAN === 0) cached.plannedAt = Number.NEGATIVE_INFINITY;
+  return PATH_MOVE_BLOCKED;
 }
 
 //============================================================================

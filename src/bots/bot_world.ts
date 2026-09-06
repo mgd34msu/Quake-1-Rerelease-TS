@@ -21,7 +21,7 @@ import { EF_MUZZLEFLASH, FL_MONSTER, MOVETYPE_NOCLIP, SOLID_NOT, SOLID_TRIGGER, 
 import { MOVE_NOMONSTERS, MOVE_NORMAL, SV_Move, SV_PointContents } from "../server/world";
 import { CONTENTS_EMPTY, CONTENTS_LAVA, CONTENTS_SKY, CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER } from "../common/bspfile";
 import { vec3, type Vec3 } from "../common/mathlib";
-import { IT_INVISIBILITY, IT_INVULNERABILITY } from "../common/quakedef";
+import { IT_INVISIBILITY, IT_INVULNERABILITY, IT_KEY1, IT_KEY2 } from "../common/quakedef";
 import type { NavGraph } from "../lib/bot_brain/nav_graph";
 import { bvec, type BotVec3 } from "../lib/bot_brain/math";
 import { BotContents, BotEntityKind, type BotEntityT, type BotSelfT, type BotSoundT, type BotTraceT, type BotWorldT } from "../lib/bot_brain/world";
@@ -138,6 +138,7 @@ export class BotServerWorld implements BotWorldT {
       team: ent.v.team | 0,
       dead: ent.v.health <= 0 || ent.v.deadflag !== 0,
       hasProtection: hasProtection(ent),
+      carryingObjective: carriesObjective(ent),
     };
   }
 
@@ -256,6 +257,18 @@ export class BotServerWorld implements BotWorldT {
     this.frameEntities = entities;
     this.frameSounds = sounds;
   }
+}
+
+/**
+ * True when the bot is carrying an objective. quakec_ctf/teamplay.qc's
+ * TeamCaptureFlagTouch gives the carrier the other team's key bit
+ * (item_flag_team1 carries IT_KEY2, item_flag_team2 carries IT_KEY1) and
+ * takes both back on a capture, so `items` is the CTF progs' own statement
+ * of who is holding a flag. No other id1 gameplay hands a key to a player in
+ * a deathmatch level.
+ */
+export function carriesObjective(ent: EdictT): boolean {
+  return ((ent.v.items | 0) & (IT_KEY1 | IT_KEY2)) !== 0;
 }
 
 /** True when the bot holds the Pentagram, which weapons.txt's electric-in-water rule exempts. */
