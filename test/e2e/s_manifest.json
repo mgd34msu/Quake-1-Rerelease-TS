@@ -1,0 +1,20 @@
+{
+  "family": "s",
+  "drivers": [
+    { "name": "s_roundtrip_classic_id1_p15", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "classic-id1", "--protocol", "15"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["classic"] },
+    { "name": "s_roundtrip_classic_hipnotic_p666", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "classic-hipnotic", "--protocol", "666"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["classic"] },
+    { "name": "s_roundtrip_classic_rogue_p15", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "classic-rogue", "--protocol", "15"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["classic"] },
+    { "name": "s_roundtrip_id1_p15", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "id1", "--protocol", "15"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["rerelease"] },
+    { "name": "s_roundtrip_id1_p666", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "id1", "--protocol", "666"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["rerelease"] },
+    { "name": "s_roundtrip_id1_p999", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "id1", "--protocol", "999"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["rerelease"] },
+    { "name": "s_roundtrip_hipnotic_p999", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "hipnotic", "--protocol", "999"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["rerelease"] },
+    { "name": "s_roundtrip_rogue_p999", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "rogue", "--protocol", "999"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["rerelease"] },
+    { "name": "s_roundtrip_mg1_p999", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "mg1", "--protocol", "999"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 240, "needs": ["rerelease", "long"] },
+    { "name": "s_roundtrip_mg3_p999", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "mg3", "--protocol", "999"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 240, "needs": ["rerelease", "long"] },
+    { "name": "s_roundtrip_dopa_p999", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "dopa", "--protocol", "999"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 180, "needs": ["rerelease"] },
+    { "name": "s_roundtrip_ctf_p999", "cmd": ["bun", "test/e2e/s_roundtrip.ts", "--tree", "ctf", "--protocol", "999"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["rerelease"] },
+    { "name": "s_autosave", "cmd": ["bun", "test/e2e/s_autosave.ts"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["rerelease"] },
+    { "name": "s_retail", "cmd": ["bun", "test/e2e/s_retail.ts"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 600, "needs": ["classic", "rerelease", "long"] },
+    { "name": "s_wide", "cmd": ["bun", "test/e2e/s_wide.ts"], "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" }, "timeoutSec": 180, "needs": ["rerelease", "long"] }
+  ]
+}
