@@ -4,7 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-09-05
+## [Unreleased]
+
+### Added
+- `ARCHITECTURE.md`: the design contract and phase plan for the re-release
+  engine, with the four open rulings.
+- `.orch/preferences.md`: standing orders for agent briefs (local, untracked).
+
+### Changed
+- Repository seeded from Quake-1-TS v1.0.0 (86c6867) as commit 1; package
+  renamed `quake-1-re-ts`.
+- Three suites made order-independent (construction defaults checked on
+  fresh instances; the QuakeWorld builtin table saved and restored).
+
+## Quake-1-TS [1.0.0] - 2026-09-05 (the seed)
 
 First release: id Software's 1999 GPL Quake sources ported to TypeScript on
 Bun, one `.ts` module per `.c` file, verified against retail game data.

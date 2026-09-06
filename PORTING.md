@@ -1,3 +1,14 @@
+# Porting conventions (inherited from Quake-1-TS)
+
+This file is the mechanical C-to-TypeScript contract inherited unchanged
+from the Quake-1-TS seed: file mapping, data shapes, idiom map, type
+discipline. It describes the *classic* code paths, which remain the
+fidelity harness for this engine. The design of everything this engine
+adds on top (wide state, protocol codecs, host profiles, re-release progs
+support, bots, renderer features) is in `ARCHITECTURE.md`, which wins where
+the two disagree. Two statements below no longer hold here: "the
+re-release is out of scope" and "vid_ref is the only added cvar".
+
 # Quake (v1.09 GPL, Dec 1999) → TypeScript port conventions
 
 Source tree: id's own GPL release of the Quake sources, unpacked next to this
