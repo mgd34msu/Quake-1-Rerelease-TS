@@ -147,6 +147,8 @@ import { SV_StartSound, Con_Printf } from "./sv_send";
 import type * as SvMainModule from "./sv_main";
 import { movevars } from "../pmove_types";
 import { CvarT } from "../../common/cvar";
+import { sv_friction, sv_gravity, sv_maxvelocity, sv_stopspeed } from "../../server/sv_phys";
+import { sv_accelerate, sv_maxspeed } from "../../server/sv_user";
 import { MAX_CLIENTS } from "../protocol";
 import { MAX_EDICTS } from "../bothdefs";
 import {
@@ -166,16 +168,18 @@ import {
 import { CONTENTS_EMPTY, CONTENTS_WATER } from "../../common/bspfile";
 import { SysError } from "../../platform/sys";
 
-export const sv_maxvelocity = new CvarT("sv_maxvelocity", "2000");
+// U41: one object per cvar name -- WinQuake declares `sv_maxvelocity`,
+// `sv_gravity`, `sv_stopspeed` and `sv_friction` in WinQuake/sv_phys.c and
+// `sv_maxspeed`/`sv_accelerate` in WinQuake/sv_user.c, and this binary links
+// both trees. See src/qw/server/sv_main.ts's SV_RegisterSharedVariable, which
+// carries QuakeWorld's own default onto each of these at registration.
+export { sv_maxvelocity, sv_gravity, sv_stopspeed, sv_friction };
+export { sv_maxspeed, sv_accelerate };
 
-export const sv_gravity = new CvarT("sv_gravity", "800");
-export const sv_stopspeed = new CvarT("sv_stopspeed", "100");
-export const sv_maxspeed = new CvarT("sv_maxspeed", "320");
+// QuakeWorld's own, with no WinQuake counterpart of the same name.
 export const sv_spectatormaxspeed = new CvarT("sv_spectatormaxspeed", "500");
-export const sv_accelerate = new CvarT("sv_accelerate", "10");
 export const sv_airaccelerate = new CvarT("sv_airaccelerate", "0.7");
 export const sv_wateraccelerate = new CvarT("sv_wateraccelerate", "10");
-export const sv_friction = new CvarT("sv_friction", "4");
 export const sv_waterfriction = new CvarT("sv_waterfriction", "4");
 
 export const MOVE_EPSILON = 0.01;

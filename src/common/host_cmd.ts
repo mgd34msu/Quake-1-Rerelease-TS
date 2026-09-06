@@ -137,6 +137,9 @@ import {
 import { Cvar_Set, Cvar_SetObject, Cvar_SetValue, Cvar_VariableString, type CvarT } from "./cvar";
 import type * as QwClMainModule from "../qw/client/cl_main";
 import type * as QwSvMainModule from "../qw/server/sv_main";
+import type * as QwNetUdpModule from "../qw/net_udp";
+import type * as QwNetChanModule from "../qw/net_chan";
+import { clientProfile } from "./profile";
 import {
   COM_DefaultExtension,
   COM_GetGameNames,
@@ -540,17 +543,20 @@ QuakeWorld's SV_SpawnServer calls claimServerProfile("qw"), which takes any
 NetQuake server this process is running down first -- the two never run at
 once -- so this function does no shutdown of its own.
 
-A local client is NOT connected here, unlike the NetQuake listen server's
-`connect local` below. QuakeWorld has no loopback driver at all: QW/client
-and QW/server each open their own UDP socket and even a local player connects
-over 127.0.0.1. This port has ONE `net_socket` for the whole QuakeWorld tree
-(src/qw/net_udp.ts's file-scope `let net_socket = -1`, opened by NET_Init and
-read by every NET_GetPacket/NET_SendPacket), because the C's two binaries
-never shared a process; a client and a server in one process would have to
-hold one socket each. Giving src/qw/net_udp.ts a per-profile socket pair is
-outside this unit's files, so `sv_profile qw` + `map` stands the QuakeWorld
-server up and a client joins it over UDP the same way any other client does
--- which is exactly what QuakeWorld does for a local player anyway.
+The local client joins over real UDP, not over a loopback driver: QuakeWorld
+has none at all. QW/client and QW/server each open their own socket and even
+a local player connects to 127.0.0.1, which is why the NetQuake listen
+server's `connect local` above has no equivalent here -- the connect this
+issues is a real `connect 127.0.0.1:<port>`, aimed at the port the server's
+own SV_InitNet just bound (PORT_SERVER, or `-port`), and read back through
+src/qw/net_udp.ts's NET_LocalAdr("server"). U41 gave that module one socket
+per side so both halves can hold one at once; the client's is PORT_CLIENT.
+
+The connect goes through the console under the CLIENT's profile, which is the
+seat a player typing it would be in: from a NetQuake boot that is
+src/client/cl_main.ts's CL_Connect_f (the connect rule sees the explicit port,
+brings the QuakeWorld client half up and runs the handshake), and from a `-qw`
+boot it is QW/client/cl_main.c's own.
 ==================
 */
 export function Host_Map_QW_f(): void {
@@ -567,6 +573,20 @@ export function Host_Map_QW_f(): void {
     line += " ";
   }
   Cmd_ExecuteString(line, CmdSourceT.src_command, "qw");
+
+  // A dedicated server has no client to seat, and a map that failed to spawn
+  // has nothing to join.
+  if (sysState.isDedicated) return;
+  if (!qwSvMainMod().SV_ServerActive()) return;
+
+  // SV_InitNet cleared this (net_chan.c's `#ifdef SERVERONLY` sense), and the
+  // rest of this frame belongs to the client half again -- including the
+  // connect below and whatever the client sends before src/main.ts's
+  // Host_Frame next sets it per half.
+  qwNetChanMod().netchanState.isClient = true;
+
+  const port = qwNetUdpMod().NET_LocalAdr("server").port;
+  Cmd_ExecuteString(`connect 127.0.0.1:${port}\n`, CmdSourceT.src_command, clientProfile());
 }
 
 /*
@@ -1146,6 +1166,17 @@ function qwClMainMod(): typeof QwClMainModule {
 // that never spawns a QuakeWorld map never loads it at all.
 function qwSvMainMod(): typeof QwSvMainModule {
   return require("../qw/server/sv_main");
+}
+
+// QuakeWorld's own UDP layer, for the listen server's connect (the port its
+// server socket bound). Lazily required for the same reason as the two above:
+// a process that never spawns a QuakeWorld map never loads it.
+function qwNetUdpMod(): typeof QwNetUdpModule {
+  return require("../qw/net_udp");
+}
+
+function qwNetChanMod(): typeof QwNetChanModule {
+  return require("../qw/net_chan");
 }
 
 function qwNameCvar(): CvarT {

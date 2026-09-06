@@ -579,7 +579,10 @@ export function SV_ReadClientMessage(): boolean {
           else if (Q_strncasecmp(s, "ex_flags", 8) === 0) ret2 = 1;
 
           if (ret2 === 2) Cbuf_InsertText(s);
-          else if (ret2 === 1) Cmd_ExecuteString(s, CmdSourceT.src_client);
+          // U41: a clc_stringcmd resolves against the profile of the server it
+          // arrived at, not against whatever console profile is in force in a
+          // process that has both servers linked.
+          else if (ret2 === 1) Cmd_ExecuteString(s, CmdSourceT.src_client, sv.profile);
           else Con_DPrintf("%s tried to %s\n", host_client.name, s);
           break;
         }

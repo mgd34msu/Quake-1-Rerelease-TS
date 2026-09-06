@@ -202,8 +202,9 @@ import {
   Cmd_WithConsoleProfile,
   Cmd_WithProfileRegistration,
 } from "../../common/cmd";
-import { CvarT, Cvar_RegisterVariable, Cvar_SetValue, setCvarInfoHook } from "../../common/cvar";
-import { max_edicts } from "../../common/host";
+import { CvarT, Cvar_FindVar, Cvar_RegisterVariable, Cvar_SetObject, Cvar_SetValue, setCvarInfoHook } from "../../common/cvar";
+import { deathmatch, developer, fraglimit, max_edicts, pausable, samelevel, teamplay, timelimit } from "../../common/host";
+import { hostname } from "../../common/net_main";
 import { Com_sprintf } from "../../common/sprintf";
 import { Hunk_AllocName, Hunk_LowMark, Memory_Init } from "../../common/zone";
 import { Mod_Init } from "../../common/model";
@@ -294,8 +295,6 @@ export const master_adr: NetadrT[] = Array.from({ length: MAX_MASTERS }, () => n
 export const sv_mintic = new CvarT("sv_mintic", "0.03"); // bound the size of the
 export const sv_maxtic = new CvarT("sv_maxtic", "0.1"); // physics time tic
 
-export const developer = new CvarT("developer", "0"); // show extra messages
-
 export const timeout = new CvarT("timeout", "65"); // seconds without any message
 export const zombietime = new CvarT("zombietime", "2"); // seconds to sink messages
 // after disconnect
@@ -322,27 +321,67 @@ export const sv_phs = new CvarT("sv_phs", "1");
 // nothing until the next one, exactly like the NetQuake side's sv_protocol.
 export const sv_qwprotocol = new CvarT("sv_qwprotocol", "auto");
 
-export const pausable = new CvarT("pausable", "1");
+// U41: one object per cvar name, the same ruling src/qw/client/cl_main.ts made
+// for the client. WinQuake and QuakeWorld both declare `developer`,
+// `pausable`, `fraglimit`, `timelimit`, `teamplay`, `samelevel`, `deathmatch`
+// and `hostname` (plus the sv_phys.ts, sv_user.ts and pr_cmds.ts sets), and
+// the C links one of the two per binary. This binary links both, so a second
+// object here would be the one Cvar_RegisterVariable refuses ("Can't register
+// variable %s, allready defined") -- leaving it unreachable from the console
+// AND at value 0, which is how a QuakeWorld listen server ended up running
+// with sv_gravity 0. WinQuake's object is the one that survives; the
+// QuakeWorld declaration's own default and its serverinfo `info` flag are
+// applied by SV_RegisterSharedVariable below.
+export { developer, pausable, fraglimit, timelimit, teamplay, samelevel, deathmatch, hostname };
 
 //
 // game rules mirrored in svs.info
 //
-export const fraglimit = new CvarT("fraglimit", "0", false, false, true);
-export const timelimit = new CvarT("timelimit", "0", false, false, true);
-export const teamplay = new CvarT("teamplay", "0", false, false, true);
-export const samelevel = new CvarT("samelevel", "0", false, false, true);
 export const maxclients = new CvarT("maxclients", "8", false, false, true);
 export const maxspectators = new CvarT("maxspectators", "8", false, false, true);
-export const deathmatch = new CvarT("deathmatch", "1", false, false, true); // 0, 1, or 2
 export const spawn = new CvarT("spawn", "0", false, false, true);
 export const watervis = new CvarT("watervis", "0", false, false, true);
 
-export const hostname = new CvarT("hostname", "unnamed", false, false, true);
+/*
+QW/client/cvar.c's Cvar_RegisterVariable ends with an unconditional
+`Cvar_Set (variable->name, value)`, which is how a QuakeWorld server's own
+default reaches the cvar and how an info-flagged one reaches svs.info the
+moment it registers. src/common/cvar.ts folds that tail under the QuakeWorld
+profile, and skips it entirely when the object is ALREADY linked -- which is
+exactly the shared-object case above. This does that tail by hand:
+
+- `info`: the QuakeWorld declaration's serverinfo flag is set on the shared
+  object, since WinQuake's declaration has no such field to carry it.
+- a shared object nothing has registered yet (the `-dedicated -qw` boot, where
+  WinQuake's Host_Init never ran) adopts QuakeWorld's own default string, so
+  qwsv starts at `deathmatch 1`/`sv_aim 2`/`hostname "unnamed"` exactly as the
+  separate binary did.
+- a shared object WinQuake already registered (a listen server, where the
+  player has been at a NetQuake console) keeps the value in force and only
+  propagates it into svs.info. Documented deviation: a listen server's
+  QuakeWorld ruleset therefore starts from the values the player already had,
+  not from QuakeWorld's compiled-in defaults.
+*/
+function SV_RegisterSharedVariable(variable: CvarT, qwDefault: string, info: boolean): void {
+  const linked = Cvar_FindVar(variable.name) !== null;
+  if (info) variable.info = true;
+  Cvar_RegisterVariable(variable);
+  Cvar_SetObject(variable, linked ? variable.string : qwDefault);
+}
 
 //============================================================================
 
 export function ServerPaused(): boolean {
   return sv.paused;
+}
+
+// Not in the C: the listen-server bootstrap (src/common/host_cmd.ts's
+// Host_Map_QW_f) has to know whether the map it just asked for actually
+// spawned before it seats a local client on it, and src/main.ts's Host_Frame
+// has to know whether there is a QuakeWorld server in this process to run.
+// QW/server has no `server_t.active` field -- `sv.state` is the whole answer.
+export function SV_ServerActive(): boolean {
+  return sv.state !== ServerStateT.ss_dead;
 }
 
 /*
@@ -362,7 +401,7 @@ export function SV_Shutdown(): void {
     Sys_FileClose(svSendFileState.sv_fraglogfile);
     svSendFileState.sv_logfile = null;
   }
-  NET_Shutdown();
+  NET_Shutdown("server");
 }
 
 /*
@@ -680,7 +719,7 @@ export function SVC_Log(): void {
     // they allready have this data, or we aren't logging frags
     const nack = new Uint8Array(1);
     nack[0] = A2A_NACK.charCodeAt(0);
-    NET_SendPacket(1, nack, net_from);
+    NET_SendPacket(1, nack, net_from, "server");
     return;
   }
 
@@ -691,7 +730,7 @@ export function SVC_Log(): void {
 
   const bytes = new Uint8Array(data.length + 1);
   bytes.set(stringToLatin1Bytes(data), 0);
-  NET_SendPacket(data.length + 1, bytes, net_from);
+  NET_SendPacket(data.length + 1, bytes, net_from, "server");
 }
 
 /*
@@ -705,7 +744,7 @@ export function SVC_Ping(): void {
   const data = new Uint8Array(1);
   data[0] = A2A_ACK.charCodeAt(0);
 
-  NET_SendPacket(1, data, net_from);
+  NET_SendPacket(1, data, net_from, "server");
 }
 
 /*
@@ -1198,7 +1237,7 @@ export function SV_SendBan(): void {
   data.set(stringToLatin1Bytes(body), 5);
   data[5 + body.length] = 0;
 
-  NET_SendPacket(5 + body.length, data, net_from);
+  NET_SendPacket(5 + body.length, data, net_from, "server");
 }
 
 /*
@@ -1222,7 +1261,7 @@ SV_ReadPackets
 =================
 */
 export function SV_ReadPackets(): void {
-  while (NET_GetPacket()) {
+  while (NET_GetPacket("server")) {
     if (SV_FilterPacket()) {
       SV_SendBan(); // tell them we aren't listening...
       continue;
@@ -1427,34 +1466,36 @@ export function SV_InitLocal(): void {
   Cvar_RegisterVariable(sv_mintic);
   Cvar_RegisterVariable(sv_maxtic);
 
-  Cvar_RegisterVariable(fraglimit);
-  Cvar_RegisterVariable(timelimit);
-  Cvar_RegisterVariable(teamplay);
-  Cvar_RegisterVariable(samelevel);
+  // The shared objects carry QW's own default and info flag through
+  // SV_RegisterSharedVariable -- see its own comment.
+  SV_RegisterSharedVariable(fraglimit, "0", true);
+  SV_RegisterSharedVariable(timelimit, "0", true);
+  SV_RegisterSharedVariable(teamplay, "0", true);
+  SV_RegisterSharedVariable(samelevel, "0", true);
   Cvar_RegisterVariable(maxclients);
   Cvar_RegisterVariable(maxspectators);
-  Cvar_RegisterVariable(hostname);
-  Cvar_RegisterVariable(deathmatch);
+  SV_RegisterSharedVariable(hostname, "unnamed", true);
+  SV_RegisterSharedVariable(deathmatch, "1", true); // 0, 1, or 2
   Cvar_RegisterVariable(spawn);
   Cvar_RegisterVariable(watervis);
 
-  Cvar_RegisterVariable(developer);
+  SV_RegisterSharedVariable(developer, "0", false);
 
   Cvar_RegisterVariable(timeout);
   Cvar_RegisterVariable(zombietime);
 
-  Cvar_RegisterVariable(svPhys.sv_maxvelocity);
-  Cvar_RegisterVariable(svPhys.sv_gravity);
-  Cvar_RegisterVariable(svPhys.sv_stopspeed);
-  Cvar_RegisterVariable(svPhys.sv_maxspeed);
+  SV_RegisterSharedVariable(svPhys.sv_maxvelocity, "2000", false);
+  SV_RegisterSharedVariable(svPhys.sv_gravity, "800", false);
+  SV_RegisterSharedVariable(svPhys.sv_stopspeed, "100", false);
+  SV_RegisterSharedVariable(svPhys.sv_maxspeed, "320", false);
   Cvar_RegisterVariable(svPhys.sv_spectatormaxspeed);
-  Cvar_RegisterVariable(svPhys.sv_accelerate);
+  SV_RegisterSharedVariable(svPhys.sv_accelerate, "10", false);
   Cvar_RegisterVariable(svPhys.sv_airaccelerate);
   Cvar_RegisterVariable(svPhys.sv_wateraccelerate);
-  Cvar_RegisterVariable(svPhys.sv_friction);
+  SV_RegisterSharedVariable(svPhys.sv_friction, "4", false);
   Cvar_RegisterVariable(svPhys.sv_waterfriction);
 
-  Cvar_RegisterVariable(prCmds.sv_aim);
+  SV_RegisterSharedVariable(prCmds.sv_aim, "2", false);
 
   Cvar_RegisterVariable(filterban);
 
@@ -1475,7 +1516,7 @@ export function SV_InitLocal(): void {
   // Host_MaxEdicts would clamp every QuakeWorld map to MIN_EDICTS.
   Cvar_RegisterVariable(max_edicts);
 
-  Cvar_RegisterVariable(pausable);
+  SV_RegisterSharedVariable(pausable, "1", false);
 
   Cmd_AddCommand("addip", SV_AddIP_f, "qw");
   Cmd_AddCommand("removeip", SV_RemoveIP_f, "qw");
@@ -1530,7 +1571,7 @@ export function Master_Heartbeat(): void {
   for (let i = 0; i < MAX_MASTERS; i++)
     if (master_adr[i].port) {
       Con_Printf("Sending heartbeat to %s\n", NET_AdrToString(master_adr[i]));
-      NET_SendPacket(string.length, stringToLatin1Bytes(string), master_adr[i]);
+      NET_SendPacket(string.length, stringToLatin1Bytes(string), master_adr[i], "server");
     }
 }
 
@@ -1548,7 +1589,7 @@ export function Master_Shutdown(): void {
   for (let i = 0; i < MAX_MASTERS; i++)
     if (master_adr[i].port) {
       Con_Printf("Sending heartbeat to %s\n", NET_AdrToString(master_adr[i]));
-      NET_SendPacket(string.length, stringToLatin1Bytes(string), master_adr[i]);
+      NET_SendPacket(string.length, stringToLatin1Bytes(string), master_adr[i], "server");
     }
 }
 
@@ -1688,7 +1729,7 @@ export function SV_InitNet(): void {
     port = Q_atoi(com_argv[p + 1]);
     Con_Printf("Port: %i\n", port);
   }
-  NET_Init(port);
+  NET_Init(port, "server");
 
   Netchan_Init();
 

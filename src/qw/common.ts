@@ -935,7 +935,17 @@ export function COM_InitFilesystem(): void {
 // gamedir switch is allowed to unwind to.
 //================
 
+// U41: a QuakeWorld listen server has TWO callers of this -- the client's
+// CL_InitQwProfile and the server's SV_InitProfile, each one-shot on its own
+// half -- and running it twice mounts `qw` twice and re-pins
+// com_base_searchpaths above the duplicate. The guard belongs here, with the
+// function, rather than being duplicated at each caller.
+let adopted = false;
+
 export function COM_AdoptSharedFilesystem(): void {
+  if (adopted) return;
+  adopted = true;
+
   const i = COM_CheckParm("-basedir");
   com_basedir = i && i < com_argc - 1 ? com_argv[i + 1] : host_parms.basedir;
 

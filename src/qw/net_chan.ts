@@ -68,7 +68,7 @@ Deviations from the brief / from Quake 2's net_chan.ts:
   same 0-65535 output range, no seeded-determinism requirement.
 */
 
-import { NetadrT, copyNetadr, net_from, NET_SendPacket, NET_AdrToString, NET_CompareAdr } from "./net_udp";
+import { NetadrT, copyNetadr, net_from, NET_SendPacket, NET_AdrToString, NET_CompareAdr, type NetSideT } from "./net_udp";
 import { SizeBuf, SZ_Write, MSG_WriteLong, MSG_WriteShort, MSG_BeginReading, MSG_ReadLong, MSG_ReadShort, net_message } from "../common/sizebuf";
 import { CvarT, Cvar_RegisterVariable, Cvar_SetValue } from "../common/cvar";
 import { Con_Printf } from "../client/console";
@@ -135,6 +135,15 @@ export const netchanState = {
   demoplayback: false,
   realtime: 0,
 };
+
+// U41: which of src/qw/net_udp.ts's two sockets this call's packets leave by.
+// `isClient` already carries "which binary is this call happening in", and a
+// listen server is both binaries in one process taking turns -- src/main.ts's
+// Host_Frame clears it around the server half and sets it around the client
+// half, which is the same fixed sense each of the C's two processes saw.
+function netchanSide(): NetSideT {
+  return netchanState.isClient ? "client" : "server";
+}
 
 export interface NetchanServerHooks {
   isPaused(): boolean;
@@ -247,7 +256,7 @@ export function Netchan_OutOfBand(adr: NetadrT, length: number, data: Uint8Array
   // send the datagram
   // zoid, no input in demo playback mode
   if (!(netchanState.isClient && netchanState.demoplayback)) {
-    NET_SendPacket(send.cursize, send.data, adr);
+    NET_SendPacket(send.cursize, send.data, adr, netchanSide());
   }
 }
 
@@ -412,7 +421,7 @@ export function Netchan_Transmit(chan: NetchanT, length: number, data: Uint8Arra
 
   // zoid, no input in demo playback mode
   if (!(netchanState.isClient && netchanState.demoplayback)) {
-    NET_SendPacket(send.cursize, send.data, chan.remote_address);
+    NET_SendPacket(send.cursize, send.data, chan.remote_address, netchanSide());
   }
 
   if (chan.cleartime < netchanState.realtime) {

@@ -92,6 +92,30 @@ Deviations from the brief / from Quake 2's net_udp.ts:
 - NET_StringToAdr: RULING per brief -- dotted quads only; a leading
   non-digit character (the C's gethostbyname path) returns false rather than
   attempting any DNS lookup.
+
+U41 (ARCHITECTURE.md "Unified client and server"): the C's `int net_socket`
+is one file-scope descriptor because qwcl and qwsv are two binaries. This one
+binary can hold both at once -- a QuakeWorld listen server is a client and a
+server in one process -- and QuakeWorld has no loopback network driver, so
+even that local player's packets travel over real UDP and the two halves need
+one socket each: the client's on PORT_CLIENT (27001) and the server's on
+PORT_SERVER (27500, or `-port`). `net_socket` therefore becomes a pair, keyed
+by `NetSideT`, and NET_Init/NET_Shutdown/NET_GetPacket/NET_SendPacket take the
+side. The parameter defaults to "client" so that every call site that is a
+client by construction (src/qw/client/cl_main.ts, cl_demo.ts's CL_GetMessage)
+reads exactly as the C's does; src/qw/server/** passes "server" explicitly,
+and src/qw/net_chan.ts passes the side its own `netchanState.isClient` names.
+
+`net_local_adr` follows the split the same way: the exported object stays the
+CLIENT's, since that is the one QW/client/cl_main.c's A2C_CLIENT_COMMAND check
+reads, and NET_LocalAdr(side) is how the server side (sv_ccmds.ts's `status`,
+and host_cmd.ts's listen-server connect, which needs the port the server
+actually bound) reads its own.
+
+`net_message`/`net_message_buffer` stay single, as the C's are: the client's
+CL_ReadPackets and the server's SV_ReadPackets each drain their own socket to
+completion inside their own half of the frame, exactly as the two processes
+did, so the one buffer is never live for both at once.
 */
 
 import { ptr } from "bun:ffi";
@@ -133,7 +157,18 @@ export function copyNetadr(src: NetadrT): NetadrT {
   return a;
 }
 
+// Which of the two sockets a call means -- see the file header's U41 note.
+export type NetSideT = "client" | "server";
+
 export const net_local_adr: NetadrT = new NetadrT();
+// The server side's `net_local_adr`. One object per side, since the two
+// sockets bind different ports; NET_LocalAdr is how a caller names one.
+const net_local_adr_server: NetadrT = new NetadrT();
+
+export function NET_LocalAdr(side: NetSideT = "client"): NetadrT {
+  return side === "server" ? net_local_adr_server : net_local_adr;
+}
+
 export const net_from: NetadrT = new NetadrT(); // address of who sent the packet
 export { net_message }; // sizebuf_t net_message -- see file header
 
@@ -271,7 +306,9 @@ function SockadrToNetadr(s: Uint8Array, a: NetadrT): void {
 
 //=============================================================================
 
-let net_socket = -1; // non blocking, for receives
+// int net_socket; -- one per side, see the file header's U41 note. Both are
+// non blocking, for receives.
+const net_sockets: { client: number; server: number } = { client: -1, server: -1 };
 
 // Scratch sockaddr buffers -- the C's are function-local stack structs, and
 // this module, like the C, is single-threaded and never re-enters itself.
@@ -327,7 +364,7 @@ function UDP_OpenSocket(port: number): number {
   return newsocket;
 }
 
-function NET_GetLocalAddress(): void {
+function NET_GetLocalAddress(side: NetSideT): void {
   // gethostname(buff, MAXHOSTNAMELEN) + NET_StringToAdr(buff): this port's
   // NET_StringToAdr never resolves a machine name (see file header), so the
   // `-ip` interface address, or 127.0.0.1, stands in for it.
@@ -338,17 +375,18 @@ function NET_GetLocalAddress(): void {
     if (parmIp !== undefined) ipStr = parmIp;
   }
 
-  NET_StringToAdr(ipStr, net_local_adr);
+  const adr = NET_LocalAdr(side);
+  NET_StringToAdr(ipStr, adr);
 
   const l = lib();
   if (l) {
     const address = new Uint8Array(SOCKADDR_SIZE);
     socklenBuf[0] = SOCKADDR_SIZE;
-    if (l.getsockname(net_socket, ptr(address), ptr(socklenBuf)) === -1) Sys_Error("NET_Init: getsockname:", l.strerror(l.errno()));
-    net_local_adr.port = (address[2] << 8) | address[3];
+    if (l.getsockname(net_sockets[side], ptr(address), ptr(socklenBuf)) === -1) Sys_Error("NET_Init: getsockname:", l.strerror(l.errno()));
+    adr.port = (address[2] << 8) | address[3];
   }
 
-  Con_Printf(`IP address ${NET_AdrToString(net_local_adr)}\n`);
+  Con_Printf(`IP address ${NET_AdrToString(adr)}\n`);
 }
 
 /*
@@ -356,11 +394,12 @@ function NET_GetLocalAddress(): void {
 NET_Init
 ====================
 */
-export function NET_Init(port: number): void {
+export function NET_Init(port: number, side: NetSideT = "client"): void {
   //
   // open the single socket to be used for all communications
+  // (one per side in this port -- see the file header's U41 note)
   //
-  net_socket = UDP_OpenSocket(port);
+  net_sockets[side] = UDP_OpenSocket(port);
 
   //
   // init the message buffer
@@ -372,7 +411,7 @@ export function NET_Init(port: number): void {
   //
   // determine my name & address
   //
-  NET_GetLocalAddress();
+  NET_GetLocalAddress(side);
 
   Con_Printf("UDP Initialized\n");
 }
@@ -382,14 +421,20 @@ export function NET_Init(port: number): void {
 NET_Shutdown
 ====================
 */
-export function NET_Shutdown(): void {
+// With no side named, both sockets close: that is what a process shutting
+// down means, and it is what every existing caller (and every test's afterAll)
+// asks for.
+export function NET_Shutdown(side?: NetSideT): void {
   const l = lib();
-  if (l && net_socket !== -1) l.close(net_socket);
-  net_socket = -1;
+  for (const s of side === undefined ? (["client", "server"] as const) : [side]) {
+    if (l && net_sockets[s] !== -1) l.close(net_sockets[s]);
+    net_sockets[s] = -1;
+  }
 }
 
-export function NET_GetPacket(): boolean {
+export function NET_GetPacket(side: NetSideT = "client"): boolean {
   const l = lib();
+  const net_socket = net_sockets[side];
   if (!l || net_socket === -1) return false;
 
   socklenBuf[0] = SOCKADDR_SIZE;
@@ -415,8 +460,9 @@ export function NET_GetPacket(): boolean {
   return ret !== 0;
 }
 
-export function NET_SendPacket(length: number, data: Uint8Array, to: NetadrT): void {
+export function NET_SendPacket(length: number, data: Uint8Array, to: NetadrT, side: NetSideT = "client"): void {
   const l = lib();
+  const net_socket = net_sockets[side];
   if (!l || net_socket === -1) return;
 
   NetadrToSockadr(to, toSockaddr);

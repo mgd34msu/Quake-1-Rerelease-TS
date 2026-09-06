@@ -135,7 +135,7 @@ import { Netchan_Init, Netchan_Process, Netchan_Setup, Netchan_Transmit, netchan
 import { A2A_ACK, A2A_PING, A2C_CLIENT_COMMAND, A2C_PRINT, ClcOpsT, MAX_CLIENTS, PORT_CLIENT, PROTOCOL_VERSION, S2C_CHALLENGE, S2C_CONNECTION } from "../protocol";
 import { Cvar_RegisterVariable, Cvar_Set, Cvar_VariableValue, Cvar_WriteVariables, CvarT, setCvarInfoHook } from "../../common/cvar";
 import { developer, host, HostEndGame, host_speeds, SysFileTextWriter } from "../../common/host";
-import { resetClientProfile } from "../../common/profile";
+import { resetClientProfile, serverProfile, serverShutdownHooks } from "../../common/profile";
 // One object per cvar name -- see the blocks below.
 import {
   cl_shownet,
@@ -610,6 +610,26 @@ export function CL_Disconnect(): void {
 
 export function CL_Disconnect_f(): void {
   CL_Disconnect();
+
+  // U41: `disconnect` typed on a QuakeWorld LISTEN server takes the server
+  // down with the connection, which is what WinQuake's own CL_Disconnect_f
+  // does (`if (sv.active) Host_ShutdownServer (false);`) and what QW/client
+  // has no equivalent of, having no listen server at all. Reached through
+  // src/common/profile.ts's serverShutdownHooks rather than an import of the
+  // server tree: the slot is null in a process that never linked it and its
+  // body is a no-op when no level is up. CL_Disconnect itself does NOT do
+  // this -- the connect path calls it to close the previous connection, and
+  // src/common/host_cmd.ts's Host_Map_QW_f connects the local client to a
+  // server it has just spawned.
+  const shutdown = serverShutdownHooks.qw;
+  if (shutdown !== null && serverProfile() === "qw") {
+    // SV_FinalMessage's packets leave by the server's socket, so the netchan
+    // flag is the server's for the duration (src/qw/net_chan.ts's netchanSide).
+    const wasClient = netchanState.isClient;
+    netchanState.isClient = false;
+    shutdown();
+    netchanState.isClient = wasClient;
+  }
 }
 
 /*

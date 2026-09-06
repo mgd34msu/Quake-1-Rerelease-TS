@@ -572,6 +572,16 @@ export function Cmd_AddCommand(cmd_name: string, fn: XCommandT, profile?: NetPro
         cmd.fn = fn; // the previous renderer's function must not survive the switch
         return;
       }
+      // U41, the twin of src/common/cvar.ts's `existing === variable` no-op:
+      // one binary runs an init function that the C ran once per binary more
+      // than once -- pr_edict_core.ts's PR_Init registers `edict`/`edicts`/
+      // `edictcount`/`profile` from WinQuake's Host_Init and again from the
+      // QuakeWorld server's SV_InitProfile. Re-registering THE SAME function
+      // under the same name and scope leaves cmd_functions exactly as it
+      // already is, so it is a no-op, not the double definition this guard
+      // exists to catch. A DIFFERENT function under a name already taken is
+      // still a real collision and still prints.
+      if (cmd.fn === fn) return;
       Con_Printf("Cmd_AddCommand: %s already defined\n", cmd_name);
       return;
     }

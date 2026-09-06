@@ -95,7 +95,7 @@ import {
   Q_atof,
   Q_atoi,
 } from "../common";
-import { net_from, net_local_adr, NET_AdrToString, NET_BaseAdrToString, NET_SendPacket, NET_StringToAdr } from "../net_udp";
+import { net_from, NET_AdrToString, NET_BaseAdrToString, NET_LocalAdr, NET_SendPacket, NET_StringToAdr } from "../net_udp";
 import { Sys_FileClose, Sys_FileOpenRead, Sys_FileOpenWrite, Sys_FileTime, Sys_mkdir, Sys_Quit, SysError } from "../../platform/sys";
 
 // see file header: sv_main.c-owned names, reached lazily.
@@ -173,7 +173,7 @@ export function SV_SetMaster_f(): void {
     Con_Printf("Sending a ping.\n");
 
     const data = new Uint8Array([A2A_PING.charCodeAt(0), 0]);
-    NET_SendPacket(2, data, master_adr[i - 1]);
+    NET_SendPacket(2, data, master_adr[i - 1], "server");
   }
 
   svs.last_heartbeat = -99999;
@@ -445,7 +445,7 @@ export function SV_Status_f(): void {
   const avg = (1000 * svs.stats.latched_active) / STATFRAMES;
   const pak = svs.stats.latched_packets / STATFRAMES;
 
-  Con_Printf("net address      : %s\n", NET_AdrToString(net_local_adr));
+  Con_Printf("net address      : %s\n", NET_AdrToString(NET_LocalAdr("server")));
   Con_Printf("cpu utilization  : %3i%%\n", Math.trunc(cpu));
   Con_Printf("avg response time: %i ms\n", Math.trunc(avg));
   Con_Printf("packets/frame    : %5.2f (%d)\n", pak, num_prstr());

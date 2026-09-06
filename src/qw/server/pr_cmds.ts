@@ -207,6 +207,7 @@ import {
 } from "./progs";
 import { ED_Alloc, ED_Free, ED_Print, ED_PrintEdicts, ED_PrintNum } from "./pr_edict";
 import { OFS_PARM0, OFS_PARM1, OFS_PARM2, OFS_PARM3, OFS_PARM4, OFS_RETURN, type StringT } from "../../progs/pr_comp";
+import { sv_aim } from "../../progs/pr_cmds";
 import { PR_RunError, SV_Error, prExec, setBuiltins, type BuiltinT } from "./pr_exec";
 import {
   DAMAGE_AIM,
@@ -1183,7 +1184,11 @@ vector aim(entity, missilespeed)
 // see file header: QW's real default is "2"; the old WinQuake-style value
 // is kept as a dead comment in the C, ported the same way here.
 // const sv_aim = new CvarT("sv_aim", "0.93");
-export const sv_aim = new CvarT("sv_aim", "2");
+// U41: one object per cvar name -- WinQuake declares `sv_aim` in
+// WinQuake/pr_cmds.c and this binary links both trees. QuakeWorld's own "2"
+// (which disables aim assist outright) is carried onto the shared object by
+// src/qw/server/sv_main.ts's SV_RegisterSharedVariable.
+export { sv_aim };
 
 function PF_aim(): void {
   const ent = G_EDICT(OFS_PARM0);

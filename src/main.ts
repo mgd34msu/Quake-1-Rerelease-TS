@@ -107,9 +107,10 @@ import { Host_Shutdown as NQ_Host_Shutdown } from "./common/host";
 import { registerLandriver, vcrState } from "./common/net_main";
 import { udpLandriver } from "./platform/net_udp";
 import { NET_Ready as qwNetReady } from "./qw/net_udp";
+import { netchanState } from "./qw/net_chan";
 // The qwsv half of the link step: QW/server's own object files. Nothing here
 // runs until the `-dedicated -qw` boot below asks for it.
-import { SV_Frame as QWSV_SV_Frame, SV_Init as QWSV_SV_Init } from "./qw/server/sv_main";
+import { SV_Frame as QWSV_SV_Frame, SV_Init as QWSV_SV_Init, SV_ServerActive as QWSV_SV_ServerActive } from "./qw/server/sv_main";
 import { SV_FlushSignon as QWSV_SV_FlushSignon } from "./qw/server/sv_init";
 import { setSvFlushSignonHook as qwSetSvFlushSignonHook } from "./qw/server/pr_edict";
 import { SV_Quit_f as QWSV_SV_Quit_f } from "./qw/server/sv_ccmds";
@@ -185,8 +186,25 @@ export function Host_Frame(time: number): void {
     QWSV_SV_Frame(time);
     return;
   }
+  // U41, the QuakeWorld listen server: a client process that typed `map` under
+  // the QuakeWorld profile is running both halves, and each of the C's two
+  // binaries ran its own loop. They take turns here, server first (WinQuake's
+  // _Host_Frame runs its listen server ahead of the client's read too), each
+  // with `netchanState.isClient` at the fixed sense that binary compiled with
+  // -- which is also what picks the socket their packets leave by
+  // (src/qw/net_chan.ts's netchanSide).
+  if (qwListenServer()) {
+    netchanState.isClient = false;
+    QWSV_SV_Frame(time);
+    netchanState.isClient = true;
+  }
   if (clientProfile() === "qw") QW_Host_Frame(time);
   else NQ_Host_Frame(time);
+}
+
+// True while this process is a client hosting a QuakeWorld server of its own.
+function qwListenServer(): boolean {
+  return !sysState.isDedicated && serverProfile() === "qw" && QWSV_SV_ServerActive();
 }
 
 // True while this process is a dedicated server running the QuakeWorld tree:

@@ -210,7 +210,7 @@ function SV_FlushRedirect(): void {
     send.set(bodyBytes, 5);
     send[5 + bodyBytes.length] = 0;
 
-    NET_SendPacket(send.length, send, net_from);
+    NET_SendPacket(send.length, send, net_from, "server");
   } else if (sv_redirected === RedirectT.RD_CLIENT) {
     const host_client = svState.host_client;
     if (host_client === null) throw new SysError("SV_FlushRedirect: no host_client");

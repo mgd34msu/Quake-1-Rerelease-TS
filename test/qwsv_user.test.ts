@@ -100,12 +100,14 @@ import {
   SV_Say,
   SV_SetInfo_f,
   SV_UserInit,
-  cl_rollangle,
-  cl_rollspeed,
   sv_mapcheck,
   sv_spectalk,
   ucmds,
 } from "../src/qw/server/sv_user";
+// U41: WinQuake and QuakeWorld both declare cl_rollspeed/cl_rollangle, and one
+// object per name now serves both -- WinQuake/view.c's. src/qw/server/sv_user.ts
+// registers and reads these two through a lazy require of that module.
+import { cl_rollangle, cl_rollspeed } from "../src/client/view";
 
 let savedQwBuiltins: ReturnType<typeof getBuiltins> | null = null;
 const scratchRoot = (process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests");

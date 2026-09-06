@@ -193,13 +193,21 @@ import { FileHandle } from "../../common/common";
 import { Com_sprintf } from "../../common/sprintf";
 import { type Vec3, AngleVectors, DotProduct, VectorCopy, vec3, vec3_origin } from "../../common/mathlib";
 import { Sys_FileClose, Sys_FileOpenWrite, Sys_FileRead, Sys_FileWrite, Sys_Printf, SysError } from "../../platform/sys";
+import type * as ViewModule from "../../client/view";
 
 // `usercmd_t cmd;` -- file scope in the C, shared by SV_RunCmd's own
 // chop-up recursion.
 export const cmd: QwUsercmdT = new QwUsercmdT();
 
-export const cl_rollspeed = new CvarT("cl_rollspeed", "200");
-export const cl_rollangle = new CvarT("cl_rollangle", "2.0");
+// U41: one object per cvar name -- WinQuake declares `cl_rollspeed` and
+// `cl_rollangle` in WinQuake/view.c (V_CalcRoll is "used by view and
+// sv_user"), and this binary links both trees. Reached through a lazy
+// require, not a static import, so the QuakeWorld dedicated server's link
+// step stays what it was: src/client/view.ts pulls the whole client renderer
+// in behind it, and qwsv has no client. Same idiom as `svMain()` below.
+function viewMod(): typeof ViewModule {
+  return require("../../client/view");
+}
 export const sv_spectalk = new CvarT("sv_spectalk", "1");
 
 export const sv_mapcheck = new CvarT("sv_mapcheck", "1");
@@ -782,7 +790,7 @@ export function OutofBandPrintf(where: NetadrT, fmt: string, ...args: Array<stri
   send[4] = A2C_PRINT.charCodeAt(0);
   for (let i = 0; i < text.length && 5 + i < send.length; i++) send[5 + i] = text.charCodeAt(i) & 0xff;
 
-  NET_SendPacket(5 + text.length + 1, send, where);
+  NET_SendPacket(5 + text.length + 1, send, where, "server");
 }
 
 /*
@@ -1354,9 +1362,10 @@ export function V_CalcRoll(angles: Vec3, velocity: Vec3): number {
   const sign = side < 0 ? -1 : 1;
   side = Math.abs(side);
 
-  const value = cl_rollangle.value;
+  const view = viewMod();
+  const value = view.cl_rollangle.value;
 
-  if (side < cl_rollspeed.value) side = (side * value) / cl_rollspeed.value;
+  if (side < view.cl_rollspeed.value) side = (side * value) / view.cl_rollspeed.value;
   else side = value;
 
   return side * sign;
@@ -1755,8 +1764,9 @@ SV_UserInit
 ==============
 */
 export function SV_UserInit(): void {
-  Cvar_RegisterVariable(cl_rollspeed);
-  Cvar_RegisterVariable(cl_rollangle);
+  const view = viewMod();
+  Cvar_RegisterVariable(view.cl_rollspeed);
+  Cvar_RegisterVariable(view.cl_rollangle);
   Cvar_RegisterVariable(sv_spectalk);
   Cvar_RegisterVariable(sv_mapcheck);
 }

@@ -38,6 +38,7 @@ import { ClientStateT, ServerStateT, SOLID_BBOX, SOLID_BSP, MOVETYPE_PUSH, sv, s
 import { SV_ClearWorld } from "../src/qw/server/world";
 import { SV_CalcPHS } from "../src/qw/server/sv_init";
 import { MSG_BROADCAST, MSG_ONE, pr_builtin, pr_numbuiltins, sv_aim } from "../src/qw/server/pr_cmds";
+import { sv_aim as nqSvAim } from "../src/progs/pr_cmds";
 import { svErrorState } from "../src/qw/server/sv_main";
 import { HAVE_QWPROGS } from "./support/fixture_availability";
 
@@ -429,18 +430,21 @@ describe.skipIf(!HAVE_QWPROGS)("PF_setorigin / PF_setsize (world.ts linking)", (
 });
 
 describe.skipIf(!HAVE_QWPROGS)("sv_aim", () => {
-  // Checked via `.string` (set unconditionally by CvarT's constructor), not
-  // `.value` (only populated by a successful Cvar_RegisterVariable call):
-  // src/progs/pr_cmds.ts (WinQuake) registers its own, separate CvarT also
-  // named "sv_aim" against the same process-wide cvar registry (src/common/
-  // cvar.ts's `cvar_vars`, shared across every test file bun loads into one
-  // process); Cvar_RegisterVariable is idempotent by name (see this file's
-  // own header), so whichever module's sv_aim registers first "wins" the
-  // registry slot and the other's `.value` stays its constructor default (0)
-  // -- a real, pre-existing, already-documented cross-track collision (also
-  // observable for `teamplay`/`developer`/etc.), not a defect in this port.
-  test("QW's real default is \"2\", not WinQuake's \"0.93\"", () => {
-    expect(sv_aim.string).toBe("2");
+  // U41 replaced the cross-track collision this block used to document (two
+  // CvarT objects named "sv_aim", one per tree, of which only the first to
+  // register was reachable from the console while the other sat at value 0)
+  // with one object per name: this module re-exports the one WinQuake's
+  // pr_cmds.c declares. QuakeWorld's own default -- "2", which disables the
+  // aim assist WinQuake's "0.93" turns on -- is carried onto the shared
+  // object when the QuakeWorld server registers it, by
+  // src/qw/server/sv_main.ts's SV_RegisterSharedVariable (QW/client/cvar.c's
+  // own Cvar_RegisterVariable tail). The constructor default read here is
+  // therefore WinQuake's; test/qw_listen.test.ts covers the QuakeWorld one
+  // reaching a real qwsv boot.
+  test("is the one object WinQuake's pr_cmds.c declares", () => {
+    expect(sv_aim).toBe(nqSvAim);
+    expect(sv_aim.name).toBe("sv_aim");
+    expect(sv_aim.string).toBe("0.93");
   });
 });
 
