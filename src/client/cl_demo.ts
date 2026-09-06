@@ -67,13 +67,20 @@ Deviations from PORTING.md / the C source:
   reads the OLD `cls.forcetrack` (the assignment `cls.forcetrack = track`
   happens several lines later) -- a real bug in the original, printing the
   stale value instead of the just-parsed `track`. Preserved verbatim.
+- U3 (protocol 15/666/999): a `.dem` file is a raw capture of one client's
+  stream, header apart, so nothing here decodes a message and nothing here
+  needs to know the protocol. Playback re-derives it exactly as a live connect
+  does: the recorded svc_serverinfo carries the protocol number (and, for 999,
+  the PRFL_* word), and CL_ParseServerInfo sets cl.protocol/cl.protocolflags
+  off it. CL_PlayDemo_f resets both to protocol 15 first so a demo that is cut
+  before its serverinfo cannot inherit the last connection's protocol.
 */
 
 import { Q_atoi, va, com_gamedir, COM_DefaultExtension, COM_FOpenFile, COM_FRead, COM_FClose, type FileHandle } from "../common/common";
 import { Com_sprintf } from "../common/sprintf";
 import { Cmd_Argc, Cmd_Argv, Cmd_ExecuteString, cmdState, CmdSourceT } from "../common/cmd";
 import { MSG_WriteByte, net_message, SZ_Clear } from "../common/sizebuf";
-import { SvcOpsT } from "../common/protocol";
+import { PROTOCOL_NETQUAKE, SvcOpsT } from "../common/protocol";
 import { NET_GetMessage } from "../common/net_main";
 import { MAX_MSGLEN } from "../common/quakedef";
 import { VectorCopy } from "../common/mathlib";
@@ -185,7 +192,11 @@ export function CL_GetMessage(): number {
     }
 
     net_message.cursize = headerView.getInt32(0, true); // LittleLong (net_message.cursize) -- no-op, see file header
-    if (net_message.cursize > MAX_MSGLEN) Sys_Error("Demo message > MAX_MSGLEN");
+    // U3: the wide protocols raise MAX_MSGLEN to 64000, but net_message's own
+    // buffer is NET_MAXMESSAGE bytes (src/common/net.ts, outside this unit's
+    // SCOPE), so the smaller of the two is the real ceiling -- reading past it
+    // would run off the end of net_message.data.
+    if (net_message.cursize > Math.min(MAX_MSGLEN, net_message.maxsize)) Sys_Error("Demo message > MAX_MSGLEN");
 
     const r = COM_FRead(demofile, net_message.data, net_message.cursize);
     if (r !== net_message.cursize) {
@@ -344,6 +355,9 @@ export function CL_PlayDemo_f(): void {
   cls.demoplayback = true;
   cls.state = CactiveT.ca_connected;
   cls.forcetrack = 0;
+  // see the file header: the demo's own recorded serverinfo re-derives these
+  cl.protocol = PROTOCOL_NETQUAKE;
+  cl.protocolflags = 0;
 
   let neg = false;
   const demofile = cls.demofile;

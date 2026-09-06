@@ -126,9 +126,10 @@ import {
   type Vec3,
 } from "../common/mathlib";
 import { Mod_ForName, Mod_LeafPVS, Mod_PointInLeaf, type ModelT } from "../common/model";
-import { MAX_MODELS, MAX_SOUNDS } from "../common/quakedef";
+import { EntityStateT, MAX_MODELS, MAX_SOUNDS } from "../common/quakedef";
 import { MSG_WriteAngle, MSG_WriteByte, MSG_WriteChar, MSG_WriteCoord, MSG_WriteLong, MSG_WriteShort, MSG_WriteString, type SizeBuf } from "../common/sizebuf";
-import { SvcOpsT } from "../common/protocol";
+import { ENTALPHA_DEFAULT, ENTALPHA_ZERO, ENTSCALE_DEFAULT, PROTOCOL_NETQUAKE, PROTOCOL_RMQ, SvcOpsT } from "../common/protocol";
+import { getCodec } from "../common/protocol/registry";
 import { Sys_Error, SysError } from "../platform/sys";
 import { GLOBAL_OFS, type GlobalVars } from "./progdefs";
 import {
@@ -167,7 +168,7 @@ import {
 } from "../server/server";
 import { MOVE_NORMAL, SV_LinkEdict, SV_Move, SV_PointContents } from "../server/world";
 import { SV_CheckBottom, SV_MoveToGoal, SV_movestep } from "../server/sv_move";
-import { SV_ModelIndex, SV_StartParticle, SV_StartSound } from "../server/sv_main";
+import { SV_EdictAlpha, SV_EdictScale, SV_ModelIndex, SV_StartParticle, SV_StartSound } from "../server/sv_main";
 
 //============================================================================
 // small module-private guards, matching the pattern already established in
@@ -585,14 +586,10 @@ function PF_ambientsound(): void {
     return;
   }
 
-  // add an svc_spawnambient command to the level signon packet
-  MSG_WriteByte(sv.signon, SvcOpsT.svc_spawnstaticsound);
-  for (let i = 0; i < 3; i++) MSG_WriteCoord(sv.signon, pos[i]);
-
-  MSG_WriteByte(sv.signon, soundnum);
-
-  MSG_WriteByte(sv.signon, vol * 255);
-  MSG_WriteByte(sv.signon, attenuation * 64);
+  // add an svc_spawnambient command to the level signon packet. The codec
+  // picks svc_spawnstaticsound vs svc_spawnstaticsound2 and refuses a sound
+  // index protocol 15 cannot name.
+  getCodec(sv.protocol).writeStaticSound(sv.signon, pos, soundnum, vol, attenuation, sv.protocolflags);
 }
 
 /*
@@ -1336,19 +1333,28 @@ function PF_WriteEntity(): void {
 
 //=============================================================================
 
+const makestaticScratch = new EntityStateT();
+
 function PF_makestatic(): void {
   const ent = G_EDICT(OFS_PARM0);
+  const wide = sv.protocol !== PROTOCOL_NETQUAKE;
 
-  MSG_WriteByte(sv.signon, SvcOpsT.svc_spawnstatic);
+  const state = makestaticScratch;
+  state.modelindex = SV_ModelIndex(PR_GetString(ent.v.model));
+  state.frame = ent.v.frame;
+  state.colormap = ent.v.colormap;
+  state.skin = ent.v.skin;
+  VectorCopy(ent.v.origin, state.origin);
+  VectorCopy(ent.v.angles, state.angles);
+  // johnfitz -- alpha/scale. Protocol 15 leaves both at their defaults so its
+  // bytes are exactly the seed's (see sv_main.ts's SV_WriteEntitiesToClient
+  // for the same ruling).
+  state.alpha = wide ? SV_EdictAlpha(ent) : ENTALPHA_DEFAULT;
+  state.scale = sv.protocol === PROTOCOL_RMQ ? SV_EdictScale(ent) : ENTSCALE_DEFAULT;
 
-  MSG_WriteByte(sv.signon, SV_ModelIndex(PR_GetString(ent.v.model)));
-
-  MSG_WriteByte(sv.signon, ent.v.frame);
-  MSG_WriteByte(sv.signon, ent.v.colormap);
-  MSG_WriteByte(sv.signon, ent.v.skin);
-  for (let i = 0; i < 3; i++) {
-    MSG_WriteCoord(sv.signon, ent.v.origin[i]);
-    MSG_WriteAngle(sv.signon, ent.v.angles[i]);
+  // johnfitz -- don't send invisible static entities
+  if (!(wide && state.alpha === ENTALPHA_ZERO)) {
+    getCodec(sv.protocol).writeStatic(sv.signon, state, sv.protocolflags);
   }
 
   // throw the entity away now

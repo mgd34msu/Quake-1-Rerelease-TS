@@ -28,8 +28,8 @@ import { CvarT, Cvar_RegisterVariable } from "../../common/cvar";
 import { Con_Printf } from "../../client/console";
 import { Sys_Error, SysError } from "../../platform/sys";
 import { Com_sprintf } from "../../common/sprintf";
-import { MAX_EDICTS } from "../../common/quakedef";
-import { deathmatch } from "../../common/host";
+
+import { deathmatch, Host_MaxEdicts } from "../../common/host";
 import { hostCmdState } from "../../common/host_cmd";
 import {
   MOVETYPE_STEP,
@@ -112,7 +112,13 @@ export const nqProfile: ProgsProfileT = {
   extensions: new Set<string>(),
 
   get maxEdicts(): number {
-    return MAX_EDICTS;
+    // U3: quakedef.h's MAX_EDICTS is now only the ceiling on the `max_edicts`
+    // cvar; the live cap is the table SV_SpawnServer allocated (Ironwail's
+    // `qcvm->max_edicts`). Before a server has allocated one -- a bare
+    // PR_LoadProgs in a test, or a savegame load before SV_SpawnServer -- the
+    // clamped cvar value is the answer, which is exactly what SV_SpawnServer
+    // is about to allocate.
+    return sv.max_edicts > 0 ? sv.max_edicts : Host_MaxEdicts();
   },
   edictAllocStart() {
     return svs.maxclients + 1;

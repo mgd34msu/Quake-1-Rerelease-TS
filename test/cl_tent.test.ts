@@ -787,6 +787,6 @@ describe("client.h constants this unit relies on", () => {
   test("MAX_BEAMS / MAX_TEMP_ENTITIES / MAX_VISEDICTS", () => {
     expect(MAX_BEAMS).toBe(24);
     expect(MAX_TEMP_ENTITIES).toBe(64);
-    expect(MAX_VISEDICTS).toBe(256);
+    expect(MAX_VISEDICTS).toBe(4096); // U3: widened from WinQuake's 256 (Ironwail client.h:308)
   });
 });

@@ -165,3 +165,112 @@ export const TE_EXPLOSION2 = 12;
 // PGM 01/21/97
 export const TE_BEAM = 13;
 // PGM 01/21/97
+
+//============================================================================
+// U3 additions: FitzQuake 666 / RMQ 999 (Ironwail Quake/protocol.h). Protocol
+// 15's own constants above are untouched; everything below is only read by a
+// wide codec.
+
+export const PROTOCOL_NETQUAKE = 15;
+export const PROTOCOL_FITZQUAKE = 666;
+export const PROTOCOL_RMQ = 999;
+
+// PROTOCOL_RMQ protocol flags
+export const PRFL_SHORTANGLE = 1 << 1;
+export const PRFL_FLOATANGLE = 1 << 2;
+export const PRFL_24BITCOORD = 1 << 3;
+export const PRFL_FLOATCOORD = 1 << 4;
+export const PRFL_EDICTSCALE = 1 << 5;
+export const PRFL_ALPHASANITY = 1 << 6; // cleanup insanity with alpha
+export const PRFL_INT32COORD = 1 << 7;
+export const PRFL_MOREFLAGS = 1 << 31; // not supported
+
+// The set an RMQ client accepts (cl_parse.c's `supportedflags`).
+export const PRFL_SUPPORTED = PRFL_SHORTANGLE | PRFL_FLOATANGLE | PRFL_24BITCOORD | PRFL_FLOATCOORD | PRFL_EDICTSCALE | PRFL_INT32COORD;
+
+// U_NOLERP under its FitzQuake name: the bit is only ever set for
+// MOVETYPE_STEP, and 666/999 give it lerp meaning on the client.
+export const U_STEP = U_NOLERP;
+
+export const U_EXTEND1 = 1 << 15;
+export const U_ALPHA = 1 << 16; // 1 byte, uses ENTALPHA_ENCODE, not sent if equal to baseline
+export const U_FRAME2 = 1 << 17; // 1 byte, this is .frame & 0xFF00 (second byte)
+export const U_MODEL2 = 1 << 18; // 1 byte, this is .modelindex & 0xFF00 (second byte)
+export const U_LERPFINISH = 1 << 19; // 1 byte, 0.0-1.0 maps to 0-255, this is ent->v.nextthink - sv.time
+export const U_SCALE = 1 << 20; // 1 byte, for PROTOCOL_RMQ PRFL_EDICTSCALE
+export const U_UNUSED21 = 1 << 21;
+export const U_UNUSED22 = 1 << 22;
+export const U_EXTEND2 = 1 << 23; // another byte to follow, future expansion
+
+export const SU_EXTEND1 = 1 << 15; // another byte to follow
+export const SU_WEAPON2 = 1 << 16; // 1 byte, this is .weaponmodel & 0xFF00 (second byte)
+export const SU_ARMOR2 = 1 << 17; // 1 byte, this is .armorvalue & 0xFF00 (second byte)
+export const SU_AMMO2 = 1 << 18; // 1 byte, this is .currentammo & 0xFF00 (second byte)
+export const SU_SHELLS2 = 1 << 19; // 1 byte, this is .ammo_shells & 0xFF00 (second byte)
+export const SU_NAILS2 = 1 << 20; // 1 byte, this is .ammo_nails & 0xFF00 (second byte)
+export const SU_ROCKETS2 = 1 << 21; // 1 byte, this is .ammo_rockets & 0xFF00 (second byte)
+export const SU_CELLS2 = 1 << 22; // 1 byte, this is .ammo_cells & 0xFF00 (second byte)
+export const SU_EXTEND2 = 1 << 23; // another byte to follow
+export const SU_WEAPONFRAME2 = 1 << 24; // 1 byte, this is .weaponframe & 0xFF00 (second byte)
+export const SU_WEAPONALPHA = 1 << 25; // 1 byte, alpha for weaponmodel, uses ENTALPHA_ENCODE
+export const SU_EXTEND3 = 1 << 31; // another byte to follow, future expansion
+
+export const SND_LARGEENTITY = 1 << 3; // a short + byte (instead of just a short)
+export const SND_LARGESOUND = 1 << 4; // a short soundindex (instead of a byte)
+
+// flags for entity baseline messages
+export const B_LARGEMODEL = 1 << 0; // modelindex is short instead of byte
+export const B_LARGEFRAME = 1 << 1; // frame is short instead of byte
+export const B_ALPHA = 1 << 2; // 1 byte, uses ENTALPHA_ENCODE, not sent if ENTALPHA_DEFAULT
+export const B_SCALE = 1 << 3;
+
+// alpha encoding
+export const ENTALPHA_DEFAULT = 0; // entity's alpha is "default" (i.e. water obeys r_wateralpha)
+export const ENTALPHA_ZERO = 1; // entity is invisible (lowest possible alpha)
+export const ENTALPHA_ONE = 255; // entity is fully opaque (highest possible alpha)
+
+// server convert to byte to send to client
+export function ENTALPHA_ENCODE(a: number): number {
+  if (a === 0) return ENTALPHA_DEFAULT;
+  const v = a * 254 + 1;
+  return Q_rint(v < 1 ? 1 : v > 255 ? 255 : v);
+}
+
+// client convert to float for rendering
+export function ENTALPHA_DECODE(a: number): number {
+  return a === ENTALPHA_DEFAULT ? 1.0 : (a - 1) / 254;
+}
+
+// server convert to float for savegame
+export function ENTALPHA_TOSAVE(a: number): number {
+  return a === ENTALPHA_DEFAULT ? 0.0 : a === ENTALPHA_ZERO ? -1.0 : (a - 1) / 254;
+}
+
+export const ENTSCALE_DEFAULT = 16; // equivalent to float 1.0 due to byte packing
+
+export function ENTSCALE_ENCODE(a: number): number {
+  return a ? a * ENTSCALE_DEFAULT : ENTSCALE_DEFAULT;
+}
+
+export function ENTSCALE_DECODE(a: number): number {
+  return a / ENTSCALE_DEFAULT;
+}
+
+// mathlib.h's `Q_rint` (round half away from zero for positives, the C's
+// `(x > 0 ? (int)(x + 0.5) : (int)(x - 0.5))`). mathlib.ts has no port of it;
+// only the protocol encoders below need it, so it lives here.
+export function Q_rint(x: number): number {
+  return x > 0 ? Math.trunc(x + 0.5) : Math.trunc(x - 0.5);
+}
+
+// FitzQuake / re-release server messages. The enum above holds protocol 15's
+// own opcodes exactly as protocol.h does; these are the codes 666/999 add,
+// kept as `export const` because SvcOpsT's members must stay the 15 set (a
+// value outside it is not a member of the enum and cl_parse's svc_strings
+// table is indexed by the 15 set).
+export const svc_skybox = 37; // [string] name
+export const svc_bf = 40;
+export const svc_fog = 41; // [byte] density [byte] red [byte] green [byte] blue [float] time
+export const svc_spawnbaseline2 = 42; // support for large modelindex, large framenum, alpha, using flags
+export const svc_spawnstatic2 = 43; // support for large modelindex, large framenum, alpha, using flags
+export const svc_spawnstaticsound2 = 44; // [coord3] [short] samp [byte] vol [byte] aten

@@ -64,6 +64,7 @@ import type { FileHandle } from "../common/common";
 import type { ModelT } from "../common/model";
 import type { QsocketT } from "../common/net";
 import { MAX_CL_STATS, MAX_EDICTS, MAX_LIGHTSTYLES, MAX_MODELS, MAX_SOUNDS } from "../common/quakedef";
+import { ENTALPHA_DEFAULT, ENTSCALE_DEFAULT, PROTOCOL_NETQUAKE } from "../common/protocol";
 import { type Vec3, vec3 } from "../common/mathlib";
 import { SizeBuf } from "../common/sizebuf";
 import { UsercmdT } from "../server/server";
@@ -272,6 +273,14 @@ export class ClientStateT {
   maxclients = 0;
   gametype = 0;
 
+  // U3 (ARCHITECTURE.md "Protocol layer"): the protocol this connection is
+  // speaking and, for PROTOCOL_RMQ, its `PRFL_*` word. Both are read out of
+  // svc_serverinfo by CL_ParseServerInfo (Ironwail cl_parse.c:315-327) and
+  // steer every read through the session's codec; demo playback re-derives
+  // them the same way, because a demo is a raw capture of this same stream.
+  protocol: number = PROTOCOL_NETQUAKE;
+  protocolflags = 0;
+
   // refresh related state
   worldmodel: ModelT | null = null; // cl_entitites[0].model
   free_efrags: EfragT | null = null;
@@ -334,6 +343,8 @@ export class ClientStateT {
     this.viewentity = 0;
     this.maxclients = 0;
     this.gametype = 0;
+    this.protocol = PROTOCOL_NETQUAKE;
+    this.protocolflags = 0;
     this.worldmodel = null;
     this.free_efrags = null;
     this.num_entities = 0;
@@ -346,7 +357,7 @@ export class ClientStateT {
 }
 
 export const MAX_TEMP_ENTITIES = 64; // lightning bolts, etc
-export const MAX_STATIC_ENTITIES = 128; // torches, etc
+export const MAX_STATIC_ENTITIES = 4096; // torches, etc
 
 export const cl = new ClientStateT();
 
@@ -356,10 +367,66 @@ function makeArray<T>(n: number, make: () => T): T[] {
   return a;
 }
 
+// U3: `cl_entities` and `cl_static_entities` are `entity_t[MAX_EDICTS]` /
+// `[MAX_STATIC_ENTITIES]` in the C -- fixed arrays whose sizes have grown from
+// 600/128 to 32000/4096. Ironwail allocates cl_entities from the heap and
+// grows it (`cl_max_edicts`, CL_EntityNum); this port keeps the exported array
+// bindings every renderer and client module already indexes and grows them in
+// place instead, starting at exactly the seed's sizes so a classic session
+// allocates exactly what it always did, and never shrinking (a shorter array
+// would strand entity objects other modules are still holding). `growEntities`
+// / `growStaticEntities` are the only writers; CL_EntityNum and CL_ParseStatic
+// call them.
+const CL_ENTITIES_INITIAL = 600; // WinQuake's own MAX_EDICTS
+const CL_STATIC_ENTITIES_INITIAL = 128; // WinQuake's own MAX_STATIC_ENTITIES
+
 // FIXME, allocate dynamically
 export const cl_efrags: EfragT[] = makeArray(MAX_EFRAGS, () => new EfragT());
-export const cl_entities: EntityT[] = makeArray(MAX_EDICTS, () => new EntityT());
-export const cl_static_entities: EntityT[] = makeArray(MAX_STATIC_ENTITIES, () => new EntityT());
+export const cl_entities: EntityT[] = makeArray(CL_ENTITIES_INITIAL, () => new EntityT());
+export const cl_static_entities: EntityT[] = makeArray(CL_STATIC_ENTITIES_INITIAL, () => new EntityT());
+
+// U3: FitzQuake 666 / RMQ 999 give entity_t an `alpha`, a `scale` and a
+// `lerpfinish` (Ironwail render.h's entity_t). `EntityT` lives in
+// src/client/render.ts, outside this unit's SCOPE, so the three decoded values
+// are parked in a table indexed exactly like cl_entities / cl_static_entities,
+// which this module already owns and hands to every consumer. The unit that
+// lands client-side lerp consumption is the one that folds them onto EntityT.
+export class EntityExtT {
+  alpha: number = ENTALPHA_DEFAULT;
+  scale: number = ENTSCALE_DEFAULT;
+  lerpfinish = 0; // absolute client time the current frame finishes lerping at
+  hasLerpfinish = false;
+
+  clear(): void {
+    this.alpha = ENTALPHA_DEFAULT;
+    this.scale = ENTSCALE_DEFAULT;
+    this.lerpfinish = 0;
+    this.hasLerpfinish = false;
+  }
+}
+
+export const cl_entity_ext: EntityExtT[] = makeArray(CL_ENTITIES_INITIAL, () => new EntityExtT());
+export const cl_static_entity_ext: EntityExtT[] = makeArray(CL_STATIC_ENTITIES_INITIAL, () => new EntityExtT());
+
+// Grows cl_entities/cl_entity_ext so index `num` exists. Returns false when
+// `num` is past MAX_EDICTS, which is CL_EntityNum's Host_Error case.
+export function growEntities(num: number): boolean {
+  if (num >= MAX_EDICTS) return false;
+  while (cl_entities.length <= num) {
+    cl_entities.push(new EntityT());
+    cl_entity_ext.push(new EntityExtT());
+  }
+  return true;
+}
+
+export function growStaticEntities(num: number): boolean {
+  if (num >= MAX_STATIC_ENTITIES) return false;
+  while (cl_static_entities.length <= num) {
+    cl_static_entities.push(new EntityT());
+    cl_static_entity_ext.push(new EntityExtT());
+  }
+  return true;
+}
 export const cl_lightstyle: LightstyleT[] = makeArray(MAX_LIGHTSTYLES, () => new LightstyleT());
 export const cl_dlights: DlightT[] = makeArray(MAX_DLIGHTS, () => new DlightT());
 export const cl_temp_entities: EntityT[] = makeArray(MAX_TEMP_ENTITIES, () => new EntityT());
@@ -367,7 +434,7 @@ export const cl_beams: BeamT[] = makeArray(MAX_BEAMS, () => new BeamT());
 
 //=============================================================================
 
-export const MAX_VISEDICTS = 256;
+export const MAX_VISEDICTS = 4096;
 export const cl_visedicts: Array<EntityT | null> = new Array<EntityT | null>(MAX_VISEDICTS).fill(null);
 
 export const clState: { cl_numvisedicts: number } = { cl_numvisedicts: 0 };

@@ -91,61 +91,45 @@ Deviations from PORTING.md / the C source:
 */
 
 import { hostCmdState } from "../common/host_cmd";
-import { Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue } from "../common/cvar";
+import { CvarT, Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue } from "../common/cvar";
 import { Com_sprintf } from "../common/sprintf";
 import { Con_DPrintf, Con_Printf } from "../client/console";
 import { Cmd_ExecuteString, CmdSourceT } from "../common/cmd";
 import { standard_quake } from "../common/common";
-import { coop, deathmatch, host, Host_ClearMemory, skill } from "../common/host";
+import { coop, deathmatch, host, Host_ClearMemory, Host_MaxEdicts, skill } from "../common/host";
 import { hostname, NET_CanSendMessage, NET_CheckNewConnections, NET_SendMessage, NET_SendToAll, NET_SendUnreliableMessage, net_activeconnections, setNetActiveConnections } from "../common/net_main";
 import { CONTENTS_SOLID, MAX_MAP_LEAFS } from "../common/bspfile";
-import { isMleaf, Mod_ForName, Mod_LeafPVS, type MleafT, type ModelT, type MnodeT } from "../common/model";
+import { NET_MAXMESSAGE } from "../common/net";
+import { isMleaf, loadState, Mod_ForName, Mod_LeafPVS, type MleafT, type ModelT, type MnodeT } from "../common/model";
+import { BSP_WIDTH_29 } from "../common/bspfile";
 import { DotProduct, VectorAdd, VectorCopy, type Vec3, vec3 } from "../common/mathlib";
-import { MAX_DATAGRAM, MAX_EDICTS, MAX_MODELS, MAX_MSGLEN, MAX_SOUNDS, VERSION } from "../common/quakedef";
+import { DATAGRAM_MTU, MAX_DATAGRAM, MAX_MODELS, MAX_MSGLEN, MAX_SOUNDS, VERSION } from "../common/quakedef";
 import {
-  DEFAULT_SOUND_PACKET_ATTENUATION,
-  DEFAULT_SOUND_PACKET_VOLUME,
-  DEFAULT_VIEWHEIGHT,
+  ENTALPHA_DEFAULT,
+  ENTALPHA_ENCODE,
+  ENTALPHA_ZERO,
+  ENTSCALE_DEFAULT,
+  ENTSCALE_ENCODE,
   GAME_COOP,
   GAME_DEATHMATCH,
-  PROTOCOL_VERSION,
-  SND_ATTENUATION,
-  SND_VOLUME,
-  SU_ARMOR,
-  SU_IDEALPITCH,
-  SU_INWATER,
-  SU_ITEMS,
-  SU_ONGROUND,
-  SU_PUNCH1,
-  SU_VELOCITY1,
-  SU_VIEWHEIGHT,
-  SU_WEAPON,
-  SU_WEAPONFRAME,
+  PROTOCOL_FITZQUAKE,
+  PROTOCOL_NETQUAKE,
+  PROTOCOL_RMQ,
+  Q_rint,
   SvcOpsT,
-  U_ANGLE1,
-  U_ANGLE2,
-  U_ANGLE3,
-  U_COLORMAP,
-  U_EFFECTS,
-  U_FRAME,
-  U_LONGENTITY,
-  U_MODEL,
-  U_MOREBITS,
-  U_NOLERP,
-  U_ORIGIN1,
-  U_ORIGIN2,
-  U_ORIGIN3,
-  U_SIGNAL,
-  U_SKIN,
 } from "../common/protocol";
-import { MSG_WriteAngle, MSG_WriteByte, MSG_WriteChar, MSG_WriteCoord, MSG_WriteFloat, MSG_WriteLong, MSG_WriteShort, MSG_WriteString, SZ_Clear, SZ_Write, SizeBuf } from "../common/sizebuf";
+import { getCodec } from "../common/protocol/registry";
+import { ClientdataT, EntityUpdateT, SoundMessageT } from "../common/protocol/codec";
+import { MSG_WriteByte, MSG_WriteChar, MSG_WriteFloat, MSG_WriteShort, MSG_WriteString, SZ_Clear, SZ_Write, SizeBuf } from "../common/sizebuf";
 import { Sys_Error, SysError, sysState } from "../platform/sys";
 import {
   ClientT,
+  SIGNON_BUF_NQ15,
   EF_MUZZLEFLASH,
   FL_ONGROUND,
   MOVETYPE_PUSH,
   MOVETYPE_STEP,
+  MOVETYPE_WALK,
   NUM_PING_TIMES,
   NUM_SPAWN_PARMS,
   ServerStateT,
@@ -202,19 +186,68 @@ function requireWorldmodel(): ModelT {
   return sv.worldmodel;
 }
 
+// U3: `sv_protocol` (Ironwail sv_main.c's SV_Protocol_f, here a cvar per this
+// engine's brief so it can be set from a config the way every other server
+// setting is). `15`, `666`, `999` or `auto`; changes take effect at the next
+// map load, exactly as Ironwail's command does.
+export const sv_protocol = new CvarT("sv_protocol", "auto", true);
+
+// The codec this session's protocol selects. Never null: getCodec falls back to
+// protocol 15, and sv.protocol is only ever one of the three numbers below.
+function svCodec() {
+  return getCodec(sv.protocol);
+}
+
+// What the network layer can actually carry in one message today. Ironwail's
+// NET_MAXMESSAGE is 65535 (net.h:37) and its MAX_MSGLEN is 64000, so nothing
+// there ever hits this; this port's NET_MAXMESSAGE is still 8192
+// (src/common/net.ts, outside this unit's SCOPE), and both send paths copy a
+// whole message into a NET_MAXMESSAGE-byte buffer before fragmenting it
+// (net_dgrm.ts's Datagram_SendMessage into `sock.sendMessage`, net_loop.ts's
+// Loop_SendMessage/Loop_SendUnreliableMessage into the peer's
+// `receiveMessage`). Holding every buffer this server fills to that ceiling
+// keeps a wide protocol from building a message the net layer would overrun or
+// silently drop. When NET_MAXMESSAGE is raised to Ironwail's 65535 this clamp
+// stops binding on its own and the codec's own size is what applies.
+function netCap(size: number): number {
+  return Math.min(size, NET_MAXMESSAGE);
+}
+
 // sv.datagram/reliable_datagram/signon SizeBuf setup -- see file header.
+// U3: the three `maxsize` values are the CHOSEN PROTOCOL's wire sizes, not the
+// buffers' allocated length: the buffers are allocated at quakedef.ts's wide
+// MAX_DATAGRAM/MAX_MSGLEN so a 666/999 session can use all of it, while a
+// protocol-15 session is held to WinQuake's own 1024/8192 and therefore
+// overflows at exactly the byte the seed overflowed at.
 function initServerBuffers(): void {
-  sv.datagram.maxsize = sv.datagram_buf.length;
+  const codec = svCodec();
+
+  sv.datagram.maxsize = netCap(Math.min(sv.datagram_buf.length, codec.maxDatagram));
   sv.datagram.cursize = 0;
   sv.datagram.data = sv.datagram_buf;
 
-  sv.reliable_datagram.maxsize = sv.reliable_datagram_buf.length;
+  sv.reliable_datagram.maxsize = netCap(Math.min(sv.reliable_datagram_buf.length, codec.maxDatagram));
   sv.reliable_datagram.cursize = 0;
   sv.reliable_datagram.data = sv.reliable_datagram_buf;
 
-  sv.signon.maxsize = sv.signon_buf.length;
+  sv.signon.maxsize = netCap(codec.protocol === PROTOCOL_NETQUAKE ? SIGNON_BUF_NQ15 : sv.signon_buf.length);
   sv.signon.cursize = 0;
   sv.signon.data = sv.signon_buf;
+}
+
+// Ironwail keeps the encoded alpha and scale on edict_t itself (`ent->alpha`,
+// `ent->scale`, set by ED_ParseEdict and refreshed in SV_WriteEntitiesToClient
+// from the QuakeC `alpha`/`scale` fields). src/progs/progs.ts's EdictT is
+// outside this unit's SCOPE, so both are read straight off the progs field
+// each time they are needed, which is the same value Ironwail's cache holds.
+export function SV_EdictAlpha(ent: EdictT): number {
+  const ofs = GetEdictFieldValue(ent, "alpha");
+  return ofs === -1 ? ENTALPHA_DEFAULT : ENTALPHA_ENCODE(E_FLOAT(ent, ofs));
+}
+
+export function SV_EdictScale(ent: EdictT): number {
+  const ofs = GetEdictFieldValue(ent, "scale");
+  return ofs === -1 ? ENTSCALE_DEFAULT : ENTSCALE_ENCODE(E_FLOAT(ent, ofs));
 }
 
 /*
@@ -233,6 +266,7 @@ export function SV_Init(): void {
   Cvar_RegisterVariable(sv_idealpitchscale);
   Cvar_RegisterVariable(sv_aim);
   Cvar_RegisterVariable(sv_nostep);
+  Cvar_RegisterVariable(sv_protocol);
 
   for (let i = 0; i < MAX_MODELS; i++) localmodels[i] = `*${i}`;
 
@@ -255,12 +289,13 @@ Make sure the event gets sent to all clients
 ==================
 */
 export function SV_StartParticle(org: Vec3, dir: Vec3, color: number, count: number): void {
-  if (sv.datagram.cursize > MAX_DATAGRAM - 16) return;
+  const codec = svCodec();
+  if (sv.datagram.cursize > sv.datagram.maxsize - 16) return;
 
   MSG_WriteByte(sv.datagram, SvcOpsT.svc_particle);
-  MSG_WriteCoord(sv.datagram, org[0]);
-  MSG_WriteCoord(sv.datagram, org[1]);
-  MSG_WriteCoord(sv.datagram, org[2]);
+  codec.writeCoord(sv.datagram, org[0], sv.protocolflags);
+  codec.writeCoord(sv.datagram, org[1], sv.protocolflags);
+  codec.writeCoord(sv.datagram, org[2], sv.protocolflags);
   for (let i = 0; i < 3; i++) {
     let v = dir[i] * 16;
     if (v > 127) v = 127;
@@ -293,7 +328,12 @@ export function SV_StartSound(entity: EdictT, channel: number, sample: string, v
 
   if (channel < 0 || channel > 7) Sys_Error("SV_StartSound: channel = %i", channel);
 
-  if (sv.datagram.cursize > MAX_DATAGRAM - 16) return;
+  // Ironwail's 21-byte headroom: SND_LARGEENTITY/SND_LARGESOUND make the
+  // header five bytes longer than WinQuake's, and PRFL_INT32COORD doubles each
+  // coordinate. WinQuake's own 16 is kept for protocol 15 so the byte at which
+  // a full protocol-15 datagram stops accepting sounds does not move.
+  const headroom = sv.protocol === PROTOCOL_NETQUAKE ? 16 : 21;
+  if (sv.datagram.cursize > sv.datagram.maxsize - headroom) return;
 
   // find precache number for sound
   let sound_num = 1;
@@ -306,25 +346,20 @@ export function SV_StartSound(entity: EdictT, channel: number, sample: string, v
     return;
   }
 
-  const ent = NUM_FOR_EDICT(entity);
-
-  const channelBits = (ent << 3) | channel;
-
-  let field_mask = 0;
-  if (volume !== DEFAULT_SOUND_PACKET_VOLUME) field_mask |= SND_VOLUME;
-  if (attenuation !== DEFAULT_SOUND_PACKET_ATTENUATION) field_mask |= SND_ATTENUATION;
-
-  // directed messages go only to the entity the are targeted on
-  MSG_WriteByte(sv.datagram, SvcOpsT.svc_sound);
-  MSG_WriteByte(sv.datagram, field_mask);
-  if (field_mask & SND_VOLUME) MSG_WriteByte(sv.datagram, volume);
-  if (field_mask & SND_ATTENUATION) MSG_WriteByte(sv.datagram, attenuation * 64);
-  MSG_WriteShort(sv.datagram, channelBits);
-  MSG_WriteByte(sv.datagram, sound_num);
+  const msg = svStartSoundScratch;
+  msg.ent = NUM_FOR_EDICT(entity);
+  msg.channel = channel;
+  msg.soundNum = sound_num;
+  msg.volume = volume;
+  msg.attenuation = attenuation;
   for (let i = 0; i < 3; i++) {
-    MSG_WriteCoord(sv.datagram, entity.v.origin[i] + 0.5 * (entity.v.mins[i] + entity.v.maxs[i]));
+    msg.origin[i] = entity.v.origin[i] + 0.5 * (entity.v.mins[i] + entity.v.maxs[i]);
   }
+
+  svCodec().writeSound(sv.datagram, msg, sv.protocolflags);
 }
+
+const svStartSoundScratch = new SoundMessageT();
 
 /*
 ==============================================================================
@@ -347,8 +382,10 @@ export function SV_SendServerinfo(client: ClientT): void {
   const banner = Com_sprintf("%c\nVERSION %4.2f SERVER (%i CRC)", 2, VERSION, pr.crc);
   MSG_WriteString(client.message, banner);
 
+  const codec = svCodec();
+
   MSG_WriteByte(client.message, SvcOpsT.svc_serverinfo);
-  MSG_WriteLong(client.message, PROTOCOL_VERSION);
+  codec.writeProtocol(client.message, sv.protocolflags); // sv.protocol, plus the PRFL_* word for 999
   MSG_WriteByte(client.message, svs.maxclients);
 
   if (!coop.value && deathmatch.value) MSG_WriteByte(client.message, GAME_DEATHMATCH);
@@ -357,17 +394,18 @@ export function SV_SendServerinfo(client: ClientT): void {
   const worldEnt = sv.edicts[0];
   MSG_WriteString(client.message, PR_GetString(worldEnt.v.message));
 
+  // only send the first 256 model and sound precaches if protocol is 15
   for (let i = 1; i < MAX_MODELS; i++) {
     const s = sv.model_precache[i];
     if (s === null) break;
-    MSG_WriteString(client.message, s);
+    if (i < codec.maxPrecache) MSG_WriteString(client.message, s);
   }
   MSG_WriteByte(client.message, 0);
 
   for (let i = 1; i < MAX_SOUNDS; i++) {
     const s = sv.sound_precache[i];
     if (s === null) break;
-    MSG_WriteString(client.message, s);
+    if (i < codec.maxPrecache) MSG_WriteString(client.message, s);
   }
   MSG_WriteByte(client.message, 0);
 
@@ -407,6 +445,9 @@ export function SV_ConnectClient(clientnum: number): void {
 
   // set up the client_t
   const netconnection = client.netconnection;
+  // A wide session fragments reliables at its codec's datagram size
+  // (Ironwail's MAX_DATAGRAM); protocol 15 keeps WinQuake's 1024.
+  if (netconnection !== null) netconnection.fragmentSize = svCodec().maxDatagram;
 
   const spawn_parms = sv.loadgame ? client.spawn_parms.slice() : null;
 
@@ -437,7 +478,10 @@ export function SV_ConnectClient(clientnum: number): void {
   client.spawned = false;
   client.edict = ent;
   client.message.data = client.msgbuf;
-  client.message.maxsize = client.msgbuf.length;
+  // U3: `sizeof(client->msgbuf)` in the C, where msgbuf is MAX_MSGLEN bytes.
+  // Here msgbuf is allocated at the wide MAX_MSGLEN and the session's codec
+  // narrows the usable size, so protocol 15 overflows at WinQuake's own 8000.
+  client.message.maxsize = netCap(Math.min(client.msgbuf.length, svCodec().maxMsglen));
   client.message.allowoverflow = true; // we can catch it
 
   // #ifdef IDGODS ... #else: IDGODS is never defined in a WinQuake build
@@ -566,7 +610,14 @@ SV_WriteEntitiesToClient
 
 =============
 */
+// One reused snapshot; SV_WriteEntitiesToClient fills it per entity and hands
+// it to the codec, so nothing is allocated per entity per frame.
+const svEntityUpdateScratch = new EntityUpdateT();
+
 export function SV_WriteEntitiesToClient(clent: EdictT, msg: SizeBuf): void {
+  const codec = svCodec();
+  const wide = sv.protocol !== PROTOCOL_NETQUAKE;
+
   // find the client's PVS
   const org = vec3();
   VectorAdd(clent.v.origin, clent.v.view_ofs, org);
@@ -590,59 +641,72 @@ export function SV_WriteEntitiesToClient(clent: EdictT, msg: SizeBuf): void {
       if (i === ent.num_leafs) continue; // not visible
     }
 
-    if (msg.maxsize - msg.cursize < 16) {
+    // Ironwail reserves 16 bytes here too; a wide update's worst case (four
+    // bit bytes, a short entity number, three 4-byte coords, three 2-byte
+    // angles, alpha, scale, frame2, model2, lerpfinish) needs 32.
+    if (msg.maxsize - msg.cursize < (wide ? 32 : 16)) {
       Con_Printf("packet overflow\n");
       return;
     }
 
-    // send an update
-    let bits = 0;
+    const u = svEntityUpdateScratch;
+    VectorCopy(ent.v.origin, u.origin);
+    VectorCopy(ent.v.angles, u.angles);
+    // The QuakeC values go in unrounded: every comparison below is against a
+    // baseline the C compares the same raw float against, and every write
+    // truncates in MSG_Write*/`& 0xFF00` exactly as the C's `(int)` cast does.
+    u.modelindex = ent.v.modelindex;
+    u.frame = ent.v.frame;
+    u.colormap = ent.v.colormap;
+    u.skin = ent.v.skin;
+    u.effects = ent.v.effects;
+    u.movetypeStep = ent.v.movetype === MOVETYPE_STEP;
+    u.baseline = ent.baseline;
 
-    for (let i = 0; i < 3; i++) {
-      const miss = ent.v.origin[i] - ent.baseline.origin[i];
-      if (miss < -0.1 || miss > 0.1) bits |= U_ORIGIN1 << i;
+    if (wide) {
+      // johnfitz -- alpha. Protocol 15 leaves alpha and scale at their
+      // defaults so its bits and bytes are exactly what the seed produced;
+      // Ironwail runs this on every protocol, but its protocol-15 output is
+      // already not byte-identical to WinQuake's (see sizebuf.ts's header).
+      u.alpha = SV_EdictAlpha(ent);
+
+      // don't send invisible entities unless they have effects
+      if (u.alpha === ENTALPHA_ZERO && !u.effects) continue;
+
+      u.scale = SV_EdictScale(ent);
+
+      // johnfitz -- capture the interval to nextthink and send it to the
+      // client for better lerp timing, but only if the interval is not 0.1
+      // (which the client assumes). Ironwail measures the interval as
+      // `nextthink - oldthinktime` and captures it in SV_Physics
+      // (sv_phys.c:1283-1289); edict_t's `oldthinktime`/`oldframe`/
+      // `sendinterval` fields live in src/progs/progs.ts and src/server/
+      // sv_phys.ts, both outside this unit's SCOPE, so the gate here uses the
+      // same quantity the wire byte carries, `nextthink - sv.time`. That is
+      // the think interval for an entity whose think ran this frame, which is
+      // every entity SV_Physics just stepped -- SV_Physics runs immediately
+      // before SV_SendClientMessages. The `frame != oldframe` half of
+      // Ironwail's condition needs `oldframe` and is dropped; see this unit's
+      // report.
+      u.sendinterval = false;
+      u.lerpfinish = 0;
+      if (ent.v.nextthink > sv.time && (ent.v.movetype === MOVETYPE_STEP || ent.v.movetype === MOVETYPE_WALK)) {
+        const interval = ent.v.nextthink - sv.time;
+        const j = Q_rint(interval * 255);
+        if (j >= 0 && j < 256 && j !== 25 && j !== 26) {
+          // 25 and 26 are close enough to 0.1 to not send
+          u.sendinterval = true;
+          u.lerpfinish = interval;
+        }
+      }
+    } else {
+      u.alpha = ENTALPHA_DEFAULT;
+      u.scale = ENTSCALE_DEFAULT;
+      u.sendinterval = false;
+      u.lerpfinish = 0;
     }
 
-    if (ent.v.angles[0] !== ent.baseline.angles[0]) bits |= U_ANGLE1;
-
-    if (ent.v.angles[1] !== ent.baseline.angles[1]) bits |= U_ANGLE2;
-
-    if (ent.v.angles[2] !== ent.baseline.angles[2]) bits |= U_ANGLE3;
-
-    if (ent.v.movetype === MOVETYPE_STEP) bits |= U_NOLERP; // don't mess up the step animation
-
-    if (ent.baseline.colormap !== ent.v.colormap) bits |= U_COLORMAP;
-
-    if (ent.baseline.skin !== ent.v.skin) bits |= U_SKIN;
-
-    if (ent.baseline.frame !== ent.v.frame) bits |= U_FRAME;
-
-    if (ent.baseline.effects !== ent.v.effects) bits |= U_EFFECTS;
-
-    if (ent.baseline.modelindex !== ent.v.modelindex) bits |= U_MODEL;
-
-    if (e >= 256) bits |= U_LONGENTITY;
-
-    if (bits >= 256) bits |= U_MOREBITS;
-
-    // write the message
-    MSG_WriteByte(msg, bits | U_SIGNAL);
-
-    if (bits & U_MOREBITS) MSG_WriteByte(msg, bits >> 8);
-    if (bits & U_LONGENTITY) MSG_WriteShort(msg, e);
-    else MSG_WriteByte(msg, e);
-
-    if (bits & U_MODEL) MSG_WriteByte(msg, ent.v.modelindex);
-    if (bits & U_FRAME) MSG_WriteByte(msg, ent.v.frame);
-    if (bits & U_COLORMAP) MSG_WriteByte(msg, ent.v.colormap);
-    if (bits & U_SKIN) MSG_WriteByte(msg, ent.v.skin);
-    if (bits & U_EFFECTS) MSG_WriteByte(msg, ent.v.effects);
-    if (bits & U_ORIGIN1) MSG_WriteCoord(msg, ent.v.origin[0]);
-    if (bits & U_ANGLE1) MSG_WriteAngle(msg, ent.v.angles[0]);
-    if (bits & U_ORIGIN2) MSG_WriteCoord(msg, ent.v.origin[1]);
-    if (bits & U_ANGLE2) MSG_WriteAngle(msg, ent.v.angles[1]);
-    if (bits & U_ORIGIN3) MSG_WriteCoord(msg, ent.v.origin[2]);
-    if (bits & U_ANGLE3) MSG_WriteAngle(msg, ent.v.angles[2]);
+    codec.writeEntityUpdate(msg, e, u, sv.protocolflags);
   }
 }
 
@@ -665,14 +729,18 @@ SV_WriteClientdataToMessage
 
 ==================
 */
+const svClientdataScratch = new ClientdataT();
+
 export function SV_WriteClientdataToMessage(ent: EdictT, msg: SizeBuf): void {
+  const codec = svCodec();
+
   // send a damage message
   if (ent.v.dmg_take || ent.v.dmg_save) {
     const other = PROG_TO_EDICT(ent.v.dmg_inflictor);
     MSG_WriteByte(msg, SvcOpsT.svc_damage);
     MSG_WriteByte(msg, ent.v.dmg_save);
     MSG_WriteByte(msg, ent.v.dmg_take);
-    for (let i = 0; i < 3; i++) MSG_WriteCoord(msg, other.v.origin[i] + 0.5 * (other.v.mins[i] + other.v.maxs[i]));
+    for (let i = 0; i < 3; i++) codec.writeCoord(msg, other.v.origin[i] + 0.5 * (other.v.mins[i] + other.v.maxs[i]), sv.protocolflags);
 
     ent.v.dmg_take = 0;
     ent.v.dmg_save = 0;
@@ -684,15 +752,9 @@ export function SV_WriteClientdataToMessage(ent: EdictT, msg: SizeBuf): void {
   // a fixangle might get lost in a dropped packet.  Oh well.
   if (ent.v.fixangle) {
     MSG_WriteByte(msg, SvcOpsT.svc_setangle);
-    for (let i = 0; i < 3; i++) MSG_WriteAngle(msg, ent.v.angles[i]);
+    for (let i = 0; i < 3; i++) codec.writeAngle(msg, ent.v.angles[i], sv.protocolflags);
     ent.v.fixangle = 0;
   }
-
-  let bits = 0;
-
-  if (ent.v.view_ofs[2] !== DEFAULT_VIEWHEIGHT) bits |= SU_VIEWHEIGHT;
-
-  if (ent.v.idealpitch) bits |= SU_IDEALPITCH;
 
   // stuff the sigil bits into the high bits of items for sbar, or else
   // mix in items2 (non-QUAKE2 branch: the port has no `items2` entvars_t
@@ -705,62 +767,28 @@ export function SV_WriteClientdataToMessage(ent: EdictT, msg: SizeBuf): void {
     items = (ent.v.items | 0) | ((globalStruct().serverflags | 0) << 28);
   }
 
-  bits |= SU_ITEMS;
+  const cd = svClientdataScratch;
+  cd.viewheight = ent.v.view_ofs[2];
+  cd.idealpitch = ent.v.idealpitch;
+  VectorCopy(ent.v.punchangle, cd.punchangle);
+  VectorCopy(ent.v.velocity, cd.velocity);
+  cd.items = items;
+  cd.onground = ((ent.v.flags | 0) & FL_ONGROUND) !== 0;
+  cd.inwater = ent.v.waterlevel >= 2;
+  cd.weaponframe = ent.v.weaponframe;
+  cd.armorvalue = ent.v.armorvalue;
+  cd.weaponmodelindex = SV_ModelIndex(PR_GetString(ent.v.weaponmodel));
+  cd.health = ent.v.health;
+  cd.currentammo = ent.v.currentammo;
+  cd.ammo_shells = ent.v.ammo_shells;
+  cd.ammo_nails = ent.v.ammo_nails;
+  cd.ammo_rockets = ent.v.ammo_rockets;
+  cd.ammo_cells = ent.v.ammo_cells;
+  cd.weapon = ent.v.weapon;
+  cd.standardQuake = standard_quake;
+  cd.alpha = sv.protocol === PROTOCOL_NETQUAKE ? ENTALPHA_DEFAULT : SV_EdictAlpha(ent);
 
-  if ((ent.v.flags | 0) & FL_ONGROUND) bits |= SU_ONGROUND;
-
-  if (ent.v.waterlevel >= 2) bits |= SU_INWATER;
-
-  for (let i = 0; i < 3; i++) {
-    if (ent.v.punchangle[i]) bits |= SU_PUNCH1 << i;
-    if (ent.v.velocity[i]) bits |= SU_VELOCITY1 << i;
-  }
-
-  if (ent.v.weaponframe) bits |= SU_WEAPONFRAME;
-
-  if (ent.v.armorvalue) bits |= SU_ARMOR;
-
-  //	if (ent->v.weapon)
-  bits |= SU_WEAPON;
-
-  // send the data
-
-  MSG_WriteByte(msg, SvcOpsT.svc_clientdata);
-  MSG_WriteShort(msg, bits);
-
-  if (bits & SU_VIEWHEIGHT) MSG_WriteChar(msg, ent.v.view_ofs[2]);
-
-  if (bits & SU_IDEALPITCH) MSG_WriteChar(msg, ent.v.idealpitch);
-
-  for (let i = 0; i < 3; i++) {
-    if (bits & (SU_PUNCH1 << i)) MSG_WriteChar(msg, ent.v.punchangle[i]);
-    if (bits & (SU_VELOCITY1 << i)) MSG_WriteChar(msg, ent.v.velocity[i] / 16);
-  }
-
-  // [always sent]	if (bits & SU_ITEMS)
-  MSG_WriteLong(msg, items);
-
-  if (bits & SU_WEAPONFRAME) MSG_WriteByte(msg, ent.v.weaponframe);
-  if (bits & SU_ARMOR) MSG_WriteByte(msg, ent.v.armorvalue);
-  if (bits & SU_WEAPON) MSG_WriteByte(msg, SV_ModelIndex(PR_GetString(ent.v.weaponmodel)));
-
-  MSG_WriteShort(msg, ent.v.health);
-  MSG_WriteByte(msg, ent.v.currentammo);
-  MSG_WriteByte(msg, ent.v.ammo_shells);
-  MSG_WriteByte(msg, ent.v.ammo_nails);
-  MSG_WriteByte(msg, ent.v.ammo_rockets);
-  MSG_WriteByte(msg, ent.v.ammo_cells);
-
-  if (standard_quake) {
-    MSG_WriteByte(msg, ent.v.weapon);
-  } else {
-    for (let i = 0; i < 32; i++) {
-      if ((ent.v.weapon | 0) & (1 << i)) {
-        MSG_WriteByte(msg, i);
-        break;
-      }
-    }
-  }
+  codec.writeClientdata(msg, cd, sv.protocolflags);
 }
 
 /*
@@ -768,13 +796,20 @@ export function SV_WriteClientdataToMessage(ent: EdictT, msg: SizeBuf): void {
 SV_SendClientDatagram
 =======================
 */
+const svDatagramBuf = new Uint8Array(MAX_DATAGRAM);
+
 export function SV_SendClientDatagram(client: ClientT): boolean {
-  const buf = new Uint8Array(MAX_DATAGRAM);
   const msg = new SizeBuf();
 
-  msg.data = buf;
-  msg.maxsize = buf.length;
+  msg.data = svDatagramBuf;
+  msg.maxsize = netCap(Math.min(svDatagramBuf.length, svCodec().maxDatagram));
   msg.cursize = 0;
+
+  // johnfitz -- if the client is nonlocal, use a smaller max size so packets
+  // aren't fragmented (Ironwail sv_main.c's SV_SendClientDatagram). A local
+  // (loopback) client has no MTU at all, so it keeps the codec's full size.
+  const address = client.netconnection === null ? "" : client.netconnection.address;
+  if (address !== "LOCAL" && msg.maxsize > DATAGRAM_MTU) msg.maxsize = DATAGRAM_MTU;
 
   MSG_WriteByte(msg, SvcOpsT.svc_time);
   MSG_WriteFloat(msg, sv.time);
@@ -942,6 +977,9 @@ SV_CreateBaseline
 ================
 */
 export function SV_CreateBaseline(): void {
+  const codec = svCodec();
+  const rmq = sv.protocol === PROTOCOL_RMQ;
+
   for (let entnum = 0; entnum < sv.num_edicts; entnum++) {
     // get the current server version
     const svent = sv.edicts[entnum]; // EDICT_NUM(entnum)
@@ -958,23 +996,19 @@ export function SV_CreateBaseline(): void {
     if (entnum > 0 && entnum <= svs.maxclients) {
       svent.baseline.colormap = entnum;
       svent.baseline.modelindex = SV_ModelIndex("progs/player.mdl");
+      svent.baseline.alpha = ENTALPHA_DEFAULT; // johnfitz -- alpha support
+      svent.baseline.scale = ENTSCALE_DEFAULT;
     } else {
       svent.baseline.colormap = 0;
       svent.baseline.modelindex = SV_ModelIndex(PR_GetString(svent.v.model));
+      svent.baseline.alpha = sv.protocol === PROTOCOL_NETQUAKE ? ENTALPHA_DEFAULT : SV_EdictAlpha(svent);
+      svent.baseline.scale = rmq ? SV_EdictScale(svent) : ENTSCALE_DEFAULT;
     }
 
-    // add to the message
-    MSG_WriteByte(sv.signon, SvcOpsT.svc_spawnbaseline);
-    MSG_WriteShort(sv.signon, entnum);
-
-    MSG_WriteByte(sv.signon, svent.baseline.modelindex);
-    MSG_WriteByte(sv.signon, svent.baseline.frame);
-    MSG_WriteByte(sv.signon, svent.baseline.colormap);
-    MSG_WriteByte(sv.signon, svent.baseline.skin);
-    for (let i = 0; i < 3; i++) {
-      MSG_WriteCoord(sv.signon, svent.baseline.origin[i]);
-      MSG_WriteAngle(sv.signon, svent.baseline.angles[i]);
-    }
+    // add to the message. nq15's writeBaseline normalizes a modelindex or
+    // frame that will not fit in a byte before it writes, which is what keeps
+    // the client's baseline and the server's in agreement on protocol 15.
+    codec.writeBaseline(sv.signon, entnum, svent.baseline, sv.protocolflags);
   }
 }
 
@@ -1028,6 +1062,84 @@ export function SV_SaveSpawnparms(): void {
 
 /*
 ================
+SV_ChooseProtocol
+
+`sv_protocol` is `15`, `666`, `999` or `auto`. Ironwail's own SV_Protocol_f has
+no `auto`; this engine's default is `auto` (ARCHITECTURE.md "Protocol layer"),
+which never picks 15 -- 15 is only ever chosen by asking for it -- and picks
+999 when the map needs width:
+
+  * the map is BSP2 or 2PSB (its lump indices are 32-bit, so it is a map built
+    past BSP29's limits and its coordinates routinely leave +-4096), or
+  * any worldmodel bound is outside +-4096, which is the range protocol 15 and
+    666's 13.3 fixed-point coordinates can address, or
+  * the map's entity lump holds more than 600 entities (WinQuake's MAX_EDICTS).
+
+else 666.
+
+The count is taken from the entity lump rather than from `sv.num_edicts` after
+the spawn functions run, because PF_makestatic and PF_ambientsound write into
+the signon buffer from inside ED_LoadFromFile and therefore need the protocol
+already fixed. ED_LoadFromFile creates exactly one edict per entity block, so
+the lump count is the spawn count before any QuakeC-created entity.
+================
+*/
+const AUTO_EXTENT = 4096; // protocol 15/666's 13.3 fixed-point coordinate range
+const AUTO_EDICTS = 600; // WinQuake's MAX_EDICTS
+
+// Entity blocks in a map's entity lump: `{` at the top level, outside strings.
+export function SV_CountEntityLump(entities: string): number {
+  let count = 0;
+  let inQuote = false;
+  for (let i = 0; i < entities.length; i++) {
+    const c = entities[i];
+    if (c === '"') inQuote = !inQuote;
+    else if (!inQuote && c === "{") count++;
+  }
+  return count;
+}
+
+export function SV_AutoProtocol(worldmodel: ModelT, bspWidth: number): number {
+  if (bspWidth !== BSP_WIDTH_29) return PROTOCOL_RMQ;
+
+  for (let i = 0; i < 3; i++) {
+    if (worldmodel.mins[i] < -AUTO_EXTENT || worldmodel.maxs[i] > AUTO_EXTENT) return PROTOCOL_RMQ;
+  }
+
+  if (SV_CountEntityLump(worldmodel.entities ?? "") + svs.maxclients + 1 > AUTO_EDICTS) return PROTOCOL_RMQ;
+
+  return PROTOCOL_FITZQUAKE;
+}
+
+export function SV_ChooseProtocol(worldmodel: ModelT, bspWidth: number): number {
+  const requested = sv_protocol.string.trim().toLowerCase();
+  switch (requested) {
+    case "15":
+      return PROTOCOL_NETQUAKE;
+    case "666":
+      return PROTOCOL_FITZQUAKE;
+    case "999":
+      return PROTOCOL_RMQ;
+    case "auto":
+      return SV_AutoProtocol(worldmodel, bspWidth);
+    default:
+      Con_Printf("sv_protocol must be 15, 666, 999 or auto\n");
+      return SV_AutoProtocol(worldmodel, bspWidth);
+  }
+}
+
+// sv.protocol + sv.protocolflags + the three staging buffers' wire sizes, and
+// the console line that says which protocol this map is being served on.
+function SV_SetProtocol(protocol: number): void {
+  sv.protocol = protocol;
+  const codec = getCodec(protocol);
+  sv.protocolflags = codec.defaultFlags;
+  initServerBuffers();
+  Con_Printf("Server protocol %i (flags 0x%x)\n", sv.protocol, sv.protocolflags);
+}
+
+/*
+================
 SV_SpawnServer
 
 This is called at the start of each level
@@ -1063,8 +1175,11 @@ export function SV_SpawnServer(server: string): void {
   PR_SetProfile(nqProfile); // this binary's QuakeC host profile (ARCHITECTURE.md, "Core model")
   PR_LoadProgs();
 
-  // allocate server memory
-  PR_AllocEdicts(MAX_EDICTS); // in place of `Hunk_AllocName (sv.max_edicts*pr_edict_size, "edicts")`; sets sv.edicts/sv.max_edicts (PORTING.md ruling, U021)
+  // allocate server memory. `qcvm->max_edicts = CLAMP (MIN_EDICTS,
+  // (int)max_edicts.value, MAX_EDICTS)` (Ironwail sv_main.c:1971) in place of
+  // `Hunk_AllocName (sv.max_edicts*pr_edict_size, "edicts")`; sets
+  // sv.edicts/sv.max_edicts (PORTING.md ruling, U021)
+  PR_AllocEdicts(Host_MaxEdicts());
 
   initServerBuffers(); // see file header's SV_Init deviation note (also done here, matching the real C's placement)
 
@@ -1090,6 +1205,16 @@ export function SV_SpawnServer(server: string): void {
   }
   sv.worldmodel = worldmodel;
   sv.models[1] = worldmodel;
+
+  // The BSP width Mod_LoadBrushModel just parsed. model.ts records it on the
+  // `loadState` holder rather than on ModelT, and Mod_ForName's submodel
+  // lookups below never re-enter Mod_LoadBrushModel, so it is read here, at
+  // the one point where it is unambiguously this map's.
+  const bspWidth = loadState.bspWidth;
+
+  // The protocol has to be fixed before ED_LoadFromFile: PF_makestatic and
+  // PF_ambientsound write into sv.signon from inside the spawn functions.
+  SV_SetProtocol(SV_ChooseProtocol(worldmodel, bspWidth));
 
   // clear world interaction links
   SV_ClearWorld();

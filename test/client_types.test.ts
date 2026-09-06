@@ -155,8 +155,10 @@ describe("client.h constants", () => {
     expect(MAX_EFRAGS).toBe(640);
     expect(MAX_DEMOS).toBe(8);
     expect(MAX_TEMP_ENTITIES).toBe(64);
-    expect(MAX_STATIC_ENTITIES).toBe(128);
-    expect(MAX_VISEDICTS).toBe(256);
+    // U3 (ARCHITECTURE.md "Engine core commitments"): widened from WinQuake's
+    // 128/256 to Ironwail's client.h:307-308 values.
+    expect(MAX_STATIC_ENTITIES).toBe(4096);
+    expect(MAX_VISEDICTS).toBe(4096);
   });
 
   test("cactive_t values", () => {
@@ -180,7 +182,7 @@ describe("client singletons", () => {
   });
 
   test("cl's sized fields match the C array bounds", () => {
-    expect(cl.stats.length).toBe(32); // MAX_CL_STATS
+    expect(cl.stats.length).toBe(256); // MAX_CL_STATS -- U3: widened from WinQuake's 32
     expect(cl.item_gettime.length).toBe(32);
     expect(cl.mtime.length).toBe(2);
     expect(cl.cshifts.length).toBe(NUM_CSHIFTS);
@@ -291,8 +293,14 @@ describe("client singletons", () => {
 describe("client.h data arrays", () => {
   test("array lengths match the C bounds", () => {
     expect(cl_efrags.length).toBe(MAX_EFRAGS);
-    expect(cl_entities.length).toBe(MAX_EDICTS);
-    expect(cl_static_entities.length).toBe(MAX_STATIC_ENTITIES);
+    // U3: cl_entities and cl_static_entities start at WinQuake's own 600/128
+    // and grow on demand (client.ts's growEntities/growStaticEntities) rather
+    // than allocating MAX_EDICTS (32000) entity objects at module load. Their
+    // ceilings are checked in test/protocol_limits.test.ts.
+    expect(cl_entities.length).toBeGreaterThanOrEqual(600);
+    expect(cl_entities.length).toBeLessThanOrEqual(MAX_EDICTS);
+    expect(cl_static_entities.length).toBeGreaterThanOrEqual(128);
+    expect(cl_static_entities.length).toBeLessThanOrEqual(MAX_STATIC_ENTITIES);
     expect(cl_lightstyle.length).toBe(MAX_LIGHTSTYLES);
     expect(cl_dlights.length).toBe(MAX_DLIGHTS);
     expect(cl_temp_entities.length).toBe(MAX_TEMP_ENTITIES);

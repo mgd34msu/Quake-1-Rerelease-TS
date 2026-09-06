@@ -168,7 +168,7 @@ import {
   vcrState,
   type NetSvsClientT,
 } from "./net_main";
-import { MAX_SCOREBOARD, MINIMUM_MEMORY, MINIMUM_MEMORY_LEVELPAK, qw, type QuakeParmsT } from "./quakedef";
+import { DEFAULT_MAX_EDICTS, MAX_EDICTS, MAX_SCOREBOARD, MIN_EDICTS, MINIMUM_MEMORY, MINIMUM_MEMORY_LEVELPAK, qw, type QuakeParmsT } from "./quakedef";
 import { W_LoadWadFile } from "./wad";
 import type { Vec3 } from "./mathlib";
 import { vec3_origin } from "./mathlib";
@@ -440,6 +440,22 @@ export const pausable = new CvarT("pausable", "1");
 
 export const temp1 = new CvarT("temp1", "0");
 
+// U3 (ARCHITECTURE.md "Engine core commitments"): the runtime edict table
+// size, clamped MIN_EDICTS..MAX_EDICTS at SV_SpawnServer. Ironwail declares it
+// in host.c (`cvar_t max_edicts`) and reads it once per map load in
+// SV_SpawnServer (`qcvm->max_edicts = CLAMP (MIN_EDICTS, (int)max_edicts.value,
+// MAX_EDICTS)`); changing it mid-level does nothing until the next load.
+export const max_edicts = new CvarT("max_edicts", String(DEFAULT_MAX_EDICTS), true);
+
+// The clamp Ironwail's SV_SpawnServer applies, as a function so both
+// SV_SpawnServer and the NQ progs profile's `maxEdicts` getter read one rule.
+export function Host_MaxEdicts(): number {
+  const v = Math.trunc(max_edicts.value);
+  if (!(v >= MIN_EDICTS)) return MIN_EDICTS; // also catches NaN
+  if (v > MAX_EDICTS) return MAX_EDICTS;
+  return v;
+}
+
 export class HostError extends Error {
   constructor(message: string) {
     super(message);
@@ -574,6 +590,8 @@ export function Host_InitLocal(): void {
   Cvar_RegisterVariable(pausable);
 
   Cvar_RegisterVariable(temp1);
+
+  Cvar_RegisterVariable(max_edicts);
 
   Host_FindMaxClients();
 

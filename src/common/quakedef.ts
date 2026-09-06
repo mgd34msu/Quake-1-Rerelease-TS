@@ -63,16 +63,30 @@ export const MAX_OSPATH = 128; // max length of a filesystem pathname
 
 export const ON_EPSILON = 0.1; // point on plane side epsilon
 
-export const MAX_MSGLEN = 8000; // max length of a reliable message
-export const MAX_DATAGRAM = 1024; // max length of unreliable message
+// U3 (ARCHITECTURE.md "Engine core commitments"): the limits below are the
+// engine's INTERNAL capacity, widened to Ironwail/vkQuake's values. What goes
+// on the wire is narrowed per session by the chosen protocol codec
+// (src/common/protocol/codec.ts): protocol 15 keeps WinQuake's 8000/1024 and
+// its 256-entry precache tables (nq15.ts's NQ15_MAX_MSGLEN/NQ15_MAX_DATAGRAM/
+// NQ15_MAX_PRECACHE), so a classic map under `sv_protocol 15` is still
+// byte-compatible with a vanilla client. Ironwail quakedef.h:97-110.
+export const MAX_MSGLEN = 64000; // max length of a reliable message
+export const MAX_DATAGRAM = 64000; // max length of unreliable message
+
+// actual limit for unreliable messages to nonlocal clients (Ironwail
+// quakedef.h:100); SV_SendClientDatagram caps a remote client's datagram here
+// so UDP never has to fragment.
+export const DATAGRAM_MTU = 1400;
 
 //
 // per-level limits
 //
-export const MAX_EDICTS = 600; // FIXME: ouch! ouch! ouch!
+export const MAX_EDICTS = 32000; // highest allowed value for the max_edicts cvar
+export const MIN_EDICTS = 256; // lowest allowed value for the max_edicts cvar
+export const DEFAULT_MAX_EDICTS = 16384; // the max_edicts cvar's default
 export const MAX_LIGHTSTYLES = 64;
-export const MAX_MODELS = 256; // these are sent over the net as bytes
-export const MAX_SOUNDS = 256; // so they cannot be blindly increased
+export const MAX_MODELS = 8192;
+export const MAX_SOUNDS = 2048;
 
 export const SAVEGAME_COMMENT_LENGTH = 39;
 
@@ -81,7 +95,7 @@ export const MAX_STYLESTRING = 64;
 //
 // stats are integers communicated to the client by the server
 //
-export const MAX_CL_STATS = 32;
+export const MAX_CL_STATS = 256;
 export const STAT_HEALTH = 0;
 export const STAT_FRAGS = 1;
 export const STAT_WEAPON = 2;
@@ -170,6 +184,12 @@ export const MAX_SCOREBOARDNAME = 32;
 
 export const SOUND_CHANNELS = 8;
 
+// U3: `alpha` and `scale` are FitzQuake 666 / RMQ 999 additions to
+// entity_state_t (Ironwail protocol.h:257-268). They default to
+// ENTALPHA_DEFAULT (0) and ENTSCALE_DEFAULT (16), which is what protocol 15
+// leaves them at, so a classic session behaves exactly as before. Spelled as
+// literals rather than imported from protocol.ts because protocol.ts is a leaf
+// module and sizebuf.ts already imports it; importing back would be a cycle.
 export class EntityStateT {
   origin: Vec3 = new Float32Array(3);
   angles: Vec3 = new Float32Array(3);
@@ -177,6 +197,8 @@ export class EntityStateT {
   frame = 0;
   colormap = 0;
   skin = 0;
+  alpha = 0; // ENTALPHA_DEFAULT
+  scale = 16; // ENTSCALE_DEFAULT
   effects = 0;
 
   clear(): void {
@@ -186,6 +208,8 @@ export class EntityStateT {
     this.frame = 0;
     this.colormap = 0;
     this.skin = 0;
+    this.alpha = 0;
+    this.scale = 16;
     this.effects = 0;
   }
 
@@ -201,6 +225,8 @@ export class EntityStateT {
     this.frame = src.frame;
     this.colormap = src.colormap;
     this.skin = src.skin;
+    this.alpha = src.alpha;
+    this.scale = src.scale;
     this.effects = src.effects;
   }
 }

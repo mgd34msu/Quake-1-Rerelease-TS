@@ -12,7 +12,8 @@ import { sysState, SysError } from "../src/platform/sys";
 import { EdictT, PR_GetString, PR_SetEngineString, pr, setEdictTable } from "../src/progs/progs";
 import { ENTVARS_SIZE_WORDS } from "../src/progs/progdefs";
 import { PR_LoadProgs } from "../src/progs/pr_edict";
-import { ClientT, MOVETYPE_PUSH, SOLID_BSP, SOLID_NOT, ServerStateT, sv, svState, svs } from "../src/server/server";
+import { ClientT, MOVETYPE_PUSH, SIGNON_BUF_NQ15, SOLID_BSP, SOLID_NOT, ServerStateT, sv, svState, svs } from "../src/server/server";
+import { NQ15_MAX_DATAGRAM } from "../src/common/protocol/nq15";
 import { SV_ClearWorld, SV_LinkEdict } from "../src/server/world";
 import {
   SV_CreateBaseline,
@@ -122,16 +123,20 @@ describe.skipIf(!HAVE_PROGS106)("SV_Init", () => {
   });
 
   test("allocates the three SizeBufs over their backing buffers", () => {
+    // U3: the buffers are allocated at quakedef.ts's wide MAX_DATAGRAM /
+    // MAX_MSGLEN, and `maxsize` is the CHOSEN protocol's wire size. sv.clear()
+    // leaves sv.protocol at PROTOCOL_NETQUAKE, so a fresh SV_Init gives
+    // WinQuake's own 1024 / 8192.
     expect(sv.datagram.data).toBe(sv.datagram_buf);
-    expect(sv.datagram.maxsize).toBe(sv.datagram_buf.length);
+    expect(sv.datagram.maxsize).toBe(NQ15_MAX_DATAGRAM);
     expect(sv.datagram.cursize).toBe(0);
 
     expect(sv.reliable_datagram.data).toBe(sv.reliable_datagram_buf);
-    expect(sv.reliable_datagram.maxsize).toBe(sv.reliable_datagram_buf.length);
+    expect(sv.reliable_datagram.maxsize).toBe(NQ15_MAX_DATAGRAM);
     expect(sv.reliable_datagram.cursize).toBe(0);
 
     expect(sv.signon.data).toBe(sv.signon_buf);
-    expect(sv.signon.maxsize).toBe(sv.signon_buf.length);
+    expect(sv.signon.maxsize).toBe(SIGNON_BUF_NQ15);
     expect(sv.signon.cursize).toBe(0);
   });
 

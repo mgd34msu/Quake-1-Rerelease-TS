@@ -48,6 +48,7 @@ import type { ModelT } from "../common/model";
 import type { QsocketT } from "../common/net";
 import { SizeBuf } from "../common/sizebuf";
 import { MAX_DATAGRAM, MAX_LIGHTSTYLES, MAX_MODELS, MAX_MSGLEN, MAX_SOUNDS } from "../common/quakedef";
+import { PROTOCOL_NETQUAKE } from "../common/protocol";
 import type { Vec3 } from "../common/mathlib";
 import { vec3 } from "../common/mathlib";
 
@@ -58,11 +59,24 @@ export enum ServerStateT {
   ss_active = 1,
 }
 
+// WinQuake's `byte signon_buf[8192]` -- its own fixed staging size, not a wire
+// size. `signon_buf` below is allocated at MAX_MSGLEN so a wide protocol can
+// use the whole thing; SV_SpawnServer sets `sv.signon.maxsize` to this value
+// for protocol 15, so a classic session's signon capacity is byte-for-byte
+// what the seed had.
+export const SIGNON_BUF_NQ15 = 8192;
+
 export class ServerT {
   active = false; // false if only a net client
 
   paused = false;
   loadgame = false; // handle connections specially
+
+  // U3: the protocol this session speaks and, for PROTOCOL_RMQ, its `PRFL_*`
+  // word. Chosen at SV_SpawnServer from the `sv_protocol` cvar (Ironwail
+  // sv_main.c:1956-1964, `sv.protocol` / `sv.protocolflags`).
+  protocol: number = PROTOCOL_NETQUAKE;
+  protocolflags = 0;
 
   time = 0;
 
@@ -90,10 +104,12 @@ export class ServerT {
   reliable_datagram_buf: Uint8Array = new Uint8Array(MAX_DATAGRAM);
 
   signon: SizeBuf = new SizeBuf();
-  signon_buf: Uint8Array = new Uint8Array(8192);
+  signon_buf: Uint8Array = new Uint8Array(MAX_MSGLEN);
 
   clear(): void {
     this.active = false;
+    this.protocol = PROTOCOL_NETQUAKE;
+    this.protocolflags = 0;
     this.paused = false;
     this.loadgame = false;
     this.time = 0;
@@ -115,7 +131,7 @@ export class ServerT {
     this.reliable_datagram = new SizeBuf();
     this.reliable_datagram_buf = new Uint8Array(MAX_DATAGRAM);
     this.signon = new SizeBuf();
-    this.signon_buf = new Uint8Array(8192);
+    this.signon_buf = new Uint8Array(MAX_MSGLEN);
   }
 }
 

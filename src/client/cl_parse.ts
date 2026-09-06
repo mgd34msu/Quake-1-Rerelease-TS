@@ -56,7 +56,10 @@ import {
   DEFAULT_SOUND_PACKET_ATTENUATION,
   DEFAULT_SOUND_PACKET_VOLUME,
   DEFAULT_VIEWHEIGHT,
-  PROTOCOL_VERSION,
+  PRFL_SUPPORTED,
+  PROTOCOL_FITZQUAKE,
+  PROTOCOL_NETQUAKE,
+  PROTOCOL_RMQ,
   SND_ATTENUATION,
   SND_VOLUME,
   SU_ARMOR,
@@ -85,13 +88,20 @@ import {
   U_ORIGIN2,
   U_ORIGIN3,
   U_SKIN,
+  svc_bf,
+  svc_fog,
+  svc_skybox,
+  svc_spawnbaseline2,
+  svc_spawnstatic2,
+  svc_spawnstaticsound2,
 } from "../common/protocol";
+import { getCodec, protocolSupported } from "../common/protocol/registry";
+import { ClientdataTailT, EntityUpdateTailT, SoundHeaderT } from "../common/protocol/codec";
 import {
   MSG_BeginReading,
   MSG_ReadAngle,
   MSG_ReadByte,
   MSG_ReadChar,
-  MSG_ReadCoord,
   MSG_ReadFloat,
   MSG_ReadLong,
   MSG_ReadShort,
@@ -106,11 +116,15 @@ import {
   MAX_EDICTS,
   MAX_LIGHTSTYLES,
   MAX_MODELS,
+  MAX_SOUNDS,
   MAX_SCOREBOARD,
   STAT_ACTIVEWEAPON,
   STAT_AMMO,
   STAT_ARMOR,
+  STAT_CELLS,
   STAT_HEALTH,
+  STAT_NAILS,
+  STAT_ROCKETS,
   STAT_MONSTERS,
   STAT_SECRETS,
   STAT_SHELLS,
@@ -125,7 +139,7 @@ import { CL_ClearState, CL_SignonReply, cl_shownet } from "./cl_main";
 import { CL_GetMessage } from "./cl_demo";
 import { CL_ParseTEnt } from "./cl_tent";
 import { Con_DPrintf, Con_Printf } from "./console";
-import { MAX_STATIC_ENTITIES, SIGNONS, ScoreboardT, cl, cl_entities, cl_lightstyle, cl_static_entities, cls } from "./client";
+import { EntityExtT, SIGNONS, ScoreboardT, cl, cl_entities, cl_entity_ext, cl_lightstyle, cl_static_entities, cl_static_entity_ext, cls, growEntities, growStaticEntities } from "./client";
 import { BOTTOM_RANGE, TOP_RANGE, getRenderer, type EntityT } from "./render";
 // r_part.c (concurrent sibling, not yet landed -- absent-at-gate rule)
 import { R_ParseParticleEffect } from "./r_part";
@@ -193,11 +207,22 @@ CL_EntityNum
 This error checks and tracks the total number of entities
 ===============
 */
+// The codec this connection is speaking. `cl.protocol` is set by
+// CL_ParseServerInfo, from the live stream or from a demo's recorded
+// serverinfo -- the two are the same bytes, so a demo re-derives its protocol
+// exactly as a connect does (Ironwail cl_demo.c:133-146's rule).
+function clCodec() {
+  return getCodec(cl.protocol);
+}
+
 export function CL_EntityNum(num: number): EntityT {
   if (num >= cl.num_entities) {
-    if (num >= MAX_EDICTS) Host_Error("CL_EntityNum: %i is an invalid number", num);
+    // U3: cl_entities grows on demand up to MAX_EDICTS instead of being a
+    // MAX_EDICTS-long array allocated at module load (see client.ts).
+    if (!growEntities(num)) Host_Error("CL_EntityNum: %i is an invalid number", num);
     while (cl.num_entities <= num) {
       cl_entities[cl.num_entities].colormap = vid.colormap;
+      cl_entity_ext[cl.num_entities].clear();
       cl.num_entities++;
     }
   }
@@ -210,7 +235,10 @@ export function CL_EntityNum(num: number): EntityT {
 CL_ParseStartSoundPacket
 ==================
 */
+const soundHeader = new SoundHeaderT();
+
 export function CL_ParseStartSoundPacket(): void {
+  const codec = clCodec();
   const pos = vec3();
   let volume: number;
   let attenuation: number;
@@ -223,15 +251,16 @@ export function CL_ParseStartSoundPacket(): void {
   if (field_mask & SND_ATTENUATION) attenuation = MSG_ReadByte() / 64.0;
   else attenuation = DEFAULT_SOUND_PACKET_ATTENUATION;
 
-  let channel = MSG_ReadShort();
-  const sound_num = MSG_ReadByte();
+  codec.readSoundHeader(field_mask, soundHeader);
+  const ent = soundHeader.ent;
+  const channel = soundHeader.channel;
+  const sound_num = soundHeader.soundNum;
 
-  const ent = channel >> 3;
-  channel &= 7;
+  if (sound_num >= MAX_SOUNDS) Host_Error("CL_ParseStartSoundPacket: %i > MAX_SOUNDS", sound_num);
 
   if (ent > MAX_EDICTS) Host_Error("CL_ParseStartSoundPacket: ent = %i", ent);
 
-  for (let i = 0; i < 3; i++) pos[i] = MSG_ReadCoord();
+  for (let i = 0; i < 3; i++) pos[i] = codec.readCoord(cl.protocolflags);
 
   S_StartSound(ent, channel, cl.sound_precache[sound_num], pos, volume / 255.0, attenuation);
 }
@@ -317,9 +346,18 @@ export function CL_ParseServerInfo(): void {
 
   // parse protocol version number
   const version = MSG_ReadLong();
-  if (version !== PROTOCOL_VERSION) {
-    Con_Printf("Server returned version %i, not %i", version, PROTOCOL_VERSION);
+  // johnfitz -- support multiple protocols
+  if (!protocolSupported(version)) {
+    Con_Printf("Server returned version %i, not %i or %i or %i", version, PROTOCOL_NETQUAKE, PROTOCOL_FITZQUAKE, PROTOCOL_RMQ);
     return;
+  }
+  cl.protocol = version;
+
+  // mh -- read the protocol flags from the server so we know what protocol
+  // features to expect. Only PROTOCOL_RMQ carries them.
+  cl.protocolflags = clCodec().readProtocolFlags();
+  if (cl.protocol === PROTOCOL_RMQ && (cl.protocolflags & ~PRFL_SUPPORTED) !== 0) {
+    Con_Printf("PROTOCOL_RMQ protocolflags %i contains unsupported flags\n", cl.protocolflags);
   }
 
   // parse maxclients
@@ -365,12 +403,12 @@ export function CL_ParseServerInfo(): void {
 
   // precache sounds
   cl.sound_precache.fill(null); // memset (cl.sound_precache, 0, sizeof(cl.sound_precache))
-  const sound_precache: string[] = new Array<string>(MAX_MODELS).fill("");
+  const sound_precache: string[] = new Array<string>(MAX_SOUNDS).fill("");
   let numsounds = 1;
   for (; ; numsounds++) {
     str = MSG_ReadString();
     if (!str[0]) break;
-    if (numsounds === MAX_MODELS) {
+    if (numsounds === MAX_SOUNDS) {
       Con_Printf("Server sent too many sound precaches\n");
       return;
     }
@@ -425,7 +463,10 @@ function rand(): number {
   return Math.floor(Math.random() * 0x8000);
 }
 
+const entityUpdateTail = new EntityUpdateTailT();
+
 export function CL_ParseUpdate(bitsIn: number): void {
+  const codec = clCodec();
   let bits = bitsIn;
 
   if (cls.signon === SIGNONS_LAST) {
@@ -439,11 +480,15 @@ export function CL_ParseUpdate(bitsIn: number): void {
     bits |= extra << 8;
   }
 
+  // U_EXTEND1 / U_EXTEND2 on 666 and 999; a no-op on 15
+  bits = codec.readEntityBits(bits);
+
   let num: number;
   if (bits & U_LONGENTITY) num = MSG_ReadShort();
   else num = MSG_ReadByte();
 
   const ent = CL_EntityNum(num);
+  const ext = cl_entity_ext[num];
 
   for (let i = 0; i < 16; i++) if (bits & (1 << i)) bitcounts[i]++;
 
@@ -458,19 +503,6 @@ export function CL_ParseUpdate(bitsIn: number): void {
     modnum = MSG_ReadByte();
     if (modnum >= MAX_MODELS) Host_Error("CL_ParseModel: bad modnum");
   } else modnum = ent.baseline.modelindex;
-
-  const model = cl.model_precache[modnum];
-  if (model !== ent.model) {
-    ent.model = model;
-    // automatic animation (torches, etc) can be either all together
-    // or randomized
-    if (model) {
-      if (model.synctype === SynctypeT.ST_RAND) ent.syncbase = (rand() & 0x7fff) / 0x7fff;
-      else ent.syncbase = 0.0;
-    } else forcelink = true; // hack to make null model players work
-
-    if (num > 0 && num <= cl.maxclients) getRenderer().R_TranslatePlayerSkin(num - 1);
-  }
 
   let i: number;
   if (bits & U_FRAME) ent.frame = MSG_ReadByte();
@@ -499,22 +531,51 @@ export function CL_ParseUpdate(bitsIn: number): void {
   VectorCopy(ent.msg_origins[0], ent.msg_origins[1]);
   VectorCopy(ent.msg_angles[0], ent.msg_angles[1]);
 
-  if (bits & U_ORIGIN1) ent.msg_origins[0][0] = MSG_ReadCoord();
+  if (bits & U_ORIGIN1) ent.msg_origins[0][0] = codec.readCoord(cl.protocolflags);
   else ent.msg_origins[0][0] = ent.baseline.origin[0];
-  if (bits & U_ANGLE1) ent.msg_angles[0][0] = MSG_ReadAngle();
+  if (bits & U_ANGLE1) ent.msg_angles[0][0] = codec.readAngle(cl.protocolflags);
   else ent.msg_angles[0][0] = ent.baseline.angles[0];
 
-  if (bits & U_ORIGIN2) ent.msg_origins[0][1] = MSG_ReadCoord();
+  if (bits & U_ORIGIN2) ent.msg_origins[0][1] = codec.readCoord(cl.protocolflags);
   else ent.msg_origins[0][1] = ent.baseline.origin[1];
-  if (bits & U_ANGLE2) ent.msg_angles[0][1] = MSG_ReadAngle();
+  if (bits & U_ANGLE2) ent.msg_angles[0][1] = codec.readAngle(cl.protocolflags);
   else ent.msg_angles[0][1] = ent.baseline.angles[1];
 
-  if (bits & U_ORIGIN3) ent.msg_origins[0][2] = MSG_ReadCoord();
+  if (bits & U_ORIGIN3) ent.msg_origins[0][2] = codec.readCoord(cl.protocolflags);
   else ent.msg_origins[0][2] = ent.baseline.origin[2];
-  if (bits & U_ANGLE3) ent.msg_angles[0][2] = MSG_ReadAngle();
+  if (bits & U_ANGLE3) ent.msg_angles[0][2] = codec.readAngle(cl.protocolflags);
   else ent.msg_angles[0][2] = ent.baseline.angles[2];
 
   if (bits & U_NOLERP) ent.forcelink = true;
+
+  // johnfitz -- PROTOCOL_FITZQUAKE: alpha, scale, the high bytes of frame and
+  // modelindex, and the lerp finish time. Empty on protocol 15, where the
+  // codec's tail reader reads nothing and leaves the defaults.
+  codec.readEntityUpdateTail(bits, entityUpdateTail);
+  ext.alpha = entityUpdateTail.hasAlpha ? entityUpdateTail.alpha : ent.baseline.alpha;
+  ext.scale = entityUpdateTail.hasScale ? entityUpdateTail.scale : ent.baseline.scale;
+  if (entityUpdateTail.hasFrame2) ent.frame = (ent.frame & 0x00ff) | (entityUpdateTail.frameHigh << 8);
+  if (entityUpdateTail.hasModel2) modnum = (modnum & 0x00ff) | (entityUpdateTail.modelHigh << 8);
+  if (entityUpdateTail.hasLerpfinish) {
+    ext.lerpfinish = ent.msgtime + entityUpdateTail.lerpfinish;
+    ext.hasLerpfinish = true;
+  } else {
+    ext.hasLerpfinish = false;
+  }
+
+  // johnfitz -- moved here from above: U_MODEL2 can still change modnum
+  const model = cl.model_precache[modnum];
+  if (model !== ent.model) {
+    ent.model = model;
+    // automatic animation (torches, etc) can be either all together
+    // or randomized
+    if (model) {
+      if (model.synctype === SynctypeT.ST_RAND) ent.syncbase = (rand() & 0x7fff) / 0x7fff;
+      else ent.syncbase = 0.0;
+    } else forcelink = true; // hack to make null model players work
+
+    if (num > 0 && num <= cl.maxclients) getRenderer().R_TranslatePlayerSkin(num - 1);
+  }
 
   if (forcelink) {
     // didn't have an update last message
@@ -537,15 +598,11 @@ const SIGNONS_TOTAL = SIGNONS;
 CL_ParseBaseline
 ==================
 */
-export function CL_ParseBaseline(ent: EntityT): void {
-  ent.baseline.modelindex = MSG_ReadByte();
-  ent.baseline.frame = MSG_ReadByte();
-  ent.baseline.colormap = MSG_ReadByte();
-  ent.baseline.skin = MSG_ReadByte();
-  for (let i = 0; i < 3; i++) {
-    ent.baseline.origin[i] = MSG_ReadCoord();
-    ent.baseline.angles[i] = MSG_ReadAngle();
-  }
+// `version` is 1 for svc_spawnbaseline / svc_spawnstatic and 2 for their
+// 666/999 `2` forms, which prefix a B_* flag byte (Ironwail's
+// `CL_ParseBaseline (ent, version)`).
+export function CL_ParseBaseline(ent: EntityT, version = 1): void {
+  clCodec().readBaseline(ent.baseline, version, cl.protocolflags);
 }
 
 /*
@@ -555,7 +612,14 @@ CL_ParseClientdata
 Server information pertaining to this client only
 ==================
 */
-export function CL_ParseClientdata(bits: number): void {
+const clientdataTail = new ClientdataTailT();
+
+// johnfitz -- the bit word is read here instead of in CL_ParseServerMessage,
+// because 666/999 follow it with up to two more bytes.
+export function CL_ParseClientdata(): void {
+  const codec = clCodec();
+  const bits = codec.readClientdataBits();
+
   if (bits & SU_VIEWHEIGHT) cl.viewheight = MSG_ReadChar();
   else cl.viewheight = DEFAULT_VIEWHEIGHT;
 
@@ -633,7 +697,26 @@ export function CL_ParseClientdata(bits: number): void {
       Sbar_Changed();
     }
   }
+
+  // johnfitz -- PROTOCOL_FITZQUAKE: the high byte of each widened stat, and
+  // the weapon model's alpha. All zero on protocol 15.
+  codec.readClientdataTail(bits, clientdataTail);
+  cl.stats[STAT_WEAPON] |= clientdataTail.weaponHigh << 8;
+  cl.stats[STAT_ARMOR] |= clientdataTail.armorHigh << 8;
+  cl.stats[STAT_AMMO] |= clientdataTail.ammoHigh << 8;
+  cl.stats[STAT_SHELLS] |= clientdataTail.shellsHigh << 8;
+  cl.stats[STAT_NAILS] |= clientdataTail.nailsHigh << 8;
+  cl.stats[STAT_ROCKETS] |= clientdataTail.rocketsHigh << 8;
+  cl.stats[STAT_CELLS] |= clientdataTail.cellsHigh << 8;
+  cl.stats[STAT_WEAPONFRAME] |= clientdataTail.weaponframeHigh << 8;
+  clViewentAlpha.alpha = clientdataTail.weaponalpha;
 }
+
+// The view model's alpha (Ironwail's `cl.viewent.alpha`). `cl.viewent` is an
+// EntityT from src/client/render.ts, outside this unit's SCOPE, so the value
+// is parked beside the other per-entity 666/999 extras; the unit that lands
+// client-side alpha rendering folds it onto EntityT.
+export const clViewentAlpha = new EntityExtT();
 
 /*
 =====================
@@ -672,12 +755,13 @@ export function CL_NewTranslation(slot: number): void {
 CL_ParseStatic
 =====================
 */
-export function CL_ParseStatic(): void {
+export function CL_ParseStatic(version = 1): void {
   const i = cl.num_statics;
-  if (i >= MAX_STATIC_ENTITIES) Host_Error("Too many static entities");
+  if (!growStaticEntities(i)) Host_Error("Too many static entities");
   const ent = cl_static_entities[i];
+  const ext = cl_static_entity_ext[i];
   cl.num_statics++;
-  CL_ParseBaseline(ent);
+  CL_ParseBaseline(ent, version);
 
   // copy it to the current state
   ent.model = cl.model_precache[ent.baseline.modelindex];
@@ -685,6 +769,8 @@ export function CL_ParseStatic(): void {
   ent.colormap = vid.colormap;
   ent.skinnum = ent.baseline.skin;
   ent.effects = ent.baseline.effects;
+  ext.alpha = ent.baseline.alpha; // johnfitz -- alpha
+  ext.scale = ent.baseline.scale;
 
   VectorCopy(ent.baseline.origin, ent.origin);
   VectorCopy(ent.baseline.angles, ent.angles);
@@ -696,10 +782,11 @@ export function CL_ParseStatic(): void {
 CL_ParseStaticSound
 ===================
 */
-export function CL_ParseStaticSound(): void {
+export function CL_ParseStaticSound(version = 1): void {
+  const codec = clCodec();
   const org = vec3();
-  for (let i = 0; i < 3; i++) org[i] = MSG_ReadCoord();
-  const sound_num = MSG_ReadByte();
+  for (let i = 0; i < 3; i++) org[i] = codec.readCoord(cl.protocolflags);
+  const sound_num = codec.readStaticSoundIndex(version);
   const vol = MSG_ReadByte();
   const atten = MSG_ReadByte();
 
@@ -748,7 +835,7 @@ export function CL_ParseServerMessage(): void {
       continue;
     }
 
-    SHOWNET(svc_strings[cmd]);
+    SHOWNET(cmd < svc_strings.length ? svc_strings[cmd] : `svc_${cmd}`);
 
     // other commands
     switch (cmd) {
@@ -766,13 +853,13 @@ export function CL_ParseServerMessage(): void {
         break;
 
       case SvcOpsT.svc_clientdata:
-        i = MSG_ReadShort();
-        CL_ParseClientdata(i);
+        CL_ParseClientdata(); // johnfitz -- the bit word is read inside now
         break;
 
       case SvcOpsT.svc_version:
         i = MSG_ReadLong();
-        if (i !== PROTOCOL_VERSION) Host_Error("CL_ParseServerMessage: Server is protocol %i instead of %i\n", i, PROTOCOL_VERSION);
+        if (!protocolSupported(i)) Host_Error("CL_ParseServerMessage: Server is protocol %i instead of %i or %i or %i\n", i, PROTOCOL_NETQUAKE, PROTOCOL_FITZQUAKE, PROTOCOL_RMQ);
+        cl.protocol = i;
         break;
 
       case SvcOpsT.svc_disconnect:
@@ -853,10 +940,10 @@ export function CL_ParseServerMessage(): void {
       case SvcOpsT.svc_spawnbaseline:
         i = MSG_ReadShort();
         // must use CL_EntityNum() to force cl.num_entities up
-        CL_ParseBaseline(CL_EntityNum(i));
+        CL_ParseBaseline(CL_EntityNum(i), 1);
         break;
       case SvcOpsT.svc_spawnstatic:
-        CL_ParseStatic();
+        CL_ParseStatic(1);
         break;
       case SvcOpsT.svc_temp_entity:
         CL_ParseTEnt();
@@ -895,7 +982,39 @@ export function CL_ParseServerMessage(): void {
         break;
 
       case SvcOpsT.svc_spawnstaticsound:
-        CL_ParseStaticSound();
+        CL_ParseStaticSound(1);
+        break;
+
+      // johnfitz -- PROTOCOL_FITZQUAKE's own opcodes (37, 40-44). They are
+      // `export const`s rather than SvcOpsT members: SvcOpsT is protocol 15's
+      // set exactly, and `svc_strings` above is indexed by it.
+      case svc_spawnbaseline2:
+        i = MSG_ReadShort();
+        CL_ParseBaseline(CL_EntityNum(i), 2);
+        break;
+      case svc_spawnstatic2:
+        CL_ParseStatic(2);
+        break;
+      case svc_spawnstaticsound2:
+        CL_ParseStaticSound(2);
+        break;
+      case svc_skybox:
+        // [string] name. The sky loader is a renderer unit; the name is read
+        // so the stream stays in sync, and dropped.
+        MSG_ReadString();
+        break;
+      case svc_bf:
+        // Ironwail runs the `bf` console command (a screen flash); screen.ts's
+        // flash is a later unit, so this opcode carries no payload to skip.
+        break;
+      case svc_fog:
+        // [byte] density [byte] red [byte] green [byte] blue [short] time.
+        // Fog is a renderer unit; read past it so the stream stays in sync.
+        MSG_ReadByte();
+        MSG_ReadByte();
+        MSG_ReadByte();
+        MSG_ReadByte();
+        MSG_ReadShort();
         break;
 
       case SvcOpsT.svc_cdtrack:

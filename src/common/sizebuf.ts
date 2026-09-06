@@ -47,6 +47,16 @@ Deviations from PORTING.md / the C source:
   takes the same branch a nonzero (garbage) read would have taken: cursize==0
   means there is no prior trailing NUL to overwrite, so it always appends
   fresh in that case.
+- U3 addition (wide protocols): Ironwail replaces WinQuake's two-argument
+  `MSG_WriteCoord`/`MSG_WriteAngle` with three-argument versions that take the
+  session's `PRFL_*` word (common.c:780-797), and adds MSG_WriteCoord16/24/32f
+  and MSG_WriteAngle16 beside them. WinQuake's own two-argument pair must keep
+  its exact bytes for protocol 15 (`(int)(f*8)` and `((int)f*256/360)&255`,
+  truncation, not rounding -- Ironwail's Coord16/Angle use Q_rint and would
+  differ), so the flag-taking versions are added under the names
+  `MSG_WriteCoordFlags`/`MSG_WriteAngleFlags`/`MSG_ReadCoordFlags`/
+  `MSG_ReadAngleFlags` rather than overloading the originals. The unsuffixed
+  names stay exactly what WinQuake's common.c defines.
 - MSG_ReadString's `if (c == -1 || c == 0) break;` (c from MSG_ReadChar,
   which returns `(signed char)` of the raw byte) means a string byte whose
   raw value is 0xFF reads back as -1 and is indistinguishable from "no more
@@ -56,6 +66,7 @@ Deviations from PORTING.md / the C source:
 
 import { Sys_Error } from "../platform/sys";
 import { Con_Printf } from "../client/console";
+import { PRFL_24BITCOORD, PRFL_FLOATANGLE, PRFL_FLOATCOORD, PRFL_INT32COORD, PRFL_SHORTANGLE, Q_rint } from "./protocol";
 
 export class SizeBuf {
   allowoverflow = false; // if false, do a Sys_Error
@@ -193,6 +204,45 @@ export function MSG_WriteAngle(sb: SizeBuf, f: number): void {
   MSG_WriteByte(sb, Math.trunc((t * 256) / 360) & 255);
 }
 
+//----------------------------------------------------------------------------
+// Ironwail common.c:762-797's flag-driven coord/angle encoders (see file
+// header for why these carry a `Flags` suffix instead of overloading the two
+// WinQuake functions above).
+
+// original behavior, 13.3 fixed point coords, max range +-4096
+export function MSG_WriteCoord16(sb: SizeBuf, f: number): void {
+  MSG_WriteShort(sb, Q_rint(f * 8));
+}
+
+// 16.8 fixed point coords, max range +-32768
+export function MSG_WriteCoord24(sb: SizeBuf, f: number): void {
+  MSG_WriteShort(sb, f); // MSG_WriteShort (sb, f) -- the C truncates the float
+  MSG_WriteByte(sb, Math.trunc(f * 255) % 255); // (int)(f*255)%255
+}
+
+// 32-bit float coords
+export function MSG_WriteCoord32f(sb: SizeBuf, f: number): void {
+  MSG_WriteFloat(sb, f);
+}
+
+export function MSG_WriteCoordFlags(sb: SizeBuf, f: number, flags: number): void {
+  if (flags & PRFL_FLOATCOORD) MSG_WriteFloat(sb, f);
+  else if (flags & PRFL_INT32COORD) MSG_WriteLong(sb, Q_rint(f * 16));
+  else if (flags & PRFL_24BITCOORD) MSG_WriteCoord24(sb, f);
+  else MSG_WriteCoord16(sb, f);
+}
+
+export function MSG_WriteAngleFlags(sb: SizeBuf, f: number, flags: number): void {
+  if (flags & PRFL_FLOATANGLE) MSG_WriteFloat(sb, f);
+  else if (flags & PRFL_SHORTANGLE) MSG_WriteShort(sb, Q_rint((f * 65536.0) / 360.0) & 65535);
+  else MSG_WriteByte(sb, Q_rint((f * 256.0) / 360.0) & 255);
+}
+
+export function MSG_WriteAngle16(sb: SizeBuf, f: number, flags: number): void {
+  if (flags & PRFL_FLOATANGLE) MSG_WriteFloat(sb, f);
+  else MSG_WriteShort(sb, Q_rint((f * 65536.0) / 360.0) & 65535);
+}
+
 //
 // reading functions
 //
@@ -301,4 +351,40 @@ export function MSG_ReadCoord(): number {
 
 export function MSG_ReadAngle(): number {
   return MSG_ReadChar() * (360.0 / 256);
+}
+
+//----------------------------------------------------------------------------
+// Ironwail common.c:934-978's flag-driven coord/angle decoders.
+
+// original behavior, 13.3 fixed point coords, max range +-4096
+export function MSG_ReadCoord16(): number {
+  return MSG_ReadShort() * (1.0 / 8);
+}
+
+// 16.8 fixed point coords, max range +-32768
+export function MSG_ReadCoord24(): number {
+  return MSG_ReadShort() + MSG_ReadByte() * (1.0 / 255);
+}
+
+// 32-bit float coords
+export function MSG_ReadCoord32f(): number {
+  return MSG_ReadFloat();
+}
+
+export function MSG_ReadCoordFlags(flags: number): number {
+  if (flags & PRFL_FLOATCOORD) return MSG_ReadFloat();
+  if (flags & PRFL_INT32COORD) return MSG_ReadLong() * (1.0 / 16.0);
+  if (flags & PRFL_24BITCOORD) return MSG_ReadCoord24();
+  return MSG_ReadCoord16();
+}
+
+export function MSG_ReadAngleFlags(flags: number): number {
+  if (flags & PRFL_FLOATANGLE) return MSG_ReadFloat();
+  if (flags & PRFL_SHORTANGLE) return MSG_ReadShort() * (360.0 / 65536);
+  return MSG_ReadChar() * (360.0 / 256);
+}
+
+export function MSG_ReadAngle16(flags: number): number {
+  if (flags & PRFL_FLOATANGLE) return MSG_ReadFloat();
+  return MSG_ReadShort() * (360.0 / 65536);
 }
