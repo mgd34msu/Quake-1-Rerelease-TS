@@ -115,14 +115,32 @@ ruling for the same reason), so gl_rmain.ts's R_DrawAliasModel skips that
 decompression pair entirely on the MD5 path -- see that file's own call
 site comment.
 
-SHADOW. Not implemented for the MD5 path: this unit's brief permits
-either "skip or project the skinned verts like GL_DrawAliasShadow", and
-skipping is the simpler, equally-compliant choice -- r_shadows draws
-nothing under a model's feet when it has an MD5 replacement attached and
-enhanced models are on. Flagged as a follow-up for whoever wants shadow
-parity (GL_DrawAliasShadow's own per-vertex skew math, fed md5Skin's
-blended positions instead of TrivertxT, is a straightforward mechanical
-adaptation of this file's own draw loop).
+SHADOW. U35: `GL_DrawMd5Shadow` below is the "project the skinned verts
+like GL_DrawAliasShadow" option this unit's own U29 header left as a
+follow-up. It reuses `payload.meshVertScratch` -- the SAME per-mesh
+Float32Array `GL_DrawMd5AliasFrame` just filled through `md5Skin` this
+frame for this entity's draw -- rather than re-skinning: R_DrawAliasModel
+(gl_rmain.ts) always calls `GL_DrawMd5AliasFrame` immediately before the
+shadow pass for the same entity, and the module is never reentrant (this
+file's own "zero-per-frame-allocation" note below), so the scratch still
+holds this frame's blended positions when the shadow pass reads them.
+Applies gl_rmain.c's own GL_DrawAliasShadow skew formula byte-for-byte
+(`point[0] -= shadevector[0]*(point[2]+lheight)`, `point[2] = height`
+where `height = -lheight+1` and `lheight = origin[2]-lightspot[2]`) to
+those already-model-space floats instead of a classic TrivertxT's
+scale/scale_origin-decompressed point -- no scale_origin/scale step is
+needed here for the same reason GL_DrawMd5AliasFrame's own TRANSFORM
+section skips it for the main draw. `shadevector` is taken as a parameter
+(mirroring `GL_DrawMd5AliasFrame`'s own signature) rather than imported
+from gl_rmain.ts directly, to avoid a gl_md5.ts<->gl_rmain.ts import
+cycle; `lightspot` is imported straight from gl_rlight.ts, which does not
+import this module, so no cycle risk there. gl_rmain.ts's own
+R_DrawAliasModel calls this from its MD5 branch under `r_shadows` in
+place of `GL_DrawAliasShadow` -- see that file's own comment at the call
+site (the one line this unit touches there beyond the accessor allowance:
+the shadow dispatch already branches on `md5Payload` for the draw call
+immediately above it, so this is the same shape extended to the shadow
+call three lines later).
 
 IMMEDIATE MODE. Per this unit's brief ("immediate mode is acceptable"):
 every mesh draws as one glBegin(GL_TRIANGLES)/glEnd walking mesh.indices
@@ -144,7 +162,7 @@ import { cl } from "../client/client";
 import type { EntityT } from "../client/render";
 import type { ModelT } from "../common/model";
 import type { MdlT } from "../common/modelgen";
-import type { Vec3 } from "../common/mathlib";
+import { type Vec3, vec3 } from "../common/mathlib";
 import { Sys_Error } from "../platform/sys";
 import { AliashdrT } from "./gl_model_types";
 import { GL_Bind, GL_LoadTexture } from "./gl_draw";
@@ -152,6 +170,10 @@ import { GL_TRIANGLES, qgl } from "./qgl";
 // read-only reuse of the software renderer's cvar object -- see this
 // file's header ("do not register twice").
 import { r_enhancedmodels } from "../common/render_cvars";
+// read-only reuse of the shadow projection's own light-height input -- see
+// this file's header (SHADOW). gl_rlight.ts does not import this module,
+// so no cycle.
+import { lightspot } from "./gl_rlight";
 
 export { r_enhancedmodels };
 
@@ -314,6 +336,40 @@ export function GL_DrawMd5AliasFrame(payload: Md5GlAliasT, ent: EntityT, pose1: 
       if (alpha === 1) qgl().qglColor3f(dot * shadelightColor[0], dot * shadelightColor[1], dot * shadelightColor[2]);
       else qgl().qglColor4f(dot * shadelightColor[0], dot * shadelightColor[1], dot * shadelightColor[2], alpha);
       qgl().qglVertex3f(skinned[o], skinned[o + 1], skinned[o + 2]);
+    }
+    qgl().qglEnd();
+  }
+}
+
+// module-scope scratch, same idiom as `md5FrameSel`/`shadowPoint`
+// (gl_rmain.ts) -- GL_DrawMd5Shadow is never reentrant either.
+const md5ShadowPoint: Vec3 = vec3();
+
+/*
+U35: gl_rmain.c's own GL_DrawAliasShadow skew, fed md5Skin's already-
+blended positions (still sitting in `payload.meshVertScratch` from the
+GL_DrawMd5AliasFrame call this frame's draw just made -- reused verbatim,
+no re-skin) instead of a classic TrivertxT -- see this file's header,
+SHADOW.
+*/
+export function GL_DrawMd5Shadow(payload: Md5GlAliasT, ent: EntityT, shadevector: Vec3): void {
+  const lheight = ent.origin[2] - lightspot[2];
+  const height = -lheight + 1.0;
+
+  for (let m = 0; m < payload.model.meshes.length; m++) {
+    const mesh: Md5MeshT = payload.model.meshes[m];
+    const skinned = payload.meshVertScratch[m];
+
+    qgl().qglBegin(GL_TRIANGLES);
+    for (let i = 0; i < mesh.numIndices; i++) {
+      const v = mesh.indices[i];
+      const o = v * MD5_VERTEX_STRIDE;
+
+      md5ShadowPoint[0] = skinned[o] - shadevector[0] * (skinned[o + 2] + lheight);
+      md5ShadowPoint[1] = skinned[o + 1] - shadevector[1] * (skinned[o + 2] + lheight);
+      md5ShadowPoint[2] = height;
+
+      qgl().qglVertex3fv(md5ShadowPoint);
     }
     qgl().qglEnd();
   }

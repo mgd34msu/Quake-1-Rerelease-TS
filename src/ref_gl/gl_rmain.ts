@@ -275,7 +275,7 @@ import {
 } from "./qgl";
 import { GL_Bind } from "./gl_draw";
 // U29: re-release MD5 replacement models -- see gl_md5.ts's own header.
-import { GL_DrawMd5AliasFrame, getMd5GlPayload, r_enhancedmodels } from "./gl_md5";
+import { GL_DrawMd5AliasFrame, GL_DrawMd5Shadow, getMd5GlPayload, r_enhancedmodels } from "./gl_md5";
 import { GL_DisableMultitexture, R_DrawBrushModel, R_DrawWaterSurfaces, R_DrawWorld, R_MarkLeaves, R_RenderBrushPoly } from "./gl_rsurf";
 import { R_AnimateLight, R_LightPoint, R_RenderDlights, lightcolor, lightspot } from "./gl_rlight";
 import { Fog_DisableGFog, Fog_EnableGFog, Fog_SetupFrame } from "./gl_fog";
@@ -1004,8 +1004,9 @@ export function R_DrawAliasModel(e: EntityT): void {
   // bind + draw" portion of this function once the classic setup above
   // (lerp bookkeeping, culling, lighting, shadevector) is in place -- see
   // gl_md5.ts's header (TRANSFORM) for why the scale_origin/scale
-  // decompression pair below is skipped for it, and (SHADOW) for why
-  // r_shadows draws nothing for it.
+  // decompression pair below is skipped for it. U35 gives it a shadow too --
+  // see gl_md5.ts's header (SHADOW) and this function's own r_shadows block
+  // below.
   const md5Payload = r_enhancedmodels.value ? getMd5GlPayload(paliashdr) : null;
 
   //
@@ -1101,14 +1102,23 @@ export function R_DrawAliasModel(e: EntityT): void {
 
   qgl().qglPopMatrix();
 
-  // U29: no shadow for an MD5 replacement -- see gl_md5.ts's header (SHADOW).
-  if (r_shadows.value && !md5Payload) {
+  // U35: an MD5 replacement now gets a shadow too -- gl_md5.ts's own
+  // GL_DrawMd5Shadow projects the SAME already-model-space skinned/blended
+  // positions GL_DrawMd5AliasFrame just drew above (reusing its scratch, no
+  // re-skin), through the identical skew GL_DrawAliasShadow applies to a
+  // classic TrivertxT -- see gl_md5.ts's header (SHADOW). The matrix this
+  // block sets up (R_RotateForEntity, no scale_origin/scale) is already the
+  // correct one for both: the classic path bakes scale_origin/scale into
+  // GL_DrawAliasShadow's own per-vertex math instead of a glScalef here (see
+  // that function), and MD5 needs no such step at all (TRANSFORM, above).
+  if (r_shadows.value) {
     qgl().qglPushMatrix();
     R_RotateForEntity(entityTransformLerp.origin, entityTransformLerp.angles, currententity.scale);
     qgl().qglDisable(GL_TEXTURE_2D);
     qgl().qglEnable(GL_BLEND);
     qgl().qglColor4f(0, 0, 0, 0.5);
-    GL_DrawAliasShadow(paliashdr, rmainState.lastpose1, rmainState.lastpose2, rmainState.lastblend);
+    if (md5Payload) GL_DrawMd5Shadow(md5Payload, currententity, shadevector);
+    else GL_DrawAliasShadow(paliashdr, rmainState.lastpose1, rmainState.lastpose2, rmainState.lastblend);
     qgl().qglEnable(GL_TEXTURE_2D);
     qgl().qglDisable(GL_BLEND);
     qgl().qglColor4f(1, 1, 1, 1);

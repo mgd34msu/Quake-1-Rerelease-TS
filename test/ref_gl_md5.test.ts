@@ -53,11 +53,12 @@ import { EntityT } from "../src/client/render";
 import { cl } from "../src/client/client";
 import { vec3 } from "../src/common/mathlib";
 import { frustum, glState } from "../src/ref_gl/glquake";
+import { lightspot } from "../src/ref_gl/gl_rlight";
 import { AliashdrT, MaliasframedescT } from "../src/ref_gl/gl_model_types";
-import { GL_TRIANGLE_FAN, GL_TRIANGLES, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
+import { GL_TRIANGLE_FAN, GL_TRIANGLES, GLPointer, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
 import { R_DrawAliasModel, gl_nocolors, r_shadows } from "../src/ref_gl/gl_rmain";
 import * as glDraw from "../src/ref_gl/gl_draw";
-import { GL_DrawMd5AliasFrame, type Md5GlAliasT, attachMd5GlReplacementIfAny, getMd5GlPayload, r_enhancedmodels } from "../src/ref_gl/gl_md5";
+import { GL_DrawMd5AliasFrame, GL_DrawMd5Shadow, type Md5GlAliasT, attachMd5GlReplacementIfAny, getMd5GlPayload, r_enhancedmodels } from "../src/ref_gl/gl_md5";
 import { ensureDir } from "./support/bsp_builder";
 import { writePakToDisk } from "./support/pak_builder";
 
@@ -175,7 +176,23 @@ frame 1 {
 const scratchRoot = process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests";
 mkdirSync(scratchRoot, { recursive: true });
 
-const rec = new QGLRecording();
+// U35: GL_DrawMd5Shadow (like gl_rmain.ts's own GL_DrawAliasShadow) reuses
+// one scratch vec3 across every vertex it emits through qglVertex3fv --
+// QGLRecording stores that call's argument by reference, so reading it back
+// afterwards would show only the LAST vertex repeated. This subclass
+// snapshots each call's value at the time it was made, the same idiom
+// test/ref_gl_lerp.test.ts's own SnapshottingQGL and test/ref_gl_main.
+// test.ts's own copy of it use for the same reason.
+class SnapshottingQGL extends QGLRecording {
+  readonly vertex3fv: number[][] = [];
+
+  override qglVertex3fv(v: GLPointer): void {
+    if (v instanceof Float32Array) this.vertex3fv.push([v[0], v[1], v[2]]);
+    super.qglVertex3fv(v);
+  }
+}
+
+const rec = new SnapshottingQGL();
 let nextTexnum = 1;
 let loadTextureSpy: ReturnType<typeof spyOn>;
 let scratchDir: string;
@@ -194,6 +211,7 @@ const saved = {
   clWorldmodel: cl.worldmodel,
   gl_nocolors: gl_nocolors.value,
   r_shadows: r_shadows.value,
+  lightspot: [lightspot[0], lightspot[1], lightspot[2]],
   frustum: frustum.map((p) => ({ normal: [p.normal[0], p.normal[1], p.normal[2]], dist: p.dist, type: p.type, signbits: p.signbits })),
 };
 
@@ -268,6 +286,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   rec.clear();
+  rec.vertex3fv.length = 0;
   loadTextureSpy.mockClear();
   glState.currenttexture = -1;
   glState.currententity = null;
@@ -277,6 +296,9 @@ beforeEach(() => {
   r_shadows.value = 0;
   r_enhancedmodels.string = "1";
   r_enhancedmodels.value = 1;
+  lightspot[0] = 0;
+  lightspot[1] = 0;
+  lightspot[2] = 0;
   openFrustum();
 });
 
@@ -295,6 +317,9 @@ afterAll(() => {
   cl.worldmodel = saved.clWorldmodel;
   gl_nocolors.value = saved.gl_nocolors;
   r_shadows.value = saved.r_shadows;
+  lightspot[0] = saved.lightspot[0];
+  lightspot[1] = saved.lightspot[1];
+  lightspot[2] = saved.lightspot[2];
   for (let i = 0; i < 4; i++) {
     frustum[i].normal[0] = saved.frustum[i].normal[0];
     frustum[i].normal[1] = saved.frustum[i].normal[1];
@@ -499,6 +524,87 @@ describe("GL_DrawMd5AliasFrame two-frame pose blend", () => {
 });
 
 //============================================================================
+// GL_DrawMd5Shadow -- U35: projects the draw's own skinned/blended
+// positions (reusing GL_DrawMd5AliasFrame's scratch, no re-skin) with the
+// classic GL_DrawAliasShadow skew.
+//============================================================================
+
+describe("GL_DrawMd5Shadow", () => {
+  let triPayload: Md5GlAliasT;
+
+  beforeAll(() => {
+    const mod = new ModelT();
+    mod.name = "progs/tri.mdl";
+    const hdr = new AliashdrT();
+    const mdl = new MdlT();
+    mdl.numskins = 1;
+    mdl.numframes = 1;
+    attachMd5GlReplacementIfAny(mod, hdr, mdl);
+    const p = getMd5GlPayload(hdr);
+    if (!p) throw new Error("test setup: no MD5 payload attached for progs/tri.mdl");
+    triPayload = p;
+  });
+
+  test("emits one GL_TRIANGLES pass, one vertex per mesh index -- equal to the mesh's own numVerts for this one-triangle fixture", () => {
+    const ent = new EntityT();
+    ent.skinnum = 0;
+    ent.syncbase = 0;
+    ent.origin.set([0, 0, 0]);
+    const shadevector = vec3(0, 0, 1);
+    const shadelightColor = vec3(1, 1, 1);
+
+    // populates payload.meshVertScratch -- GL_DrawMd5Shadow must reuse it
+    // rather than re-skinning.
+    GL_DrawMd5AliasFrame(triPayload, ent, 0, 0, 0, shadevector, shadelightColor, 1);
+    rec.clear();
+    rec.vertex3fv.length = 0;
+
+    GL_DrawMd5Shadow(triPayload, ent, shadevector);
+
+    const beginCalls = rec.calls.filter((c) => c.name === "qglBegin");
+    expect(beginCalls.length).toBe(1);
+    expect(beginCalls[0].args).toEqual([GL_TRIANGLES]);
+    expect(rec.calls.some((c) => c.name === "qglEnd")).toBe(true);
+
+    expect(rec.vertex3fv.length).toBe(triPayload.model.meshes[0].numIndices);
+    expect(rec.vertex3fv.length).toBe(triPayload.model.meshes[0].numVerts);
+  });
+
+  test("the classic skew: z = -lheight+1, x/y offset by shadevector*(z+lheight), against the fixture's own known (unrotated, unblended) vertex positions", () => {
+    const ent = new EntityT();
+    ent.skinnum = 0;
+    ent.syncbase = 0;
+    ent.origin.set([0, 0, 0]);
+    const drawShadevector = vec3(0, 0, 1); // this call's own light dir is irrelevant to the shadow -- only its skinning matters here
+    const shadelightColor = vec3(1, 1, 1);
+
+    // the "tri" fixture's own joint is at the origin with no rotation and
+    // this is a same-frame (unblended) draw, so md5Skin's output for each
+    // vertex is exactly its own weight offset -- vertex 0 (0,-30,-30),
+    // vertex 1 (0,30,-30), vertex 2 (0,30,30) (see md5MeshText/this file's
+    // "blend 0 and blend 1..." test, which confirms the same identity for
+    // the sibling "blend" fixture).
+    GL_DrawMd5AliasFrame(triPayload, ent, 0, 0, 0, drawShadevector, shadelightColor, 1);
+    rec.clear();
+    rec.vertex3fv.length = 0;
+
+    lightspot[0] = 0;
+    lightspot[1] = 0;
+    lightspot[2] = 5; // lheight = origin[2]-lightspot[2] = -5; height = -lheight+1 = 6
+    const shadowShadevector = vec3(0.5, 0.25, 1);
+
+    GL_DrawMd5Shadow(triPayload, ent, shadowShadevector);
+
+    // hand-computed: point[c] -= shadevector[c]*(point[2]+lheight); point[2] = height
+    expect(rec.vertex3fv).toEqual([
+      [17.5, -21.25, 6], // (0,-30,-30): -0.5*(-30-5)=17.5; -30-0.25*(-35)=-21.25
+      [17.5, 38.75, 6], // (0,30,-30): 0-0.5*(-35)=17.5; 30-0.25*(-35)=38.75
+      [-12.5, 23.75, 6], // (0,30,30): 0-0.5*(25)=-12.5; 30-0.25*(25)=23.75
+    ]);
+  });
+});
+
+//============================================================================
 // R_DrawAliasModel -- the r_enhancedmodels draw-time branch
 //============================================================================
 
@@ -594,6 +700,37 @@ describe("R_DrawAliasModel branches on r_enhancedmodels for an attached MD5 payl
     expect(translates.some((c) => c.args[0] === 1 && c.args[1] === 2 && c.args[2] === 3)).toBe(true);
     const bindCalls = rec.calls.filter((c) => c.name === "qglBindTexture");
     expect(bindCalls.some((c) => c.args[1] === 999)).toBe(true);
+  });
+
+  test("U35: r_shadows 1 draws the MD5 shadow after the model, at the projected z", () => {
+    r_enhancedmodels.value = 1;
+    r_shadows.value = 1;
+    const e = makeEntity("progs/mixed.mdl", hdr);
+    glState.currententity = e; // origin (0,0,0); lightspot reset to (0,0,0) by beforeEach
+
+    R_DrawAliasModel(e);
+
+    const modelVertexIdx = rec.calls.findIndex((c) => c.name === "qglVertex3f");
+    const shadowBeginIdx = rec.calls.findIndex((c, idx) => c.name === "qglBegin" && c.args[0] === GL_TRIANGLES && idx > modelVertexIdx);
+    expect(modelVertexIdx).toBeGreaterThanOrEqual(0);
+    expect(shadowBeginIdx).toBeGreaterThan(modelVertexIdx);
+
+    // one shadow vertex per mesh index -- same count as the model's own
+    // draw (the "mixed" fixture is the same one-triangle shape as "tri").
+    expect(rec.vertex3fv.length).toBe(3);
+    // origin (0,0,0), lightspot (0,0,0) -> lheight = 0, height = -0+1 = 1
+    for (const v of rec.vertex3fv) expect(v[2]).toBe(1);
+  });
+
+  test("U35: r_shadows 0 draws no MD5 shadow", () => {
+    r_enhancedmodels.value = 1;
+    r_shadows.value = 0;
+    const e = makeEntity("progs/mixed.mdl", hdr);
+    glState.currententity = e;
+
+    R_DrawAliasModel(e);
+
+    expect(rec.vertex3fv.length).toBe(0);
   });
 });
 
