@@ -123,6 +123,15 @@ binary, `q1rets`; see [Building from source](#building-from-source) below.
   same per-game-directory layout).
 - `-nohomedir` — write into `<basedir>/<gamedir>` itself, the unmodified
   WinQuake behaviour.
+- `cfg_version` (archived; an addition) — the format version of the
+  config.cfg the engine wrote. When a config from an earlier build (no
+  `cfg_version` line, or one below the current 2) is exec'd, `cfg_migrate`
+  runs right behind it and resets the settings whose defaults changed since
+  (`scr_sbarscale`, `scr_conscale`, `con_font`) to the current defaults,
+  then stamps the version; a config already at the current version is left
+  exactly as the player wrote it. Note: the QuakeWorld client (`-qw`) still
+  reads and writes `<basedir>/qw/config.cfg` and does not use the home
+  directory tier yet.
 - `-game <dir>` — an arbitrary override game directory, as the original.
   `-hipnotic`, `-rogue`, `-mg1`, `-mg3`, `-dopa`, `-ctf` each add the
   matching mission-pack or re-release campaign directory.
