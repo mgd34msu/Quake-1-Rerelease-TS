@@ -45,10 +45,16 @@ afterAll(() => {
   else console.log(`kept qex live logs in ${logDir}`);
 });
 
-if (HAVE_RERELEASE) mkdirSync(join(BASEDIR, GAME), { recursive: true }); // Host_Shutdown writes config.cfg here
+// Every write the engine makes (config.cfg at shutdown, autosaves, the
+// console log) goes to a throwaway home directory under the test scratch
+// root, never into the retail tree Q1TS_DATA points at.
+const SCRATCH_ROOT = process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests";
+mkdirSync(SCRATCH_ROOT, { recursive: true });
+const HOMEDIR = mkdtempSync(join(SCRATCH_ROOT, "qex-home-"));
+afterAll(() => rmSync(HOMEDIR, { recursive: true, force: true }));
 
 function buildScript(map: string): string {
-  const args = ["q1ts", "-basedir", BASEDIR, "-game", GAME, "-nosound", "+map", map];
+  const args = ["q1ts", "-basedir", BASEDIR, "-homedir", HOMEDIR, "-game", GAME, "-nosound", "+map", map];
   return [
     `const { Sys_Main_Init, runFrames } = await import(${JSON.stringify(mainTs)});`,
     `const { cl, cls, SIGNONS } = await import(${JSON.stringify(join(import.meta.dir, "..", "src", "client", "client.ts"))});`,

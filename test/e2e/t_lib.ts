@@ -127,11 +127,11 @@ isolated tree family E builds (test/e2e/e_lib.ts's ensureBasedir): `Id1`
 symlinked back to the retail install and a private WRITABLE `qw/` holding a
 copy of qwprogs.dat.
 
-It is not an optimisation. `-homedir` does not reach the QuakeWorld side --
-a `-qw` client resolves `config.cfg` and every `exec` against
-`<basedir>/qw` and never looks in the homedir (see t_qw.ts's defect note) --
-so a QuakeWorld seat scripted by an exec'd cfg needs a writable `qw/`
-directory that is NOT the retail install.
+It is not an optimisation. `sv_profile qw` + `map dm1` needs a `qw/qwprogs.dat`
+the retail install does not ship, so this family's own basedir carries a copy.
+(The QuakeWorld side now mounts `<homedir>/qw` first and writes there, since
+the -homedir fix of 2026-09-07; the seats below still script through this
+basedir's `qw/` because that is where the progs live.)
 
 A zero-byte map left under `qw/maps` by a failed client download makes
 COM_FindFile prefer it over the pak's real map and takes the server down, so
@@ -182,9 +182,9 @@ export function qwBasedir(): string {
 }
 
 /*
-A QuakeWorld client seat's console script. It goes into `<qwBasedir>/qw`
-rather than the homedir for the reason qwBasedir() gives, and is chained the
-same way a NetQuake client's is.
+A QuakeWorld client seat's console script. It goes into `<qwBasedir>/qw`,
+the directory qwBasedir() prepares, and is chained the same way a NetQuake
+client's is.
 */
 export function startQwClient(name: string, args: readonly string[], script: readonly string[]): SeatT {
   const dir = `${qwBasedir()}/qw`;

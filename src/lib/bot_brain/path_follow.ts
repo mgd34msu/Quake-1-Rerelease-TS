@@ -64,6 +64,11 @@ export function setPath(state: BotPathStateT, path: NavPathT | null, origin: Bot
       const next = path.points[state.index + 1]!;
       const back = (here.x - origin.x) * (next.x - origin.x) + (here.y - origin.y) * (next.y - origin.y);
       if (back >= 0) break;
+      // Only a point at the bot's own level can be "behind" it. The bottom of
+      // a flooded shaft sits directly under a bot floating at its top, which
+      // the flat test above reads as already passed -- and the bot then swims
+      // at the next tunnel node straight through the shaft wall.
+      if (Math.abs(here.z - origin.z) > 64) break;
       state.index++;
     }
   }
@@ -95,6 +100,8 @@ export interface BotMoveOutputT {
   status: BotPathStatusT;
   forwardmove: number;
   sidemove: number;
+  /** Vertical swim component, non-zero only while the bot is in deep enough water to swim. */
+  upmove: number;
   jump: boolean;
   /** The point currently being steered toward, for a caller that wants to look at it. */
   target: BotVec3 | null;
@@ -108,6 +115,8 @@ export interface BotFollowInputT {
   pitch: number;
   yaw: number;
   onGround: boolean;
+  /** 0 dry, 1 feet wet, 2 waist deep, 3 submerged -- Quake's waterlevel. Swimming starts at 2. */
+  waterLevel?: number;
   now: number;
   /** Seconds of no meaningful progress before the controller reports Stuck. */
   stuckTime: number;
@@ -128,7 +137,7 @@ export interface BotFollowInputT {
  * pick a different goal).
  */
 export function followPath(state: BotPathStateT, input: BotFollowInputT, movement: BotMovementSettings, rng: BotRandomT): BotMoveOutputT {
-  const idle: BotMoveOutputT = { status: BotPathStatus.NoPath, forwardmove: 0, sidemove: 0, jump: false, target: null, link: null };
+  const idle: BotMoveOutputT = { status: BotPathStatus.NoPath, forwardmove: 0, sidemove: 0, upmove: 0, jump: false, target: null, link: null };
 
   const path = state.path;
   if (path === null || path.points.length === 0) return idle;
@@ -152,7 +161,7 @@ export function followPath(state: BotPathStateT, input: BotFollowInputT, movemen
   }
 
   if (state.index >= path.points.length) {
-    return { status: BotPathStatus.Arrived, forwardmove: 0, sidemove: 0, jump: false, target: null, link: null };
+    return { status: BotPathStatus.Arrived, forwardmove: 0, sidemove: 0, upmove: 0, jump: false, target: null, link: null };
   }
 
   const target = path.points[state.index]!;
@@ -166,12 +175,31 @@ export function followPath(state: BotPathStateT, input: BotFollowInputT, movemen
     state.stuckCount++;
     state.stuckOrigin = { x: input.origin.x, y: input.origin.y, z: input.origin.z };
     state.stuckSince = input.now;
-    return { status: BotPathStatus.Stuck, forwardmove: 0, sidemove: 0, jump: false, target, link };
+    return { status: BotPathStatus.Stuck, forwardmove: 0, sidemove: 0, upmove: 0, jump: false, target, link };
   }
 
-  const dir = steerDirection(input.origin, target);
   const speed = movement.walkOnly ? (input.walkSpeed ?? BOT_WALK_SPEED) : (input.runSpeed ?? BOT_RUN_SPEED);
   const { forward, right } = angleVectors(0, input.yaw, 0);
+
+  // On land the steering direction is flat: the ground carries the bot up and
+  // down steps and slopes. Swimming, the direction is the full 3-D vector to
+  // the point, and its vertical part goes out as upmove -- Quake's water move
+  // (SV_WaterMove) adds upmove straight onto the wish velocity, which is the
+  // only way a bot ever dives down a flooded shaft or surfaces from one. Yaw
+  // alone can never do it, and the bot's pitch belongs to its aim.
+  const swimming = (input.waterLevel ?? 0) >= 2;
+  let dir: BotVec3;
+  let upmove = 0;
+  if (swimming) {
+    const dx = target.x - input.origin.x;
+    const dy = target.y - input.origin.y;
+    const dz = target.z - input.origin.z;
+    const len = Math.hypot(dx, dy, dz);
+    dir = len > 0 ? { x: dx / len, y: dy / len, z: dz / len } : { x: 0, y: 0, z: 0 };
+    upmove = clamp(dir.z * speed, -speed, speed);
+  } else {
+    dir = steerDirection(input.origin, target);
+  }
 
   const forwardmove = clamp((dir.x * forward.x + dir.y * forward.y) * speed, -speed, speed);
   const sidemove = clamp((dir.x * right.x + dir.y * right.y) * speed, -speed, speed);
@@ -186,7 +214,7 @@ export function followPath(state: BotPathStateT, input: BotFollowInputT, movemen
     if (needsJump || stepUp) jump = true;
   }
 
-  return { status: BotPathStatus.Moving, forwardmove, sidemove, jump, target, link };
+  return { status: BotPathStatus.Moving, forwardmove, sidemove, upmove, jump, target, link };
 }
 
 /**

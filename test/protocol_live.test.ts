@@ -204,7 +204,13 @@ const CLASSIC_ARGS = ["-norerelease"];
 const mainTs = join(import.meta.dir, "..", "src", "main.ts");
 const headlessEnv = { ...process.env, SDL_VIDEODRIVER: "dummy", SDL_AUDIODRIVER: "dummy" };
 
-if (HAVE_DATA) mkdirSync(join(BASEDIR, GAME), { recursive: true }); // Host_Shutdown writes config.cfg here
+// Every write the engine makes (config.cfg at shutdown, autosaves, the
+// console log) goes to a throwaway home directory under the test scratch
+// root, never into the retail tree Q1TS_DATA points at.
+const SCRATCH_ROOT = process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests";
+mkdirSync(SCRATCH_ROOT, { recursive: true });
+const HOMEDIR = mkdtempSync(join(SCRATCH_ROOT, "proto-home-"));
+afterAll(() => rmSync(HOMEDIR, { recursive: true, force: true }));
 
 const logDir = mkdtempSync(join(tmpdir(), "q1-protocol-live-"));
 
@@ -218,7 +224,7 @@ afterAll(() => {
 // seats. Frames are paced the way sys_linux.c's main loop paces Host_Frame
 // (a fixed slice spun as fast as a loop can go would race the server clock).
 function buildScript(protocol: string, map: string, extraArgs: string[], basedir: string, game: string): string {
-  const args = ["q1ts", "-basedir", basedir, "-game", game, "-nosound", ...extraArgs, "+sv_protocol", protocol, "+map", map];
+  const args = ["q1ts", "-basedir", basedir, "-homedir", HOMEDIR, "-game", game, "-nosound", ...extraArgs, "+sv_protocol", protocol, "+map", map];
   return [
     `const { Sys_Main_Init, runFrames } = await import(${JSON.stringify(mainTs)});`,
     `const { cl, cls, cl_entities, SIGNONS } = await import(${JSON.stringify(join(import.meta.dir, "..", "src", "client", "client.ts"))});`,

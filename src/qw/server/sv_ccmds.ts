@@ -83,7 +83,6 @@ import {
   COM_FOpenFile,
   COM_Gamedir,
   com_gamedir,
-  gamedirfile,
   Info_Print,
   Info_SetValueForKey,
   Info_SetValueForStarKey,
@@ -779,15 +778,20 @@ export function SV_Snap(uid: number): void {
     return;
   }
 
-  Sys_mkdir(gamedirfile);
-  let checkname = `${gamedirfile}/snap`;
+  // Port deviation: the C builds these paths from `gamedirfile` (the bare
+  // directory name, relative to the process's working directory). Ours are
+  // built from com_gamedir, the absolute writable game directory, so a
+  // server started from any directory writes its snaps next to its other
+  // files and not into whatever the working directory happens to be.
+  Sys_mkdir(com_gamedir);
+  let checkname = `${com_gamedir}/snap`;
   Sys_mkdir(checkname);
 
   // pcxname[strlen(pcxname)-6]/[-5] byte mutation -- see file header
   let j = 0;
   for (; j <= 99; j++) {
     const pcxname = `${uid}-${String(j).padStart(2, "0")}.pcx`;
-    checkname = `${gamedirfile}/snap/${pcxname}`;
+    checkname = `${com_gamedir}/snap/${pcxname}`;
     if (Sys_FileTime(checkname) === -1) break; // file doesn't exist
   }
   if (j === 100) {

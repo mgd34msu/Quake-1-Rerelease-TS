@@ -68,7 +68,7 @@ import {
   msgState,
   MSG_BeginReading,
 } from "../src/qw/common";
-import { COM_LoadHunkFile as SharedCOM_LoadHunkFile, setComSearchpaths, setComModified } from "../src/common/common";
+import { COM_LoadHunkFile as SharedCOM_LoadHunkFile, setComSearchpaths, setComModified, setComHomedir, com_homedir } from "../src/common/common";
 import { QwUsercmdT, CM_ANGLE2, CM_FORWARD, CM_BUTTONS } from "../src/qw/protocol";
 import { SizeBuf, SZ_Alloc } from "../src/common/sizebuf";
 import { writePakToDisk, ensureDir } from "./support/pak_builder";
@@ -85,13 +85,20 @@ const scratchDir = mkdtempSync(join(scratchRoot, "qw-common-test-"));
 // this file's own tests expect to start clean, and restore the defaults
 // afterward so a later-run file sees the same clean state this file started
 // with.
+// The home directory tier is shared module state too (src/common/common.ts's
+// com_homedir): a test file that booted with -homedir earlier in the same
+// process leaves it set, and every layout below is written for the plain
+// -nohomedir shape unless it sets its own. Cleared per test, restored after.
+const savedHomedir = com_homedir;
 beforeEach(() => {
   setComSearchpaths(null);
   setComModified(false);
+  setComHomedir("");
 });
 afterAll(() => {
   setComSearchpaths(null);
   setComModified(false);
+  setComHomedir(savedHomedir);
 });
 
 function latin1Bytes(s: string): Uint8Array {
@@ -454,6 +461,31 @@ describe("COM_InitFilesystem / COM_Gamedir", () => {
     writeLoose(join(baseDir, "qw", "marker.txt"), "QW");
     return baseDir;
   }
+
+  test("with a home directory, <homedir>/qw is searched first and is the writable com_gamedir; COM_Gamedir moves it to <homedir>/<dir>", () => {
+    const baseDir = makeBaseDir("homefs");
+    const homeDir = join(scratchDir, "homefs-home");
+    ensureDir(join(homeDir, "qw"));
+    writeLoose(join(homeDir, "qw", "marker.txt"), "HOME");
+    setComHomedir(homeDir);
+
+    COM_InitArgv(["quake", "-basedir", baseDir]);
+    COM_InitFilesystem();
+
+    expect(com_gamedir).toBe(join(homeDir, "qw"));
+    expect(gamedirfile).toBe("qw");
+    const data = COM_LoadHunkFile("marker.txt");
+    if (data === null) throw new Error("expected marker.txt to be found");
+    expect(bytesToLatin1(data)).toBe("HOME");
+
+    COM_Gamedir("ctf");
+    expect(gamedirfile).toBe("ctf");
+    expect(com_gamedir).toBe(join(homeDir, "ctf"));
+    // the base tree's own qw/ is still on the path under the home tier
+    const qw = COM_LoadHunkFile("marker.txt");
+    if (qw === null) throw new Error("expected marker.txt to be found");
+    expect(bytesToLatin1(qw)).toBe("HOME");
+  });
 
   test("search order: qw is searched before id1 (a file present in both resolves to qw's)", () => {
     const baseDir = makeBaseDir("initfs");

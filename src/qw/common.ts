@@ -355,6 +355,7 @@ import {
   setComArgv,
   setComSearchpaths,
   setComGamedir,
+  com_homedir,
   setComModified,
   setStaticRegistered,
   setComFilesize,
@@ -841,6 +842,37 @@ export function COM_AddGameDirectory(dir: string): void {
     if (!pak) break;
     setComSearchpaths({ kind: "pack", pack: pak, next: com_searchpaths });
   }
+
+  COM_AddHomeDirectory(gamedirfile);
+}
+
+//================
+//
+// COM_AddHomeDirectory
+//
+// Not in the C. The home directory tier of src/common/common.ts's
+// COM_AddGameDirectory (-homedir / COM_DefaultHomeDir), applied to the
+// QuakeWorld search path: `<homedir>/<gamedir>` is mounted last, so it is
+// searched first, and becomes com_gamedir -- where config.cfg, demos,
+// snaps, qconsole.log and the frag logs are written. Without it the
+// QuakeWorld side wrote into `<basedir>/qw` whatever -homedir said, which is
+// the retail install for a normal user. A no-op under -nohomedir, which
+// leaves com_homedir empty.
+//================
+
+function COM_AddHomeDirectory(gamedir: string): void {
+  if (!com_homedir) return;
+  const homeDir = `${com_homedir}/${gamedir}`;
+  COM_CreatePath(`${homeDir}/`);
+  const resolved = Sys_ResolveCase(homeDir);
+  setComGamedir(resolved);
+  setComSearchpaths({ kind: "dir", filename: resolved, next: com_searchpaths });
+  for (let i = 0; ; i++) {
+    const pakfile = Sys_ResolveCase(`${resolved}/pak${i}.pak`);
+    const pak = COM_LoadPackFile(pakfile);
+    if (!pak) break;
+    setComSearchpaths({ kind: "pack", pack: pak, next: com_searchpaths });
+  }
 }
 
 //================
@@ -893,6 +925,8 @@ export function COM_Gamedir(dir: string): void {
     if (!pak) break;
     setComSearchpaths({ kind: "pack", pack: pak, next: com_searchpaths });
   }
+
+  COM_AddHomeDirectory(dir);
 }
 
 //================

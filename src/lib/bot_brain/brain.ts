@@ -412,6 +412,11 @@ export class BotBrain {
     return this.pathState.path;
   }
 
+  /** The index of the point the follower is steering at, for a trace or a debugger. */
+  currentPathIndex(): number {
+    return this.pathState.index;
+  }
+
   //--------------------------------------------------------------------------
 
   /** Says one of this type's lines the first time in a level, and no more. */
@@ -509,7 +514,7 @@ export class BotBrain {
 
       const follow = followPath(
         this.pathState,
-        { origin: self.origin, pitch: this.aim.pitch, yaw: this.aim.yaw, onGround: self.onGround, now, stuckTime: STUCK_SECONDS, runSpeed: this.config.runSpeed, walkSpeed: this.config.walkSpeed },
+        { origin: self.origin, pitch: this.aim.pitch, yaw: this.aim.yaw, onGround: self.onGround, waterLevel: self.waterLevel, now, stuckTime: STUCK_SECONDS, runSpeed: this.config.runSpeed, walkSpeed: this.config.walkSpeed },
         this.settings.movement,
         this.config.rng,
       );
@@ -542,6 +547,7 @@ export class BotBrain {
         this.stuckTrips = 0; // real progress retires the tally
         cmd.forwardmove = follow.forwardmove;
         cmd.sidemove = follow.sidemove;
+        cmd.upmove = follow.upmove;
         if (follow.jump) cmd.buttons |= BOT_BUTTON_JUMP;
         moveTarget = follow.target;
       } else if (follow.status === BotPathStatus.NoPath) {

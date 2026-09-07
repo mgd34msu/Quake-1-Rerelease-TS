@@ -144,6 +144,26 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- Bots can swim. The path follower only ever steered flat, from yaw, so a
+  bot whose route dropped down a flooded shaft floated at its top forever
+  (every ThreeWave CTF base on ctf1 is joined to the tunnel that way), and
+  it also retired the shaft's bottom node as "already behind me" on a flat
+  test while floating 800 units above it, then pushed at the next tunnel node
+  through the shaft wall. Submerged, the follower now steers along the full
+  three-dimensional direction to its point and sends the vertical part as
+  upmove, and a point far above or below the bot is never skipped. Shared
+  brain, fed back to quake-2-re-ts.
+- The QuakeWorld side honours `-homedir`: `<homedir>/qw` (and `<homedir>/<dir>`
+  after a `gamedir` switch) is mounted first and is where config.cfg, demos,
+  snaps and the logs are written. It used to write into `<basedir>/qw`, the
+  retail install for a normal user, whatever -homedir said.
+- The QuakeWorld server's `snap` wrote its `snap/` directory relative to the
+  process's working directory (the bare game directory name, as the C did);
+  it now writes under the absolute game directory like everything else.
+- Four data-backed unit tests (host_error_frame, protocol_live, qex_live,
+  net_e2e) booted with no -homedir and left `e2e_*` game directories with
+  autosaves, a config.cfg and a console log inside the retail data tree.
+  Each now runs from a throwaway home directory under the test scratch root.
 - Text drawn through the kfont/TTF path landed at the font's raw atlas size
   instead of the text cell its caller had laid out, so with a
   high-resolution font selected (which the re-release trees got by default)

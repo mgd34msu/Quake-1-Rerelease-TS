@@ -42,7 +42,7 @@ game just to prove where one try/catch sits.
 */
 
 import { afterAll, describe, expect, spyOn, test } from "bun:test";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { Cbuf_AddText, cmdHost } from "../src/common/cmd";
 import { conState } from "../src/client/console";
@@ -70,7 +70,13 @@ const HAVE_DATA = BASEDIR !== "" && (existsSync(join(BASEDIR, "id1")) || existsS
 const GAME = "e2e_hostfr";
 const MAP = "e1m1";
 
-if (HAVE_DATA) mkdirSync(join(BASEDIR, GAME), { recursive: true }); // Host_Shutdown writes config.cfg here
+// Every write the engine makes (config.cfg at shutdown, autosaves, the
+// console log) goes to a throwaway home directory under the test scratch
+// root, never into the retail tree Q1TS_DATA points at.
+const SCRATCH_ROOT = process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests";
+mkdirSync(SCRATCH_ROOT, { recursive: true });
+const HOMEDIR = mkdtempSync(join(SCRATCH_ROOT, "hostfr-home-"));
+afterAll(() => rmSync(HOMEDIR, { recursive: true, force: true }));
 
 const savedNostdout = sysState.nostdout;
 const savedIsDedicated = sysState.isDedicated;
@@ -153,7 +159,7 @@ function bootListenServer(): void {
   // re-install the real "soft" renderer if some other file's test left it
   // deleted.
   if (getRegisteredRenderer("soft") === null) registerRenderer("soft", () => softRenderer);
-  Sys_Main_Init(["q1ts", "-basedir", BASEDIR, "-game", GAME, "-nosound"]);
+  Sys_Main_Init(["q1ts", "-basedir", BASEDIR, "-homedir", HOMEDIR, "-game", GAME, "-nosound"]);
 }
 
 describe.skipIf(!HAVE_DATA)("Host_Error mid-frame (.orch/e2e/A.md's Second defect, D2)", () => {

@@ -590,6 +590,42 @@ describe("path controller", () => {
     expect(second.target).toEqual({ x: 256, y: 256, z: 0 });
   });
 
+  test("swimming, the controller steers in three dimensions and dives with upmove", () => {
+    // A flooded shaft: the bot floats at the top, the route continues from
+    // the shaft's bottom node along a tunnel. Dry, movement is flat and
+    // upmove stays zero; submerged, the vertical part of the direction to
+    // the point goes out as a negative upmove (Quake's water move adds it
+    // straight onto the wish velocity, the only way a bot ever dives).
+    const positions = [bvec(0, 0, 0), bvec(0, 0, -800), bvec(1200, 0, -800)];
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(3)));
+    const state = newPathState();
+    setPath(state, graph.stringPull([0, 1, 2], bvec(1200, 0, -800)), bvec(8, 0, 0), 0);
+    const movement = movementSettings({ walkOnly: false });
+
+    // setPath's "skip the points behind me" must not retire the bottom node
+    // just because it lies flat-behind the bot: it is 800 units below.
+    expect(state.index).toBe(0);
+    const bottom = state.path!.points[0]!;
+    expect(bottom.z).toBeCloseTo(-800, 3);
+
+    const dry = followPath(state, { origin: bvec(8, 0, 0), pitch: 0, yaw: 0, onGround: false, waterLevel: 0, now: 0, stuckTime: 1 }, movement, new Xorshift32(1));
+    expect(dry.status).toBe(BotPathStatus.Moving);
+    expect(dry.upmove).toBe(0);
+
+    const wet = followPath(state, { origin: bvec(8, 0, 0), pitch: 0, yaw: 0, onGround: false, waterLevel: 3, now: 0.1, stuckTime: 1 }, movement, new Xorshift32(1));
+    expect(wet.status).toBe(BotPathStatus.Moving);
+    expect(wet.upmove).toBeLessThan(-0.9 * BOT_RUN_SPEED);
+    expect(Math.abs(wet.forwardmove)).toBeLessThan(0.1 * BOT_RUN_SPEED);
+
+    // At the bottom the node retires and the tunnel is followed flat, so
+    // upmove drops back to nothing even though the bot is still submerged.
+    const along = followPath(state, { origin: bvec(0, 0, -800), pitch: 0, yaw: 0, onGround: false, waterLevel: 3, now: 0.2, stuckTime: 1 }, movement, new Xorshift32(1));
+    expect(along.status).toBe(BotPathStatus.Moving);
+    expect(along.target).toEqual({ x: 1200, y: 0, z: -800 });
+    expect(Math.abs(along.upmove)).toBeLessThan(1);
+    expect(along.forwardmove).toBeCloseTo(BOT_RUN_SPEED, 3);
+  });
+
   test("reaching the last point reports Arrived", () => {
     const positions = [bvec(0, 0, 0), bvec(128, 0, 0)];
     const graph = navGraphFromNav2(buildNav(positions, chainLinks(2)));

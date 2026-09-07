@@ -150,7 +150,7 @@ function shotFiles(gamedir: string): Set<string> {
   return new Set(readdirSync(gamedir).filter((f) => /^quake\d+\.(pcx|tga)$/i.test(f)));
 }
 
-/** Runs `screenshot` and renames the new file to <SHOTDIR>/<name>.<ext>. gamedir is the mod directory screenshot writes into (e.g. .../q1-basedir/e2e_j). */
+/** Runs `screenshot` and renames the new file to <SHOTDIR>/<name>.<ext>. gamedir is the mod directory screenshot writes into (the homedir's e2e_j, read from the live com_gamedir). */
 export function shot(gamedir: string, name: string): string | null {
   if (!existsSync(SHOTDIR)) mkdirSync(SHOTDIR, { recursive: true });
   const before = shotFiles(gamedir);

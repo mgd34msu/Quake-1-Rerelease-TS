@@ -50,7 +50,13 @@ const MAP = "dm3";
 // log instead.
 const MAP_LOADED = "maps/dm3.bsp";
 
-if (HAVE_DATA) mkdirSync(join(BASEDIR, GAME), { recursive: true }); // Host_Shutdown writes config.cfg here
+// Every write the engine makes (config.cfg at shutdown, autosaves, the
+// console log) goes to a throwaway home directory under the test scratch
+// root, never into the retail tree Q1TS_DATA points at.
+const SCRATCH_ROOT = process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests";
+mkdirSync(SCRATCH_ROOT, { recursive: true });
+const HOMEDIR = mkdtempSync(join(SCRATCH_ROOT, "nete2e-home-"));
+afterAll(() => rmSync(HOMEDIR, { recursive: true, force: true }));
 
 const logDir = mkdtempSync(join(tmpdir(), "q1-net-e2e-"));
 const serverLogPath = join(logDir, "server.log");
@@ -74,6 +80,7 @@ const serverCmd: string[] = HAVE_DATA
       "run",
       mainTs,
       "-basedir", BASEDIR,
+      "-homedir", HOMEDIR,
       "-game", GAME,
       "-dedicated", "4",
       "-port", String(PORT),
@@ -133,7 +140,7 @@ function buildClientScript(mode: "disconnect" | "hold"): string {
   // Cmd_Argv(1) of "connect 127.0.0.1:26240" is only "127.0.0.1" and
   // PartialIPAddress fills the port in from net_hostport. `-port` is how a
   // NetQuake client picks the server's port, exactly as the C does it.
-  `Sys_Main_Init(["q1ts", "-basedir", ${JSON.stringify(BASEDIR)}, "-game", ${JSON.stringify(GAME)},`,
+  `Sys_Main_Init(["q1ts", "-basedir", ${JSON.stringify(BASEDIR)}, "-homedir", ${JSON.stringify(HOMEDIR)}, "-game", ${JSON.stringify(GAME)},`,
   `  "-port", ${JSON.stringify(String(PORT))}, "-nosound", "+connect", "127.0.0.1"]);`,
   `const deadline = Date.now() + 20000;`,
   `let oldtime = Sys_FloatTime() - 0.1;`,
@@ -260,7 +267,7 @@ describe.skipIf(!HAVE_DATA)("a connect to a dead port fails in bounded time", ()
     `const { Sys_Main_Init, runFrames } = await import(${JSON.stringify(mainTs)});`,
     `const { cls } = await import(${JSON.stringify(join(import.meta.dir, "..", "src", "client", "client.ts"))});`,
     `const { Cbuf_AddText } = await import(${JSON.stringify(join(import.meta.dir, "..", "src", "common", "cmd.ts"))});`,
-    `Sys_Main_Init(["q1ts", "-basedir", ${JSON.stringify(BASEDIR)}, "-game", ${JSON.stringify(GAME)},`,
+    `Sys_Main_Init(["q1ts", "-basedir", ${JSON.stringify(BASEDIR)}, "-homedir", ${JSON.stringify(HOMEDIR)}, "-game", ${JSON.stringify(GAME)},`,
     `  "-port", ${JSON.stringify(String(DEAD_PORT))}, "-nosound"]);`,
     `runFrames(2, 0.05);`, // drain quake.rc/stuffcmds
     `const t0 = Date.now();`,
