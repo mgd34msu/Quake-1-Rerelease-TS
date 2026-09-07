@@ -7,29 +7,18 @@ Family X, driver 5: QuakeWorld demo record/playback, at protocols 28 and 29.
 A dedicated qwsv plus a `-qw` client, both the compiled binary (standing
 order 19), real UDP in this unit's 26800-26899 band. test/e2e/t_lib.ts (unit
 E3, family T) is only read here, never written: `startServer`/`startQwClient`/
-`killSeat`/`waitFor`/`readLog`/`clientLevelTitle`/`recordedDemoPath`/
-`qwBasedir`/`waits` and the headless-env enforcement baked into its seat
-spawner are reused rather than re-derived.
+`writeQwSpawnCfg`/`killSeat`/`waitFor`/`readLog`/`clientLevelTitle`/
+`recordedDemoPath`/`qwBasedir`/`waits` and the headless-env enforcement baked
+into its seat spawner are reused rather than re-derived.
 
 src/qw/client/cl_demo.ts's CL_Record_f refuses unless `cls.state` is already
 `ca_active` ("You must be connected to record."), the OPPOSITE of NetQuake's
-CL_Record_f (which refuses if ALREADY connected). test/e2e/t_demos_net.ts's
-own QuakeWorld scenario stays red for exactly this reason: a QW client only
-has ONE scriptable channel, its opening cfg, and its own comment notes every
-line of that cfg runs AHEAD of the text the server stuffs to finish the join,
-so a `record` placed right after `connect` in the same cfg always lands
-before `cls.state` reaches `ca_active`.
+CL_Record_f (which refuses if ALREADY connected). A QuakeWorld client's
+opening cfg has always run entirely AHEAD of the text the server stuffs to
+finish the join, so a `record` placed right after `connect` in that same cfg
+always used to land before `cls.state` reached `ca_active`.
 
-STATUS (this unit's report has the full account): every design tried below
-reaches "the client joined" (confirmed off the SERVER's own log) but
-`record` still lands before the CLIENT's own `cls.state` reaches `ca_active`
--- this driver is RED on the `record`/playback assertions and left that way
-on purpose (a driver asserts the correct behaviour and stays red until it is
-true, per .orch/briefs/E2E-COMMON.md), not silently downgraded to "did not
-crash". The mechanics below are real, confirmed findings, kept as exact
-context for whoever picks this back up -- not a solved problem.
-
-Four designs were tried:
+Four designs were tried and rejected before F20 (`cl_execonspawn`) landed:
 
   1. t_lib.ts's `PolledClientT` (`arm()`/`run()`), `arm()` called immediately
      after spawning, before confirming the join off the server's own log: the
@@ -69,26 +58,25 @@ Four designs were tried:
      the same way, `record` still landing before "entered the game". This
      rules out both "not enough idle settle time" and "the server needs a
      real usercmd packet before it will finish spawning the client" as
-     the/a sufficient explanation on their own.
+     the/a sufficient explanation on their own, and pointed at something in
+     the SPAWN TIMING itself rather than the script's shape.
 
-Two real, independently confirmed facts remain unreconciled: (3)'s chaining
-mechanism is a genuine starvation risk (proven mechanically from the source,
-not just observed), and this session's host was independently confirmed to
-be under severe, unrelated contention (this unit's report: a different
-project's orphaned process pegging a full core for 25+ hours, plus this
-qwsv/qwcl pair measured accumulating far fewer CPU-seconds than wall-clock
-seconds while running) -- but (4) shows the failure reproduces even with NO
-chaining and a modest, single-segment budget, which contention alone does
-not explain (a slow host should just need more real seconds, not fail the
-same way regardless of how those seconds are spent). Something about this
-engine's dedicated qwsv's own spawn-completion timing for a scripted,
-`-nosound`, headless client is not yet understood; the recording script below
-keeps design (4)'s movement (a reasonable thing to do in a recorded demo
-regardless) and a config kept deliberately in ONE segment, but this is the
-best-reasoned attempt on record, not a confirmed fix.
+F20's `cl_execonspawn <cfg>` (documented in src/client/cl_main.ts) resolves
+the actual problem: a named cfg that runs exactly once, on the first frame
+this client's `cls.state` reaches `ca_active`, through `Cbuf_AddText` --
+i.e. behind anything the server has already stuffed to finish the join, not
+ahead of it. So the working design is:
+
+  5. The recording script (movement, `record`, more movement, `stop`) is
+     written as its OWN named cfg in the QW basedir (t_lib.ts's
+     writeQwSpawnCfg), and the client's ONE-SHOT opening cfg only arms it --
+     `cl_execonspawn <thatcfg>` -- before `connect`. `record` inside the armed
+     cfg therefore only ever runs once `cls.state` is ALREADY `ca_active`,
+     which is exactly what CL_Record_f requires; none of designs (1)-(4)'s
+     mechanisms apply because nothing chains or loops across the join at all.
 */
 
-import { argValue, check, clientLevelTitle, killSeat, qwBasedir, readLog, recordedDemoPath, startQwClient, startServer, summary, waitFor, waits, type SeatT } from "./t_lib";
+import { argValue, check, clientLevelTitle, killSeat, qwBasedir, readLog, recordedDemoPath, startQwClient, startServer, summary, waitFor, waits, writeQwSpawnCfg, type SeatT } from "./t_lib";
 import { existsSync, statSync } from "node:fs";
 
 const PROTOCOL_ARG = argValue("protocol", "28");
@@ -102,19 +90,11 @@ const port = argValue("port", DEFAULT_PORT[PROTOCOL_ARG]);
 const DEMO = `x_qwd_${PROTOCOL_ARG}`;
 const tag = `x_qwd_${PROTOCOL_ARG}`;
 
-// Real Host_Frame ticks, kept small on purpose -- see file header. The whole
-// recScript below (literal commands plus these wait budgets) must stay
-// under t_lib.ts's 1600-byte CFG_SEGMENT_BYTES so it is written as a SINGLE
-// cfg segment with no chained `exec`, which is what keeps the server's own
-// appended join-completion text from ever being pushed back.
-//
-// Design (4) from the file header: a single unchained segment, with movement
-// before `record` (not confirmed to fix the underlying issue -- see file
-// header STATUS -- but a reasonable thing to do in a recorded demo either
-// way, and it does not make the failure any worse).
-const CONNECT_SETTLE = 30;
-const MOVE_SETTLE = 150;
-const HOLD_FRAMES = 60;
+// Real Host_Frame ticks, kept modest since the recording no longer has to
+// survive being spliced across the connect: this cfg only ever runs once the
+// join is already done.
+const MOVE_SETTLE = 90;
+const HOLD_FRAMES = 120;
 
 const BASE = qwBasedir();
 
@@ -122,10 +102,10 @@ const sv: SeatT = startServer(`${tag}_sv`, ["-qw", "-basedir", BASE, "-nosound",
 const svUp = await waitFor(sv, /Server protocol \d+ \(flags/, 90000);
 check(`${tag}/server-serves-the-protocol`, svUp, svUp ? "" : `no "Server protocol" line in ${sv.log}`);
 
+// The post-join recording script: F20's cl_execonspawn arms this cfg to run
+// on the client's own first ca_active frame, so `record` below always finds
+// cls.state already active -- see the file header's design (5).
 const recScript = [
-  "cl_shownet 0",
-  `connect 127.0.0.1:${port}`,
-  ...waits(CONNECT_SETTLE),
   "+forward",
   "+attack",
   ...waits(MOVE_SETTLE),
@@ -140,10 +120,10 @@ const recScript = [
   "stop",
   ...waits(10),
 ];
-const recScriptBytes = recScript.join("\n").length;
-check(`${tag}/recording-script-is-one-segment`, recScriptBytes < 1600, `${recScriptBytes} bytes (must stay under t_lib.ts's 1600-byte CFG_SEGMENT_BYTES -- see file header)`);
+const recCfg = writeQwSpawnCfg(`${tag}_rec`, recScript);
 
-const cl: SeatT = startQwClient(`${tag}_cl`, ["-qw", "-basedir", BASE, "-nosound"], recScript);
+const bootScript = ["cl_shownet 0", `cl_execonspawn ${recCfg}`, `connect 127.0.0.1:${port}`];
+const cl: SeatT = startQwClient(`${tag}_cl`, ["-qw", "-basedir", BASE, "-nosound"], bootScript);
 
 const joined = await waitFor(sv, /entered the game/, 120000);
 check(`${tag}/client-joined`, joined, joined ? "" : (readLog(sv).match(/.*entered the game.*/g) ?? []).slice(-1).join("") || `no player entered (client log ${cl.log})`);

@@ -20,10 +20,12 @@ Two things make this family different from family D's two-process harness:
     map load, answers `status` with the player list and their frags, and
     answers `edict <n>` with that entity's live fields (origin, ammo,
     health, deadflag). The CLIENT prints the level title it received, the
-    obituaries and chat the server broadcast, and -- via a demo it records
-    from before the connect -- the exact serverinfo bytes it parsed, which
-    is the only place the client side of the negotiated protocol number and
-    protocol flags is observable at all (see t_matrix.ts's defect note).
+    obituaries and chat the server broadcast, and -- since F20 -- its own
+    `Client protocol <n> (flags 0x<f>)` line (t_lib.ts's clientProtocolLine),
+    the direct client-side observable of the negotiated protocol number and
+    protocol flags; a demo it records from before the connect carries the
+    same numbers in its serverinfo bytes (readDemoServerInfo) and stays
+    available as a fallback cross-check.
 
 Ports: this unit's assigned UDP band is 26300-26399. Every driver picks its
 own ports out of it so two drivers in the runner's pool never collide.
@@ -190,6 +192,21 @@ export function startQwClient(name: string, args: readonly string[], script: rea
   return spawnSeat(name, [BINARY, ...args, "+exec", cfg]);
 }
 
+/*
+A named cfg written into a QuakeWorld basedir's `qw/` directory for a client
+to run on its OWN, once it reaches ca_active, by arming `cl_execonspawn
+<name>` (F20 defect D4) in the client's opening cfg rather than placing the
+script itself ahead of `connect`. cl_execonspawn's exec reaches the command
+buffer through Cbuf_AddText -- behind anything the server has already
+stuffed to finish the join -- so a `record` (or anything else) inside the
+returned cfg runs once cls.state is ALREADY ca_active, unlike a script
+placed in the boot cfg, which always runs ahead of that stuffed text (see
+x_qwd.ts's file header for the four designs that failed before F20 landed).
+*/
+export function writeQwSpawnCfg(name: string, script: readonly string[]): string {
+  return writeScriptInto(`${qwBasedir()}/qw`, name, script);
+}
+
 // ===========================================================================
 // seats
 // ===========================================================================
@@ -251,6 +268,27 @@ exec'ing the next one, and no segment is anywhere near the buffer's size.
 Splitting introduces no timing seam of its own -- Cbuf_InsertText splices in
 front of what is left and Cbuf_Execute keeps consuming in the same frame, so
 a chain boundary is not a frame boundary.
+
+That front-splice is also a starvation risk for ANY chained one-shot script,
+not only an armed PolledClientT's looping step chain. A PolledClientT starves
+the server's stuffed join-completion text forever, because its step cfg keeps
+re-execing itself in a loop that never stops. A plain one-shot script chained
+by writeScriptInto/writeScript starves the SAME text for exactly as long as
+the chain has segments left to splice: each segment's trailing `exec
+<name>_i+1.cfg` re-inserts at the front, ahead of whatever Cbuf_AddText has
+appended behind it, so anything the server stuffs to finish a connect (QW's
+`skins`/`cmd` pair, or a NetQuake `soundlist`/`spawnstatic` batch) that lands
+while segments are still queued gets pushed back by every remaining segment
+boundary -- the exact mechanism x_qwd.ts's file header proved for design (3)
+(a chained one-shot QuakeWorld boot script with a `record` past the connect).
+A one-shot script is safe from this only if the WHOLE timeline up to and past
+the point anything gets stuffed fits in ONE segment (under CFG_SEGMENT_BYTES,
+no chaining at all), or if the script's own `connect`/join sits in the FIRST
+segment with nothing chained behind it yet. See writeQwSpawnCfg above for the
+alternative F20 makes possible: running the post-join script through
+`cl_execonspawn` instead of chaining it into the one-shot boot script at all,
+since its exec lands through Cbuf_AddText well after the join has already
+completed.
 */
 const CFG_SEGMENT_BYTES = 1600;
 
@@ -728,6 +766,23 @@ export function serverProtocolLine(text: string): { protocol: number; flags: num
 export function serverRuleset(text: string): string | null {
   const all = [...text.matchAll(/Server ruleset (\w+)/g)];
   return all.length === 0 ? null : all[all.length - 1][1];
+}
+
+/*
+The negotiated protocol as the CLIENT saw it, read straight off F20's
+`Client protocol <n> (flags 0x<f>)` line (src/client/cl_parse.ts's
+CL_ParseServerInfo on NetQuake, gated on SS_IsPrimary; src/qw/client/
+cl_parse.ts's unconditionally) rather than out of a recorded demo. This is
+the primary observable for "what protocol/flags did the client negotiate" --
+readDemoServerInfo above stays available as a fallback cross-check against
+what actually landed in a recorded .dem, but no longer the only way to ask
+the client side of the question.
+*/
+export function clientProtocolLine(text: string): { protocol: number; flags: number } | null {
+  const all = [...text.matchAll(/Client protocol (\d+) \(flags 0x([0-9a-f]+)\)/g)];
+  if (all.length === 0) return null;
+  const m = all[all.length - 1];
+  return { protocol: Number(m[1]), flags: parseInt(m[2], 16) };
 }
 
 /*

@@ -22,8 +22,9 @@ NetQuake and QuakeWorld put `record` at opposite ends of the connect:
     console frame;
   - QuakeWorld's (src/qw/client/cl_demo.ts) refuses UNLESS `cls.state` is
     already ca_active ("You must be connected to record."), so the driver
-    arms the client's console channel once the server has announced it
-    entering, and only then tells it to record.
+    arms F20's `cl_execonspawn` on a second cfg (t_lib.ts's writeQwSpawnCfg)
+    before `connect`, which runs that cfg's `record` only once this client's
+    own join has actually reached ca_active (see x_qwd.ts's file header).
 
 The QuakeWorld runs take the runner's `qwclient` lock: QuakeWorld's client
 port is the hardcoded PORT_CLIENT = 27001 and only one can be alive at a time.
@@ -35,6 +36,7 @@ import {
   check,
   contentById,
   clientLevelTitle,
+  clientProtocolLine,
   killSeat,
   qwBasedir,
   readDemoServerInfo,
@@ -44,10 +46,14 @@ import {
   sleep,
   startPolledClient,
   startPolledQwClient,
+  startQwClient,
   startServer,
   summary,
   waitFor,
+  waits,
+  writeQwSpawnCfg,
   type PolledClientT,
+  type SeatT,
 } from "./t_lib";
 import { homedirArgs } from "./q1data";
 import { existsSync, statSync } from "node:fs";
@@ -113,6 +119,13 @@ if (!isQw) {
     info === null ? "no serverinfo message in the demo" : `demo ${info.protocol}/0x${info.flags.toString(16)}, server ${p === null ? "?" : p.protocol}/0x${(p?.flags ?? 0).toString(16)}`,
   );
 
+  const clientProto = clientProtocolLine(clText);
+  check(
+    "the client's own protocol line matches the server",
+    clientProto !== null && p !== null && clientProto.protocol === p.protocol && clientProto.flags === p.flags,
+    clientProto === null ? `no "Client protocol" line in ${cl.seat.log}` : `server ${p === null ? "?" : `${p.protocol}/0x${p.flags.toString(16)}`}, client ${clientProto.protocol}/0x${clientProto.flags.toString(16)}`,
+  );
+
   killSeat(cl.seat);
   killSeat(sv);
   playbackArgs = [...baseArgs(classic, GAME), "-port", String(port)];
@@ -134,31 +147,46 @@ if (!isQw) {
   check("the QuakeWorld server serves the protocol it was asked for", p !== null && p.protocol === Number(protocolArg), `asked for ${protocolArg}, got ${p === null ? "nothing" : p.protocol}`);
 
   /*
-  The `record` goes in the opening cfg, which is the only console input a
-  QuakeWorld client can be given, and QuakeWorld's CL_Record_f refuses it:
-  every line of a cfg is executed AHEAD of the text the server stuffs to
-  finish the join, so a cfg's `record` always runs while cls.state is still
-  ca_connecting, and the console answers "You must be connected to record."
-  There is no later moment to try again -- once the cfg is exhausted the
-  buffer is empty and nothing can put a command into a running client. The
-  assertions below are the behaviour that is wanted (record a live
-  QuakeWorld session, replay it) and stay red until the engine offers a
-  scriptable way in; see this unit's report.
+  A QuakeWorld client's opening cfg runs entirely AHEAD of the text the
+  server stuffs to finish the join, so a `record` placed there always used
+  to land while cls.state was still ca_connecting ("You must be connected to
+  record."). F20's `cl_execonspawn <cfg>` arms a SECOND cfg that runs once,
+  through Cbuf_AddText (behind that stuffed text), on the client's own first
+  ca_active frame -- so the recording script below only ever runs once the
+  join has actually completed. See x_qwd.ts's file header for the four
+  designs that failed before F20 landed and the reasoning for this one.
   */
-  const cl = startPolledQwClient(`t_dem_${protocolArg}_cl`, ["-qw", "-basedir", BASE, "-nosound"], [
-    "cl_shownet 0",
-    `connect 127.0.0.1:${port}`,
+  const MOVE_SETTLE = 90;
+  const HOLD_FRAMES = 240;
+  const recScript = [
     "+forward",
     "+attack",
+    ...waits(MOVE_SETTLE),
+    "-forward",
+    "-attack",
     `record ${DEMO}`,
+    "+forward",
+    "+attack",
+    ...waits(HOLD_FRAMES),
+    "-forward",
+    "-attack",
+    "stop",
+    ...waits(10),
+  ];
+  const recCfg = writeQwSpawnCfg(`t_dem_${protocolArg}_rec`, recScript);
+  const cl: SeatT = startQwClient(`t_dem_${protocolArg}_cl`, ["-qw", "-basedir", BASE, "-nosound"], [
+    "cl_shownet 0",
+    `cl_execonspawn ${recCfg}`,
+    `connect 127.0.0.1:${port}`,
   ]);
   const joined = await waitFor(sv, /entered the game/, 180000);
-  check("the recording client is in the QuakeWorld game", joined, (readLog(sv).match(/.*entered the game.*/g) ?? []).slice(-1).join("") || `no player entered (client log ${cl.seat.log})`);
-  await sleep(6000);
-  await cl.run(["stop"], 30000);
+  check("the recording client is in the QuakeWorld game", joined, (readLog(sv).match(/.*entered the game.*/g) ?? []).slice(-1).join("") || `no player entered (client log ${cl.log})`);
+
+  const recCompleted = await waitFor(cl, /Completed demo/, 120000);
+  check("the recording completes on its own timeline", recCompleted, recCompleted ? "" : readLog(cl).slice(-800));
   await sleep(1500);
 
-  const clText = readLog(cl.seat);
+  const clText = readLog(cl);
   liveTitle = clientLevelTitle(clText);
   demoPath = recordedDemoPath(clText);
   check(
@@ -168,7 +196,14 @@ if (!isQw) {
   );
   check("the client's console reported completing the demo", /Completed demo/.test(clText), (clText.match(/.*(Completed demo|recording to|must be connected).*/gi) ?? []).slice(-2).join(" | "));
 
-  killSeat(cl.seat);
+  const clientProto = clientProtocolLine(clText);
+  check(
+    "the QuakeWorld client's own protocol line matches the server",
+    clientProto !== null && p !== null && clientProto.protocol === p.protocol && clientProto.flags === p.flags,
+    clientProto === null ? `no "Client protocol" line in ${cl.log}` : `server ${p === null ? "?" : `${p.protocol}/0x${p.flags.toString(16)}`}, client ${clientProto.protocol}/0x${clientProto.flags.toString(16)}`,
+  );
+
+  killSeat(cl);
   killSeat(sv);
   await sleep(3000);
   playbackArgs = ["-qw", "-basedir", BASE, "-nosound"];
