@@ -563,6 +563,11 @@ export function CL_ParseServerData(): void {
   cl.qw.protocol = qwProtocolSupported(protover) ? protover : PROTOCOL_VERSION;
   cl.qw.protocolflags = cl.qw.codec().readProtocolFlags();
 
+  // F20 D5 (an addition): the client's half of the server's own "Server
+  // protocol %i (flags 0x%x)" line, so a log shows both ends of the
+  // negotiation.
+  Con_Printf("Client protocol %i (flags 0x%x)\n", cl.qw.protocol, cl.qw.protocolflags);
+
   cl.qw.servercount = MSG_ReadLong();
 
   // game directory

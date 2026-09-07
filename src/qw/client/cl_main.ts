@@ -142,6 +142,8 @@ import { developer, host, HostEndGame, host_speeds, SysFileTextWriter } from "..
 import { resetClientProfile, serverProfile, serverShutdownHooks } from "../../common/profile";
 // One object per cvar name -- see the blocks below.
 import {
+  CL_ExecOnSpawn,
+  cl_execonspawn,
   cl_shownet,
   lookspring,
   lookstrafe,
@@ -1160,6 +1162,7 @@ export function CL_Init(): void {
   Cvar_RegisterVariable(cl_pitchspeed);
   Cvar_RegisterVariable(cl_anglespeedkey);
   Cvar_RegisterVariable(cl_shownet);
+  Cvar_RegisterVariable(cl_execonspawn);
   Cvar_RegisterVariable(cl_sbar);
   Cvar_RegisterVariable(cl_hudswap);
   Cvar_RegisterVariable(cl_maxfps);
@@ -1389,6 +1392,12 @@ export function Host_Frame(time: number): void {
 
     // do client side motion prediction
     CL_PredictMove();
+
+    // F20 D4: CL_PredictMove is where a QuakeWorld client reaches ca_active,
+    // so the armed cfg goes into the command buffer here and runs at the top
+    // of the next frame, behind everything the server stuffed to finish the
+    // join.
+    CL_ExecOnSpawn(cls.state === CactiveT.ca_active);
 
     // Set up prediction for other players
     CL_SetUpPlayerPrediction(true);

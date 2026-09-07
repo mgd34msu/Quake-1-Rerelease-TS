@@ -26,11 +26,15 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 import { COM_CheckRegistered, COM_InitArgv, COM_InitFilesystem, pop, setStaticRegistered, static_registered } from "../src/common/common";
+import { Cbuf_Execute, Cbuf_Init, Cmd_AddCommand, Cmd_Init, cmdHost } from "../src/common/cmd";
+import { Cvar_RegisterVariable, Cvar_Set } from "../src/common/cvar";
 import { HostEndGame, HostError } from "../src/common/host";
 import { Mod_Init, ModelT, TextureT, setModelLoaderHooks, type ModelLoaderHooks } from "../src/common/model";
 import {
   ClcOpsT,
   PROTOCOL_FITZQUAKE,
+  PROTOCOL_RMQ,
+  PRFL_SUPPORTED,
   svc_rawprint,
   PROTOCOL_VERSION,
   SU_ITEMS,
@@ -67,12 +71,13 @@ import * as consoleMod from "../src/client/console";
 import * as screenMod from "../src/client/screen";
 import * as splitscreenMod from "../src/client/splitscreen";
 import { CL_KeepaliveMessage, CL_ParseServerMessage } from "../src/client/cl_parse";
+import { CL_ExecOnSpawn, cl_execonspawn } from "../src/client/cl_main";
 import type { EntityT, ParticleT, Renderer } from "../src/client/render";
 import { BOTTOM_RANGE, LERP_FINISH, LERP_MOVESTEP, LERP_RESETANIM, TOP_RANGE, re } from "../src/client/render";
 import { VID_GRADES, VrectT, vid } from "../src/client/vid";
 import type { QpicT } from "../src/common/wad";
 
-import { buildBsp, ensureDir } from "./support/bsp_builder";
+import { buildBsp, ensureDir, writeGameFile } from "./support/bsp_builder";
 import { writePakToDisk } from "./support/pak_builder";
 
 const scratchRoot = (process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests");
@@ -831,5 +836,114 @@ describe("CL_KeepaliveMessage", () => {
     expect(() => CL_KeepaliveMessage()).not.toThrow();
     sv.active = savedActive;
     cls.demoplayback = savedDemo;
+  });
+});
+
+/*
+F20 D5 (an addition): the client's half of the server's own "Server protocol
+%i (flags 0x%x)" line. The server has always announced what it serves a map
+on; neither client tree ever said what it negotiated, so a log of a failed
+pairing showed one end of it.
+
+F20 D4 (an addition): cl_execonspawn, the one moment neither tree can script.
+CL_ExecOnSpawn is the shared half both clients call from their own frame loop
+-- NetQuake's with cls.signon == SIGNONS, QuakeWorld's with cls.state ==
+ca_active -- so what is pinned here is the arming rule and the one-shot.
+*/
+describe("the negotiated protocol is announced on the client (F20 D5)", () => {
+  test("svc_serverinfo prints the protocol and flags it parsed", () => {
+    const savedSvActive = sv.active;
+    sv.active = true;
+
+    buildMessage((sb) => {
+      MSG_WriteByte(sb, SvcOpsT.svc_serverinfo);
+      MSG_WriteLong(sb, PROTOCOL_RMQ);
+      MSG_WriteLong(sb, PRFL_SUPPORTED); // RMQ is the one protocol carrying a flags word
+      MSG_WriteByte(sb, 1); // maxclients
+      MSG_WriteByte(sb, 0); // gametype: GAME_COOP
+      MSG_WriteString(sb, "the slipgate complex");
+      MSG_WriteString(sb, "maps/world.bsp"); // model precache 1
+      MSG_WriteString(sb, ""); // end of model list
+      MSG_WriteString(sb, ""); // end of sound list
+    });
+
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    let lines: string[] = [];
+    try {
+      CL_ParseServerMessage();
+      lines = printSpy.mock.calls.map((call) => call.map((arg) => String(arg)).join(" "));
+    } finally {
+      printSpy.mockRestore();
+      sv.active = savedSvActive;
+    }
+
+    expect(cl.protocol).toBe(PROTOCOL_RMQ);
+    expect(cl.protocolflags).toBe(PRFL_SUPPORTED);
+    expect(lines).toContain(`Client protocol %i (flags 0x%x)\n ${PROTOCOL_RMQ} ${PRFL_SUPPORTED}`);
+  });
+});
+
+describe("cl_execonspawn (F20 D4)", () => {
+  const savedExecOnSpawn = cl_execonspawn.string;
+  const savedCmdInitialized = cmdHost.initialized;
+  let spawned = 0;
+
+  beforeAll(() => {
+    writeGameFile(baseDir, "id1/f20spawn.cfg", new TextEncoder().encode("test_f20_spawned\n"));
+    // CL_Init registers the cvar in a real boot; this suite boots no client.
+    // The same object, so a later CL_Init in this process is a no-op re-link.
+    Cvar_RegisterVariable(cl_execonspawn);
+    cmdHost.initialized = false; // Cmd_AddCommand Sys_Errors once a host has booted
+    Cbuf_Init(); // this suite boots no host, so the command buffer has no storage yet
+    Cmd_Init(); // `exec` itself
+    Cmd_AddCommand("test_f20_spawned", () => {
+      spawned++;
+    });
+    cmdHost.initialized = savedCmdInitialized;
+  });
+
+  afterAll(() => {
+    Cvar_Set(cl_execonspawn.name, savedExecOnSpawn);
+    Cbuf_Init(); // leave the buffer empty for whatever suite runs next
+    cmdHost.initialized = savedCmdInitialized;
+  });
+
+  test("does nothing while the client has not reached active", () => {
+    Cvar_Set(cl_execonspawn.name, "f20spawn.cfg");
+    spawned = 0;
+
+    CL_ExecOnSpawn(false);
+    Cbuf_Execute();
+
+    expect(spawned).toBe(0);
+    expect(cl_execonspawn.string).toBe("f20spawn.cfg"); // still armed
+  });
+
+  test("does nothing when no cfg is armed", () => {
+    Cvar_Set(cl_execonspawn.name, "");
+    spawned = 0;
+
+    CL_ExecOnSpawn(true);
+    Cbuf_Execute();
+
+    expect(spawned).toBe(0);
+  });
+
+  test("execs the cfg once on the first active frame, then clears itself", () => {
+    Cvar_Set(cl_execonspawn.name, "f20spawn.cfg");
+    spawned = 0;
+
+    CL_ExecOnSpawn(true);
+    Cbuf_Execute();
+
+    expect(spawned).toBe(1);
+    expect(cl_execonspawn.string).toBe("");
+
+    // every later frame, and the next level, add nothing more
+    CL_ExecOnSpawn(true);
+    CL_ExecOnSpawn(true);
+    Cbuf_Execute();
+
+    expect(spawned).toBe(1);
   });
 });

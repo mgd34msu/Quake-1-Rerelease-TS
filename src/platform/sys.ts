@@ -475,34 +475,58 @@ export function Sys_Sleep(): void {}
 
 // sys_linux.c/QW's sys_unix.c: `static char text[256]; len = read(0, text,
 // sizeof(text)); ...; text[len-1] = 0;` -- a single read() returns whatever
-// the kernel currently has buffered, up to 256 bytes, which for a pipe (not
-// a line-buffered tty) can be MULTIPLE newline-terminated lines at once; the
-// C strips only the trailing byte (assumed '\n') and hands the rest back
-// as-is, embedded newlines included. Host_GetConsoleCommands/
-// SV_GetConsoleCommands then do a bare `Cbuf_AddText(cmd)` (no "\n" of their
-// own -- confirmed by direct reading of both host.c and sys_unix.c: neither
-// appends one), so it is Sys_ConsoleInput's OWN embedded newlines that keep
-// two commands arriving in one read() from being executed as one glued-together
-// line by Cbuf_Execute's own newline/`;` splitting. See F.md's D2 sibling
-// report, .orch/e2e/E.md defect B: an earlier version of this function split
-// on every '\n' into single-line queue entries with the newline discarded,
-// so two lines arriving in one write() (e.g. a script piping "hostname a\n
-// echo MARK\n" in one shot) lost their separator entirely once
-// Host_GetConsoleCommands's own `while` loop (below, unchanged, always did a
-// bare Cbuf_AddText per call) concatenated them back together.
+// the kernel currently has buffered, up to 256 bytes, so it can hand back
+// several newline-terminated lines at once (a pipe, not a line-buffered tty)
+// or half of one, and the C strips only the trailing byte. Its two callers
+// (host.c's Host_GetConsoleCommands, QW/server/sv_main.c's
+// SV_GetConsoleCommands) then do a bare `Cbuf_AddText(cmd)` with no separator
+// of their own, so whether two commands written in one shot survive as two
+// commands depends entirely on what this function hands back.
+//
+// Deviation, deliberate (F20 defect D3): this splits on newlines and returns ONE
+// complete line per call, terminated by the "\n" it was split on, holding a
+// partial line until its newline arrives and tolerating CRLF. Keeping the
+// terminator on the returned string is what makes `edicts` + `echo X`,
+// written to a dedicated server's stdin in one write(), stay two commands
+// through EITHER caller's bare Cbuf_AddText -- dropping it (the C's
+// `text[len-1] = 0`) glues them into `edictsecho`, and the C only escapes
+// that because it hands back the embedded newlines of a multi-line read.
 const MAXCMDLINE = 256;
 
 let stdinReaderStarted = false;
-const stdinChunkQueue: string[] = [];
+const stdinLineQueue: string[] = [];
+let stdinPending = "";
 
-// Lazily pumps stdin into a chunk queue the first time Sys_ConsoleInput is
+// One complete line, CR before the LF dropped (a cfg or a script written on
+// Windows reaches a dedicated server's stdin with CRLF endings).
+function queueStdinLine(line: string): void {
+  stdinLineQueue.push(`${line.endsWith("\r") ? line.slice(0, -1) : line}\n`);
+}
+
+function queueStdinText(text: string): void {
+  stdinPending += text;
+
+  for (;;) {
+    const nl = stdinPending.indexOf("\n");
+    if (nl === -1) break;
+    queueStdinLine(stdinPending.slice(0, nl));
+    stdinPending = stdinPending.slice(nl + 1);
+  }
+
+  // Nothing terminates a line that never gets a newline, and a real read()
+  // cannot buffer more than its 256 bytes either: past that bound the
+  // unterminated remainder is delivered as a line of its own.
+  while (stdinPending.length >= MAXCMDLINE) {
+    queueStdinLine(stdinPending.slice(0, MAXCMDLINE));
+    stdinPending = stdinPending.slice(MAXCMDLINE);
+  }
+}
+
+// Lazily pumps stdin into a line queue the first time Sys_ConsoleInput is
 // called with isDedicated set. sys_linux.c instead makes fd 0 non-blocking
 // (fcntl FNDELAY) and does one raw `read()` per poll; bun has no non-blocking
-// stdin read, so this reads the stream continuously in the background,
-// re-chunking whatever text arrives into (at most) MAXCMDLINE-byte pieces --
-// the same bound a real `read(0, text, sizeof(text))` would enforce -- and
-// Sys_ConsoleInput dequeues one whole chunk per call, exactly as one `read()`
-// would return one chunk per call.
+// stdin read, so this reads the stream continuously in the background and
+// Sys_ConsoleInput dequeues one line per call.
 function pumpStdin(): void {
   void (async () => {
     const reader = Bun.stdin.stream().getReader();
@@ -512,10 +536,13 @@ function pumpStdin(): void {
       if (done) break;
       if (!value || value.length === 0) continue;
 
-      const text = decoder.decode(value, { stream: true });
-      for (let i = 0; i < text.length; i += MAXCMDLINE) {
-        stdinChunkQueue.push(text.slice(i, i + MAXCMDLINE));
-      }
+      queueStdinText(decoder.decode(value, { stream: true }));
+    }
+
+    // end of stream: a last line written without its newline is still a line
+    if (stdinPending.length > 0) {
+      queueStdinLine(stdinPending);
+      stdinPending = "";
     }
   })();
 }
@@ -529,13 +556,10 @@ export function Sys_ConsoleInput(): string | null {
     pumpStdin();
   }
 
-  const chunk = stdinChunkQueue.shift();
-  if (chunk === undefined || chunk.length < 1) return null; // len < 1 -> return NULL
+  const line = stdinLineQueue.shift();
+  if (line === undefined) return null; // len < 1 -> return NULL
 
-  // text[len-1] = 0; -- unconditionally drops the last character of
-  // whatever was read (assumed '\n'), same as the C; any newlines earlier in
-  // the chunk are left exactly where they were.
-  return chunk.slice(0, chunk.length - 1);
+  return line;
 }
 
 // void Sys_SendKeyEvents (void)

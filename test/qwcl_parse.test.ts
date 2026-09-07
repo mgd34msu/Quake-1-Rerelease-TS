@@ -60,6 +60,8 @@ import { PROTOCOL_VERSION, SND_ATTENUATION, SND_VOLUME, SvcOpsT, S2C_CHALLENGE, 
 import { movevars } from "../src/qw/pmove_types";
 import { NetadrT, net_from } from "../src/qw/net_udp";
 import * as netUdp from "../src/qw/net_udp";
+import * as qwConsoleMod from "../src/qw/client/console";
+import { PROTOCOL_QW_WIDE, QW29_DEFAULT_FLAGS } from "../src/common/protocol/qw29";
 import { Netchan_Setup, netchanState } from "../src/qw/net_chan";
 
 import { CactiveT, cl, cls } from "../src/client/client";
@@ -403,6 +405,47 @@ describe("CL_ParseServerData", () => {
 
     // and it asked for the sound list
     expect(netchanText()).toContain(`soundlist 4242 0`);
+  });
+
+  /*
+  F20 D5 (an addition): the client's half of the server's own "Server protocol
+  %i (flags 0x%x)" line. Protocol 29 is the one QuakeWorld protocol carrying a
+  flag word, so it shows both halves of what is printed.
+  */
+  test("announces the protocol and flags it negotiated", () => {
+    buildMessage((sb) => {
+      MSG_WriteLong(sb, PROTOCOL_QW_WIDE);
+      MSG_WriteLong(sb, QW29_DEFAULT_FLAGS);
+      MSG_WriteLong(sb, 7); // servercount
+      MSG_WriteString(sb, "fortress"); // gamedir: already current, so no config re-exec
+      MSG_WriteByte(sb, 0); // playernum
+      MSG_WriteString(sb, "The Abandoned Base");
+      for (let i = 0; i < 10; i++) MSG_WriteFloat(sb, 1); // movevars
+    });
+
+    // the connection's codec decides how every later message in this suite
+    // parses (rule 13): put back the 28 the suite runs on
+    const savedProtocol = cl.qw.protocol;
+    const savedFlags = cl.qw.protocolflags;
+
+    const printSpy = spyOn(qwConsoleMod, "Con_Printf");
+    let lines: string[] = [];
+    let protocol = 0;
+    let flags = 0;
+    try {
+      CL_ParseServerData();
+      lines = printSpy.mock.calls.map((call) => call.map((arg) => String(arg)).join(" "));
+      protocol = cl.qw.protocol;
+      flags = cl.qw.protocolflags;
+    } finally {
+      printSpy.mockRestore();
+      cl.qw.protocol = savedProtocol;
+      cl.qw.protocolflags = savedFlags;
+    }
+
+    expect(protocol).toBe(PROTOCOL_QW_WIDE);
+    expect(flags).toBe(QW29_DEFAULT_FLAGS);
+    expect(lines).toContain(`Client protocol %i (flags 0x%x)\n ${PROTOCOL_QW_WIDE} ${QW29_DEFAULT_FLAGS}`);
   });
 });
 

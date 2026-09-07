@@ -803,3 +803,64 @@ describe.skipIf(!HAVE_PROGS106)("Host_WriteConfiguration", () => {
     expect(cmdHost.initialized).toBe(true);
   });
 });
+
+/*
+F20 defect D3, end to end through the real drain: two commands the engine
+read in two separate reads, drained by one frame's Host_GetConsoleCommands,
+must stay two commands. Sys_ConsoleInput used to hand back each read minus
+its last byte, and Host_GetConsoleCommands's bare Cbuf_AddText per call then
+glued them: `test_f20_first a` + `test_f20_second b` executed as the single
+command `test_f20_first atest_f20_second b`.
+
+The child starts the stdin reader FIRST and then does nothing for two
+seconds: that is what puts each write in the queue as its own entry (a
+reader started after both writes sees them as one read, which the old code
+happened to survive, because it kept that read's embedded newline).
+
+A child process: Bun.stdin.stream() can be taken only once per process, and
+taking it in this suite would swallow the runner's own stdin (the same reason
+test/sys.test.ts spawns one).
+*/
+describe("Host_GetConsoleCommands", () => {
+  test("keeps two stdin reads drained in one frame as two commands", async () => {
+    const hostPath = new URL("../src/common/host.ts", import.meta.url).pathname;
+    const cmdPath = new URL("../src/common/cmd.ts", import.meta.url).pathname;
+    const sysPath = new URL("../src/platform/sys.ts", import.meta.url).pathname;
+    const child = `
+      const { Host_GetConsoleCommands } = await import(${JSON.stringify(hostPath)});
+      const { Cbuf_Execute, Cbuf_Init, Cmd_AddCommand, Cmd_Argv } = await import(${JSON.stringify(cmdPath)});
+      const { Sys_ConsoleInput, sysState } = await import(${JSON.stringify(sysPath)});
+      Cbuf_Init(); // Host_Init's own first step: the command buffer's storage
+      sysState.isDedicated = true;
+      Sys_ConsoleInput(); // starts the background stdin reader
+      const ran = [];
+      Cmd_AddCommand("test_f20_first", () => ran.push("first:" + Cmd_Argv(1)));
+      Cmd_AddCommand("test_f20_second", () => ran.push("second:" + Cmd_Argv(1)));
+      await Bun.sleep(2000); // both writes are read into the queue, nothing drains it
+      for (let i = 0; i < 200 && ran.length < 2; i++) {
+        Host_GetConsoleCommands();
+        Cbuf_Execute();
+        await Bun.sleep(25);
+      }
+      console.log("RAN:" + JSON.stringify(ran));
+      process.exit(0);
+    `;
+
+    const proc = Bun.spawn(["bun", "-e", child], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    await Bun.sleep(800); // the child's reader is up and idle
+    proc.stdin.write("test_f20_first a\n");
+    proc.stdin.flush();
+    await Bun.sleep(300); // a second read, not a continuation of the first
+    proc.stdin.write("test_f20_second b\n");
+    proc.stdin.flush();
+
+    const out = await new Response(proc.stdout).text();
+    const err = await new Response(proc.stderr).text();
+    await proc.exited;
+
+    const match = /RAN:(\[.*\])/.exec(`${out}${err}`);
+    expect(match).not.toBeNull();
+    const ran: unknown = JSON.parse(match === null ? "[]" : match[1]);
+    expect(ran).toEqual(["first:a", "second:b"]);
+  }, 30000);
+});

@@ -1277,6 +1277,29 @@ export function SV_ChooseProtocol(worldmodel: ModelT, bspWidth: number): number 
   }
 }
 
+/*
+================
+SV_ProtocolTooNarrow
+
+`sv_protocol 15` is the one setting that can ask for a protocol the map is out
+of reach of: 15's coordinates are 13.3 fixed point, so a world built past
+BSP29's limits (BSP2/2PSB) or whose bounds leave +-4096 cannot be addressed on
+it at all, and serving it anyway puts every entity in the level at a wrapped
+position. `auto` never picks 15 and the other two settings widen rather than
+narrow (SV_AutoProtocol's own comment), so this asks only about 15.
+================
+*/
+export function SV_ProtocolTooNarrow(protocol: number, worldmodel: ModelT, bspWidth: number): boolean {
+  if (protocol !== PROTOCOL_NETQUAKE) return false;
+  if (bspWidth !== BSP_WIDTH_29) return true;
+
+  for (let i = 0; i < 3; i++) {
+    if (worldmodel.mins[i] < -AUTO_EXTENT || worldmodel.maxs[i] > AUTO_EXTENT) return true;
+  }
+
+  return false;
+}
+
 // sv.protocol + sv.protocolflags + the three staging buffers' wire sizes, and
 // the console line that says which protocol this map is being served on.
 function SV_SetProtocol(protocol: number): void {
@@ -1396,7 +1419,13 @@ export function SV_SpawnServer(server: string): void {
 
   // The protocol has to be fixed before ED_LoadFromFile: PF_makestatic and
   // PF_ambientsound write into sv.signon from inside the spawn functions.
-  SV_SetProtocol(SV_ChooseProtocol(worldmodel, bspWidth));
+  const protocol = SV_ChooseProtocol(worldmodel, bspWidth);
+  if (SV_ProtocolTooNarrow(protocol, worldmodel, bspWidth)) {
+    Con_Printf("sv_protocol 15 cannot carry %s (BSP2 / extents beyond +-4096): use 666, 999 or auto\n", sv.modelname);
+    sv.active = false;
+    return;
+  }
+  SV_SetProtocol(protocol);
 
   // clear world interaction links
   SV_ClearWorld();

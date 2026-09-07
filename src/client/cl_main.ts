@@ -94,7 +94,7 @@ import type * as QwMenuModule from "../qw/client/menu";
 import type * as QwScreenModule from "../qw/client/screen";
 import type * as QwSbarModule from "../qw/client/sbar";
 import type * as HostCmdModule from "../common/host_cmd";
-import { CvarT, Cvar_RegisterVariable } from "../common/cvar";
+import { CvarT, Cvar_RegisterVariable, Cvar_Set } from "../common/cvar";
 import type { Vec3 } from "../common/mathlib";
 import { AngleVectors, VectorCopy, VectorMA, anglemod, vec3 } from "../common/mathlib";
 import type { ModelT } from "../common/model";
@@ -394,6 +394,34 @@ function qwSbarMod(): typeof QwSbarModule {
 // src/common/profile.ts). "auto" reads the address; "qw"/"28"/"29" force the
 // QuakeWorld handshake; "nq"/"15"/"666"/"999" force NetQuake.
 export const cl_protocol = new CvarT("cl_protocol", "auto", true);
+
+/*
+cl_execonspawn: this port's own cvar (F20 defect D4), documented in the
+README's "Client and server" list. Neither client tree has any way to run a
+command at the moment the join finishes: a cfg's lines all execute ahead of the
+text the server stuffs to complete the handshake (`skins`/`begin` on
+QuakeWorld), so a `record`, a level-dependent `bind`, or a screenshot script
+placed after `connect` in the opening cfg always lands too early -- and a cfg
+that loops waiting for the join starves the very text it waits for, because
+`exec` is Cbuf_InsertText (front of the buffer) while the server's stuffed
+commands arrive through Cbuf_AddText (back of it).
+
+Named cfg, executed once on the first frame after this client reaches active
+-- SIGNONS here, ca_active on QuakeWorld -- and then cleared, so it arms one
+join and does not re-fire on the next level. The exec goes in through
+Cbuf_AddText, behind anything the server has already stuffed.
+*/
+export const cl_execonspawn = new CvarT("cl_execonspawn", "");
+
+export function CL_ExecOnSpawn(active: boolean): void {
+  if (!active) return;
+
+  const name = cl_execonspawn.string.trim();
+  if (name === "") return;
+
+  Cvar_Set(cl_execonspawn.name, "");
+  Cbuf_AddText(`exec ${name}\n`);
+}
 
 // The QuakeWorld client's subsystems, brought up the first time this process
 // opens a QuakeWorld connection. QW/client/cl_main.c does all of this inside
@@ -1100,6 +1128,7 @@ export function CL_Init(): void {
   // dispatcher (src/common/host_cmd.ts's Host_Connect_f stays registered
   // unscoped and is what this calls for the NetQuake arm).
   Cvar_RegisterVariable(cl_protocol);
+  Cvar_RegisterVariable(cl_execonspawn);
   Cmd_AddCommand("connect", CL_Connect_f, "nq");
 
   SS_Init();
@@ -1153,6 +1182,7 @@ function registerClMainHooks(): void {
   hostClientHooks.clSendCmd = SS_SendCmd;
   hostClientHooks.clReadFromServer = () => {
     SS_ReadFromServer();
+    CL_ExecOnSpawn(cls.state === CactiveT.ca_connected && cls.signon === SIGNONS);
   };
   hostClientHooks.clDecayLights = CL_DecayLights;
   hostClientHooks.clInit = CL_Init;

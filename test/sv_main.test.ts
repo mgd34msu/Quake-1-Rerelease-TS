@@ -1,11 +1,11 @@
-import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { COM_CheckRegistered, COM_InitArgv, COM_InitFilesystem, pop } from "../src/common/common";
 import { writePakToDisk } from "./support/pak_builder";
 import { buildBsp, ensureDir, writeGameFile } from "./support/bsp_builder";
-import { Mod_ForName, Mod_Init } from "../src/common/model";
-import { Cvar_FindVar } from "../src/common/cvar";
+import { Mod_ForName, Mod_Init, ModelT } from "../src/common/model";
+import { Cvar_FindVar, Cvar_Set } from "../src/common/cvar";
 import { coop, deathmatch, skill } from "../src/common/host";
 import { Q_RandomSeed, Q_SeedRandom, Q_rand, vec3 } from "../src/common/mathlib";
 import { sysState, SysError } from "../src/platform/sys";
@@ -19,6 +19,7 @@ import {
   SV_CreateBaseline,
   SV_Init,
   SV_ModelIndex,
+  SV_ProtocolTooNarrow,
   SV_SpawnServer,
   SV_StartParticle,
   SV_StartSound,
@@ -27,6 +28,9 @@ import {
   SV_WriteEntitiesToClient,
   localmodels,
 } from "../src/server/sv_main";
+import * as consoleMod from "../src/client/console";
+import { BSP_WIDTH_29, BSP_WIDTH_2PSB, BSP_WIDTH_BSP2 } from "../src/common/bspfile";
+import { PROTOCOL_FITZQUAKE, PROTOCOL_NETQUAKE, PROTOCOL_RMQ } from "../src/common/protocol";
 import { SvcOpsT, SU_ARMOR, SU_IDEALPITCH, SU_ITEMS, SU_ONGROUND, SU_VIEWHEIGHT, SU_WEAPON } from "../src/common/protocol";
 import { SizeBuf, SZ_Clear } from "../src/common/sizebuf";
 import { HAVE_PROGS106 } from "./support/fixture_availability";
@@ -591,5 +595,65 @@ describe.skipIf(!HAVE_PROGS106)("SV_SpawnServer (guarded on pr_cmds.ts)", () => 
     expect(sv.state).toBe(ServerStateT.ss_active);
     expect(sv.worldmodel).not.toBeNull();
     expect(sv.signon.cursize).toBeGreaterThan(0);
+  });
+});
+
+//============================================================================
+// F20 D1: `sv_protocol 15` asked for a map protocol 15 cannot address.
+
+describe.skipIf(!HAVE_PROGS106)("sv_protocol 15 on a map it cannot address", () => {
+  if (!hasPrCmds) {
+    test.skip("pr_cmds.ts not landed yet -- skipped", () => {});
+    return;
+  }
+
+  // Bounds and a BSP width are all SV_ProtocolTooNarrow reads.
+  function world(min: number, max: number): ModelT {
+    const m = new ModelT();
+    m.mins[0] = m.mins[1] = m.mins[2] = min;
+    m.maxs[0] = m.maxs[1] = m.maxs[2] = max;
+    return m;
+  }
+
+  test("only protocol 15, and only past 13.3 fixed point's reach", () => {
+    // BSP29 inside +-4096: 15 addresses it
+    expect(SV_ProtocolTooNarrow(PROTOCOL_NETQUAKE, world(-4096, 4096), BSP_WIDTH_29)).toBe(false);
+    // BSP2/2PSB lump indices mean a map built past BSP29's limits
+    expect(SV_ProtocolTooNarrow(PROTOCOL_NETQUAKE, world(-64, 64), BSP_WIDTH_BSP2)).toBe(true);
+    expect(SV_ProtocolTooNarrow(PROTOCOL_NETQUAKE, world(-64, 64), BSP_WIDTH_2PSB)).toBe(true);
+    // a BSP29 world whose own bounds leave the range
+    expect(SV_ProtocolTooNarrow(PROTOCOL_NETQUAKE, world(-4097, 4096), BSP_WIDTH_29)).toBe(true);
+    expect(SV_ProtocolTooNarrow(PROTOCOL_NETQUAKE, world(-4096, 4097), BSP_WIDTH_29)).toBe(true);
+    // 666 and 999 are never refused here: `auto` never picks 15, and an
+    // explicit 666/999 is the caller's own widening
+    expect(SV_ProtocolTooNarrow(PROTOCOL_FITZQUAKE, world(-20000, 20000), BSP_WIDTH_BSP2)).toBe(false);
+    expect(SV_ProtocolTooNarrow(PROTOCOL_RMQ, world(-20000, 20000), BSP_WIDTH_BSP2)).toBe(false);
+  });
+
+  test("the spawn is refused, names the map, and leaves the server inactive", () => {
+    writeGameFile(baseDir, "id1/maps/f20wide.bsp", buildBsp({ width: BSP_WIDTH_BSP2 }));
+    svs.maxclients = 1;
+    svs.clients = [new ClientT()];
+    coop.value = 0;
+    deathmatch.value = 0;
+    skill.value = 1;
+    sv.active = true; // a live previous map, which the refusal must not leave behind as "spawned"
+
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+    Cvar_Set("sv_protocol", "15");
+    let lines: string[] = [];
+    try {
+      SV_SpawnServer("f20wide");
+      // mockRestore drops the recorded calls, so read them first
+      lines = printSpy.mock.calls.map((call) => call.map((arg) => String(arg)).join(" "));
+    } finally {
+      Cvar_Set("sv_protocol", "auto");
+      printSpy.mockRestore();
+    }
+
+    expect(sv.active).toBe(false);
+    expect(lines).toContain("sv_protocol 15 cannot carry %s (BSP2 / extents beyond +-4096): use 666, 999 or auto\n maps/f20wide.bsp");
+    // refused before the protocol was fixed, so the map was never announced
+    expect(lines.some((line) => line.startsWith("Server protocol"))).toBe(false);
   });
 });

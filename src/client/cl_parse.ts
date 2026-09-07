@@ -446,6 +446,12 @@ export function CL_ParseServerInfo(): void {
     Con_Printf("PROTOCOL_RMQ protocolflags %i contains unsupported flags\n", cl.protocolflags);
   }
 
+  // F20 D5 (an addition): the client's half of the server's own "Server
+  // protocol %i (flags 0x%x)" line, so a log shows both ends of the
+  // negotiation. One world, one line: a splitscreen seat's signon carries the
+  // same numbers the primary's did.
+  if (SS_IsPrimary()) Con_Printf("Client protocol %i (flags 0x%x)\n", cl.protocol, cl.protocolflags);
+
   // parse maxclients
   cl.maxclients = MSG_ReadByte();
   if (cl.maxclients < 1 || cl.maxclients > MAX_SCOREBOARD) {

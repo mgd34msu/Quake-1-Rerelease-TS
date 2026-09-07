@@ -292,3 +292,52 @@ describe("Sys_ConsoleInput -- a line piped in before the reader starts", () => {
     expect(`${out}${err}`).toContain("GOT:status");
   }, 20000);
 });
+
+/*
+F20 defect D3. Sys_ConsoleInput used to hand back whatever one read() had
+buffered, minus its last byte, so two commands written to a dedicated
+server's stdin in one write() came back as one string and its two callers'
+bare Cbuf_AddText glued them (`edicts` + `echo X` -> `edictsecho`). It now
+splits on newlines: one complete line per call, terminated, a partial line
+held until its newline arrives, CRLF endings tolerated.
+
+A child process for the same reason the test above uses one: Bun.stdin.stream()
+can be taken only once per process.
+*/
+describe("Sys_ConsoleInput -- one line per call", () => {
+  test("splits a multi-line write, holds a partial line, tolerates CRLF", async () => {
+    const sysPath = new URL("../src/platform/sys.ts", import.meta.url).pathname;
+    const child = `
+      const { Sys_ConsoleInput, sysState } = await import(${JSON.stringify(sysPath)});
+      sysState.isDedicated = true;
+      const lines = [];
+      for (let i = 0; i < 200 && lines.length < 3; i++) {
+        for (;;) {
+          const line = Sys_ConsoleInput();
+          if (line === null) break;
+          lines.push(line);
+        }
+        await Bun.sleep(25);
+      }
+      console.log("LINES:" + JSON.stringify(lines));
+      process.exit(0);
+    `;
+
+    const proc = Bun.spawn(["bun", "-e", child], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+    // two whole commands and half of a third, all in ONE write
+    proc.stdin.write("edicts\necho MARK\r\npar");
+    proc.stdin.flush();
+    await Bun.sleep(400);
+    proc.stdin.write("tial\n");
+    proc.stdin.flush();
+
+    const out = await new Response(proc.stdout).text();
+    const err = await new Response(proc.stderr).text();
+    await proc.exited;
+
+    const match = /LINES:(\[.*\])/.exec(`${out}${err}`);
+    expect(match).not.toBeNull();
+    const lines: unknown = JSON.parse(match === null ? "[]" : match[1]);
+    expect(lines).toEqual(["edicts\n", "echo MARK\n", "partial\n"]);
+  }, 30000);
+});

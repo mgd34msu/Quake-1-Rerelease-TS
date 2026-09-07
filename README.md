@@ -146,7 +146,21 @@ binary, `q1rets`; see [Building from source](#building-from-source) below.
   `auto`) overrides the guess outright.
 - `sv_protocol 15|666|999|auto` (default `auto`) — the NetQuake wire
   protocol; `auto` picks 999 when a map needs the extra width, else 666,
-  and never 15 unless asked.
+  and never 15 unless asked. An explicit `sv_protocol 15` on a map protocol
+  15 cannot address — a BSP2/2PSB world, or one whose bounds leave ±4096,
+  which its 13.3 fixed-point coordinates would wrap — refuses the spawn
+  (`sv_protocol 15 cannot carry maps/x.bsp …`) and leaves the previous map
+  running, the same way a missing map does, instead of serving a level every
+  entity in is misplaced.
+- `cl_execonspawn <cfgname>` (default empty) — an addition: run `exec
+  <cfgname>` once, on the first frame after this client has finished joining
+  a server (SIGNONS on NetQuake, `ca_active` on QuakeWorld), then clear
+  itself. Neither original tree can script anything for that moment: every
+  line of the opening cfg executes ahead of the commands the server stuffs to
+  complete the handshake, so a `record`, a level-dependent `bind` or a
+  screenshot script placed after `connect` always ran too early. Arm it from
+  the command line (`+cl_execonspawn joined.cfg`) or from a cfg, and set it
+  again for each join you want it on.
 - `sv_qwprotocol 28|29|auto` (default `auto`) — the QuakeWorld wire
   protocol; 29 is this engine's own wide extension (16-bit entity numbers,
   `U_MODEL2`/`U_FRAME2`, 999-style coords), negotiated when the client

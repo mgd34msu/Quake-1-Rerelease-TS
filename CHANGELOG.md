@@ -145,6 +145,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checked `fopen` for NULL (config.cfg, saves, demo record, the GL mesh
   cache, QuakeWorld downloads and config) fails with its original message
   instead of aborting the engine.
+- `sv_protocol 15` refuses a map it cannot carry (BSP2 or extents past
+  +-4096) with a message naming the pairing instead of serving a world its
+  13.3 coordinates cannot address; `auto` is unchanged.
+- A dedicated server's stdin is split into lines (one command per line,
+  partial lines held until their newline), so two console lines can no
+  longer fuse into one command.
+- `cl_execonspawn <cfg>` runs a cfg once when the client reaches the game
+  (both NetQuake and QuakeWorld), so a client can be scripted past its join,
+  which a cfg on the command line cannot do (its lines run ahead of the
+  server's stuffed join text).
+- Both clients print `Client protocol N (flags 0x..)` when the serverinfo
+  arrives, mirroring the server's own line.
 - Two NetQuake clients from the same address (one machine, or a LAN behind
   one NAT) can both hold slots: a connect request from a known address on a
   different port is a new player, not the old one returning from a crash,
