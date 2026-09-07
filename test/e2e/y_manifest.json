@@ -1,0 +1,58 @@
+{
+  "family": "y",
+  "drivers": [
+    {
+      "name": "y_mixer_classic_id1",
+      "cmd": ["bun", "test/e2e/y_mixer.ts", "--tree", "classic-id1"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["classic", "audio"]
+    },
+    {
+      "name": "y_mixer_id1",
+      "cmd": ["bun", "test/e2e/y_mixer.ts", "--tree", "id1"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease", "audio"]
+    },
+    {
+      "name": "y_mixer_mg1",
+      "cmd": ["bun", "test/e2e/y_mixer.ts", "--tree", "mg1"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 300,
+      "needs": ["rerelease", "audio"]
+    },
+    {
+      "name": "y_ambient",
+      "cmd": ["bun", "test/e2e/y_ambient.ts"],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "SDL_AUDIODRIVER": "disk",
+        "SDL_DISKAUDIOFILE": "${Q1TS_SCRATCH}/e2e/y/y_ambient.raw",
+        "SDL_DISKAUDIODELAY": "0"
+      },
+      "timeoutSec": 180,
+      "needs": ["classic", "audio"]
+    },
+    {
+      "name": "y_music",
+      "cmd": ["bun", "test/e2e/y_music.ts"],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "SDL_AUDIODRIVER": "disk",
+        "SDL_DISKAUDIOFILE": "${Q1TS_SCRATCH}/e2e/y/y_music.raw",
+        "SDL_DISKAUDIODELAY": "0"
+      },
+      "timeoutSec": 180,
+      "needs": ["rerelease", "audio"]
+    },
+    {
+      "name": "y_qw",
+      "cmd": ["bun", "test/e2e/y_qw.ts"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 240,
+      "needs": ["classic", "audio", "qw", "binary"],
+      "lock": "qwclient"
+    }
+  ]
+}
