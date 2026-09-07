@@ -120,6 +120,38 @@ export interface BotTraceT {
   hitId: number;
 }
 
+/** Options a trace can carry. Additive: a binding that ignores them keeps the behaviour it had. */
+export interface BotTraceOptsT {
+  /**
+   * Clip against the world and the brush models bolted to it, and nothing
+   * else. A clearance test wants this: a team-mate standing in a doorway is
+   * not a reason to call the doorway too narrow for the bot, and a plan made
+   * around who happened to be standing where is stale by the time the bot
+   * walks it.
+   */
+  ignoreEntities?: boolean;
+}
+
+/**
+ * The body a walking actor occupies, as offsets from its own origin, plus
+ * the height its walk code lifts it over a sill without jumping. The
+ * default is the player: Quake 1's player hull and Quake II's are both 32
+ * units wide, 56 tall and step 18, so a binding for either game gets the
+ * right answer without saying anything, and a binding whose actors are a
+ * different size answers `BotWorldT.hull`.
+ */
+export interface BotHullT {
+  mins: BotVec3;
+  maxs: BotVec3;
+  step: number;
+}
+
+export const BOT_PLAYER_HULL: BotHullT = {
+  mins: { x: -16, y: -16, z: -24 },
+  maxs: { x: 16, y: 16, z: 32 },
+  step: 18,
+};
+
 /** Point-contents answers the brain needs; the binding maps its own numbering onto these. */
 export const BotContents = {
   Empty: 0,
@@ -173,7 +205,7 @@ export interface BotWorldT {
   /** A point trace against the world and against solid entities. */
   traceLine(start: BotVec3, end: BotVec3): BotTraceT;
   /** A box trace, for "can I actually walk from here to there". */
-  traceBox(start: BotVec3, mins: BotVec3, maxs: BotVec3, end: BotVec3): BotTraceT;
+  traceBox(start: BotVec3, mins: BotVec3, maxs: BotVec3, end: BotVec3, opts?: BotTraceOptsT): BotTraceT;
   /** What kind of medium a point is in. */
   pointContents(p: BotVec3): BotContentsT;
 
@@ -190,4 +222,7 @@ export interface BotWorldT {
 
   /** The navigation graph for this map, or null when the map has none. */
   nav(): NavGraph | null;
+
+  /** The body this bot walks with, when it is not `BOT_PLAYER_HULL`. */
+  hull?(): BotHullT;
 }

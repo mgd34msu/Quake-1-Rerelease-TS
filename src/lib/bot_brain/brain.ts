@@ -82,6 +82,7 @@ import {
   BOT_BUTTON_ATTACK,
   BOT_BUTTON_JUMP,
   BOT_BUTTON_USE,
+  BOT_PLAYER_HULL,
   BotContents,
   BotEntityKind,
   emptyUsercmd,
@@ -152,6 +153,14 @@ interface ExplicitGoalT {
 
 const STUCK_SECONDS = 0.6;
 const REPLAN_SECONDS = 2.0;
+/**
+ * How far below a point the clearance sweep looks for the floor it is
+ * standing on. Deep enough to cover the difference between a nav node and a
+ * player origin and any lip either of them sits on; shallow enough that a
+ * point out over a drop keeps its own height rather than being measured
+ * against the floor of the room below.
+ */
+const GROUND_PROBE = 64;
 /** Give up on a goal after this many consecutive stuck trips. */
 const STUCK_GIVE_UP = 3;
 /** How far a roaming bot is willing to be sent. */
@@ -1126,9 +1135,54 @@ export class BotBrain {
     }
 
     const visible = (from: BotVec3, to: BotVec3): boolean => world.traceLine(bvecAdd(from, bvec(0, 0, 16)), bvecAdd(to, bvec(0, 0, 16))).fraction >= 1;
-    const path = nav.planPath(self.origin, goal, { caps: this.traverseCaps(world), visible });
+    const path = nav.planPath(self.origin, goal, { caps: this.traverseCaps(world), visible, fits: this.clearanceTest(world), from: self.origin });
     setPath(this.pathState, path, self.origin, now);
     if (path === null) this.pathState.plannedAt = now;
+  }
+
+  /**
+   * "Could this bot walk straight from here to there", answered with the
+   * bot's own body rather than with a sight line. Two things the point
+   * trace it replaces got wrong:
+   *
+   * WIDTH. A zero-width line fits through the gap beside a doorway, the
+   * railing over a stair and the slot between two crates; a 32-unit-wide
+   * player does not. A shortcut approved on the sight line leaves the
+   * follower pressed against the wall next to the door until the plan
+   * expires, whereupon the same route is planned again.
+   *
+   * GROUND. A walk is planned between standing positions, and the two kinds
+   * of point being joined do not measure from the same place: a nav file's
+   * node sits on the floor, and a player's origin is its own `-mins.z`
+   * above it. Anchoring the box at either point as given puts it through
+   * the floor at one end and waist-high at the other, so both ends are
+   * dropped to the ground they stand on first and the box is measured up
+   * from there -- lifted by the step height, which is exactly the part of
+   * the body the walk code carries over a sill for free.
+   *
+   * Entities are ignored: a team-mate standing in a doorway is not a reason
+   * to call the doorway too narrow, and by the time the bot walks the plan
+   * whoever was standing there has moved.
+   */
+  private clearanceTest(world: BotWorldT): (from: BotVec3, to: BotVec3) => boolean {
+    const hull = world.hull === undefined ? BOT_PLAYER_HULL : world.hull();
+    const mins = bvec(hull.mins.x, hull.mins.y, hull.step);
+    const maxs = bvec(hull.maxs.x, hull.maxs.y, hull.maxs.z - hull.mins.z);
+    // One plan asks about the same node origin many times, and the origins
+    // it asks about are the graph's own objects, so identity is enough.
+    const ground = new Map<BotVec3, BotVec3>();
+    const groundOf = (p: BotVec3): BotVec3 => {
+      const cached = ground.get(p);
+      if (cached !== undefined) return cached;
+      const down = world.traceLine(p, bvec(p.x, p.y, p.z - GROUND_PROBE));
+      const found = down.fraction >= 1 ? bvec(p.x, p.y, p.z) : down.endpos;
+      ground.set(p, found);
+      return found;
+    };
+    return (from: BotVec3, to: BotVec3): boolean => {
+      const trace = world.traceBox(groundOf(from), mins, maxs, groundOf(to), { ignoreEntities: true });
+      return !trace.startsolid && trace.fraction >= 1;
+    };
   }
 
   //--------------------------------------------------------------------------

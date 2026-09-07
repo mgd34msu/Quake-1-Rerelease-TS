@@ -37,11 +37,13 @@ import { Host_Init, coop, deathmatch, host } from "../src/common/host";
 import { Loc_SetLocaleProbeForTest } from "../src/common/loc_host";
 import { SV_Physics } from "../src/server/sv_phys";
 import { SV_RunClients } from "../src/server/sv_user";
+import { SV_LinkEdict } from "../src/server/world";
 import { SV_CheckForNewClients, SV_ClientIsBot, SV_SendClientMessages } from "../src/server/sv_main";
 import { vec3, Q_SeedRandom } from "../src/common/mathlib";
 import { HAVE_PROGS106, PROGS106_DAT } from "./support/fixture_availability";
 import { WORLDSPAWN_MODELS } from "./support/dedicated_fixture";
 import {
+  BotServerWorld,
   Bot_Add,
   Bot_ClearMonsterPaths,
   Bot_ClearNav,
@@ -499,6 +501,46 @@ describe.skipIf(!HAVE_PROGS106)("bot client slots on a synthetic dedicated serve
     expect(ent.v.health).toBeGreaterThan(0);
     expect((ent.v.flags | 0) & FL_ISBOT).toBe(FL_ISBOT);
     expect(ent.v.colormap).toBe(clientnum + 1);
+
+    Bot_RemoveAll();
+  });
+
+  test("a clearance sweep that ignores entities walks through a player the plain box trace stops at", () => {
+    // The binding's half of the width-aware corner cut: the brain asks for a
+    // box trace that meets the world and the brush models bolted to it and
+    // nothing else, because a team-mate standing in a doorway is not a
+    // reason to call the doorway too narrow.
+    const tracer = Bot_Add("tracer", "medium");
+    const blocker = Bot_Add("blocker", "medium");
+    const self = svs.clients[tracer]!.edict!;
+    const other = svs.clients[blocker]!.edict!;
+
+    self.v.origin[0] = -128;
+    self.v.origin[1] = 0;
+    self.v.origin[2] = 24;
+    SV_LinkEdict(self, false);
+    other.v.origin[0] = 0;
+    other.v.origin[1] = 0;
+    other.v.origin[2] = 24;
+    SV_LinkEdict(other, false);
+
+    const world = new BotServerWorld(self.index);
+    const start = { x: -128, y: 0, z: 24 };
+    const end = { x: 128, y: 0, z: 24 };
+    const mins = { x: -16, y: -16, z: -6 };
+    const maxs = { x: 16, y: 16, z: 32 };
+
+    const plain = world.traceBox(start, mins, maxs, end);
+    expect(plain.fraction).toBeLessThan(1);
+    expect(plain.hitId).toBe(other.index);
+
+    const ignoring = world.traceBox(start, mins, maxs, end, { ignoreEntities: true });
+    expect(ignoring.fraction).toBe(1);
+    expect(ignoring.hitId).toBe(-1);
+
+    // And the hull the brain plans with is the bot's own box, which the
+    // QuakeC set with setsize.
+    expect(world.hull()).toEqual({ mins: { x: -16, y: -16, z: -24 }, maxs: { x: 16, y: 16, z: 32 }, step: 18 });
 
     Bot_RemoveAll();
   });

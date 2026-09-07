@@ -24,7 +24,7 @@ import { vec3, type Vec3 } from "../common/mathlib";
 import { IT_INVISIBILITY, IT_INVULNERABILITY, IT_KEY1, IT_KEY2 } from "../common/quakedef";
 import type { NavGraph } from "../lib/bot_brain/nav_graph";
 import { bvec, type BotVec3 } from "../lib/bot_brain/math";
-import { BotContents, BotEntityKind, type BotEntityT, type BotSelfT, type BotSoundT, type BotTraceT, type BotWorldT } from "../lib/bot_brain/world";
+import { BOT_PLAYER_HULL, BotContents, BotEntityKind, type BotEntityT, type BotHullT, type BotSelfT, type BotSoundT, type BotTraceOptsT, type BotTraceT, type BotWorldT } from "../lib/bot_brain/world";
 import { Bot_Knowledge, Bot_Nav } from "./bot_data";
 
 /** quakec/defs.qc:260 -- "mal: this will be set on bot players". */
@@ -153,15 +153,36 @@ export class BotServerWorld implements BotWorldT {
     };
   }
 
-  traceBox(start: BotVec3, mins: BotVec3, maxs: BotVec3, end: BotVec3): BotTraceT {
+  /**
+   * MOVE_NOMONSTERS is what `ignoreEntities` means here: SV_ClipToLinks
+   * skips every touched entity that is not SOLID_BSP, so the sweep meets
+   * the world and the brush models bolted to it (doors, plats, trains) and
+   * passes straight through players, monsters and dropped items.
+   */
+  traceBox(start: BotVec3, mins: BotVec3, maxs: BotVec3, end: BotVec3, opts?: BotTraceOptsT): BotTraceT {
     const ent = this.edict();
-    const trace = SV_Move(toEngineVec(start), toEngineVec(mins), toEngineVec(maxs), toEngineVec(end), MOVE_NORMAL, ent);
+    const type = opts?.ignoreEntities === true ? MOVE_NOMONSTERS : MOVE_NORMAL;
+    const trace = SV_Move(toEngineVec(start), toEngineVec(mins), toEngineVec(maxs), toEngineVec(end), type, ent);
     return {
       fraction: trace.fraction,
       endpos: toBotVec(trace.endpos),
       startsolid: trace.startsolid,
       hitId: trace.ent === null ? -1 : trace.ent.index,
     };
+  }
+
+  /**
+   * The bot's own box, which the QuakeC set with setsize. It is the player
+   * hull in every progs that ships, so this only ever differs when a mod
+   * resizes its players -- and a corpse, whose box the QuakeC flattens, is
+   * never the thing being planned for.
+   */
+  hull(): BotHullT {
+    const ent = this.edict();
+    const mins = toBotVec(ent.v.mins);
+    const maxs = toBotVec(ent.v.maxs);
+    if (maxs.z - mins.z < 8 || maxs.x - mins.x < 8) return BOT_PLAYER_HULL;
+    return { mins, maxs, step: BOT_PLAYER_HULL.step };
   }
 
   pointContents(p: BotVec3): number {
