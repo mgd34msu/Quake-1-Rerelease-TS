@@ -13,7 +13,7 @@ import { beforeEach, describe, expect, test, afterAll } from "bun:test";
 
 import { cl, cls } from "../src/client/client";
 import { EntityT, ParticleT, re } from "../src/client/render";
-import type { Renderer } from "../src/client/render";
+import type { GlyphAtlasSourceT, Renderer } from "../src/client/render";
 import { vid } from "../src/client/vid";
 import { VrectT } from "../src/client/vid";
 import { scrState } from "../src/client/screen_types";
@@ -27,7 +27,8 @@ import { QpicT } from "../src/common/wad";
 import { STAT_HEALTH } from "../src/common/quakedef";
 
 import { cl_sbar, cl_hudswap } from "../src/qw/client/cl_main";
-import { scr_sbarscale } from "../src/client/kfont_text";
+import { IT_SHOTGUN, STAT_ITEMS } from "../src/qw/bothdefs";
+import { scr_sbarscale, SbarScale } from "../src/client/kfont_text";
 
 import {
   Sbar_ColorForMap,
@@ -35,7 +36,9 @@ import {
   Sbar_Draw,
   Sbar_DrawInventory,
   Sbar_DrawNormal,
+  Sbar_FinaleOverlay,
   Sbar_Init,
+  Sbar_IntermissionNumber,
   Sbar_SortFrags,
   Sbar_SortTeams,
   fragsort,
@@ -58,7 +61,11 @@ type DrawCall =
   | { fn: "Draw_Fill"; x: number; y: number; w: number; h: number; c: number }
   | { fn: "Draw_TileClear"; x: number; y: number; w: number; h: number }
   | { fn: "Draw_Alt_String"; x: number; y: number; str: string }
-  | { fn: "Draw_SubPic"; x: number; y: number; picName: string; srcx: number; srcy: number; w: number; h: number };
+  | { fn: "Draw_SubPic"; x: number; y: number; picName: string; srcx: number; srcy: number; w: number; h: number }
+  // G11: records for the new headsup-scaling call paths -- see this file's
+  // own new "G11" describe blocks below.
+  | { fn: "Draw_ScaledSubPic"; x: number; y: number; picName: string; srcx: number; srcy: number; w: number; h: number; scale: number }
+  | { fn: "Draw_GlyphAtlas"; dstX: number; dstY: number; dstW: number; dstH: number; srcX: number; srcY: number; srcW: number; srcH: number };
 
 function makeFakeRenderer(): { renderer: Renderer; calls: DrawCall[]; picByName: Map<string, QpicT> } {
   const picByName = new Map<string, QpicT>();
@@ -174,6 +181,32 @@ function makeFakeRenderer(): { renderer: Renderer; calls: DrawCall[]; picByName:
     },
     Draw_Alt_String(x: number, y: number, str: string): void {
       calls.push({ fn: "Draw_Alt_String", x, y, str });
+    },
+    // G11: the new scaled-subpic primitive (render.ts's own comment) --
+    // recorded, not a no-op, so the new headsup-scaling tests below can
+    // assert on it directly. At SbarScale() 1 sbar.ts's own Sbar_DrawSubPic
+    // never reaches this member (it always calls Draw_SubPic above), so
+    // every pre-G11 test in this file that never touches scr_sbarscale is
+    // unaffected by this member existing.
+    Draw_ScaledSubPic(x: number, y: number, pic: QpicT, srcx: number, srcy: number, w: number, h: number, scale: number): void {
+      calls.push({ fn: "Draw_ScaledSubPic", x, y, picName: nameOf(pic), srcx, srcy, w, h, scale });
+    },
+    // G11: recorded for the same reason -- kfont_text.ts's Text_Draw only
+    // reaches this member (rather than its scale-1 Draw_Character fast path)
+    // when `scale !== 1`, which no pre-G11 test in this file exercises.
+    Draw_GlyphAtlas(
+      dstX: number,
+      dstY: number,
+      dstW: number,
+      dstH: number,
+      _source: GlyphAtlasSourceT,
+      srcX: number,
+      srcY: number,
+      srcW: number,
+      srcH: number,
+      _tint: readonly [number, number, number] | null,
+    ): void {
+      calls.push({ fn: "Draw_GlyphAtlas", dstX, dstY, dstW, dstH, srcX, srcY, srcW, srcH });
     },
     isGL: false,
     SCR_ScreenShot_f(): void {},
@@ -615,6 +648,151 @@ describe("G9: QuakeWorld status bar bottom-centre anchor deviation from the clas
     // from QW's original flush-left `x` (which would have been 0 here).
     expect(sbar?.x).toBe(160);
     expect(sbar?.y).toBe(480 - 24);
+  });
+});
+
+describe("G11: headsup HUD (`cl_sbar 0`) scales while staying docked to the real window edges", () => {
+  test("weapon strip and ammo box scale via Draw_ScaledSubPic, x still real-edge-docked (vid.width - N*s)", () => {
+    vid.width = 1280;
+    vid.height = 720;
+    scr_sbarscale.value = 2; // SbarFitScale() here is min(4,5)=4, so 2 is honoured as-is
+    expect(SbarScale()).toBe(2);
+
+    cl_sbar.value = 0;
+    scr_viewsize.value = 100;
+    cl_hudswap.value = 0;
+    cl.stats[STAT_ITEMS] |= IT_SHOTGUN;
+    cl.stats[6] = 123; // STAT_SHELLS -- a 3-digit count so all three digit glyphs draw
+
+    fake.calls.length = 0;
+    Sbar_DrawInventory();
+
+    const subs = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_ScaledSubPic" }> => c.fn === "Draw_ScaledSubPic");
+
+    // sbar.c: Sbar_DrawSubPic((hudswap)?0:(vid.width-24*s), -68-(7-i)*16, ...)
+    const weapon = subs.find((c) => c.picName === "inva1_shotgun");
+    expect(weapon).toBeDefined();
+    expect(weapon?.x).toBe(1280 - 24 * 2); // docked to the real right edge at the SCALED width, not centred
+    expect(weapon?.y).toBe((-68 - 7 * 16) * 2 + (720 - 24 * 2));
+    expect(weapon?.w).toBe(24); // source rect stays in the pic's own unscaled texel space
+    expect(weapon?.h).toBe(16);
+    expect(weapon?.scale).toBe(2);
+
+    // sbar.c: Sbar_DrawSubPic((hudswap)?0:(vid.width-42*s), -24-(4-i)*11, sb_ibar, 3+i*48, 0, 42, 11) at i=0
+    const ammo = subs.find((c) => c.picName === "ibar" && c.srcx === 3);
+    expect(ammo).toBeDefined();
+    expect(ammo?.x).toBe(1280 - 42 * 2);
+    expect(ammo?.y).toBe(-68 * 2 + (720 - 24 * 2));
+    expect(ammo?.w).toBe(42);
+    expect(ammo?.h).toBe(11);
+    expect(ammo?.scale).toBe(2);
+
+    // the three ammo-count digit glyphs share the ammo box's own row (same y)
+    const glyphs = fake.calls
+      .filter((c): c is Extract<DrawCall, { fn: "Draw_GlyphAtlas" }> => c.fn === "Draw_GlyphAtlas")
+      .filter((c) => c.dstY === ammo!.y);
+    expect(glyphs.length).toBe(3); // "123" -- all three digits non-space
+    expect(glyphs.every((g) => g.dstW === 16 && g.dstH === 16)).toBe(true); // 8px glyph * scale 2, not fixed 8px
+
+    const xs = glyphs.map((g) => g.dstX).sort((a, b) => a - b);
+    // (hudswap)?3:(vid.width-39*s) / -31*s / -23*s, each + sbarHeadsupCharacter's own 4*s
+    expect(xs).toEqual([1280 - 39 * 2 + 4 * 2, 1280 - 31 * 2 + 4 * 2, 1280 - 23 * 2 + 4 * 2]);
+  });
+
+  test("cl_hudswap 1 keeps the headsup strip docked to the left edge (x=0) at every scale", () => {
+    vid.width = 1280;
+    vid.height = 720;
+    scr_sbarscale.value = 2;
+
+    cl_sbar.value = 0;
+    scr_viewsize.value = 100;
+    cl_hudswap.value = 1;
+    cl.stats[STAT_ITEMS] |= IT_SHOTGUN;
+
+    fake.calls.length = 0;
+    Sbar_DrawInventory();
+
+    const subs = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_ScaledSubPic" }> => c.fn === "Draw_ScaledSubPic");
+    expect(subs.length).toBeGreaterThan(0);
+    expect(subs.every((c) => c.x === 0)).toBe(true);
+  });
+
+  test("at SbarScale() 1, the headsup strip never reaches the new scaled primitives (Draw_SubPic/Draw_Character only, byte-identical to pre-G11)", () => {
+    vid.width = 640;
+    vid.height = 480;
+    scr_sbarscale.value = 1;
+    cl_sbar.value = 0;
+    scr_viewsize.value = 100;
+    cl_hudswap.value = 0;
+
+    fake.calls.length = 0;
+    Sbar_DrawInventory();
+
+    expect(fake.calls.some((c) => c.fn === "Draw_ScaledSubPic")).toBe(false);
+    expect(fake.calls.some((c) => c.fn === "Draw_GlyphAtlas")).toBe(false);
+    expect(fake.calls.some((c) => c.fn === "Draw_SubPic")).toBe(true);
+  });
+});
+
+describe("G11: Sbar_FinaleOverlay / Sbar_IntermissionNumber scale with SbarScale()", () => {
+  test("Sbar_FinaleOverlay centres the SCALED pic in real pixels", () => {
+    vid.width = 1280;
+    vid.height = 720;
+    scr_sbarscale.value = 2;
+
+    fake.calls.length = 0;
+    Sbar_FinaleOverlay();
+
+    const transPics = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_TransPic" }> => c.fn === "Draw_TransPic");
+    const finale = transPics.find((p) => p.picName === "gfx/finale.lmp");
+    expect(finale).toBeDefined();
+    // the fake's default pic is 8x8: px = trunc((1280 - 8*2)/2), py = 16*2
+    expect(finale?.x).toBe(Math.trunc((1280 - 8 * 2) / 2));
+    expect(finale?.y).toBe(32);
+  });
+
+  test("Sbar_FinaleOverlay at SbarScale() 1 is byte-identical to the pre-G11 unscaled centring", () => {
+    vid.width = 640;
+    vid.height = 480;
+    scr_sbarscale.value = 1;
+
+    fake.calls.length = 0;
+    Sbar_FinaleOverlay();
+
+    const transPics = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_TransPic" }> => c.fn === "Draw_TransPic");
+    const finale = transPics.find((p) => p.picName === "gfx/finale.lmp");
+    expect(finale?.x).toBe(Math.trunc((640 - 8) / 2));
+    expect(finale?.y).toBe(16);
+  });
+
+  test("Sbar_IntermissionNumber scales each digit's real position by SbarScale()", () => {
+    vid.width = 1280;
+    vid.height = 720;
+    scr_sbarscale.value = 2;
+
+    fake.calls.length = 0;
+    Sbar_IntermissionNumber(160, 64, 7, 3, 0);
+
+    const transPics = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_TransPic" }> => c.fn === "Draw_TransPic");
+    // num "  7" (digits=3): only the last cell draws, xx = 160 + (3-1)*24 = 208
+    const seven = transPics.find((p) => p.picName === "num_7");
+    expect(seven).toBeDefined();
+    expect(seven?.x).toBe(208 * 2);
+    expect(seven?.y).toBe(64 * 2);
+  });
+
+  test("Sbar_IntermissionNumber at SbarScale() 1 is byte-identical to the pre-G11 unscaled formula", () => {
+    vid.width = 320;
+    vid.height = 200;
+    scr_sbarscale.value = 1;
+
+    fake.calls.length = 0;
+    Sbar_IntermissionNumber(160, 64, 7, 3, 0);
+
+    const transPics = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_TransPic" }> => c.fn === "Draw_TransPic");
+    const seven = transPics.find((p) => p.picName === "num_7");
+    expect(seven?.x).toBe(208);
+    expect(seven?.y).toBe(64);
   });
 });
 

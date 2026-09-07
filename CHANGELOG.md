@@ -359,8 +359,31 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bottom-centre anchor as the NetQuake bar is a deliberate, documented
   deviation from that original placement, not a fidelity break -- the
   headsup HUD (`cl_sbar 0`), which docks to the real window edges by design,
-  is unchanged. At 320x200/`scr_*scale 1` every affected draw call is
+  scaled its picture-based elements but not yet its ammo/weapon strip (see
+  below). At 320x200/`scr_*scale 1` every affected draw call is
   byte-identical to its pre-existing formula.
+- The QuakeWorld headsup HUD (`cl_sbar 0`, its default)'s edge-docked
+  ammo/weapon strip -- the bottom-right ammo counts and weapon icons drawn by
+  `Sbar_DrawInventory`'s `headsup` branch -- now scales with `scr_sbarscale`
+  like the rest of the status bar, instead of staying fixed at 8px glyphs and
+  1x icons regardless of window size (at 1920x1080 that strip was unreadably
+  tiny next to the now-scaled classic bar and console). It stays docked to
+  the REAL window edges at every scale rather than centring, the opposite of
+  the classic bar's own anchor -- a deliberate distinction, since headsup
+  mode's whole point is real-edge docking. `Sbar_FinaleOverlay` and
+  `Sbar_IntermissionNumber`, left at 1x by the change above, now scale too.
+  Software and OpenGL both gained a `Draw_ScaledSubPic` renderer primitive
+  (mirroring the existing `Draw_ScaledPic`) to draw a scaled sub-rectangle of
+  a wad picture, which the ammo-count background swatches need.
+- QuakeWorld's `quit` console command (a WinQuake-style convenience this
+  port added; the real QuakeWorld client has none, only a menu "Quit" item)
+  always opened the confirm-menu screen regardless of how it was invoked, so
+  a `quit` issued from a cfg or script (nothing left to answer the "press Y
+  to quit" prompt) hung forever instead of exiting. It now checks the same
+  real `key_dest` state the NetQuake client's own `quit` does: typed at the
+  actual console it disconnects and exits immediately, matching NetQuake;
+  reached with the game or a menu focused it still opens the confirm menu
+  exactly as before.
 - A bot validated its corner cuts with a zero-width sight line, so the
   string puller approved shortcuts a 32-unit-wide player cannot fit
   through: on `ctf9` a flag carrier was handed a first steering point some

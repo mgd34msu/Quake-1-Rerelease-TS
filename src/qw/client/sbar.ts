@@ -105,16 +105,41 @@ QW's own "headsup" HUD (`cl_sbar 0`, a compact icon strip docked to the
 REAL window edges -- `Sbar_DrawInventory`'s `if (headsup) {...}` branches,
 positioned at literal `vid.width - N` / `0` with NO relation to the 320-wide
 canvas at all) is a genuinely different, edge-anchored layout, not a
-scaled-down view of the classic bar, so it keeps drawing at 1:1 device
-pixels exactly as before -- those three `Sbar_DrawCharacter` call sites now
-go through a local `sbarRawCharacter` (the pre-G9 body, kept verbatim) so
-the new centring/scaling in `Sbar_DrawCharacter` itself never reaches them.
-`Sbar_DrawSubPic` (only ever called from those same headsup branches -- see
-this file's earlier deviation note) is UNCHANGED for the identical reason,
-and additionally because `Renderer` has no `Draw_ScaledSubPic` member to
-scale it with; adding one means touching src/client/render.ts and both
-renderer modules, outside this unit's SCOPE -- reported as a follow-up if
-headsup mode is ever brought into this scaling model.
+scaled-down view of the classic bar. G9 left it at 1:1 device pixels
+(documented in this section, pre-G11); at 1920x1080 that meant an 8px-glyph
+ammo count and 1x weapon/ammo icons pinned to the real bottom-right corner,
+unreadable next to the now-scaled classic bar, rankings overlay and console
+(this unit's brief, reproduced with a headless capture at that resolution).
+
+G11 addition (2026-09-07, "the headsup HUD scales too, still docked to the
+real edges"): every headsup element now scales by the SAME `SbarScale()`
+the rest of this file uses, while staying anchored to the actual window
+edges -- Mike's ruling was explicitly "dock the SCALED element to the edge;
+do not centre it", the opposite of the classic bar's own G9 centred anchor.
+`Sbar_DrawSubPic` (this file's own function below) now scales its Y the same
+way `Sbar_DrawPic`/`Sbar_DrawTransPic` do (a virtual offset from the
+`vid.height - SBAR_HEIGHT` anchor, multiplied by `s`, with the anchor itself
+using `SBAR_HEIGHT*s`) through a new `Draw_ScaledSubPic` Renderer member
+(src/client/render.ts, mirroring `Draw_ScaledPic`; implemented in both
+src/ref_soft/draw.ts and src/ref_gl/gl_draw.ts, and wired onto both live
+renderer objects -- src/ref_gl/ref_gl.ts, src/ref_soft/ref_soft.ts -- the
+same one-line mirror of F2b's own `Draw_ScaledPic`/`Draw_ScaledTransPic`
+wiring; those two files are not in this unit's brief's literal SCOPE list
+but the member is inert without it, reported as a deviation in this unit's
+report). `X`, unlike `Y`, is NOT scaled by `Sbar_DrawSubPic` itself -- for
+headsup, `x` already arrives as a REAL, edge-docked pixel coordinate (either
+literal `0` for the left edge, or `vid.width - N` for the right), never a
+virtual canvas coordinate the way the classic bar's `x` is; `Sbar_DrawInventory`
+itself now multiplies each such `N` constant by `s` at its call sites
+(`vid.width - 24*s`, `vid.width - 42*s`, ...) so the scaled element's real
+footprint still touches the real edge, exactly as the brief specifies.
+The three `Sbar_DrawCharacter` call sites for the ammo-count digits (the old
+`sbarRawCharacter`, kept 1:1 pre-G11) now go through a new local
+`sbarHeadsupCharacter`, the same edge-docked-x/scaled-y/scaled-glyph
+convention: `Text_Draw`'s own `scale` argument (kfont_text.ts) already
+stretches the glyph itself, so scaling only the anchor math here (not a
+separate glyph-size step) is enough, mirroring how `Sbar_DrawCharacter`
+itself only scales its anchor and leaves the glyph stretch to `Text_Draw`.
 
 `Sbar_DeathmatchOverlay`/`Sbar_TeamOverlay` (the `+showscores` full-screen
 rankings) and `Sbar_MiniDeathmatchOverlay` (the sidebar shown when there's
@@ -147,12 +172,24 @@ scaled-up bar leaves less than 512 (or 640, for the team columns) virtual
 units of real width -- caught by a live headless run at 1920x1080
 (`SbarFitScale()` 6, unguarded `x = 324*6 = 1944` walked past `vid.width`
 and the renderer logged "Bad Draw_Fill" every frame), not by inspection;
-fixed before landing. `Sbar_FinaleOverlay` (the
-already-centred, already full-picture `gfx/finale.lmp` intermission screen)
-and `Sbar_IntermissionNumber` (positioned entirely by its screen.ts-owned
-caller, outside this unit's console/notify/centerprint-only screen.ts SCOPE)
-are unchanged -- neither is one of the rows the brief calls out, and
-`Sbar_IntermissionNumber`'s caller is not in this unit's SCOPE to update.
+fixed before landing.
+
+G11: `Sbar_FinaleOverlay` (the already-centred, already full-picture
+`gfx/finale.lmp` intermission screen) and `Sbar_IntermissionNumber` (a
+digit-strip helper with no caller anywhere in this port's QW tree currently
+-- confirmed by a repo-wide grep; NQ's own src/client/sbar.ts has the only
+live callers, out of this unit's SCOPE) were left at 1x by G9; the brief
+calls both out by name. `Sbar_FinaleOverlay` now centres its SCALED pic
+directly in real pixels (`(vid.width - pic.width*s)/2`, `16*s`), the same
+"real vid.width already, no virtual-unit indirection needed" shape the
+original's own unscaled formula already had, through the same
+s===1-or-member-missing `Draw_TransPic`/`Draw_ScaledTransPic` fallback
+`Sbar_DrawPic` uses. `Sbar_IntermissionNumber` now scales its own `x`/`y`
+(virtual-unit coordinates, matching how a caller would pass them -- see
+NQ's own `Sbar_IntermissionNumber`, called with 320-wide-canvas values like
+`(160, 64)`) by `s` per digit through the identical fallback, so a future
+QW intermission-screen caller (screen.ts's own SCOPE, not this unit's) gets
+scaling for free without needing to know about `SbarScale()` itself.
 */
 
 import { cl, cls } from "../../client/client";
@@ -433,14 +470,27 @@ Sbar_DrawSubPic
 
 JACK: Draws a portion of the picture in the status bar.
 
-G9: only ever called from Sbar_DrawInventory's headsup branches (see this
-file's header) -- kept at 1:1 device pixels like the rest of that mode, and
-because `Renderer` has no scaled-subpic member to draw it with otherwise.
+G11: only ever called from Sbar_DrawInventory's headsup branches (see this
+file's header). `x` arrives already a REAL, edge-docked pixel coordinate
+(the caller does its own `* s` on any constant offset, since headsup has no
+canvas-wide anchor to scale x against the way the classic bar's
+sbarCenterX does); `y` is still a virtual offset from the SBAR_HEIGHT anchor,
+scaled here exactly like Sbar_DrawPic/Sbar_DrawTransPic scale theirs, with
+the anchor itself using the SCALED SBAR_HEIGHT so a taller headsup element
+still docks flush with the real bottom edge. Byte-identical to the pre-G11
+formula (`y + (vid.height - SBAR_HEIGHT)`) at SbarScale() 1.
 =============
 */
 export function Sbar_DrawSubPic(x: number, y: number, pic: QpicT | null, srcx: number, srcy: number, width: number, height: number): void {
   if (!pic) return;
-  getRenderer().Draw_SubPic(x, y + (vid.height - SBAR_HEIGHT), pic, srcx, srcy, width, height);
+  const r = getRenderer();
+  const s = SbarScale();
+  const dy = y * s + (vid.height - SBAR_HEIGHT * s);
+  if (s === 1 || r.Draw_ScaledSubPic === undefined) {
+    r.Draw_SubPic(x, dy, pic, srcx, srcy, width, height);
+    return;
+  }
+  r.Draw_ScaledSubPic(x, dy, pic, srcx, srcy, width, height, s);
 }
 
 /*
@@ -482,11 +532,17 @@ export function Sbar_DrawCharacter(x: number, y: number, num: number): void {
   Text_Draw(anchorX + (x + 4) * s, anchorY + y * s, String.fromCharCode(num & 0xff), false, s);
 }
 
-/** G9: the pre-G9 body of Sbar_DrawCharacter, kept verbatim for
- * Sbar_DrawInventory's headsup branches -- see this file's header. Not a
- * ported C name. */
-function sbarRawCharacter(x: number, y: number, num: number): void {
-  getRenderer().Draw_Character(x + 4, y + vid.height - SBAR_HEIGHT, num);
+/** G11 (pre-G11: sbarRawCharacter, the pre-G9 body of Sbar_DrawCharacter
+ * kept verbatim): Sbar_DrawInventory's headsup branches' own scaled digit
+ * drawer -- see this file's header. `x` is already a real, edge-docked pixel
+ * coordinate (the caller's own `* s`, same convention Sbar_DrawSubPic's `x`
+ * uses); `y` is a virtual offset from the SBAR_HEIGHT anchor, scaled the same
+ * way Sbar_DrawCharacter scales its own `y`. Text_Draw's own `scale`
+ * argument stretches the glyph; byte-identical to the pre-G11 formula
+ * (`x+4, y+vid.height-SBAR_HEIGHT`) at SbarScale() 1. Not a ported C name. */
+function sbarHeadsupCharacter(x: number, y: number, num: number): void {
+  const s = SbarScale();
+  Text_Draw(x + 4 * s, y * s + (vid.height - SBAR_HEIGHT * s), String.fromCharCode(num & 0xff), false, s);
 }
 
 /*
@@ -702,6 +758,7 @@ Sbar_DrawInventory
 export function Sbar_DrawInventory(): void {
   const headsup = !(cl_sbar.value || scr_viewsize.value < 100);
   const hudswap = cl_hudswap.value !== 0; // Get that nasty float out :)
+  const s = SbarScale(); // G11: headsup docks the SCALED element to the real edge -- see file header
 
   if (!headsup) Sbar_DrawPic(0, -24, sb_ibar);
 
@@ -719,7 +776,7 @@ export function Sbar_DrawInventory(): void {
 
       if (headsup) {
         if (i || vid.height > 200)
-          Sbar_DrawSubPic(hudswap ? 0 : vid.width - 24, -68 - (7 - i) * 16, sb_weapons[flashon][i], 0, 0, 24, 16);
+          Sbar_DrawSubPic(hudswap ? 0 : vid.width - 24 * s, -68 - (7 - i) * 16, sb_weapons[flashon][i], 0, 0, 24, 16);
       } else {
         Sbar_DrawPic(i * 24, -16, sb_weapons[flashon][i]);
       }
@@ -732,10 +789,10 @@ export function Sbar_DrawInventory(): void {
   for (let i = 0; i < 4; i++) {
     const num = Com_sprintf("%3i", cl.stats[STAT_SHELLS + i]);
     if (headsup) {
-      Sbar_DrawSubPic(hudswap ? 0 : vid.width - 42, -24 - (4 - i) * 11, sb_ibar, 3 + i * 48, 0, 42, 11);
-      if (num[0] !== " ") sbarRawCharacter(hudswap ? 3 : vid.width - 39, -24 - (4 - i) * 11, 18 + num.charCodeAt(0) - 48);
-      if (num[1] !== " ") sbarRawCharacter(hudswap ? 11 : vid.width - 31, -24 - (4 - i) * 11, 18 + num.charCodeAt(1) - 48);
-      if (num[2] !== " ") sbarRawCharacter(hudswap ? 19 : vid.width - 23, -24 - (4 - i) * 11, 18 + num.charCodeAt(2) - 48);
+      Sbar_DrawSubPic(hudswap ? 0 : vid.width - 42 * s, -24 - (4 - i) * 11, sb_ibar, 3 + i * 48, 0, 42, 11);
+      if (num[0] !== " ") sbarHeadsupCharacter(hudswap ? 3 * s : vid.width - 39 * s, -24 - (4 - i) * 11, 18 + num.charCodeAt(0) - 48);
+      if (num[1] !== " ") sbarHeadsupCharacter(hudswap ? 11 * s : vid.width - 31 * s, -24 - (4 - i) * 11, 18 + num.charCodeAt(1) - 48);
+      if (num[2] !== " ") sbarHeadsupCharacter(hudswap ? 19 * s : vid.width - 23 * s, -24 - (4 - i) * 11, 18 + num.charCodeAt(2) - 48);
     } else {
       if (num[0] !== " ") Sbar_DrawCharacter((6 * i + 1) * 8 - 2, -24, 18 + num.charCodeAt(0) - 48);
       if (num[1] !== " ") Sbar_DrawCharacter((6 * i + 2) * 8 - 2, -24, 18 + num.charCodeAt(1) - 48);
@@ -970,6 +1027,7 @@ Sbar_IntermissionNumber
 */
 export function Sbar_IntermissionNumber(x: number, y: number, num: number, digits: number, color: number): void {
   const r = getRenderer();
+  const s = SbarScale(); // G11: scaled -- see file header
   const str = Sbar_itoa(num);
   let ptr = 0;
   const l = str.length;
@@ -982,7 +1040,10 @@ export function Sbar_IntermissionNumber(x: number, y: number, num: number, digit
     const frame = ch === "-" ? STAT_MINUS : ch.charCodeAt(0) - 48;
 
     const pic = sb_nums[color][frame];
-    if (pic) r.Draw_TransPic(xx, y, pic);
+    if (pic) {
+      if (s === 1 || r.Draw_ScaledTransPic === undefined) r.Draw_TransPic(xx * s, y * s, pic);
+      else r.Draw_ScaledTransPic(xx * s, y * s, pic, s);
+    }
     xx += 24;
     ptr++;
   }
@@ -1378,5 +1439,19 @@ export function Sbar_FinaleOverlay(): void {
   scrState.scr_copyeverything = 1;
 
   const pic = r.Draw_CachePic("gfx/finale.lmp");
-  if (pic) r.Draw_TransPic(Math.trunc((vid.width - pic.width) / 2), 16, pic);
+  if (!pic) return;
+
+  // G11: scaled -- see file header. `vid.width` is already real, so centring
+  // against `pic.width*s` (the SCALED pic's real footprint) needs no
+  // virtual-unit indirection, unlike Sbar_TeamOverlay/DeathmatchOverlay's own
+  // ranking.lmp centring (which starts from the virtual "160").
+  const s = SbarScale();
+  if (s === 1) {
+    r.Draw_TransPic(Math.trunc((vid.width - pic.width) / 2), 16, pic);
+    return;
+  }
+  const px = Math.trunc((vid.width - pic.width * s) / 2);
+  const py = 16 * s;
+  if (r.Draw_ScaledTransPic === undefined) r.Draw_TransPic(px, py, pic);
+  else r.Draw_ScaledTransPic(px, py, pic, s);
 }

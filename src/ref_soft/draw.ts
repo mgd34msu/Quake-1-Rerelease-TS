@@ -675,6 +675,52 @@ export function Draw_ScaledTransPic(x: number, y: number, pic: QpicT, scale: num
 }
 
 /*
+================
+Draw_ScaledSubPic
+
+G11 addition -- NOT from draw.c. render.ts's own Draw_ScaledSubPic comment:
+the scaled counterpart of Draw_SubPic (this file's own function above),
+needed by QW/client/sbar.ts's headsup HUD (`cl_sbar 0`) so its edge-docked
+ammo/weapon strip scales with SbarScale() instead of staying 1:1. Blits the
+same nearest-neighbour stretch drawScaledPic8 already does for a whole pic,
+sourced from the (srcx, srcy, width, height) sub-rectangle of `pic` instead
+of the whole thing, to a destination sized `width*scale` x `height*scale`.
+Like Draw_SubPic itself, this never skips TRANSPARENT_COLOR (Draw_SubPic's
+own header: a raw copy, no transparency test) and clips a destination pixel
+landing outside the buffer rather than Sys_Error'ing (drawScaledPic8's own
+header note applies here too -- a scaled headsup element legitimately runs
+past the window edge at some size/scale combinations).
+================
+*/
+export function Draw_ScaledSubPic(x: number, y: number, pic: QpicT, srcx: number, srcy: number, width: number, height: number, scale: number): void {
+  const buffer = vid.buffer;
+  if (!buffer) return;
+
+  const dx0 = Math.round(x);
+  const dy0 = Math.round(y);
+  const dw = Math.max(1, Math.round(width * scale));
+  const dh = Math.max(1, Math.round(height * scale));
+  const source = pic.data;
+  const out32 = overlay32();
+
+  for (let py = 0; py < dh; py++) {
+    const dy = dy0 + py;
+    if (dy < 0 || dy >= vid.height) continue;
+    const sy = srcy + Math.min(height - 1, Math.floor((py * height) / dh));
+    const srcRowOfs = sy * pic.width;
+    let destOfs = dy * vid.rowbytes + dx0;
+    for (let px = 0; px < dw; px++, destOfs++) {
+      const dx = dx0 + px;
+      if (dx < 0 || dx >= vid.width) continue;
+      const sx = srcx + Math.min(width - 1, Math.floor((px * width) / dw));
+      const c = source[srcRowOfs + sx];
+      buffer[destOfs] = c;
+      if (out32 !== null) out32[destOfs] = d_8to24table[c];
+    }
+  }
+}
+
+/*
 =============
 Draw_TransPic
 =============

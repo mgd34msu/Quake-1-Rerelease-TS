@@ -24,6 +24,27 @@ unit's changes (`process.exit(0)` right after `hostShutdown()`); the tests
 below (`> quit`) confirm that path positively rather than re-testing the
 already-analyzed non-bug.
 
+G11 correction (2026-09-07): the qwcl scenario below ("answering 'y' at the
+quit-confirm menu") described `src/qw/client/cl_main.ts`'s CL_Quit_f as a
+faithful port of QW/client/cl_main.c's own Host_Quit_f-equivalent with its
+key_dest check commented out in the C. Checked directly against the real
+QuakeWorld GPL source (/home/buzzkill/Projects/qsrc/quake/QW/client/*.c):
+there is no such function there at all -- the genuine QW client has no
+console "quit" command (only QW/server/sv_ccmds.c's dedicated-server one);
+quitting is reached only through the menu's "Quit" item and its confirm
+screen's 'y'/'Y' key. CL_Quit_f was this port's own invented convenience
+(a WinQuake-style "quit" typed at the console), and its permanently-true
+confirm-menu branch was the actual defect this unit's brief reported: the
+coordinator's headless walk script types `quit` from an exec'd cfg after
+`toggleconsole` (key_dest===key_console, nothing left to answer a menu
+prompt), so the process ran to a `timeout` kill (exit 124) instead of
+exiting. CL_Quit_f now checks the real key_dest, mirroring
+src/common/host_cmd.ts's shared Host_Quit_f (the NetQuake track's own
+"quit"): a console-driven `quit` disconnects and exits immediately (see the
+new "qwcl: quit typed at the actual console" case below, mirroring the
+q1ts case just above it); the menu-driven path (this section's own 'y'-key
+test) is unchanged.
+
 D1 (a separate defect, not this unit's) means both q1ts and qwcl bind a
 FIXED UDP port regardless of any `-port` given (q1ts: 26000; qwcl: QW/client
 has no `-port` override in the C at all, PORT_CLIENT=27001 always). Every
@@ -215,6 +236,55 @@ console.log("SYSEXIT_MUST_NOT_PRINT_AFTER_QUIT");
     }
   }, 15000);
 
+  test("qwcl: `quit` typed at the actual console (key_dest===key_console) exits 0 (.orch G11)", async () => {
+    // The coordinator's own headless walk script (qwlook/run.sh) execs a
+    // cfg that runs `toggleconsole` (key_dest -> key_console) before `quit`,
+    // exactly this scenario -- previously CL_Quit_f always opened the
+    // confirm menu regardless of key_dest (see this file's own G11 note
+    // above), so this ran to a `timeout` kill instead of exiting.
+    const fixture = buildQwclFixture("sysexit-qwcl-scriptedquit-");
+    const script = `
+import { Sys_Main_Init, runFrames } from "./src/qw/main_cl";
+import { NET_Ready } from "./src/qw/net_udp";
+import { keyState, KeydestT } from "./src/client/keys";
+import { Cbuf_AddText, Cbuf_Execute } from "./src/common/cmd";
+try {
+  Sys_Main_Init(["qwcl", "-basedir", ${JSON.stringify(fixture.baseDir)}]);
+  await NET_Ready();
+} catch (err) {
+  console.log("SYSEXIT_BIND_FAILED: " + (err instanceof Error ? err.message : String(err)));
+  process.exit(1);
+}
+console.log("SYSEXIT_BOOT_OK");
+runFrames(2, 0.05);
+keyState.key_dest = KeydestT.key_console;
+Cbuf_AddText("quit\\n");
+Cbuf_Execute();
+console.log("SYSEXIT_MUST_NOT_PRINT_AFTER_QUIT");
+`;
+    try {
+      const start = Date.now();
+      const child = spawnChild(["timeout", "10", "bun", "-e", script]);
+      const code = await waitForExit(child.proc, 10000);
+      const elapsed = Date.now() - start;
+
+      if (code === null) {
+        child.proc.kill();
+        throw new Error(`did not exit within 10s.\nstdout:\n${child.out.text}\nstderr:\n${child.err.text}`);
+      }
+      if (child.out.text.includes("SYSEXIT_BIND_FAILED") || !child.out.text.includes("SYSEXIT_BOOT_OK")) {
+        note("qwcl console quit", `port 27001 already in use (qwcl has no -port override) -- ${child.out.text.trim()}`);
+        return;
+      }
+
+      expect(child.out.text).not.toContain("SYSEXIT_MUST_NOT_PRINT_AFTER_QUIT"); // proves process.exit(0) actually ran
+      expect(code).toBe(0);
+      expect(elapsed).toBeLessThan(5000);
+    } finally {
+      destroyQwclFixture(fixture);
+    }
+  }, 15000);
+
   test.skipIf(!HAVE_QWPROGS)("qwsv: `quit` typed on stdin exits 0 with the config write skipped (dedicated) and a clean shutdown", async () => {
     const fixture = buildQwsvFixture("sysexit-qwsv-stdinquit-");
     try {
@@ -244,15 +314,11 @@ console.log("SYSEXIT_MUST_NOT_PRINT_AFTER_QUIT");
   }, 15000);
 
   test("qwcl: answering 'y' at the quit-confirm menu exits 0", async () => {
-    // Not the `key_dest===key_console` driver the other three trees use:
-    // QW/client/cl_main.c's own CL_Quit_f has an always-true `if (1)` (the
-    // C itself comments out its key_dest test -- see src/qw/client/cl_main.ts's
-    // file header, "CL_Quit_f's always-true if(1)... Kept verbatim"), so the
-    // "quit" console command can never reach `CL_Disconnect();Sys_Quit();`
-    // in the real client either -- it always opens the confirm menu. The
-    // real exit path (also faithfully exactly as the original, src/qw/client/menu.ts's
-    // own file header) is M_Quit_Key's 'y'/'Y' case, which calls
-    // `CL_Disconnect(); Sys_Quit();` directly, bypassing CL_Quit_f entirely.
+    // The genuine, menu-driven quit path -- unaffected by G11's CL_Quit_f
+    // fix (see this file's own G11 note above): src/qw/client/menu.ts's
+    // M_Quit_Key 'y'/'Y' case calls `CL_Disconnect(); Sys_Quit();` directly,
+    // bypassing CL_Quit_f entirely, exactly matching the real QuakeWorld
+    // client's own M_Quit_Key.
     const fixture = buildQwclFixture("sysexit-qwcl-consolequit-");
     const script = `
 import { Sys_Main_Init, runFrames } from "./src/qw/main_cl";

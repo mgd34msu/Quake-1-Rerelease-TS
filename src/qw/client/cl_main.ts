@@ -71,9 +71,34 @@ Deviations from PORTING.md / the C source:
   inline, which is the code that actually runs.
 - `#ifdef _WIN32` SetWindowText/ShowWindow/SetForegroundWindow and the
   `#ifdef _WINDOWS` CL_Windows_f command are dropped (no Win32 window here).
-- CL_Quit_f's always-true `if (1)` (the C comments out the key_dest test)
-  so `CL_Disconnect (); Sys_Quit ();` is dead code there. Kept verbatim
-  behind the same always-true condition.
+- G11 correction (2026-09-07): CL_Quit_f is NOT a ported QW/client/cl_main.c
+  function -- checked directly against the real QuakeWorld GPL source
+  (/home/buzzkill/Projects/qsrc/quake/QW/client/*.c): the genuine client has
+  no console "quit" command at all (only sv_ccmds.c's dedicated-server one);
+  quitting is reached exclusively through the main menu's "Quit" item
+  (menu.c's M_Menu_Quit_f) and its confirm screen's 'y'/'Y' key
+  (M_Quit_Key, this port's src/qw/client/menu.ts). A prior unit invented
+  `Cmd_AddCommand("quit", CL_Quit_f, "qw")` as a WinQuake-style QoL
+  convenience (matching NetQuake's own console "quit") and gave CL_Quit_f a
+  permanently-true confirm-menu branch, mistakenly documented here as "the C
+  comments out the key_dest test" -- there is no such C body to compare
+  against. This unit's brief (a scripted `quit` at the end of a
+  cl_execonspawn cfg, run against a headless SDL_VIDEODRIVER=dummy build,
+  never terminating because nothing can answer the confirm menu's 'y'
+  prompt) makes CL_Quit_f check the SAME real `key_dest` state
+  src/common/host_cmd.ts's shared Host_Quit_f already checks for the
+  NetQuake track (`hostClientHooks.keyDestIsConsole()`, src/client/keys.ts's
+  shared key_dest, read by both client tracks): the confirm menu still opens
+  when quit is typed while the game/menu has input focus (console closed),
+  matching NetQuake's own behaviour and this port's still-passing
+  test/sys_exit.test.ts "'y' at the quit-confirm menu" case (menu-driven
+  quitting is untouched, only reachable via CL_Quit_f's OTHER branch which
+  never changed); a `quit` issued from the console (key_dest===key_console,
+  e.g. after `toggleconsole`, exactly the coordinator's own headless walk
+  script) now disconnects and exits immediately instead of opening a menu
+  nothing can dismiss -- a documented quality-of-life fix, not a fidelity
+  regression, since the confirm-menu-only path CL_Quit_f approximated was
+  itself already this port's own invented QoL addition.
 - CL_FullServerinfo_f reads the key `"*vesion"` (sic, a typo in the C for
   "*version"), so the version print never fires against a real server.
   Preserved exactly as the C has it.
@@ -138,7 +163,7 @@ import { NET_AdrToString, NET_CompareAdr, NET_Init, NET_IsClientLegal, NET_SendP
 import { Netchan_Init, Netchan_Process, Netchan_Setup, Netchan_Transmit, netchanState } from "../net_chan";
 import { A2A_ACK, A2A_PING, A2C_CLIENT_COMMAND, A2C_PRINT, ClcOpsT, MAX_CLIENTS, PORT_CLIENT, PROTOCOL_VERSION, S2C_CHALLENGE, S2C_CONNECTION } from "../protocol";
 import { Cvar_RegisterVariable, Cvar_Set, Cvar_VariableValue, Cvar_WriteVariables, CvarT, setCvarInfoHook } from "../../common/cvar";
-import { developer, host, HostEndGame, host_speeds, SysFileTextWriter } from "../../common/host";
+import { developer, host, hostClientHooks, HostEndGame, host_speeds, SysFileTextWriter } from "../../common/host";
 import { resetClientProfile, serverProfile, serverShutdownHooks } from "../../common/profile";
 // One object per cvar name -- see the blocks below.
 import {
@@ -331,10 +356,18 @@ function connectlessPacket(text: string): Uint8Array {
 /*
 ==================
 CL_Quit_f
+
+G11: see this file's header -- checks the actual key_dest state, mirroring
+src/common/host_cmd.ts's shared Host_Quit_f (the NetQuake track's own "quit"
+command), instead of the always-true confirm-menu branch this function had
+before. `cls.state !== CactiveT.ca_dedicated` mirrors Host_Quit_f's own
+`!sysState.isDedicated` guard; qwcl is never literally ca_dedicated (that
+state belongs to the separate qwsv dedicated-server binary), so this is a
+formality kept for the same "closest faithful mirror" reason.
 ==================
 */
 export function CL_Quit_f(): void {
-  if (true /* key_dest != key_console */ /* && cls.state != ca_dedicated */) {
+  if (!(hostClientHooks.keyDestIsConsole?.() ?? true) && cls.state !== CactiveT.ca_dedicated) {
     M_Menu_Quit_f();
     return;
   }

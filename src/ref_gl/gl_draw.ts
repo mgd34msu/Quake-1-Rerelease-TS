@@ -1041,6 +1041,53 @@ export function Draw_ScaledTransPic(x: number, y: number, pic: QpicT, scale: num
 }
 
 /*
+================
+Draw_ScaledSubPic
+
+G11 addition -- NOT from gl_draw.c. render.ts's own Draw_ScaledSubPic
+comment: the scaled counterpart of Draw_SubPic (this file's own function
+above), needed by QW/client/sbar.ts's headsup HUD (`cl_sbar 0`) so its
+edge-docked ammo/weapon strip scales with SbarScale() instead of staying
+1:1. The same sub-rectangle texture-coordinate remap Draw_SubPic already
+computes (gl.sl/sh/tl/th narrowed to the requested srcx/srcy/width/height
+window), with the destination quad's width/height multiplied by `scale` --
+only the four qglVertex2f corners move, exactly like drawScaledPicGl's own
+relationship to Draw_Pic.
+================
+*/
+export function Draw_ScaledSubPic(x: number, y: number, pic: QpicT, srcx: number, srcy: number, width: number, height: number, scale: number): void {
+  if (scrap_dirty) Scrap_Upload();
+  const gl = picGl.get(pic);
+  if (!gl) return; // Draw_PicFromWad/Draw_CachePic/Draw_Init not yet run for this pic
+
+  const oldglwidth = gl.sh - gl.sl;
+  const oldglheight = gl.th - gl.tl;
+
+  const newsl = gl.sl + (srcx * oldglwidth) / pic.width;
+  const newsh = newsl + (width * oldglwidth) / pic.width;
+
+  const newtl = gl.tl + (srcy * oldglheight) / pic.height;
+  const newth = newtl + (height * oldglheight) / pic.height;
+
+  const w = width * scale;
+  const h = height * scale;
+
+  const q = qgl();
+  q.qglColor4f(1, 1, 1, 1);
+  GL_Bind(gl.texnum);
+  q.qglBegin(GL_QUADS);
+  q.qglTexCoord2f(newsl, newtl);
+  q.qglVertex2f(x, y);
+  q.qglTexCoord2f(newsh, newtl);
+  q.qglVertex2f(x + w, y);
+  q.qglTexCoord2f(newsh, newth);
+  q.qglVertex2f(x + w, y + h);
+  q.qglTexCoord2f(newsl, newth);
+  q.qglVertex2f(x, y + h);
+  q.qglEnd();
+}
+
+/*
 =============
 Draw_TransPicTranslate
 

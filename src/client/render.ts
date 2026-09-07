@@ -649,6 +649,20 @@ export interface Renderer {
   Draw_ScaledPic?(x: number, y: number, pic: QpicT, scale: number): void;
   Draw_ScaledTransPic?(x: number, y: number, pic: QpicT, scale: number, translation?: Uint8Array): void;
 
+  // G11 addition, not from draw.h: QW/client/sbar.ts's headsup HUD
+  // (`cl_sbar 0`'s edge-docked ammo/weapon strip, Sbar_DrawSubPic's own
+  // callers) needs a scaled counterpart to Draw_SubPic the same way
+  // Draw_ScaledPic is one for Draw_Pic -- QW's draw.c/gl_draw.c addition
+  // (Draw_SubPic, above) blits a SOURCE sub-rectangle of a wad pic (e.g. one
+  // 42x11 ammo-count swatch out of sb_ibar), so the scaled form takes the
+  // same srcx/srcy/width/height source rectangle Draw_SubPic does, with the
+  // DESTINATION rectangle multiplied by `scale` (mirroring Draw_ScaledPic's
+  // own width/height*scale) while the source rectangle stays in the pic's
+  // own unscaled texel space. Optional for the same reason Draw_ScaledPic is
+  // (render.ts's own F2b comment): sbar.ts falls back to unscaled Draw_SubPic
+  // when this member or the renderer itself lacks it.
+  Draw_ScaledSubPic?(x: number, y: number, pic: QpicT, srcx: number, srcy: number, width: number, height: number, scale: number): void;
+
   //
   // the particle drawing half of r_part.c's R_DrawParticles
   //

@@ -168,6 +168,7 @@ import {
   Draw_Pic,
   Draw_PicFromWad,
   Draw_ScaledPic,
+  Draw_ScaledSubPic,
   Draw_ScaledTransPic,
   Draw_String,
   Draw_SubPic,
@@ -557,6 +558,15 @@ export const softRenderer: Renderer = {
   // require() fallback.
   Draw_ScaledPic,
   Draw_ScaledTransPic,
+  // G11: same wiring for the new Draw_ScaledSubPic (render.ts's own comment)
+  // -- the headsup HUD's scaled ammo/weapon strip. Not in this unit's brief's
+  // literal SCOPE list (only render.ts/ref_soft/draw.ts/ref_gl/gl_draw.ts
+  // were named "to add a scaled-subpic member"), but the member is inert
+  // without this one-line mirror of the F2b wiring immediately above it --
+  // sbar.ts's own fallback only reaches an UNSCALED Draw_SubPic otherwise,
+  // which would leave the live renderer failing the brief's own headless
+  // acceptance check. Reported as a deviation in this unit's report.
+  Draw_ScaledSubPic,
 
   D_StartParticles,
   D_DrawParticle,
