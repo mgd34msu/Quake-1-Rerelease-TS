@@ -621,6 +621,33 @@ export function edictNumber(e: EdictSampleT | null, field: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+export interface BoundsT {
+  readonly min: readonly [number, number, number];
+  readonly max: readonly [number, number, number];
+}
+
+/*
+An entity's world-space bounding box as the SERVER itself reports it.
+`absmin`/`absmax` are what SV_LinkEdict wrote for the entity's current
+origin, so they are read first and `origin + mins/maxs` is only rebuilt when
+ED_Print skipped one of them for being all zero. The last fallback is Quake's
+own standard 32x32x64 monster/player hull, which is what every entity these
+drivers measure against actually carries.
+*/
+export function edictBounds(e: EdictSampleT | null): BoundsT | null {
+  const absmin = edictVector(e, "absmin");
+  const absmax = edictVector(e, "absmax");
+  if (absmin !== null && absmax !== null) return { min: absmin, max: absmax };
+  const origin = edictVector(e, "origin");
+  if (origin === null) return null;
+  const mins = edictVector(e, "mins") ?? [-16, -16, -24];
+  const maxs = edictVector(e, "maxs") ?? [16, 16, 40];
+  return {
+    min: [origin[0] + mins[0], origin[1] + mins[1], origin[2] + mins[2]],
+    max: [origin[0] + maxs[0], origin[1] + maxs[1], origin[2] + maxs[2]],
+  };
+}
+
 /** How many `monster_*` edicts in an `edicts` dump carry a non-zero `deadflag`, i.e. have been killed. */
 export function deadMonsters(text: string): number {
   let n = 0;

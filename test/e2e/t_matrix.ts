@@ -23,9 +23,12 @@ asserts:
     phase;
   - a monster dies from the client's shots: fewer `monster_*` edicts are still
     solid in the server's `edicts` dump after the fight than before it, fought
-    with `sv_aim 0` widening autoaim to a full forward hemisphere and a
-    hitscan weapon (the shotgun) so a headless client that cannot aim by
-    itself still lands real damage instead of relying on splash near-misses.
+    with `sv_aim 0` widening autoaim to a full forward hemisphere and, at any
+    range where a hitscan trace can start in open space, the shotgun -- so a
+    headless client that cannot aim by itself still lands real damage instead
+    of relying on splash near-misses. Inside the range where FireBullets'
+    own trace cannot start outside the target at all, the fight switches to
+    the rocket launcher; see "the dead zone" below the fight for why.
 
 The invalid-by-design pairing is protocol 15 with a BSP2 map (mg1, mg3, dopa).
 Protocol 15's coordinates are 13.3 fixed point, so it cannot address a world
@@ -43,6 +46,7 @@ import {
   consoleLine,
   svQuery,
   contentById,
+  edictBounds,
   edictNumber,
   edictVector,
   killSeat,
@@ -491,23 +495,97 @@ if (c.monsters && beforeLive > 0) {
   does not need a navigation failure to explain a miss, so a failed attempt
   retargets and fires again rather than giving up on the first one.
   */
-  for (let fireAttempt = 0; fireAttempt < 3; fireAttempt++) {
-    const liveDump = await svQuery(sv, "edicts", `RETARGET${fireAttempt}`);
-    const livePlayerOrigin = playerOrigin(liveDump) ?? originNow;
-    const liveMonstersNow = parseEdicts(liveDump).filter((e) => (e.fields.get("classname") ?? "").startsWith("monster_") && edictNumber(e, "solid") !== 0);
-    if (liveMonstersNow.length === 0) break; // nothing left alive to shoot at
-    let liveTarget = liveMonstersNow[0];
-    let liveBestDist = Infinity;
-    for (const m of liveMonstersNow) {
+  interface LiveTargetT {
+    readonly sample: EdictSampleT;
+    readonly origin: readonly [number, number, number];
+    readonly dist: number;
+  }
+
+  /** The nearest still-solid `monster_*` in a dump to `from`, by classname and liveness. */
+  function nearestLiveMonster(dump: string, from: readonly [number, number, number]): LiveTargetT | null {
+    let best: LiveTargetT | null = null;
+    for (const m of parseEdicts(dump)) {
+      if (!(m.fields.get("classname") ?? "").startsWith("monster_")) continue;
+      if (edictNumber(m, "solid") === 0) continue;
       const o = edictVector(m, "origin");
       if (o === null) continue;
-      const d = Math.hypot(o[0] - livePlayerOrigin[0], o[1] - livePlayerOrigin[1], o[2] - livePlayerOrigin[2]);
-      if (d < liveBestDist) {
-        liveBestDist = d;
-        liveTarget = m;
-      }
+      const d = Math.hypot(o[0] - from[0], o[1] - from[1], o[2] - from[2]);
+      if (best === null || d < best.dist) best = { sample: m, origin: o, dist: d };
     }
-    const liveTargetOrigin = edictVector(liveTarget, "origin") ?? targetOrigin;
+    return best;
+  }
+
+  /*
+  The dead zone, and why the weapon is chosen from the live geometry.
+
+  FireBullets (weapons.qc, identical in the classic and the re-release
+  progs) traces every pellet from a point 10 units in front of the shooter:
+
+      src = self.origin + v_forward*10;
+      src_z = self.absmin_z + self.size_z * 0.7;
+      traceline (src, src + direction*2048, FALSE, self);
+      if (trace_fraction != 1.0)
+          TraceAttack (4, direction);
+
+  A traceline whose START POINT is already inside the target's own bounding
+  box comes back startsolid, and SV_ClipToLinks (src/server/world.ts:814,
+  faithful to id's own) leaves such a trace at fraction 1 with trace_ent
+  pointing at that entity. So the QuakeC's `trace_fraction != 1.0` gate
+  discards EVERY pellet, and a point-blank shotgun does exactly zero damage
+  however precisely it was aimed. Measured in the 2026-09-06 regate:
+  rr-id1's monster_army closed to 10.1 units of the noclipping player and
+  rr-rogue's monster_knight to 27.8, and 72 pellets apiece landed nothing,
+  while the same shotgun killed classic-id1's soldier from 47 units. The
+  approach loop above cannot prevent this on its own -- it stops at its
+  buffer from where the monster STOOD, and a monster that has woken up
+  walks the rest of the way in by itself while the driver is still turning.
+
+  So each attempt asks whether FireBullets' own trace source would land
+  inside the target's box -- from the entity's live absmin/absmax off the
+  same dump, not a guessed radius -- and picks the weapon that can reach it:
+
+    - outside that zone, the shotgun, whose hitscan pellets make the kill
+      attributable to the client's own shot rather than a splash near-miss;
+    - inside it, the rocket launcher. T_MissileTouch/T_RadiusDamage
+      (weapons.qc) has no trace_fraction gate at all: a rocket spawned
+      inside the target's box impacts it on its first physics move for
+      100-120 direct damage, and wherever it does go off its 120-point
+      radius damage still reaches a target this close. `impulse 9` above
+      already handed the player 100 rockets, and `god` keeps the splash
+      from ending the run -- T_Damage's FL_GODMODE return is ahead of the
+      health subtraction, and its momentum add is skipped for a player who
+      is not MOVETYPE_WALK, which noclip guarantees here.
+  */
+  const BULLET_SRC_FORWARD = 10; // FireBullets' own `self.origin + v_forward*10`
+  const BULLET_SRC_CLEARANCE = 8; // how far clear of the box that point must sit before a pellet trace is trusted
+
+  function hitscanSourceIsInsideTarget(player: EdictSampleT | null, target: EdictSampleT): boolean {
+    const from = edictVector(player, "origin");
+    const to = edictVector(target, "origin");
+    const box = edictBounds(target);
+    if (from === null || to === null || box === null) return false;
+    // The driver never pitches, so v_forward's horizontal direction is the
+    // direction it just aimed; src_z is FireBullets' own, off the player's
+    // own live box.
+    const flat = Math.hypot(to[0] - from[0], to[1] - from[1]);
+    const playerBox = edictBounds(player);
+    const src: readonly [number, number, number] = [
+      from[0] + (flat < 0.001 ? 0 : ((to[0] - from[0]) / flat) * BULLET_SRC_FORWARD),
+      from[1] + (flat < 0.001 ? 0 : ((to[1] - from[1]) / flat) * BULLET_SRC_FORWARD),
+      playerBox === null ? from[2] + 16 : playerBox.min[2] + (playerBox.max[2] - playerBox.min[2]) * 0.7,
+    ];
+    for (let i = 0; i < 3; i++) {
+      if (src[i] < box.min[i] - BULLET_SRC_CLEARANCE) return false;
+      if (src[i] > box.max[i] + BULLET_SRC_CLEARANCE) return false;
+    }
+    return true;
+  }
+
+  for (let fireAttempt = 0; fireAttempt < 4; fireAttempt++) {
+    const liveDump = await svQuery(sv, "edicts", `RETARGET${fireAttempt}`);
+    const livePlayerOrigin = playerOrigin(liveDump) ?? originNow;
+    const live = nearestLiveMonster(liveDump, livePlayerOrigin);
+    if (live === null) break; // nothing left alive to shoot at
 
     // A closer nudge before every attempt but the first, IF the target has
     // wandered back out past the approach loop's own safe buffer -- but
@@ -515,17 +593,32 @@ if (c.monsters && beforeLive > 0) {
     // was tried and made things worse: a player and a monster are both
     // roughly 32 units wide, so anything under about 60 units puts their
     // bounding boxes overlapping, and PF_aim's own straight-ahead SV_Move
-    // trace starts already inside the very entity it is trying to reach --
-    // a confirmed miss (10.8 units away, correctly aimed within a degree,
-    // zero damage every attempt) that closing the gap further cannot fix.
-    if (fireAttempt > 0 && liveBestDist > 150) {
-      await aimAt(liveTargetOrigin);
-      const nudgeFrames = Math.min(60, Math.max(4, Math.round((liveBestDist - 90) / unitsPerFrame)));
+    // trace starts already inside the very entity it is trying to reach.
+    if (fireAttempt > 0 && live.dist > 150) {
+      await aimAt(live.origin);
+      const nudgeFrames = Math.min(60, Math.max(4, Math.round((live.dist - 90) / unitsPerFrame)));
       await cl.run(["+forward", ...waits(nudgeFrames), "-forward"]);
-      await backOffIfTooClose(liveTargetOrigin);
+      await backOffIfTooClose(live.origin);
     }
 
-    await aimAt(liveTargetOrigin);
+    await aimAt(live.origin);
+
+    // Turning is a step of its own and a monster that has already noticed
+    // the player keeps walking through it, so the weapon is chosen -- and,
+    // if the target moved far enough to matter, the aim corrected -- from
+    // the state AFTER the turn rather than from the sample the target was
+    // picked out of.
+    const readyDump = await svQuery(sv, "edicts", `FIREREADY${fireAttempt}`);
+    const me = lastEdict(readyDump, 1);
+    const ready = nearestLiveMonster(readyDump, edictVector(me, "origin") ?? livePlayerOrigin);
+    if (ready === null) break;
+    if (Math.hypot(ready.origin[0] - live.origin[0], ready.origin[1] - live.origin[1], ready.origin[2] - live.origin[2]) > 32) await aimAt(ready.origin);
+
+    const pointBlank = hitscanSourceIsInsideTarget(me, ready.sample);
+    console.log(
+      `t_matrix: attempt ${fireAttempt} on ${ready.sample.fields.get("classname") ?? "?"} at ${JSON.stringify(ready.origin)}, ${ready.dist.toFixed(0)} units away, with the ${pointBlank ? "rocket launcher" : "shotgun"}`,
+    );
+    await cl.run([pointBlank ? "impulse 7" : "impulse 2"]);
     await cl.run(["+attack", ...waits(400), "-attack"]);
 
     const afterDump = await svQuery(sv, "edicts", `FIREDONE${fireAttempt}`);
