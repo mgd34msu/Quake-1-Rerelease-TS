@@ -664,6 +664,10 @@ describe.skipIf(!HAVE_RERELEASE_PROGS)("the retail re-release id1 progs", () => 
     if (globals === null) throw new Error("pr.globals not set");
     prExec.argc = 2;
     globals.i[OFS_PARM0] = 0;
+    // ex_bot_followentity reads its entity from PARM1: set it too, or whatever
+    // an earlier suite left in that register decides the outcome (one gate saw
+    // EDICT_NUM: bad number 1073741829 here).
+    globals.i[OFS_PARM1] = 0;
 
     namedBuiltin("ex_bot_movetopoint")();
     expect(globals.f[OFS_RETURN]).toBe(BOT_GOAL_ERROR);

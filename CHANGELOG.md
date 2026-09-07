@@ -384,6 +384,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   actual console it disconnects and exits immediately, matching NetQuake;
   reached with the game or a menu focused it still opens the confirm menu
   exactly as before.
+- Bots never made a map button their goal, so a level whose route is opened
+  by one (e1m1's start region has a single exit, a floor slab a func_button
+  opens) was left only by blundering into the button while sidestepping out
+  of a wall -- a roll of the seeded dice, which is why two matches at
+  different seeds disagreed about whether coop bots ever met a monster. A bot
+  that has wedged on its route now spends up to eight seconds pressing the
+  nearest pushable interactable (bots/interactables.txt's "push"); games with
+  objectives are exempt, where a defender leaving its base for a button costs
+  more than a blocked route does (measured on u_ctf). `wantsUse` measures to a brush entity's centre, not its
+  origin (a brush model's origin is the world origin).
 - A `-vid_ref gl` boot whose config.cfg had archived `vid_ref "soft"` ran GL
   while the cvar still read soft, so the first `vid_restart` (or the video
   menu's Apply) silently dropped to the software renderer. Host_Init now

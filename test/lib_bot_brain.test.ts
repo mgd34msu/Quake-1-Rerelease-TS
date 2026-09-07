@@ -1878,3 +1878,51 @@ test("the trailing entity table attaches a bounding box to the link it indexes",
 test("emptyUsercmd is neutral", () => {
   expect(emptyUsercmd()).toEqual({ forwardmove: 0, sidemove: 0, upmove: 0, buttons: 0, impulse: 0, viewAngles: { x: 0, y: 0, z: 0 } });
 });
+
+// G12: e1m1's start region has exactly one exit, a floor slab opened by a
+// func_button; a bot that never made a map button its goal only ever left by
+// blundering into it. A wedge the bot cannot shake now sends it to the nearest
+// pushable interactable -- except in a game with objectives, where a defender
+// or roamer wandering off to press buttons costs the team more than a blocked
+// route does.
+describe("brain: interactables (G12)", () => {
+  function stubButton(id: number, origin: BotVec3): BotEntityT {
+    const ent = stubItem(id, "func_button", origin);
+    ent.kind = BotEntityKind.Interactable;
+    return ent;
+  }
+
+  test("coop: a bot wedged on the way to its goal makes the nearest push-button its goal", () => {
+    // node 0 is the bot, node 1 a button 300 units on, node 2 a monster far
+    // beyond it. The stub world never moves the bot, so pressing forward
+    // along the path is a wedge; after the give-up the errand takes over.
+    const positions = [bvec(0, 0, 0), bvec(300, 0, 0), bvec(900, 0, 0)];
+    const world = new StubWorld(bvec(0, 0, 0));
+    world.graph = navGraphFromNav2(buildNav(positions, chainLinks(3)));
+    const monster = stubMonster(31, "monster_army", bvec(900, 0, 0));
+    monster.invisible = true; // a hunt goal, never a combat target
+    world.ents = [stubButton(30, bvec(300, 0, 0)), monster];
+    const brain = makeBrain(41, { gameType: "coop", weaponStay: true });
+    // The stub never moves the bot, so its very first plan cannot be walked and
+    // the errand is armed within the first second; sample inside the errand's
+    // window (the endless wedge later rests the button too and the hunt resumes).
+    let sawButton = false;
+    for (let i = 0; i < 80 && !sawButton; i++) {
+      runFrames(brain, world, 1);
+      const end = pathEnd(brain);
+      if (end !== null && bvecDistance(end, bvec(300, 0, 8)) < 64) sawButton = true;
+    }
+    expect(sawButton).toBe(true);
+  });
+
+  test("a game with objectives never sends a bot to a button", () => {
+    const world = ctfWorld(OWN_BASE);
+    world.ents = [stubItem(20, "item_flag_team1", OWN_BASE, 5), stubItem(21, "item_flag_team2", ENEMY_BASE, 14), stubButton(30, MIDFIELD)];
+    const brain = makeBrain(42, { gameType: "ctf", weaponStay: false }, buildCtfKnowledge());
+    for (let i = 0; i < 140; i++) {
+      runFrames(brain, world, 1);
+      const end = pathEnd(brain);
+      if (end !== null) expect(bvecDistance(end, { x: MIDFIELD.x, y: MIDFIELD.y, z: MIDFIELD.z + 8 })).toBeGreaterThan(64);
+    }
+  });
+});

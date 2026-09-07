@@ -172,6 +172,31 @@ const UNREACHABLE_LIVE_SECONDS = 4;
 /** How long the sidestep-and-hop that breaks a wall contact runs for. */
 const UNSTICK_SECONDS = 0.5;
 /**
+ * A route the bot cannot walk is very often a route something has to be
+ * opened for. interactables.txt names the entities worth touching and how
+ * each one is worked, and a bot that never goes to one of them cannot finish
+ * a level that gates its only exit behind a button. e1m1 is such a level: the
+ * floor of the walkway out of the start yard is a func_door and the button
+ * that lowers it is on the wall at the west end. Bots that "played" that map
+ * before did it by walking into that button by accident while sidestepping
+ * out of a wall, which is why the same match came out differently at
+ * different server seeds.
+ *
+ * The search is opened by giving up on a goal as unreachable and it runs for
+ * INTERACT_SECONDS; it is not a standing errand, so a bot with a route does
+ * not go and press things instead of playing.
+ */
+const INTERACT_RADIUS = 1024;
+const INTERACT_SECONDS = 8;
+/**
+ * How close counts as having touched the thing. A button is pushed by walking
+ * into it, and a bot walking into one never reaches the middle of its
+ * bounding box -- that is a few units inside the brush -- so an errand that
+ * waited for an arrival would never end, and the bot would lean on the button
+ * it had already pushed until the clock ran out.
+ */
+const INTERACT_REACHED = 40;
+/**
  * How long a bot may press a move without getting anywhere before the unstick
  * window is opened regardless of what the path follower thinks. The follower
  * only watches a path, and it forgives itself every time a point is retired
@@ -234,6 +259,8 @@ export class BotBrain {
   private goalIsLive = false;
   /** Server time the sidestep-and-hop that breaks a wall contact expires. */
   private unstickUntil = 0;
+  /** While `now` is under this, a blocked bot is looking for something to open. See INTERACT_SECONDS. */
+  private pressUntil = 0;
   /** Which way that sidestep goes, +1 right or -1 left. */
   private unstickSide = 0;
   private explicitGoal: ExplicitGoalT | null = null;
@@ -261,6 +288,10 @@ export class BotBrain {
 
   private checkSixUntil = 0;
   private checkSixNextAt = 0;
+  /**
+   * The direction the current look-behind window aims at, captured when that
+   * window opened. See `shouldCheckSix`.
+   */
   private roamPoint: BotVec3 | null = null;
   /** Server time the current no-navigation roam point expires. */
   private roamUntil = 0;
@@ -333,8 +364,11 @@ export class BotBrain {
     this.unreachableUntil.clear();
     this.stuckTrips = 0;
     this.unstickUntil = 0;
+    this.pressUntil = 0;
     this.roamPoint = null;
     this.roamUntil = 0;
+    this.checkSixUntil = 0;
+    this.checkSixNextAt = 0;
     this.deadSince = -1;
     this.lastWeaponNumber = 0;
     this.lastCmd = emptyUsercmd();
@@ -470,6 +504,7 @@ export class BotBrain {
       if (this.pathState.path === null && world.nav() !== null && this.goalEntityId >= 0) {
         this.unreachableUntil.set(this.goalEntityId, now + this.unreachableRest());
         this.abandonGoal();
+        this.pressUntil = now + INTERACT_SECONDS;
       }
 
       const follow = followPath(
@@ -496,6 +531,7 @@ export class BotBrain {
           // something else instead of re-planning into the same wall.
           if (this.goalEntityId >= 0) this.unreachableUntil.set(this.goalEntityId, now + this.unreachableRest());
           this.abandonGoal();
+          this.pressUntil = now + INTERACT_SECONDS;
           this.stuckTrips = 0;
         } else {
           clearPath(this.pathState);
@@ -518,6 +554,9 @@ export class BotBrain {
       }
     }
 
+    // Nothing above this point knows what is actually in front of the bot:
+    // the follower steers at a point and the direct branch steers at a goal,
+    // and both do it through whatever geometry lies between.
     if (target !== null && rollCombatJump(this.pathState, this.settings.movement, this.config.rng, now, self.onGround)) {
       cmd.buttons |= BOT_BUTTON_JUMP;
     }
@@ -531,6 +570,7 @@ export class BotBrain {
       if (now - this.wedgeSince >= WEDGED_GIVE_UP_SECONDS) {
         if (this.goalEntityId >= 0) this.unreachableUntil.set(this.goalEntityId, now + this.unreachableRest());
         this.abandonGoal();
+        this.pressUntil = now + INTERACT_SECONDS;
         this.wedgeOrigin = { x: self.origin.x, y: self.origin.y, z: self.origin.z };
         this.wedgeSince = now;
       }
@@ -562,6 +602,15 @@ export class BotBrain {
 
     if (aimAt !== null) aimStep(this.aim, aimAt, this.settings.aiming, dt, now);
     cmd.viewAngles = bvec(this.aim.pitch, angleMod(this.aim.yaw), 0);
+
+    // forwardmove/sidemove above were projected onto the view the bot held
+    // when the frame began, but the usercmd carries the view it holds NOW,
+    // and the server moves the bot with the angles in that same command --
+    // exactly as a human client does, projecting onto the angles it is about
+    // to send. Left uncorrected the world direction comes out rotated by
+    // however far the tracker turned this frame: a few degrees while it is
+    // settling, hundreds while it is not. A bot in the middle of a turn then
+    // walks into the wall beside its route instead of along it.
 
     //---- 7: weapon and trigger ----------------------------------------------
     if (target !== null) {
@@ -830,6 +879,55 @@ export class BotBrain {
   }
 
   /** In coop, the human the bot regroups with. See COOP_REGROUP_SECONDS. */
+  /**
+   * The nearest thing worth opening, while the bot is blocked. See
+   * INTERACT_RADIUS. A brush entity's `origin` is the world origin, so the
+   * point walked to is the middle of its bounding box: for a button that is
+   * its face, and walking into a button is what pushes it.
+   */
+  private interactableGoal(entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, now: number): BotVec3 | null {
+    if (now >= this.pressUntil) return null;
+    // A game with objectives has its own reasons to be somewhere; a defender
+    // or roamer wandering off to press the nearest button costs the team more
+    // than a blocked route does (measured on u_ctf: two lost checks).
+    if (this.ownObjectiveHome !== null || this.enemyObjectiveHome !== null) return null;
+    const knowledge = this.config.knowledge;
+
+    let best: BotEntityT | null = null;
+    let bestRange = Infinity;
+    for (const ent of entities) {
+      if (ent.kind !== BotEntityKind.Interactable) continue;
+      // Buttons only, and only ones nothing else is holding the key to. The
+      // point walked to is the middle of the entity's bounding box, which is
+      // the right place for a button -- a few units thick, so its middle is
+      // its face and walking into it is what pushes it -- and the wrong place
+      // for anything large: the middle of a plat or of a door slab is inside
+      // the brush, and a bot sent there presses on the outside of it for as
+      // long as the errand lasts. An entity with a targetname is opened by
+      // whatever targets it, so touching it does nothing either.
+      if (knowledge.interactionFor(ent.classname, ent) !== "push") continue;
+      if (ent.hasTargetname) continue;
+      const blocked = this.unreachableUntil.get(ent.id);
+      if (blocked !== undefined) {
+        if (blocked > now) continue;
+        this.unreachableUntil.delete(ent.id);
+      }
+      const range = bvecDistance(self.origin, ent.center);
+      if (range > INTERACT_RADIUS || range >= bestRange) continue;
+      bestRange = range;
+      best = ent;
+    }
+    if (best === null) return null;
+    if (bestRange <= INTERACT_REACHED) {
+      // Close enough to have walked into it: the errand is over whether or
+      // not anything opened, and the bot goes back to playing.
+      this.pressUntil = 0;
+      return null;
+    }
+    this.goalEntityId = best.id;
+    return best.center;
+  }
+
   private coopRegroupGoal(entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, now: number): BotVec3 | null {
     if (!this.coopGame()) return null;
     let nearest: BotEntityT | null = null;
@@ -955,6 +1053,14 @@ export class BotBrain {
     // is what a bot does when there is nothing left to do either of those on
     // -- an ammo box the bot has room for is always worth something, so an
     // item run that outranks the fight is an item run that never ends.
+    // Blocked comes first: nothing else the bot wants is reachable until
+    // whatever is in the way has been opened.
+    const unblock = this.interactableGoal(entities, self, now);
+    if (unblock !== null) {
+      this.goalPoint = unblock;
+      return this.goalPoint;
+    }
+
     const regroup = this.coopRegroupGoal(entities, self, now);
     if (regroup !== null) {
       this.goalPoint = regroup;
@@ -1078,6 +1184,7 @@ export class BotBrain {
   private reachGoal(): void {
     clearPath(this.pathState);
     this.stuckTrips = 0;
+    this.pressUntil = 0;
     this.roamPoint = null;
     this.roamUntil = 0;
     if (this.explicitGoal !== null) this.explicitGoalDone = true;
@@ -1175,6 +1282,11 @@ export class BotBrain {
     this.checkSixNextAt = now + randomRange(this.config.rng, 3, 8);
     if (!randomChance(this.config.rng, 35)) return false;
     this.checkSixUntil = now + 0.5;
+    // Captured ONCE, here. Recomputing "180 degrees from where I am facing"
+    // on every frame of the window makes the ideal angle run away from the
+    // tracker exactly as fast as the tracker turns, so the bot pirouettes at
+    // several hundred degrees a second for the whole window instead of
+    // looking behind itself -- and a pirouette is a bot that is not steering.
     return true;
   }
 
@@ -1182,7 +1294,7 @@ export class BotBrain {
     const knowledge = this.config.knowledge;
     for (const ent of entities) {
       if (ent.kind !== BotEntityKind.Interactable) continue;
-      if (bvecDistance(origin, ent.origin) > 96) continue;
+      if (bvecDistance(origin, ent.center) > 96) continue;
       const how = knowledge.interactionFor(ent.classname, ent);
       if (how === "use" || how === "push") return true;
     }
