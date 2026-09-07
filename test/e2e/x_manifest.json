@@ -1,0 +1,1559 @@
+{
+  "family": "x",
+  "drivers": [
+    {
+      "name": "x_retail_classic_id1_demo1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-id1",
+        "--demo",
+        "demo1",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_retail_classic_id1_demo1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-id1",
+        "--demo",
+        "demo1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_classic_id1_demo2_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-id1",
+        "--demo",
+        "demo2",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_retail_classic_id1_demo2_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-id1",
+        "--demo",
+        "demo2",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_classic_id1_demo3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-id1",
+        "--demo",
+        "demo3",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_retail_classic_id1_demo3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-id1",
+        "--demo",
+        "demo3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_classic_hipnotic_hipdemo1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-hipnotic",
+        "--demo",
+        "hipdemo1",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_retail_classic_hipnotic_hipdemo1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-hipnotic",
+        "--demo",
+        "hipdemo1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_classic_hipnotic_hipdemo2_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-hipnotic",
+        "--demo",
+        "hipdemo2",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_retail_classic_hipnotic_hipdemo2_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-hipnotic",
+        "--demo",
+        "hipdemo2",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_classic_hipnotic_hipdemo3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-hipnotic",
+        "--demo",
+        "hipdemo3",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_retail_classic_hipnotic_hipdemo3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-hipnotic",
+        "--demo",
+        "hipdemo3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_classic_hipnotic_hipdemo4_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-hipnotic",
+        "--demo",
+        "hipdemo4",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_retail_classic_hipnotic_hipdemo4_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-hipnotic",
+        "--demo",
+        "hipdemo4",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_classic_rogue_demo1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-rogue",
+        "--demo",
+        "demo1",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_retail_classic_rogue_demo1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-rogue",
+        "--demo",
+        "demo1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_classic_rogue_demo2_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-rogue",
+        "--demo",
+        "demo2",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_retail_classic_rogue_demo2_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-rogue",
+        "--demo",
+        "demo2",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_classic_rogue_demo3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-rogue",
+        "--demo",
+        "demo3",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_retail_classic_rogue_demo3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "classic-rogue",
+        "--demo",
+        "demo3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "classic",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_id1_demo1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-id1",
+        "--demo",
+        "demo1",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_id1_demo1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-id1",
+        "--demo",
+        "demo1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_id1_demo2_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-id1",
+        "--demo",
+        "demo2",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_id1_demo2_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-id1",
+        "--demo",
+        "demo2",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_id1_demo3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-id1",
+        "--demo",
+        "demo3",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_id1_demo3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-id1",
+        "--demo",
+        "demo3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_hipnotic_hipdemo1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-hipnotic",
+        "--demo",
+        "hipdemo1",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_hipnotic_hipdemo1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-hipnotic",
+        "--demo",
+        "hipdemo1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_hipnotic_hipdemo2_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-hipnotic",
+        "--demo",
+        "hipdemo2",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_hipnotic_hipdemo2_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-hipnotic",
+        "--demo",
+        "hipdemo2",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_hipnotic_hipdemo3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-hipnotic",
+        "--demo",
+        "hipdemo3",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_hipnotic_hipdemo3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-hipnotic",
+        "--demo",
+        "hipdemo3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_hipnotic_hipdemo4_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-hipnotic",
+        "--demo",
+        "hipdemo4",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_hipnotic_hipdemo4_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-hipnotic",
+        "--demo",
+        "hipdemo4",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_rogue_demo1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-rogue",
+        "--demo",
+        "demo1",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_rogue_demo1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-rogue",
+        "--demo",
+        "demo1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_rogue_demo2_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-rogue",
+        "--demo",
+        "demo2",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_rogue_demo2_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-rogue",
+        "--demo",
+        "demo2",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_rogue_demo3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-rogue",
+        "--demo",
+        "demo3",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_rogue_demo3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-rogue",
+        "--demo",
+        "demo3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg1_demo1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg1",
+        "--demo",
+        "demo1",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg1_demo1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg1",
+        "--demo",
+        "demo1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg1_demo2_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg1",
+        "--demo",
+        "demo2",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg1_demo2_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg1",
+        "--demo",
+        "demo2",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg1_demo3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg1",
+        "--demo",
+        "demo3",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg1_demo3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg1",
+        "--demo",
+        "demo3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg3_demo1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg3",
+        "--demo",
+        "demo1",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg3_demo1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg3",
+        "--demo",
+        "demo1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg3_demo2_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg3",
+        "--demo",
+        "demo2",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg3_demo2_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg3",
+        "--demo",
+        "demo2",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg3_demo3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg3",
+        "--demo",
+        "demo3",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long"
+      ]
+    },
+    {
+      "name": "x_retail_rr_mg3_demo3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-mg3",
+        "--demo",
+        "demo3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "long",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_dopa_demo1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-dopa",
+        "--demo",
+        "demo1",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_dopa_demo1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-dopa",
+        "--demo",
+        "demo1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_dopa_demo2_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-dopa",
+        "--demo",
+        "demo2",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_dopa_demo2_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-dopa",
+        "--demo",
+        "demo2",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_dopa_demo3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-dopa",
+        "--demo",
+        "demo3",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_dopa_demo3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-dopa",
+        "--demo",
+        "demo3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_ctf_demo1_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-ctf",
+        "--demo",
+        "demo1",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_ctf_demo1_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-ctf",
+        "--demo",
+        "demo1",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_ctf_demo2_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-ctf",
+        "--demo",
+        "demo2",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_ctf_demo2_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-ctf",
+        "--demo",
+        "demo2",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_retail_rr_ctf_demo3_soft",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-ctf",
+        "--demo",
+        "demo3",
+        "--vid",
+        "soft"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_retail_rr_ctf_demo3_gl",
+      "cmd": [
+        "bun",
+        "test/e2e/x_retail.ts",
+        "--tree",
+        "rr-ctf",
+        "--demo",
+        "demo3",
+        "--vid",
+        "gl"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "offscreen"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "rerelease",
+        "gl"
+      ]
+    },
+    {
+      "name": "x_startdemos_classic_id1",
+      "cmd": [
+        "bun",
+        "test/e2e/x_startdemos.ts",
+        "--tree",
+        "classic-id1"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_startdemos_classic_hipnotic",
+      "cmd": [
+        "bun",
+        "test/e2e/x_startdemos.ts",
+        "--tree",
+        "classic-hipnotic"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_startdemos_classic_rogue",
+      "cmd": [
+        "bun",
+        "test/e2e/x_startdemos.ts",
+        "--tree",
+        "classic-rogue"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_startdemos_rr_id1",
+      "cmd": [
+        "bun",
+        "test/e2e/x_startdemos.ts",
+        "--tree",
+        "rr-id1"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_startdemos_rr_hipnotic",
+      "cmd": [
+        "bun",
+        "test/e2e/x_startdemos.ts",
+        "--tree",
+        "rr-hipnotic"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_startdemos_rr_rogue",
+      "cmd": [
+        "bun",
+        "test/e2e/x_startdemos.ts",
+        "--tree",
+        "rr-rogue"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 400,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_timedemo_classic_id1",
+      "cmd": [
+        "bun",
+        "test/e2e/x_timedemo.ts",
+        "--tree",
+        "classic-id1"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 180,
+      "needs": [
+        "classic"
+      ]
+    },
+    {
+      "name": "x_timedemo_rr_id1",
+      "cmd": [
+        "bun",
+        "test/e2e/x_timedemo.ts",
+        "--tree",
+        "rr-id1"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy"
+      },
+      "timeoutSec": 180,
+      "needs": [
+        "rerelease"
+      ]
+    },
+    {
+      "name": "x_record_15",
+      "cmd": [
+        "bun",
+        "test/e2e/x_record.ts",
+        "--protocol",
+        "15",
+        "--port",
+        "26810"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "SDL_AUDIODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "binary",
+        "classic"
+      ]
+    },
+    {
+      "name": "x_record_666",
+      "cmd": [
+        "bun",
+        "test/e2e/x_record.ts",
+        "--protocol",
+        "666",
+        "--port",
+        "26820"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "SDL_AUDIODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "binary",
+        "classic"
+      ]
+    },
+    {
+      "name": "x_record_999",
+      "cmd": [
+        "bun",
+        "test/e2e/x_record.ts",
+        "--protocol",
+        "999",
+        "--port",
+        "26830"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "SDL_AUDIODRIVER": "dummy"
+      },
+      "timeoutSec": 300,
+      "needs": [
+        "binary",
+        "classic"
+      ]
+    },
+    {
+      "name": "x_qwd_28",
+      "cmd": [
+        "bun",
+        "test/e2e/x_qwd.ts",
+        "--protocol",
+        "28",
+        "--port",
+        "26840"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "SDL_AUDIODRIVER": "dummy"
+      },
+      "timeoutSec": 900,
+      "needs": [
+        "binary",
+        "qw"
+      ],
+      "lock": "qwclient"
+    },
+    {
+      "name": "x_qwd_29",
+      "cmd": [
+        "bun",
+        "test/e2e/x_qwd.ts",
+        "--protocol",
+        "29",
+        "--port",
+        "26850"
+      ],
+      "env": {
+        "SDL_VIDEODRIVER": "dummy",
+        "SDL_AUDIODRIVER": "dummy"
+      },
+      "timeoutSec": 900,
+      "needs": [
+        "binary",
+        "qw"
+      ],
+      "lock": "qwclient"
+    }
+  ]
+}
