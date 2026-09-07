@@ -645,7 +645,39 @@ up with (0 = no request).
 export function SS_ServerSpawned(): number {
   const want = pendingMaxclients;
   pendingMaxclients = 0;
+  SS_SeatsReconnect();
   return want;
+}
+
+/*
+==================
+SS_SeatsReconnect
+
+The other half of a level change, for the seats.
+
+SV_SendReconnect broadcasts `svc_stufftext "reconnect"` to every client and
+runs `reconnect` locally on top of that, and Host_Reconnect_f's "wait for the
+signon messages again" is `cls.signon = 0` on whichever client is BOUND when
+it runs. Every one of those runs out of the shared command buffer, outside any
+seat's window, so all of them land on seat 0. A seat past 0 therefore carries
+`cls.signon == SIGNONS` into the new level, is sent svc_signonnum 1 by it, and
+dies on CL_ParseServerMessage's "Received signon %i when at %i" -- which is a
+Host_Error inside that seat's window, so SS_SeatFailed drops the player. Every
+`changelevel` of a splitscreen game lost its second player that way.
+
+The seats are reconnected here instead: SV_SpawnServer reaches this hook after
+SV_SendReconnect, with the new level's server about to come up, which is the
+same moment seat 0's own `reconnect` acted on. Only the signon counter is
+reset -- the loading plaque Host_Reconnect_f also raises belongs to the
+primary client, like every other whole-screen effect (see CL_ClearState).
+==================
+*/
+function SS_SeatsReconnect(): void {
+  for (let i = 1; i < seatCount; i++) {
+    const seat = seatAt(i);
+    if (seat.binding.cls.state !== CactiveT.ca_connected) continue;
+    seat.binding.cls.signon = 0;
+  }
 }
 
 /** Raise the server's player-slot count (and turn co-op on) for `want` local

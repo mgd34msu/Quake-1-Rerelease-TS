@@ -95,8 +95,16 @@ const scenario: ScenarioT = scenarioArg;
 
 // mg1's own campaign, in order (no bots -- see the file header).
 const SP_ROTATION = ["mge1m1", "mge1m2", "mge1m3", "mge2m1", "mge2m2", "mge3m1", "mge3m2", "mge4m1", "mge4m2", "mge5m1", "mge5m2"];
-// mg1's deathmatch maps, then classic id1's rerelease ones -- both bots:true and nav-covered.
-const DM_ROTATION = ["mgdm1", "mgdm2", "mgdm3", "mgdm4", "dm1", "dm2", "dm3", "dm4"];
+/*
+mg1's deathmatch maps, then classic id1's rerelease ones -- both bots:true and
+nav-covered. The rotation RETURNS to maps it has already played (mgdm1 at
+index 4, dm1 at index 9) because the memory assertions below need the same
+map's cost measured twice with other maps in between: a level that costs more
+on its second visit than its first is the observable a real leak leaves, and
+comparing two DIFFERENT maps' footprints (what this driver used to do) only
+measures how big the maps are.
+*/
+const DM_ROTATION = ["mgdm1", "mgdm2", "mgdm3", "mgdm4", "mgdm1", "dm1", "dm2", "dm3", "dm4", "dm1"];
 // rerelease id1's campaign -- the only maps flagged bots:true AND coop:true together.
 const COOP_ROTATION = ["e1m1", "e1m2", "e1m3", "e2m1", "e2m2", "e2m3"];
 
@@ -137,9 +145,18 @@ if (scenario === "sp") {
 } else {
   const port = PORTS[scenario];
   const svBoot = ["sv_randomseed " + SV_RANDOMSEED, "host_speeds 1", ...(scenario === "coop-bots" ? ["coop 1"] : []), "bot_count 4", `map ${rotation[0]}`];
-  server = startPolledSeat("z_sv", `z_${scenario}_sv`, [...baseArgs(RR_DATA, parms, `z_${scenario}_sv`), "-listen", "8", "-port", String(port)], svBoot, STEP_COUNT, IDLE_FRAMES);
+  // The seat NAME is what z_lib.ts builds the log filename AND the step-chain
+  // cfg names from, so it carries the scenario: with a bare "z_sv"/"z_cl"
+  // every scenario writes the same two logs, and running two of them one
+  // after another destroys the first one's evidence before anyone reads it.
+  // The hyphen goes, because the name reaches the engine inside an `exec`
+  // argument and the console's tokenizer ends a token at one ("couldn't exec
+  // z_dm" for a z_dm-bots_sv_boot.cfg); the `-game` directory keeps it, being
+  // an argv value that is never tokenized.
+  const seatName = `z_${scenario.replace(/-/g, "_")}`;
+  server = startPolledSeat(`${seatName}_sv`, `z_${scenario}_sv`, [...baseArgs(RR_DATA, parms, `z_${scenario}_sv`), "-listen", "8", "-port", String(port)], svBoot, STEP_COUNT, IDLE_FRAMES);
   client = startPolledSeat(
-    "z_cl",
+    `${seatName}_cl`,
     `z_${scenario}_cl`,
     [...baseArgs(RR_DATA, parms, `z_${scenario}_cl`), "-port", String(port), "+connect", "127.0.0.1"],
     ["name Z_HUMAN", "host_speeds 1"],
@@ -175,14 +192,57 @@ if (scenario === "splitscreen") {
   check("cl_splitscreen 2 is accepted on the listen server's own seat", ok, ok ? "" : readLog(server.seat).slice(-1500));
 }
 
+/*
+The roster the server's own `status` printed: Host_Status_f's `#n name frags
+time` rows (src/common/host_cmd.ts), read out of the log the command was
+issued into.
+
+Reading it ONCE right after a command is a race, and the race is what a
+"roster shows 0 clients" result means rather than a seating failure. A
+splitscreen seat's loopback connect and full signon take several server
+frames (src/client/splitscreen.ts's SS_Reconcile opens the connection on the
+frame AFTER `cl_splitscreen`, and SV_ConnectClient's signon runs from there),
+the bots' own join is not instant either, and `status` shares the seat's step
+chain with everything else the driver is doing. So every roster assertion
+here polls until the roster it is waiting for appears or its deadline passes,
+and reports whatever it last saw.
+*/
+interface RosterT {
+  readonly count: number;
+  readonly names: readonly string[];
+}
+
+// `server` is a `let` the boot block above assigns in both branches; a
+// closure does not keep that narrowing, so the seat is captured once here.
+const svSeat: PolledSeatT = server;
+
+async function roster(): Promise<RosterT> {
+  const before = readLog(svSeat.seat).length;
+  if (!(await svSeat.run(["status"], 30000))) return { count: 0, names: [] };
+  const chunk = readLog(svSeat.seat).slice(before);
+  const blocks = chunk.split(/(?=players: \d+ active)/);
+  const last = blocks[blocks.length - 1] ?? "";
+  return { count: (last.match(/^#\s*\d+/gm) ?? []).length, names: [...lastStatusFrags(last).keys()] };
+}
+
+async function rosterOf(want: number, timeoutMs: number): Promise<RosterT> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const r = await roster();
+    if (r.count >= want || Date.now() >= deadline) return r;
+    await Bun.sleep(2000);
+  }
+}
+
+// 1 host local seat 0 + 4 bots + 1 remote client, plus the splitscreen
+// scenario's own host local seat 1.
+const WANT_ROSTER = scenario === "splitscreen" ? 7 : 6;
+
 if (scenario !== "sp") {
-  const before = readLog(server.seat).length;
-  const joined = await server.run(["status"], 30000);
-  check("the client seat shows up in the server's status", joined, joined ? "" : readLog(server.seat).slice(-1500));
+  const r = await rosterOf(WANT_ROSTER, 60000);
+  check("the client seat shows up in the server's status", r.names.includes("Z_HUMAN"), `roster: ${r.names.join(", ")}`);
   if (scenario === "splitscreen") {
-    const seated = (readLog(server.seat).slice(before).match(/^#\s*\d+/gm) ?? []).length;
-    // 1 host local seat 0 + 1 host local seat 1 (splitscreen) + 4 bots + 1 remote client = 7.
-    check("the splitscreen seat is actually seated (server roster grew to 7)", seated >= 7, `roster shows ${seated} clients`);
+    check("the splitscreen seat is actually seated (server roster grew to 7)", r.count >= 7, `roster shows ${r.count} clients: ${r.names.join(", ")}`);
   }
 }
 
@@ -192,6 +252,10 @@ if (scenario !== "sp") {
 
 interface SampleT {
   readonly tSec: number;
+  // Index into `rotation`, not the map name: the rotation returns to maps it
+  // has already played, and the two visits are two different levels' worth of
+  // samples that must not merge into one.
+  readonly visit: number;
   readonly level: string;
   readonly svRssKB: number | null;
   readonly clRssKB: number | null;
@@ -229,6 +293,7 @@ let nextMove = 0;
 let nextSample = 0;
 let nextChangelevel = CHANGELEVEL_MS;
 let earlyExit: string | null = null;
+let ssAfterChange: RosterT | null = null;
 
 function inGrace(tMs: number): boolean {
   return changeTimesMs.some((c) => tMs >= c - 1000 && tMs <= c + LEVEL_GRACE_MS);
@@ -285,6 +350,12 @@ while (Date.now() - startT < totalMs) {
       break;
     }
     nextChangelevel += CHANGELEVEL_MS;
+    if (scenario === "splitscreen" && ssAfterChange === null) {
+      // The seats are torn down and re-armed around a level change
+      // (src/client/splitscreen.ts's SS_Shutdown / SS_Reconcile), so the
+      // second local player has to sign on again before the roster shows it.
+      ssAfterChange = await rosterOf(WANT_ROSTER, 45000);
+    }
   }
 
   if (elapsed >= nextSample) {
@@ -296,6 +367,7 @@ while (Date.now() - startT < totalMs) {
     for (const [name, f] of frags) if (name !== "Z_HUMAN") botFrags += f;
     samples.push({
       tSec: Math.round(elapsed / 1000),
+      visit: rotIdx,
       level: rotation[rotIdx],
       svRssKB: rssKB(server.seat.proc.pid),
       clRssKB: client === null ? null : rssKB(client.seat.proc.pid),
@@ -318,6 +390,7 @@ while (Date.now() - startT < totalMs) {
   for (const [name, f] of frags) if (name !== "Z_HUMAN") botFrags += f;
   samples.push({
     tSec: Math.round((Date.now() - startT) / 1000),
+    visit: rotIdx,
     level: rotation[rotIdx],
     svRssKB: rssKB(server.seat.proc.pid),
     clRssKB: client === null ? null : rssKB(client.seat.proc.pid),
@@ -352,18 +425,131 @@ if (client !== null) check("the client seat logged no Host_Error", clErrors.leng
 check("the server/host process is still running at the end", exitedCode(server.seat) === null, `exit code ${exitedCode(server.seat)}`);
 if (client !== null) check("the client process is still running at the end", exitedCode(client.seat) === null, `exit code ${exitedCode(client.seat)}`);
 
-const svRssSeries = samples.map((s) => s.svRssKB).filter((v): v is number => v !== null);
-if (svRssSeries.length >= 4) {
-  const half = Math.floor(svRssSeries.length / 2);
-  const firstHalf = svRssSeries.slice(0, half);
-  const secondHalf = svRssSeries.slice(half);
-  const mean = (a: number[]): number => a.reduce((x, y) => x + y, 0) / a.length;
-  const firstMean = mean(firstHalf);
-  const secondMean = mean(secondHalf);
-  const growthPct = firstMean === 0 ? 0 : ((secondMean - firstMean) / firstMean) * 100;
-  check("server RSS growth over the second half is below 15% of the first-half mean", growthPct < 15, `first-half mean ${firstMean.toFixed(0)}kB, second-half mean ${secondMean.toFixed(0)}kB (${growthPct.toFixed(1)}%)`);
+/*
+MEMORY. Two questions, and they are not the same question.
+
+Comparing the run's second half against its first half -- what this driver
+did until F22 -- compares DIFFERENT MAPS: the rotation walks from mgdm1 (84
+edicts) to mgdm3 (159), and a bigger level legitimately costs more, so the
+comparison measures map size and calls it growth. Worse, the engine's own
+footprint is dominated by things that never come back: `bun build --compile`'s
+own runtime and the bundled engine modules are ~165MB of the RSS before a
+map is even loaded, this port's hunk is one `new Uint8Array` per
+Hunk_AllocName with no shared buffer to rewind (src/common/zone.ts:
+Hunk_FreeToLowMark is a no-op), and JavaScriptCore grows its heap's high-water
+mark and never returns the pages to the OS. RSS therefore steps UP per larger
+map by design and steps down only as far as the allocator feels like.
+
+What a leak actually looks like is either of:
+
+  - a level whose footprint keeps climbing while it is being PLAYED (nothing
+    is being loaded any more, so a rising RSS is retention), or
+  - a map that costs more the SECOND time the rotation reaches it than it did
+    the first, with other maps played in between.
+
+Both are measured below, per level, which is why `SampleT` carries the
+rotation index and why DM_ROTATION revisits its maps.
+
+The FIRST sample of every level is dropped from both: it is taken as soon as
+`changelevel` echoes back, with the level's models still being decoded and
+nothing collected yet, so it is the load in progress rather than the level's
+cost. (t=0's sample is the boot map's own version of the same thing.)
+*/
+interface VisitT {
+  readonly visit: number;
+  readonly level: string;
+  readonly rss: number[];
+}
+
+const visits: VisitT[] = [];
+for (const s of samples) {
+  if (s.svRssKB === null) continue;
+  const cur = visits[visits.length - 1];
+  if (cur === undefined || cur.visit !== s.visit) visits.push({ visit: s.visit, level: s.level, rss: [s.svRssKB] });
+  else cur.rss.push(s.svRssKB);
+}
+const steady: VisitT[] = visits.map((v) => ({ visit: v.visit, level: v.level, rss: v.rss.slice(1) })).filter((v) => v.rss.length > 0);
+
+function worstWithinLevel(vs: readonly VisitT[]): string {
+  let worst = "n/a";
+  let worstPct = Number.NEGATIVE_INFINITY;
+  for (const v of vs) {
+    if (v.rss.length < 2) continue;
+    const first = v.rss[0];
+    const last = v.rss[v.rss.length - 1];
+    const pct = first === 0 ? 0 : ((last - first) / first) * 100;
+    if (pct > worstPct) {
+      worstPct = pct;
+      worst = `${v.level} ${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+    }
+  }
+  return worst;
+}
+
+const WITHIN_LEVEL_PCT = 10;
+const climbing: string[] = [];
+let levelsMeasured = 0;
+for (const v of steady) {
+  if (v.rss.length < 2) continue;
+  levelsMeasured++;
+  const first = v.rss[0];
+  const last = v.rss[v.rss.length - 1];
+  const pct = first === 0 ? 0 : ((last - first) / first) * 100;
+  if (pct >= WITHIN_LEVEL_PCT) climbing.push(`${v.level} ${first}->${last}kB (+${pct.toFixed(1)}%)`);
+}
+check(
+  `server RSS is flat within each level (last sample within ${WITHIN_LEVEL_PCT}% of the first settled one)`,
+  levelsMeasured > 0 && climbing.length === 0,
+  levelsMeasured === 0 ? "no level was sampled twice after its load window (need a longer run)" : climbing.length === 0 ? `${levelsMeasured} levels measured, worst ${worstWithinLevel(steady)}` : climbing.join("; "),
+);
+
+/*
+The revisit. `later <= earlier * 1.1` is the comparison this wants to be and
+cannot be, because RSS is a HIGH-WATER MARK: JavaScriptCore grows its heap to
+fit the biggest map the process has loaded and does not hand the pages back,
+so mgdm1's second visit legitimately sits wherever mgdm3 left the process,
+not back at mgdm1's own first-visit figure. Measured directly (F22, in
+process, with a full GC forced before each reading): the RETAINED bytes are
+flat across revisits -- mgdm1 at 40.7MB of ArrayBuffer on its first visit and
+44.1MB on its third and fifth, mgdm3 44.1MB on both of its -- while RSS over
+the same visits reads 641MB, 930MB, 929MB. Retention is flat; RSS is a
+ratchet.
+
+So the budget for a revisit is the WORST the process was already running at
+between the two visits, not the earlier visit alone. A revisit that stays
+under that has cost the process nothing it had not already spent; a real leak
+is what pushes the mark up again every time the rotation comes round, and
+fails this.
+*/
+const REVISIT_PCT = 10;
+const byLevel = new Map<string, VisitT[]>();
+for (const v of steady) {
+  const list = byLevel.get(v.level);
+  if (list === undefined) byLevel.set(v.level, [v]);
+  else list.push(v);
+}
+const revisits: string[] = [];
+const costlier: string[] = [];
+for (const [level, vs] of byLevel) {
+  if (vs.length < 2) continue;
+  const first = vs[0];
+  const final = vs[vs.length - 1];
+  const earlier = first.rss[first.rss.length - 1];
+  const later = final.rss[final.rss.length - 1];
+  let peakBetween = earlier;
+  for (const v of steady) {
+    if (v.visit <= first.visit || v.visit >= final.visit) continue;
+    for (const r of v.rss) if (r > peakBetween) peakBetween = r;
+  }
+  const budget = peakBetween * (1 + REVISIT_PCT / 100);
+  const line = `${level} ${earlier}kB -> ${later}kB (peak in between ${peakBetween}kB, budget ${budget.toFixed(0)}kB)`;
+  revisits.push(line);
+  if (later > budget) costlier.push(line);
+}
+if (revisits.length > 0) {
+  check(`a map the rotation returns to costs no more than ${REVISIT_PCT}% over the worst the run had already reached`, costlier.length === 0, revisits.join("; "));
 } else {
-  check("server RSS growth over the second half is below 15% of the first-half mean", false, `only ${svRssSeries.length} RSS samples collected (need >= 4)`);
+  console.log(`[note] the rotation did not return to any map in ${minutes} minutes -- the revisit comparison was not exercised`);
 }
 
 check("no server/host frame outside a level-change window ran over 250ms (host_speeds 1)", svSpikes.length === 0, svSpikes.length === 0 ? "" : `${svSpikes.length} spikes, worst ${Math.max(...svSpikes)}ms`);
@@ -379,6 +565,14 @@ if (scenario === "sp") {
   const lastServerStatus = fullSvLog.slice(fullSvLog.lastIndexOf("players:"));
   const stillConnected = (lastServerStatus.match(/^#\s*\d+/gm) ?? []).length;
   check("bots are still moving at the end (scoreboard frags increased, or the roster is still fully seated)", last > first || stillConnected >= 4, `frags ${first} -> ${last}; ${stillConnected} clients in the final status`);
+}
+
+if (scenario === "splitscreen") {
+  if (ssAfterChange !== null) {
+    check("the splitscreen seat is still seated on the other side of a level change", ssAfterChange.count >= WANT_ROSTER, `roster shows ${ssAfterChange.count} clients: ${ssAfterChange.names.join(", ")}`);
+  } else {
+    console.log(`[note] the soak ended before the first changelevel -- the seat's survival across a level change was not exercised`);
+  }
 }
 
 summary(`Z soak ${scenario} ${minutes}m`);

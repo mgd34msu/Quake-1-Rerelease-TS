@@ -228,6 +228,11 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   within about a second, roam when a map has no navigation, and chat
   through the localized `m_bot_chat_*` variants for every event type
   (`bot_chat 0` silences them).
+- Splitscreen: a level change no longer drops every seat past the first.
+  The server's `reconnect` reset only the bound (primary) seat's signon, so
+  the other seats carried a finished signon into the new level and died on
+  "Received signon 1 when at 4"; every connected seat's signon is reset when
+  the server spawns.
 - Splitscreen: an error raised inside a non-primary seat's window drops that
   seat (and the seats above it) instead of shutting the server and the first
   player down; with several seats sharing one console a broadcast prints

@@ -1345,6 +1345,39 @@ describe("a level change keeps the players it had", () => {
     sv.active = false;
   });
 
+  test("a changelevel puts every seat past 0 back to signon 0, the way `reconnect` does for the primary", () => {
+    seatDisconnectHooks.establishConnection = () => {};
+    oneSeat();
+    sv.active = false;
+    svs.maxclients = 4;
+    svs.maxclientslimit = 4;
+    SS_SetSeats(3);
+
+    // Where a `changelevel` finds the session: every seat fully signed on and
+    // still connected, because unlike `map` it never disconnects anyone.
+    for (const i of [0, 1, 2]) {
+      SS_Seat(i).binding.cls.state = CactiveT.ca_connected;
+      SS_Seat(i).binding.cls.signon = SIGNONS;
+    }
+
+    // SV_SpawnServer reaches this hook just after SV_SendReconnect, whose
+    // `reconnect` runs out of the shared command buffer and so only ever
+    // lands on seat 0.
+    SS_ServerSpawned();
+
+    expect(SS_Seat(1).binding.cls.signon).toBe(0);
+    expect(SS_Seat(2).binding.cls.signon).toBe(0);
+    // Seat 0 is Host_Reconnect_f's, not this hook's.
+    expect(SS_Seat(0).binding.cls.signon).toBe(SIGNONS);
+
+    for (const i of [0, 1, 2]) {
+      SS_Seat(i).binding.cls.state = CactiveT.ca_disconnected;
+      SS_Seat(i).binding.cls.signon = 0;
+    }
+    sv.active = false;
+    SS_SetSeats(1);
+  });
+
   test("the seats that come back are clamped to the new server's slot count", () => {
     seatDisconnectHooks.establishConnection = () => {};
     oneSeat();

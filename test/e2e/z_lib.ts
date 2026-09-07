@@ -265,9 +265,21 @@ export function startPolled(
     },
     async run(lines: readonly string[], timeoutMs = 60000): Promise<boolean> {
       if (!armed && !(await this.arm(timeoutMs))) return false;
-      const k = currentStep(seat) + STEP_LOOKAHEAD;
-      writeStep(dir, name, k, lines, idleFrames);
-      return await waitFor(seat, `Z_STEP_${k}`, timeoutMs);
+      const deadline = Date.now() + timeoutMs;
+      for (;;) {
+        const k = currentStep(seat) + STEP_LOOKAHEAD;
+        writeStep(dir, name, k, lines, idleFrames);
+        // The step index is aimed from a log the seat is still appending to,
+        // and `currentStep` only ever sees the echoes already flushed to it.
+        // A seat that reached step k between that read and this write has
+        // already executed the EMPTY placeholder that was sitting there, so
+        // `Z_STEP_k` is in the log with none of `lines` ever run -- and the
+        // wait below would return true on somebody else's echo. Re-aim
+        // instead, and only wait once the target is still ahead of the seat.
+        if (currentStep(seat) < k) return await waitFor(seat, `Z_STEP_${k}`, Math.max(0, deadline - Date.now()));
+        if (Date.now() >= deadline) return false;
+        await Bun.sleep(50);
+      }
     },
   };
 }

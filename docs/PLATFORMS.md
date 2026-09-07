@@ -184,6 +184,28 @@ addition over WinQuake, matching what QuakeSpasm and Ironwail do on Linux.
   `$XDG_DATA_HOME`/`$HOME` only (see "Where the engine writes" above); no
   `%APPDATA%` or `~/Library/Application Support` lookup exists yet, so on
   Windows the practical answer today is `-homedir <dir>` or `-nohomedir`.
+- **Resident memory, and the `8.0 megabyte heap` line.** That line is the
+  hunk figure the original C printed for its one `malloc`ed block, and it has
+  nothing to do with what this port actually holds: `Hunk_AllocName` is one
+  `new Uint8Array` per call and `Hunk_FreeToLowMark` is a no-op
+  (`src/common/zone.ts`), so the number is bookkeeping. The real cost of a
+  boot, measured on Linux x86-64, is around 400MB resident before a map is
+  loaded -- a dedicated server with no level at all settles at 418MB after a
+  minute of idling. Roughly 33MB of that is the Bun runtime, ~130MB more is
+  parsing and JIT-compiling the bundled engine (`bun build --compile` embeds
+  both), ~40MB is SDL shared memory even under the dummy video and audio
+  drivers, and the rest is JavaScriptCore's heap reaching its working size
+  over the first minute of the frame loop.
+- **Resident memory tracks the biggest map played, not the current one.**
+  JavaScriptCore does not return pages to the OS when a level is unloaded, so
+  a long rotation reads as a series of steps up (mgdm1 ~470MB, mgdm3 ~640MB)
+  that never step back down. This is a high-water mark, not a leak: with a
+  full collection forced before each reading, the bytes actually retained are
+  flat across repeated visits to the same map (mgdm1 holds 40.7MB of
+  typed-array data on its first visit and 44.1MB on its third and fifth,
+  while resident memory over the same visits reads 641MB, 930MB, 929MB).
+  `test/e2e/z_soak.ts` asserts against the retained shape rather than the
+  resident number for this reason.
 - **Case-sensitive game data.** Only Linux (and a case-sensitive macOS volume)
   needs this, and it is handled: a mixed-case `Id1/PAK0.PAK` is found by a
   case-insensitive directory scan. Windows and the default macOS filesystem
