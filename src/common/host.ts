@@ -116,7 +116,7 @@ Deviations from PORTING.md / the C source:
   C could have had -- takes the C's own path unchanged.
 */
 
-import { CvarT, Cvar_RegisterVariable, Cvar_SetValue, Cvar_WriteVariables, setCvarServerHooks } from "./cvar";
+import { CvarT, Cvar_FindVar, Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue, Cvar_WriteVariables, setCvarServerHooks } from "./cvar";
 import { Com_sprintf } from "./sprintf";
 import { Con_Printf, Con_DPrintf, Con_Init, setDeveloper } from "../client/console";
 import {
@@ -147,7 +147,7 @@ import type * as HostCmdModule from "./host_cmd";
 import type * as RulesetModule from "../progs/ext/ruleset";
 import { EDICT_TO_PROG, pr } from "../progs/progs";
 import type { GlobalVars } from "../progs/progdefs";
-import { Cbuf_Execute, Cbuf_AddText, Cbuf_InsertText, Cbuf_Init, Cmd_Init, Cmd_WithConsoleProfile, Cmd_FlushConfigNoise, cmdHost } from "./cmd";
+import { Cbuf_Execute, Cbuf_AddText, Cbuf_InsertText, Cbuf_Init, Cmd_AddCommand, Cmd_Init, Cmd_WithConsoleProfile, Cmd_FlushConfigNoise, cmdHost } from "./cmd";
 import { clientProfile, serverProfile } from "./profile";
 import {
   COM_CheckParm,
@@ -674,8 +674,41 @@ export function Host_FindMaxClients(): void {
 Host_InitLocal
 ======================
 */
+// This port's own addition: the archived config's format version, so a
+// config.cfg written by an earlier build can be brought up to date once
+// (Host_MigrateConfig). "0" is what a config with no cfg_version line
+// resolves to; Host_WriteConfiguration then archives the current version.
+export const cfg_version = new CvarT("cfg_version", "0", true);
+const CFG_VERSION_CURRENT = 2;
+
+/**
+ * One-time upgrades for settings whose DEFAULT changed after configs had
+ * already archived the old default as if the player had chosen it. Runs
+ * from the command buffer right after quake.rc (and so after config.cfg)
+ * has executed; a config at the current version is left alone.
+ *
+ *  2 (2026-09-07): the status bar and console scales default to auto ("0")
+ *    and the classic charset is the default font; earlier builds archived
+ *    scr_sbarscale "1", scr_conscale "1" and con_font "kfont".
+ */
+export function Host_MigrateConfig(): void {
+  const from = Math.trunc(cfg_version.value);
+  if (from < 2) {
+    for (const [name, value] of [
+      ["scr_sbarscale", "0"],
+      ["scr_conscale", "0"],
+      ["con_font", "classic"],
+    ] as const) {
+      if (Cvar_FindVar(name) !== null) Cvar_Set(name, value);
+    }
+  }
+  if (from !== CFG_VERSION_CURRENT) Cvar_Set("cfg_version", String(CFG_VERSION_CURRENT));
+}
+
 export function Host_InitLocal(): void {
   hostCmdMod().Host_InitCommands();
+  Cvar_RegisterVariable(cfg_version);
+  Cmd_AddCommand("cfg_migrate", Host_MigrateConfig);
 
   Cvar_RegisterVariable(host_framerate);
   Cvar_RegisterVariable(host_speeds);
@@ -1399,6 +1432,8 @@ export function Host_Init(parms: QuakeParmsT): void {
     const refParm = COM_CheckParm("-vid_ref");
     if (refParm && refParm < com_argc - 1) Cbuf_AddText(`vid_ref "${com_argv[refParm + 1]}"\n`);
   }
+  // Config format upgrades (Host_MigrateConfig) run after config.cfg too.
+  Cbuf_AddText("cfg_migrate\n");
 
   Hunk_AllocName(0, "-HOST_HUNKLEVEL-");
   host.hunklevel = Hunk_LowMark();

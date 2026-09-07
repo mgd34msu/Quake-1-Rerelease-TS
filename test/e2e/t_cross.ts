@@ -279,13 +279,15 @@ const cl5 = startClient(
 );
 await phase(cl5, "TRIED", 90000);
 const log5 = readLog(cl5);
-// The QuakeWorld path prints "Connecting to <address>..." and then sends a
-// `challenge` to the address it resolved -- for a bare host that is the
-// default QuakeWorld server port. The NetQuake path would print "trying..."
-// instead, so the `challenge` line is what separates the two.
+// The QuakeWorld path prints "Connecting to <address>..." (CL_CheckForResend)
+// and sends a getchallenge to the address it resolved -- for a bare host that
+// is the default QuakeWorld server port. The NetQuake path prints "trying..."
+// instead. The client's own "challenge" line is printed only when a server
+// ANSWERS (CL_ConnectionlessPacket), and no server is stood up here, so the
+// resend line is the evidence.
 check(
   "`cl_protocol qw` sends a bare address to the QuakeWorld handshake",
-  /: challenge/.test(log5) && !/trying\.\.\./.test(log5),
+  /Connecting to 127\.0\.0\.1\.\.\./.test(log5) && !/trying\.\.\./.test(log5),
   (log5.match(/.*(Connecting to|trying\.\.\.|challenge).*/g) ?? []).slice(-2).join(" | ") || "no connect attempt line at all",
 );
 killSeat(cl5);

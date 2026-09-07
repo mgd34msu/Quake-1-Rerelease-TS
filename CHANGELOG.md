@@ -339,6 +339,13 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `Host_Connect_f` does. `-clientport <n>` (an addition) moves the
   QuakeWorld client's fixed UDP port 27001 so two clients, or a listen
   server's own client and a guest, can share one host.
+- config.cfg carries a `cfg_version` (an addition). A config written by an
+  earlier build had archived `scr_sbarscale "1"`, `scr_conscale "1"` and
+  `con_font "kfont"` as if the player had chosen them, so the new auto
+  scales and the classic font never applied to an existing install;
+  `cfg_migrate` (run once after quake.rc) resets those three to their
+  defaults on a config below version 2 and stamps the current version.
+  Later choices are kept.
 - A `-vid_ref gl` boot whose config.cfg had archived `vid_ref "soft"` ran GL
   while the cvar still read soft, so the first `vid_restart` (or the video
   menu's Apply) silently dropped to the software renderer. Host_Init now

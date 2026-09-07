@@ -18,7 +18,8 @@ import { COM_InitArgv, com_gamedir, pop } from "../src/common/common";
 import { writePakToDisk } from "./support/pak_builder";
 import { buildBsp, buildMdl, buildSpr, ensureDir, writeGameFile } from "./support/bsp_builder";
 import { Cbuf_AddText, Cmd_AddCommand, Cmd_Exists, Cmd_ExecuteString, CmdSourceT, cmdHost } from "../src/common/cmd";
-import { Cvar_FindVar, Cvar_VariableValue, setCvarServerHooks } from "../src/common/cvar";
+import { Cvar_FindVar, Cvar_RegisterVariable, Cvar_Set, Cvar_VariableString, Cvar_VariableValue, setCvarServerHooks } from "../src/common/cvar";
+import { scr_sbarscale } from "../src/client/kfont_text";
 import { LUMPINFO_T_SIZE, WADINFO_T_SIZE } from "../src/common/wad";
 import { QuakeParmsT } from "../src/common/quakedef";
 import { SvcOpsT } from "../src/common/protocol";
@@ -46,6 +47,7 @@ import {
   Host_FilterTime,
   Host_Frame,
   Host_Init,
+  Host_MigrateConfig,
   Host_ShutdownServer,
   Host_WriteConfiguration,
   SV_BroadcastPrintf,
@@ -225,6 +227,33 @@ describe.skipIf(!HAVE_PROGS106)("Host_Init (-dedicated)", () => {
   test("registers host_cmd.c's commands", () => {
     for (const name of ["status", "quit", "god", "map", "restart", "changelevel", "name", "say", "kick", "load", "save", "give", "mcache"])
       expect(Cmd_Exists(name)).toBe(true);
+  });
+
+  test("Host_MigrateConfig: a config from before cfg_version 2 gets the auto scales and the classic font once, a current one is left alone", () => {
+    const cfg = Cvar_FindVar("cfg_version");
+    expect(cfg).not.toBeNull();
+    if (cfg === null) return;
+    // A dedicated boot registers none of the three client cvars; register
+    // kfont_text.ts's own scr_sbarscale object when it is not there yet, so
+    // the reset can be observed (KfontText_RegisterCvars later finds it).
+    if (Cvar_FindVar("scr_sbarscale") === null) Cvar_RegisterVariable(scr_sbarscale);
+    const savedProbe = scr_sbarscale.string;
+    const savedCfg = cfg.string;
+    try {
+      Cvar_Set("scr_sbarscale", "1");
+      Cvar_Set("cfg_version", "0"); // what a config.cfg with no cfg_version line resolves to
+      Host_MigrateConfig();
+      expect(Cvar_VariableString("scr_sbarscale")).toBe("0");
+      expect(Cvar_VariableValue("cfg_version")).toBe(2);
+
+      Cvar_Set("scr_sbarscale", "1"); // the player's own later choice
+      Host_MigrateConfig();
+      expect(Cvar_VariableString("scr_sbarscale")).toBe("1");
+      expect(Cvar_VariableValue("cfg_version")).toBe(2);
+    } finally {
+      Cvar_Set("cfg_version", savedCfg);
+      Cvar_Set("scr_sbarscale", savedProbe);
+    }
   });
 
   test("registers host.c's cvars", () => {

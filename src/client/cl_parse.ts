@@ -1050,21 +1050,21 @@ export function CL_ParseServerMessage(): void {
       case SvcOpsT.svc_updatename:
         Sbar_Changed();
         i = MSG_ReadByte();
-        if (i >= cl.maxclients) Host_Error("CL_ParseServerMessage: svc_updatename > MAX_SCOREBOARD");
+        if (i >= cl.maxclients) Host_Error("CL_ParseServerMessage: svc_updatename > MAX_SCOREBOARD (slot %d, cl.maxclients %d)", i, cl.maxclients);
         cl.scores[i].name = MSG_ReadString(); // strcpy (cl.scores[i].name, ...)
         break;
 
       case SvcOpsT.svc_updatefrags:
         Sbar_Changed();
         i = MSG_ReadByte();
-        if (i >= cl.maxclients) Host_Error("CL_ParseServerMessage: svc_updatefrags > MAX_SCOREBOARD");
+        if (i >= cl.maxclients) Host_Error("CL_ParseServerMessage: svc_updatefrags > MAX_SCOREBOARD (slot %d, cl.maxclients %d)", i, cl.maxclients);
         cl.scores[i].frags = MSG_ReadShort();
         break;
 
       case SvcOpsT.svc_updatecolors:
         Sbar_Changed();
         i = MSG_ReadByte();
-        if (i >= cl.maxclients) Host_Error("CL_ParseServerMessage: svc_updatecolors > MAX_SCOREBOARD");
+        if (i >= cl.maxclients) Host_Error("CL_ParseServerMessage: svc_updatecolors > MAX_SCOREBOARD (slot %d, cl.maxclients %d)", i, cl.maxclients);
         cl.scores[i].colors = MSG_ReadByte();
         CL_NewTranslation(i);
         break;

@@ -226,7 +226,11 @@ if (enterGameOptions()) {
   check("GameOptions Begin Game: bot_count cvar matches the Bot Count row", Cvar_VariableValue("bot_count") === 2, `bot_count=${Cvar_VariableValue("bot_count")}`);
   check("GameOptions Begin Game: bot_skill cvar matches the Bot Skill row", Cvar_VariableString("bot_skill") === targetBotSkill, `bot_skill=${Cvar_VariableString("bot_skill")} want=${targetBotSkill}`);
   console.log(`  post-launch: sv.name=${sv.name} sv.protocol=${sv.protocol} maxclients=${svs.maxclients} bot slots=${Bot_Slots().size}`);
-  check("GameOptions Begin Game: the started server actually uses bot_count (auto-fill spawned bots)", Bot_Slots().size === 2, `Bot_Slots().size=${Bot_Slots().size} want=2 (deathmatch-off under ctf teamplay is a defect candidate -- see report)`);
+  // G6: `bot_count` governs the auto-filled bots only; the bot the Bots page
+  // added by hand above (Add Random) survives the map change as an extra, so
+  // the auto-filled count is what the row promises, not the slot total.
+  const autoFilled = [...Bot_Slots().values()].filter((s) => s.auto).length;
+  check("GameOptions Begin Game: the started server actually uses bot_count (auto-fill spawned bots)", autoFilled === 2, `auto-filled=${autoFilled} of ${Bot_Slots().size} slots, want=2 auto (deathmatch-off under ctf teamplay is a defect candidate -- see report)`);
 }
 
 // ============================================================================
