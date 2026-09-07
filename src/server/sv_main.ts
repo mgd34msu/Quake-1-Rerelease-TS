@@ -1334,6 +1334,30 @@ export function SV_SpawnServer(server: string): void {
 
   // tell all connected clients that we are going to a new level
   if (sv.active) SV_SendReconnect();
+  // A client kept across the change has just been told to reconnect and gets
+  // its svc_serverinfo from the loop at the end of this function; until then
+  // it is not spawned in the new level. WinQuake left `spawned` set here
+  // because nothing wrote player information during a spawn; this port's bots
+  // do -- the prepareLevel/spawnServer hooks re-seat them, with QC prints and
+  // svc_updatename/svc_updatecolors to every spawned client -- and a kept
+  // client that has already reset on the reconnect (cl.maxclients 0) would
+  // read those ahead of its serverinfo and Host_Error. Host_Spawn_f re-sends
+  // every slot's name, frags and colours once the client spawns again.
+  for (let i = 0; i < svs.maxclients; i++) {
+    const kept = svs.clients[i];
+    if (!kept.active) continue;
+    kept.spawned = false;
+    // Reliable bytes the old level queued for this client but could not send
+    // yet (the loopback carries one reliable message at a time, so a bot
+    // seated in the frame a level change was ordered can leave its
+    // svc_updatename/svc_updatecolors waiting here) would precede the new
+    // serverinfo in the buffer; the client, wiped for the reconnect
+    // (Host_ClearMemory), has no scoreboard to put them in and aborts. Nothing
+    // in that backlog outlives the level: the signon and Host_Spawn_f rebuild
+    // every name, frag and colour. An addition over WinQuake, whose loopback
+    // never held a message back across a frame.
+    SZ_Clear(kept.message);
+  }
 
   // make cvars consistant
   if (svMainHooks.prepareLevel !== null) svMainHooks.prepareLevel(server);

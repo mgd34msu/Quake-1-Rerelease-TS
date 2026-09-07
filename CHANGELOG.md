@@ -394,6 +394,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   objectives are exempt, where a defender leaving its base for a button costs
   more than a blocked route does (measured on u_ctf). `wantsUse` measures to a brush entity's centre, not its
   origin (a brush model's origin is the world origin).
+- A player kept across `changelevel` on a listen server with bots aborted
+  with "svc_updatename > MAX_SCOREBOARD" at some level changes: the bots are
+  re-seated while the level spawns, and with the kept player still marked
+  spawned their QC print and name/colour updates landed in its reliable
+  buffer ahead of the serverinfo the spawn writes last; the client, already
+  reset for the reconnect, had no scoreboard to put the name in. A client kept
+  across a spawn is no longer counted as spawned until it spawns again
+  (Host_Spawn_f re-sends every slot's name, frags and colours), which is
+  also what keeps a bot's "entered the game" print out of that window.
 - A `-vid_ref gl` boot whose config.cfg had archived `vid_ref "soft"` ran GL
   while the cvar still read soft, so the first `vid_restart` (or the video
   menu's Apply) silently dropped to the software renderer. Host_Init now

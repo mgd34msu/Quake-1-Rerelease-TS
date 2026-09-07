@@ -29,6 +29,9 @@ import { QuakeParmsT } from "../src/common/quakedef";
 import { setHostShutdown, sysState } from "../src/platform/sys";
 import { getNetHostHooks, net_activeconnections, setNetActiveConnections, setNetHostHooks } from "../src/common/net_main";
 import { FL_MONSTER, sv, svState, svs } from "../src/server/server";
+import { QsocketT } from "../src/common/net";
+import { SvcOpsT } from "../src/common/protocol";
+import { MSG_WriteByte, MSG_WriteString } from "../src/common/sizebuf";
 import { EDICT_NUM, PR_GetString } from "../src/progs/progs";
 import { ED_FindFunction } from "../src/progs/pr_edict";
 import { pr_builtin } from "../src/progs/pr_cmds";
@@ -1018,6 +1021,58 @@ describe.skipIf(!HAVE_RERELEASE)("retail: two bots on dm4 with its real .nav", (
     const items = observations.reduce((a, o) => a + (o.itemsGained !== 0 ? 1 : 0), 0);
     expect(shots + items).toBeGreaterThan(0);
   });
+
+  test("a client kept across a changelevel sees svc_serverinfo before any bot's svc_updatename (w_multiplayer's stale-name abort)", () => {
+    // A human on a listen server stays connected through `map`: the server
+    // tells it to reconnect and later writes its serverinfo. The roster's
+    // bots are re-seated while the level spawns; with the human still marked
+    // spawned, their QC print and name/colour updates went into its buffer
+    // ahead of the serverinfo, and the client -- already reset for the
+    // reconnect -- aborted on the first player-slot update.
+    let human = -1;
+    for (let i = svs.maxclients - 1; i >= 0; i--) if (!svs.clients[i]!.active) { human = i; break; }
+    expect(human).toBeGreaterThanOrEqual(0);
+    const c = svs.clients[human]!;
+    c.active = true;
+    c.spawned = true;
+    const sock = new QsocketT();
+    sock.driver = 0; // the loopback driver: its send with no peer returns -1 and nothing else
+    sock.disconnected = false;
+    c.netconnection = sock;
+    c.message.data = c.msgbuf;
+    c.message.maxsize = c.msgbuf.length;
+    c.message.cursize = 0;
+    const savedBotCount = Cvar_VariableValue("bot_count");
+    try {
+      // `changelevel`, not `map`: the map command drops every client first,
+      // changelevel keeps them and tells them to reconnect. With bot_count
+      // set, Bot_Frame's reconcile seats auto bots during the spawn's two
+      // settle frames -- before the serverinfo loop -- which is where the
+      // driver's Bots page (bot_count 3) hit the abort.
+      Cvar_SetValue("bot_count", 2);
+      // What the loopback can leave behind: a bot seated in the frame the
+      // change was ordered wrote its name into this buffer and the frame's
+      // send could not go out yet.
+      MSG_WriteByte(c.message, SvcOpsT.svc_updatename);
+      MSG_WriteByte(c.message, 4);
+      MSG_WriteString(c.message, "Mojeh");
+      Cmd_ExecuteString("changelevel dm4", CmdSourceT.src_command);
+      const bytes = Array.from(c.message.data.subarray(0, c.message.cursize));
+      const serverinfoAt = bytes.indexOf(SvcOpsT.svc_serverinfo);
+      const updatenameAt = bytes.indexOf(SvcOpsT.svc_updatename);
+      expect(serverinfoAt).toBeGreaterThanOrEqual(0);
+      if (updatenameAt >= 0) expect(updatenameAt).toBeGreaterThan(serverinfoAt);
+      expect(c.spawned).toBe(false); // spawned again only through Host_Spawn_f
+      expect(Bot_Slots().size).toBeGreaterThan(0); // the roster did re-seat during that spawn
+    } finally {
+      Cvar_SetValue("bot_count", savedBotCount);
+      c.active = false;
+      c.spawned = false;
+      c.netconnection = null;
+      c.message.cursize = 0;
+    }
+  });
+
 });
 
 describe.skipIf(!HAVE_RERELEASE)("retail: monster walkpathtogoal on e1m1 with its real .nav", () => {
