@@ -399,7 +399,7 @@ describe.skipIf(paks.every((p) => !p.have))("nav.ts -- full retail sweep (id1 + 
     // ctf1-4, ctf6-9 and mg3's own remade dm1.nav: the 9 real v18 files.
     expect(v18Files).toBe(9);
     expect(v18Links).toBeGreaterThan(7000);
-  });
+  }, 30000); // reads the retail .nav files from the paks; 5 s is not enough under a loaded host
 
   test("ctf1.nav has 5 LongJump and 4 ManualLongJump links, ctf2.nav has 11 Teleport links (F4's counts)", () => {
     const ctfPak = paks.find((p) => p.dir === "ctf");
@@ -415,7 +415,7 @@ describe.skipIf(paks.every((p) => !p.have))("nav.ts -- full retail sweep (id1 + 
     const ctf2 = parseNav(pak.read("bots/navigation/ctf2.nav")).file!;
     const ctf2Teleport = ctf2.links.filter((l) => l.type === 2).length;
     expect(ctf2Teleport).toBe(11);
-  });
+  }, 30000); // reads the retail .nav files from the paks; 5 s is not enough under a loaded host
 
   test("every link in the 9 real v18 files carries a non-zero flags byte (0xFF or, in 7 of ctf1's links, 0x0F), and every other retail file's links carry flags 0", () => {
     let v18NonZero = 0;
@@ -439,7 +439,7 @@ describe.skipIf(paks.every((p) => !p.have))("nav.ts -- full retail sweep (id1 + 
     expect(v18Total).toBe(v18NonZero);
     expect(preV18NonZero).toBe(0);
     expect([...v18Values].sort((a, b) => a - b)).toEqual([0x0f, 0xff]);
-  });
+  }, 30000); // reads the retail .nav files from the paks; 5 s is not enough under a loaded host
 
   test("every node position lands inside its map's model-0 bounds (generous 128-unit margin; one isolated known-disconnected outlier node in e4m4.nav is exempted, and mg3's own dm1.nav is exempted -- its bundled maps/dm1.bsp's worldspawn bounds don't cover it in the retail data itself, not a parser issue -- see nav.ts's header)", () => {
     const KNOWN_ANOMALIES = new Set(["mg3:bots/navigation/dm1.nav"]);

@@ -325,7 +325,10 @@ function botSeat(entry: BotRosterEntryT): number {
     }
   }
   if (clientnum < 0) {
-    Con_Printf("addbot: server is full\n");
+    // The auto-fill runs every server frame, so a `bot_count` larger than
+    // the free slots would print this once a frame forever; only an
+    // operator's own `addbot` gets told.
+    if (!entry.auto) Con_Printf("addbot: server is full\n");
     return -1;
   }
 
@@ -548,15 +551,24 @@ function callHook(index: number, ent: EdictT): void {
  * added last. This ran off the first bot to think until F13, which meant a
  * `bot_count` raised from zero with no bot in the game had nobody to run it
  * and took effect only at the next map load.
+ *
+ * What it counts is the auto-filled part of the roster, not the whole of it.
+ * Counting the whole roster made every `addbot` a swap: the operator's bot
+ * took a slot, the next frame saw one bot too many and kicked an auto-filled
+ * one back out, and the server ended the exchange with exactly as many bots
+ * as it started with -- which is what the Bots page's Add row did.
  */
 export function Bot_Frame(): void {
   if (!sv.active) return;
   if (botState.reconciledAt === sv.time) return;
   botState.reconciledAt = sv.time;
   const want = Math.trunc(bot_count.value);
-  const grow = want > botState.roster.length;
-  const governs = want > 0 || Bot_AutoCount() > 0;
-  if (governs && want !== botState.roster.length && Bot_MultiplayerRuleset() && (!grow || Bot_MapAllowsBots(sv.name))) Bot_Reconcile();
+  if (want < 0) return;
+  const have = Bot_AutoCount();
+  if (want === have) return;
+  if (!Bot_MultiplayerRuleset()) return;
+  if (want > have && !Bot_MapAllowsBots(sv.name)) return;
+  Bot_Reconcile();
 }
 
 /**
@@ -825,16 +837,18 @@ export function Bot_AutoFill(mapname: string): void {
 }
 
 /**
- * Brings the roster to whatever `bot_count` says right now: raising it puts
- * bots in this frame, lowering it kicks the ones added last.
+ * Brings the auto-filled part of the roster to whatever `bot_count` says
+ * right now: raising it puts bots in this frame, lowering it kicks the ones
+ * added last. Bots an operator asked for by hand are neither counted nor
+ * taken away, so `addbot` adds a bot on a server `bot_count` governs.
  */
 export function Bot_Reconcile(): void {
   const want = Math.trunc(bot_count.value);
   if (want < 0) return;
-  while (botState.roster.length < want) {
+  while (Bot_AutoCount() < want) {
     if (Bot_Add("random", "", true) < 0) break;
   }
-  while (botState.roster.length > want) {
+  while (Bot_AutoCount() > want) {
     let at = -1;
     for (let i = botState.roster.length - 1; i >= 0; i--) {
       if (botState.roster[i]!.auto) {

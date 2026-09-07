@@ -654,8 +654,14 @@ export function Host_FindMaxClients(): void {
   if (svs.maxclients < 1) svs.maxclients = 8;
   else if (svs.maxclients > MAX_SCOREBOARD) svs.maxclients = MAX_SCOREBOARD;
 
-  svs.maxclientslimit = svs.maxclients;
-  if (svs.maxclientslimit < 4) svs.maxclientslimit = 4;
+  // WinQuake sized the client pool to `max(svs.maxclients, 4)` because
+  // svs.clients was one fixed hunk allocation; `maxplayers` could then never
+  // exceed 4 on a boot without -listen. The re-release hosts up to
+  // MAX_SCOREBOARD players from a plain boot (its Multiplayer menu and the
+  // Bots page both count on that), so the pool is always the full scoreboard
+  // here (G6, 2026-09-07). `svs.maxclients` still carries the -listen/
+  // -dedicated/`maxplayers` choice; NET_Init sizes net_numsockets from this.
+  svs.maxclientslimit = MAX_SCOREBOARD;
   // Hunk_AllocName (svs.maxclientslimit*sizeof(client_t), "clients")
   svs.clients = Array.from({ length: svs.maxclientslimit }, () => new ClientT());
 
@@ -1380,6 +1386,19 @@ export function Host_Init(parms: QuakeParmsT): void {
   }
 
   Cbuf_InsertText("exec quake.rc\n");
+  // `-vid_ref <name>` (vid.ts's applyVidRefParm) picked the renderer VID_Init
+  // brought up, but `vid_ref` is archived: an existing config.cfg's own
+  // `vid_ref` line re-executes out of quake.rc above and leaves the cvar
+  // reading the archived name while the live renderer is the parm's. The
+  // next `vid_restart` would then follow the cvar and silently switch
+  // renderers (q_modes_gl: a GL boot fell back to soft on every mode change).
+  // Appending the parm after the rc re-asserts it once everything the rc
+  // execs has run; setting the cvar alone never triggers a switch, so this
+  // is a no-op for the renderer that is already up.
+  if (!sysState.isDedicated) {
+    const refParm = COM_CheckParm("-vid_ref");
+    if (refParm && refParm < com_argc - 1) Cbuf_AddText(`vid_ref "${com_argv[refParm + 1]}"\n`);
+  }
 
   Hunk_AllocName(0, "-HOST_HUNKLEVEL-");
   host.hunklevel = Hunk_LowMark();

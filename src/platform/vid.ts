@@ -338,13 +338,13 @@ function resolveMode(): { width: number; height: number; fullscreen: boolean } {
 // in the engine ever writes back to them; `vid_ref` is a cvar the user is
 // expected to change.
 //
-// Known consequence, unchanged from before this was a parm at all: `vid_ref`
-// is archived (`new CvarT("vid_ref", "soft", true)` above), so an existing
-// config.cfg's own `vid_ref` line re-executes after VID_Init and leaves the
-// CVAR reading whatever was archived while the LIVE renderer is the one the
-// parm picked. The next `vid_restart` then follows the cvar. Making the parm
-// survive that would need a re-assert after quake.rc finishes, in host.c's
-// Host_Init -- not here.
+// `vid_ref` is archived (`new CvarT("vid_ref", "soft", true)` above), so an
+// existing config.cfg's own `vid_ref` line re-executes after VID_Init and
+// would leave the CVAR reading whatever was archived while the LIVE renderer
+// is the one the parm picked -- and the next `vid_restart` would follow the
+// cvar. host.ts's Host_Init therefore appends `vid_ref <parm>` to the command
+// buffer right after `exec quake.rc`, re-asserting the parm once the rc and
+// everything it execs have run (q_modes_gl, 2026-09-07).
 function applyVidRefParm(): void {
   const refParm = COM_CheckParm("-vid_ref");
   if (refParm) {

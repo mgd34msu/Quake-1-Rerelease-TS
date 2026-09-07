@@ -10,8 +10,9 @@ it touches in afterAll.
 
 The second half is guarded on the retail 2021 tree being reachable
 (Q1TS_RERELEASE_DATA, or ../qfiles/q1/rerelease): it boots a second host
-straight out of the retail paks and runs bots on dm4 and monsters on e1m1
-with their real .nav files.
+straight out of the retail paks and runs bots on dm4, monsters on e1m1 with
+their real .nav files, and the Bots page's own addbot/kickbot command lines
+against a dm1 server `bot_count` is already governing.
 */
 
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
@@ -21,7 +22,7 @@ import { join } from "node:path";
 import { COM_InitArgv, pop } from "../src/common/common";
 import { writePakToDisk } from "./support/pak_builder";
 import { buildBsp, buildMdl, buildSpr, ensureDir, writeGameFile } from "./support/bsp_builder";
-import { Cmd_ExecuteString, CmdSourceT, cmdHost } from "../src/common/cmd";
+import { Cbuf_AddText, Cbuf_Execute, Cmd_ExecuteString, CmdSourceT, cmdHost } from "../src/common/cmd";
 import { Cvar_SetValue, Cvar_VariableValue, setCvarServerHooks } from "../src/common/cvar";
 import { LUMPINFO_T_SIZE, WADINFO_T_SIZE } from "../src/common/wad";
 import { QuakeParmsT } from "../src/common/quakedef";
@@ -63,6 +64,7 @@ import {
 } from "../src/bots";
 import { PATH_ERROR, PATH_IN_PROGRESS, PATH_MOVE_BLOCKED, PATH_REACHED_GOAL, PATH_REACHED_PATH_END, BOT_GOAL_ERROR, BOT_GOAL_IN_PROGRESS } from "../src/progs/ext/qex_hooks";
 import { defaultTraverseCaps } from "../src/lib/bot_brain/nav_graph";
+import { BotAddCommand, BotAddRandomCommand, BotKickCommand, BuildBotsPageModel } from "../src/client/menu_content";
 
 //=============================================================================
 // process-wide state this file changes, captured for afterAll
@@ -691,6 +693,38 @@ describe.skipIf(!HAVE_PROGS106)("bot client slots on a synthetic dedicated serve
     Bot_RemoveAll();
   });
 
+  test("addbot adds a bot on a server bot_count already governs", () => {
+    // The Bots page's Add row issues `addbot` while `bot_count` is met.
+    // Reconciling against the whole roster made the next server frame kick
+    // an auto-filled bot straight back out, so Add left the slot count
+    // exactly where it was.
+    Bot_RemoveAll();
+    Cvar_SetValue("deathmatch", 1);
+    Cvar_SetValue("bot_count", 1);
+    Cmd_ExecuteString("map world", CmdSourceT.src_command);
+    expect(Bot_Count()).toBe(1);
+    const autoName = [...Bot_Slots().values()][0]!.name;
+
+    const manual = Bot_Add(autoName.toLowerCase() === "testbot" ? "otherbot" : "testbot", "");
+    expect(manual).toBeGreaterThanOrEqual(0);
+    expect(Bot_Count()).toBe(2);
+    const manualName = svs.clients[manual]!.name;
+
+    serverFrames(6);
+    expect(Bot_Count()).toBe(2);
+    expect([...Bot_Slots().values()].map((s) => s.name).sort()).toEqual([autoName, manualName].sort());
+
+    // And kicking it puts the server back where `bot_count` wants it,
+    // without touching the auto-filled bot.
+    Cmd_ExecuteString(`kickbot "${manualName}"`, CmdSourceT.src_command);
+    serverFrames(6);
+    expect(Bot_Count()).toBe(1);
+    expect([...Bot_Slots().values()][0]!.name).toBe(autoName);
+
+    Cvar_SetValue("bot_count", 0);
+    Bot_RemoveAll();
+  });
+
   test("bot_count applies with no bot in the game to run the reconcile", () => {
     // F13: the reconcile used to run off the first bot to think, so raising
     // `bot_count` from zero with an empty roster did nothing until the next
@@ -997,6 +1031,7 @@ describe.skipIf(!HAVE_RERELEASE)("retail: monster walkpathtogoal on e1m1 with it
   let results: MonsterResult[] = [];
   let navNodes = 0;
   let monsterCount = 0;
+  let savedSkill = 1;
 
   beforeAll(() => {
     sysState.nostdout = 1;
@@ -1007,6 +1042,11 @@ describe.skipIf(!HAVE_RERELEASE)("retail: monster walkpathtogoal on e1m1 with it
     // Monsters are removed at spawn time in deathmatch, so this half runs a
     // cooperative-rules level.
     Cvar_SetValue("deathmatch", 0);
+    // e1m1 places 10 monsters on easy, 23 on normal, 42 on hard; the counts
+    // below assume normal, and `skill` is process-wide state another suite
+    // may have left at 0.
+    savedSkill = Cvar_VariableValue("skill");
+    Cvar_SetValue("skill", 1);
     Cvar_SetValue("bot_count", 0);
     Cvar_SetValue("sv_randomseed", 7); // F13: pin the retail statistics
     Cmd_ExecuteString("map e1m1", CmdSourceT.src_command);
@@ -1016,8 +1056,11 @@ describe.skipIf(!HAVE_RERELEASE)("retail: monster walkpathtogoal on e1m1 with it
     if (nav === null) return;
 
     // Let walkmonster_start's think chain run, which is what sets FL_MONSTER.
+    // walkmonster_start defers walkmonster_start_go by `random()*0.5`, so the
+    // loop covers more than half a second: a shorter one counts only the
+    // monsters whose seeded delay happened to be short.
     host.frametime = 0.05;
-    for (let f = 0; f < 10; f++) {
+    for (let f = 0; f < 24; f++) {
       sv.time += 0.05;
       SV_Physics();
     }
@@ -1076,6 +1119,7 @@ describe.skipIf(!HAVE_RERELEASE)("retail: monster walkpathtogoal on e1m1 with it
   });
 
   afterAll(() => {
+    Cvar_SetValue("skill", savedSkill);
     Bot_ClearMonsterPaths();
   });
 
@@ -1115,5 +1159,104 @@ describe.skipIf(!HAVE_RERELEASE)("retail: monster walkpathtogoal on e1m1 with it
       return;
     }
     expect(monster).toBeDefined();
+  });
+});
+
+//=============================================================================
+// guarded: the Bots page's own command sequence against the retail tree
+//=============================================================================
+
+describe.skipIf(!HAVE_RERELEASE)("retail: the Bots page's Add / Kick rows on a running dm1", () => {
+  // menu.ts's M_QexBots_Key queues exactly these three command lines through
+  // Cbuf, and labels each roster row Add or Kick from BuildBotsPageModel's
+  // `active`. This runs that sequence on a server `bot_count` is already
+  // governing, which is what the Bots page opens on.
+  let slotsBefore = 0;
+  let slotsAfterAdd = 0;
+  let slotsAfterKick = 0;
+  let slotsAfterRandom = 0;
+  let namesAfterAdd: string[] = [];
+  let addedName = "";
+  let rowActiveBefore = true;
+  let rowActiveAfterAdd = false;
+
+  function serverFrames(n: number): void {
+    host.frametime = 0.05;
+    for (let f = 0; f < n; f++) {
+      sv.time += 0.05;
+      SV_CheckForNewClients();
+      SV_RunClients();
+    }
+  }
+
+  beforeAll(() => {
+    sysState.nostdout = 1;
+    setBuiltins(pr_builtin);
+    Bot_RemoveAll();
+    bootRetail("8");
+    // quake.rc/config.cfg are still sitting in the command buffer after
+    // Host_Init; drain them before the cvars below, or the first Cbuf_Execute
+    // of a menu command line would exec config.cfg over the top of them.
+    Cbuf_Execute();
+
+    Cvar_SetValue("sv_randomseed", 11);
+    Cvar_SetValue("coop", 0);
+    Cvar_SetValue("deathmatch", 1);
+    Cvar_SetValue("bot_count", 3);
+    Cmd_ExecuteString("map dm1", CmdSourceT.src_command);
+    serverFrames(4);
+    slotsBefore = Bot_Slots().size;
+
+    const model = BuildBotsPageModel("dm1");
+    const skillName = model.skillNames[model.skillIndex] ?? "medium";
+    const row = model.roster.find((r) => !r.active)!;
+    addedName = row.funName;
+    rowActiveBefore = row.active;
+
+    Cbuf_AddText(BotAddCommand(row.characterName, skillName));
+    Cbuf_Execute();
+    serverFrames(20);
+    slotsAfterAdd = Bot_Slots().size;
+    namesAfterAdd = [...Bot_Slots().values()].map((s) => s.name);
+    rowActiveAfterAdd = BuildBotsPageModel("dm1").roster.find((r) => r.funName === addedName)?.active ?? false;
+
+    Cbuf_AddText(BotKickCommand(addedName));
+    Cbuf_Execute();
+    serverFrames(20);
+    slotsAfterKick = Bot_Slots().size;
+
+    Cbuf_AddText(BotAddRandomCommand(skillName));
+    Cbuf_Execute();
+    serverFrames(20);
+    slotsAfterRandom = Bot_Slots().size;
+  });
+
+  afterAll(() => {
+    Cvar_SetValue("bot_count", 0);
+    Cvar_SetValue("sv_randomseed", 0);
+    Bot_RemoveAll();
+  });
+
+  test("bot_count auto-fills the server the page opens on, with room to spare", () => {
+    expect(slotsBefore).toBe(3);
+    expect(svs.maxclients).toBe(8);
+  });
+
+  test("ENTER on a roster row adds that character, and it is still there twenty frames later", () => {
+    expect(rowActiveBefore).toBe(false);
+    expect(slotsAfterAdd).toBe(slotsBefore + 1);
+    expect(namesAfterAdd).toContain(addedName);
+  });
+
+  test("the roster row reads Kick once the bot is in", () => {
+    expect(rowActiveAfterAdd).toBe(true);
+  });
+
+  test("ENTER on the same row again kicks it, and bot_count keeps its own three", () => {
+    expect(slotsAfterKick).toBe(slotsBefore);
+  });
+
+  test("the Add Random row adds a bot too", () => {
+    expect(slotsAfterRandom).toBe(slotsBefore + 1);
   });
 });

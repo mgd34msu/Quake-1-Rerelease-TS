@@ -232,10 +232,12 @@ describe.skipIf(!HAVE_PROGS106)("Host_Init (-dedicated)", () => {
       expect(Cvar_FindVar(name)).not.toBeNull();
   });
 
-  test("Host_FindMaxClients: bare -dedicated is 8 players, deathmatch 1", () => {
+  test("Host_FindMaxClients: bare -dedicated is 8 players, deathmatch 1, and the client pool is the full scoreboard", () => {
     expect(svs.maxclients).toBe(8);
-    expect(svs.maxclientslimit).toBe(8);
-    expect(svs.clients.length).toBe(8);
+    // G6: the pool is always MAX_SCOREBOARD so `maxplayers` can be raised to
+    // 16 at runtime on any boot (the re-release hosts 16 from a plain boot).
+    expect(svs.maxclientslimit).toBe(16);
+    expect(svs.clients.length).toBe(16);
     expect(Cvar_VariableValue("deathmatch")).toBe(1);
   });
 
