@@ -47,11 +47,12 @@ import {
   statsNote,
   treeConfig,
   wholeScreen,
+  fbHeight,
   type GlyphDrawT,
 } from "./r_lib";
 import { Loc_Localize } from "../../src/lib/loc";
 import { LoadMenuLocalization, LocalizedEpisodeName, AvailableLanguages } from "../../src/client/menu_content";
-import { test_ResetClLocCache, test_ResetGlyphCache, Text_Draw, Text_Width } from "../../src/client/kfont_text";
+import { SbarScale, test_ResetClLocCache, test_ResetGlyphCache, Text_Draw, Text_Width } from "../../src/client/kfont_text";
 import { keyState, KeydestT } from "../../src/client/keys";
 
 const vid = arg("vid", "soft");
@@ -114,17 +115,34 @@ check(
   const s2 = regionStats(px2);
   shot(`${tag}_conscale2`);
 
-  const height1 = g1.length > 0 ? Math.max(...g1.map((g) => g.h)) : 0;
-  const height2 = g2.length > 0 ? Math.max(...g2.map((g) => g.h)) : 0;
+  // The status bar of the demo quake.rc's startdemos started draws behind the
+  // console at SbarScale() (its gold ammo digits are classic-atlas glyphs
+  // too); only the console's own rows, above the bar, say anything about
+  // scr_conscale.
+  const barTop = fbHeight() - 48 * SbarScale();
+  const inConsole = (g: GlyphDrawT): boolean => g.y < barTop;
+  const height1 = g1.some(inConsole) ? Math.max(...g1.filter(inConsole).map((g) => g.h)) : 0;
+  const height2 = g2.some(inConsole) ? Math.max(...g2.filter(inConsole).map((g) => g.h)) : 0;
 
   check(`${tag}/console-glyphs-scale1`, g1.length > 20, `scr_conscale 1 drew ${g1.length} glyphs, tallest ${height1}px`);
   check(`${tag}/console-glyphs-scale2`, g2.length > 20, `scr_conscale 2 drew ${g2.length} glyphs, tallest ${height2}px`);
   check(`${tag}/console-nonblank-scale1`, s1.distinct > 4 && s1.litFraction > 0.02, `scr_conscale 1: ${statsNote(s1)}`);
   check(`${tag}/console-nonblank-scale2`, s2.distinct > 4 && s2.litFraction > 0.02, `scr_conscale 2: ${statsNote(s2)}`);
+  // Which draws produced each height: "source:height=count" so a fixed-size
+  // element hiding in the frame is named rather than guessed at.
+  const histogram = (gs: GlyphDrawT[]): string => {
+    const m = new Map<string, number>();
+    for (const g of gs) {
+      const k = `${g.source}:${g.h}`;
+      m.set(k, (m.get(k) ?? 0) + 1);
+    }
+    const odd = gs.filter((g) => g.h !== 8 * Math.round(g.h / 8) || g.h > 8).slice(0, 8).map((g) => `${g.source}@${g.x},${g.y}:${g.w}x${g.h}/src${g.srcX},${g.srcY}`);
+    return [...m.entries()].map(([k, n]) => `${k}=${n}`).join(" ") + (odd.length > 0 ? ` [${odd.join(" ")}]` : "");
+  };
   check(
     `${tag}/console-scale-differs`,
     height2 > height1,
-    `tallest drawn glyph ${height1}px at scr_conscale 1 vs ${height2}px at scr_conscale 2`,
+    `tallest drawn glyph ${height1}px at scr_conscale 1 vs ${height2}px at scr_conscale 2 (scale1: ${histogram(g1)} | scale2: ${histogram(g2)})`,
   );
   const pixelDiff = diffFraction(px1, px2, 8);
   check(

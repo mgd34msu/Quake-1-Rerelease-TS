@@ -84,14 +84,23 @@ const dist = (a: readonly number[], b: readonly number[]): number => Math.hypot(
 // ---- pushlatency ----------------------------------------------------------
 {
   await execPump("pushlatency -50", 800);
-  faceYaw(270);
-  const a = org();
-  exec("+forward");
-  await pump(1500);
-  exec("-forward");
-  await pump(800);
-  const b = org();
-  check("3.8 pushlatency -50 still moves the player", dist(a, b) > 20 && Cvar_VariableValue("pushlatency") === -50, `dist=${dist(a, b).toFixed(1)} pushlatency=${Cvar_VariableValue("pushlatency")}`);
+  // The spawn point is whichever deathmatch spot the server picked, so one
+  // fixed yaw can face a wall (a run measured exactly 0.0 at yaw 270): try up
+  // to four headings and take the first that moves. The claim under test is
+  // that prediction with a negative pushlatency still advances simorg, not
+  // that any particular direction is open.
+  let moved = 0;
+  for (const yaw of [270, 0, 90, 180]) {
+    faceYaw(yaw);
+    const a = org();
+    exec("+forward");
+    await pump(1500);
+    exec("-forward");
+    await pump(800);
+    moved = dist(a, org());
+    if (moved > 20) break;
+  }
+  check("3.8 pushlatency -50 still moves the player", moved > 20 && Cvar_VariableValue("pushlatency") === -50, `dist=${moved.toFixed(1)} pushlatency=${Cvar_VariableValue("pushlatency")}`);
   await execPump("pushlatency -800", 600);
 }
 
