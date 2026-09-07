@@ -139,6 +139,9 @@ binary, `q1rets`; see [Building from source](#building-from-source) below.
   server.
 - `-vid_ref soft|gl` — pick the renderer at startup (also the `vid_ref`
   cvar, default `soft`).
+- `-clientport <n>` — an addition: the UDP port the QuakeWorld client binds
+  (id compiled in 27001), so two QuakeWorld clients can run on one host, a
+  listen server's own client included.
 - `+connect <host>` (NetQuake, port from `-port`/`net_hostport`) vs.
   `+connect <host>:<port>` (QuakeWorld, port in the address) — the same
   syntax id shipped for each. An explicit port in the address means
@@ -169,8 +172,9 @@ binary, `q1rets`; see [Building from source](#building-from-source) below.
 ### Bots
 
 - `addbot [name] [skill]` — add one bot immediately.
-- `bot_count <n>` (default `0`) — auto-fill bots to this count on a
-  bots-flagged deathmatch map at load.
+- `bot_count <n>` (default `0`) — keep this many auto-filled bots on a
+  bots-flagged deathmatch map (seated at load and topped up every frame).
+  Bots added by hand with `addbot` are extra and stay until `kickbot`.
 - `bot_skill practice|easy|medium|hard|expert|nightmare` (default
   `medium`).
 
@@ -187,8 +191,20 @@ binary, `q1rets`; see [Building from source](#building-from-source) below.
 - `con_font kfont|...` (default `kfont`), `scr_usekfont 0|1` (default
   `0`) — where console/HUD glyphs come from; the retail `quake.rc` sets
   `scr_usekfont 1` to use the re-release's own bitmap font.
-- `scr_conscale`, `scr_sbarscale`, `scr_crosshairscale` (default `1`
-  each) — independent console, status bar and crosshair scale.
+- `scr_conscale` (default `0` = auto: one step per 300 rows of window
+  height, so 2 at 720p and 3 at 1080p), `scr_sbarscale` (default `0` =
+  auto: the largest whole scale at which the 320-wide status bar fits the
+  width and stays under a third of the height, so 4 at 720p and 6 at
+  1080p), `scr_crosshairscale` (default `1`) — independent console, status
+  bar and crosshair scale; a positive value pins the scale.
+- `scr_menuscale` (default `0` = auto) — the scale the menu's fixed
+  320x200 canvas is drawn at, centred in the window. `0` picks the
+  largest whole scale at which 320x200 still fits
+  (`min(floor(height/200), floor(width/320))`, never below 1), so the
+  menus fill a large window instead of sitting in one corner of it; an
+  explicit value is clamped to that same fit. This is an ADDITION: the
+  scale is a pure drawing transform, and every menu's layout, cursor
+  movement and column arithmetic stay in the original 320x200 units.
 
 ### Rendering
 

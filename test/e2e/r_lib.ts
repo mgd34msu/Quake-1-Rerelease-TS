@@ -738,10 +738,25 @@ export function captureDrawnText(run: () => void): string {
   r.Draw_Character = (x: number, y: number, num: number): void => {
     chars.push({ x, y, num });
   };
+  // Past scale 1 (G4's scr_menuscale auto, scr_conscale auto) Text_Draw's
+  // classic path goes through Draw_GlyphAtlas with the conchars cell as the
+  // source rect instead of Draw_Character: recover the charset index from
+  // that rect so the captured rows read the same at every scale.
+  const originalAtlas = r.Draw_GlyphAtlas;
+  if (originalAtlas !== undefined) {
+    r.Draw_GlyphAtlas = (dstX, dstY, dstW, dstH, source, srcX, srcY, srcW, srcH, tint): void => {
+      if (source.kind === "classic" && srcW === 8 && srcH === 8) {
+        chars.push({ x: dstX, y: dstY, num: (srcY >> 3) * 16 + (srcX >> 3) });
+        return;
+      }
+      originalAtlas.call(r, dstX, dstY, dstW, dstH, source, srcX, srcY, srcW, srcH, tint);
+    };
+  }
   try {
     run();
   } finally {
     r.Draw_Character = original;
+    if (originalAtlas !== undefined) r.Draw_GlyphAtlas = originalAtlas;
     Cvar_Set("con_font", savedFont);
     test_ResetGlyphCache();
   }

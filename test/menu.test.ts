@@ -45,6 +45,7 @@ import type { QpicT } from "../src/common/wad";
 import type { GlyphAtlasSourceT, Renderer } from "../src/client/render";
 import { Cvar_RegisterVariable, Cvar_Set, Cvar_SetValue, Cvar_VariableValue, Cvar_VariableString } from "../src/common/cvar";
 import { v_gamma } from "../src/client/view";
+import { scr_menuscale } from "../src/client/screen";
 import {
   COM_AddGameDirectory,
   COM_InitArgv,
@@ -282,6 +283,15 @@ const fakeRenderer: Renderer = {
   Draw_TransPicTranslate(x: number, y: number, pic: QpicT, translation: Uint8Array): void {
     drawCalls.push({ fn: "Draw_TransPicTranslate", args: [x, y, pic, translation] });
   },
+  // G4: the scaled menu canvas reaches these two whenever M_CanvasScale() is
+  // past 1; at scale 1 menu.ts still emits the plain Draw_Pic/Draw_TransPic
+  // calls above, which is what this file's classic-geometry assertions read.
+  Draw_ScaledPic(x: number, y: number, pic: QpicT, scale: number): void {
+    drawCalls.push({ fn: "Draw_ScaledPic", args: [x, y, pic, scale] });
+  },
+  Draw_ScaledTransPic(x: number, y: number, pic: QpicT, scale: number, translation?: Uint8Array): void {
+    drawCalls.push({ fn: "Draw_ScaledTransPic", args: [x, y, pic, scale, translation ?? null] });
+  },
   Draw_ConsoleBackground(): void {},
   Draw_BeginDisc(): void {},
   Draw_EndDisc(): void {},
@@ -413,6 +423,18 @@ function resetMenuState(): void {
   menu.menuState.setupTeamIndex = 0;
   menu.menuState.m_multiplayer_cursor = 0;
   menu.menuState.setup_cursor = 4;
+
+  // G4 additions.
+  scr_menuscale.value = 0;
+  scr_menuscale.string = "0";
+  menu.menuState.qexEpisodeCursor = 0;
+  menu.menuState.qexEpisodeTop = 0;
+  menu.menuState.qexLevelCursor = 0;
+  menu.menuState.qexLevelTop = 0;
+  menu.menuState.qexSelectedLevel = 0;
+  menu.menuState.qexAddonsCursor = 0;
+  menu.menuState.qexAddonsTop = 0;
+  menu.menuState.qexBotsTop = 0;
 }
 
 beforeEach(() => {
@@ -1932,10 +1954,14 @@ describe("menu labels through the kfont glyph path (F14)", () => {
     LoadMenuLocalization(fakeLocSeam(LOC_FILES));
   }
 
+  // G3 changed which cvar SELECTS the font: `con_font` does (default
+  // "classic"), and `scr_usekfont` is only the unicode-coverage opt-in for
+  // code points the charset has no cell for. A "classic boot" is therefore
+  // con_font=classic, not scr_usekfont=0 with con_font still naming a font.
   function useKfont(on: boolean): void {
     scr_usekfont.value = on ? 1 : 0;
     scr_usekfont.string = on ? "1" : "0";
-    con_font.string = "kfont";
+    con_font.string = on ? "kfont" : "classic";
     test_ResetGlyphCache();
   }
 
@@ -2079,5 +2105,304 @@ describe("menu labels through the kfont glyph path (F14)", () => {
     // The slider bar's own charset artwork (128..131).
     const sliderEnd = drawCalls.filter((c) => c.fn === "Draw_Character" && c.args[2] === 128);
     expect(sliderEnd.length).toBeGreaterThan(0);
+  });
+});
+
+//=============================================================================
+// G4: the classic menu tree scales to the window (scr_menuscale), and the
+// data-driven screens draw a bounded, cursor-following window of rows.
+
+describe("G4 menu canvas scale", () => {
+  function setVid(w: number, h: number): void {
+    vid.width = w;
+    vid.height = h;
+  }
+  function setMenuScale(v: number): void {
+    scr_menuscale.value = v;
+    scr_menuscale.string = String(v);
+  }
+
+  test("auto (scr_menuscale 0) is the largest whole scale at which 320x200 fits", () => {
+    setVid(1920, 1080);
+    expect(menu.M_CanvasScale()).toBe(5); // min(floor(1920/320)=6, floor(1080/200)=5)
+    setVid(640, 480);
+    expect(menu.M_CanvasScale()).toBe(2); // min(2, 2)
+    setVid(320, 240);
+    expect(menu.M_CanvasScale()).toBe(1); // min(1, 1)
+    setVid(320, 200);
+    expect(menu.M_CanvasScale()).toBe(1);
+  });
+
+  test("an explicit scr_menuscale clamps to the fit and never below 1", () => {
+    setVid(1920, 1080);
+    setMenuScale(2);
+    expect(menu.M_CanvasScale()).toBe(2);
+    setVid(320, 240);
+    expect(menu.M_CanvasScale()).toBe(1); // 2 clamped down to the fit
+    setVid(1920, 1080);
+    setMenuScale(9);
+    expect(menu.M_CanvasScale()).toBe(5); // clamped down to the fit
+    setMenuScale(0.25);
+    expect(menu.M_CanvasScale()).toBe(1); // clamped up to 1
+  });
+
+  test("the canvas is centred in both axes and canvas units map through it", () => {
+    setVid(1920, 1080);
+    expect(menu.M_CanvasX(0)).toBe(160); // (1920 - 320*5) / 2
+    expect(menu.M_CanvasY(0)).toBe(40); //  (1080 - 200*5) / 2
+    expect(menu.M_CanvasX(16)).toBe(160 + 16 * 5);
+    expect(menu.M_CanvasY(4)).toBe(40 + 4 * 5);
+  });
+
+  test("at 320x200 (scale 1) the classic Draw_Pic/Draw_TransPic call sequence is unchanged", () => {
+    setVid(320, 200);
+    drawCalls.length = 0;
+    menu.M_Main_Draw();
+    expect(drawCalls.map((c) => c.fn)).toEqual(["Draw_TransPic", "Draw_Pic", "Draw_TransPic", "Draw_TransPic"]);
+    expect(drawCalls[0].args.slice(0, 2)).toEqual([16, 4]); // gfx/qplaque.lmp, untranslated
+  });
+
+  test("at 1920x1080 the main menu's plaque draws scaled at the centred canvas position", () => {
+    setVid(1920, 1080);
+    drawCalls.length = 0;
+    menu.M_Main_Draw();
+
+    // Every pic goes through the scaled primitives, none through the plain ones.
+    expect(drawCalls.every((c) => c.fn === "Draw_ScaledPic" || c.fn === "Draw_ScaledTransPic")).toBe(true);
+
+    // gfx/qplaque.lmp at canvas (16, 4), scale 5.
+    const plaque = drawCalls[0];
+    expect(plaque.fn).toBe("Draw_ScaledTransPic");
+    expect(plaque.args[0]).toBe(160 + 16 * 5);
+    expect(plaque.args[1]).toBe(40 + 4 * 5);
+    expect(plaque.args[3]).toBe(5);
+
+    // gfx/mainmenu.lmp at canvas (72, 32) -- the third pic, ahead of the
+    // blinking gfx/menudot%i.lmp cursor.
+    const items = drawCalls[2];
+    expect(items.args[0]).toBe(160 + 72 * 5);
+    expect(items.args[1]).toBe(40 + 32 * 5);
+    expect(items.args[3]).toBe(5);
+  });
+
+  test("the whole drawn canvas stays inside the window at 1920x1080", () => {
+    setVid(1920, 1080);
+    drawCalls.length = 0;
+    menu.M_Main_Draw();
+    for (const c of drawCalls) {
+      const x = c.args[0];
+      const y = c.args[1];
+      expect(typeof x === "number" && x >= 160 && x < 160 + 320 * 5).toBe(true);
+      expect(typeof y === "number" && y >= 40 && y < 40 + 200 * 5).toBe(true);
+    }
+  });
+
+  test("M_DrawCharacter scales through the classic charset atlas past scale 1", () => {
+    setVid(1920, 1080);
+    drawCalls.length = 0;
+    menu.M_DrawCharacter(8, 32, 12);
+    expect(drawCalls.length).toBe(1);
+    const c = drawCalls[0];
+    expect(c.fn).toBe("Draw_GlyphAtlas");
+    // dstX, dstY, dstW, dstH, source kind
+    expect(c.args[0]).toBe(160 + 8 * 5);
+    expect(c.args[1]).toBe(40 + 32 * 5);
+    expect(c.args[2]).toBe(8 * 5);
+    expect(c.args[3]).toBe(8 * 5);
+    expect(c.args[4]).toBe("classic");
+    // source rect: charset entry 12 is row 0, column 12
+    expect(c.args[5]).toBe(12 * 8);
+    expect(c.args[6]).toBe(0);
+  });
+
+  test("M_DrawCharacter is byte-identical to the C at scale 1", () => {
+    setVid(320, 200);
+    drawCalls.length = 0;
+    menu.M_DrawCharacter(8, 32, 12);
+    expect(drawCalls).toEqual([{ fn: "Draw_Character", args: [8, 32, 12] }]);
+  });
+
+  test("M_Print scales its text through the same canvas transform", () => {
+    setVid(1920, 1080);
+    drawCalls.length = 0;
+    menu.M_Print(16, 32, "AB");
+    // Classic charset at a scale past 1 draws through Draw_GlyphAtlas.
+    expect(drawCalls.length).toBe(2);
+    expect(drawCalls[0].fn).toBe("Draw_GlyphAtlas");
+    expect(drawCalls[0].args[0]).toBe(160 + 16 * 5);
+    expect(drawCalls[0].args[1]).toBe(40 + 32 * 5);
+    expect(drawCalls[0].args[2]).toBe(8 * 5);
+    // the second glyph advances one scaled cell
+    expect(drawCalls[1].args[0]).toBe(160 + 16 * 5 + 8 * 5);
+  });
+
+  test("M_DrawTransPicTranslate carries its translation table into the scaled primitive", () => {
+    setVid(1920, 1080);
+    drawCalls.length = 0;
+    menu.M_DrawTransPicTranslate(112, 8, makePic(48, 56));
+    expect(drawCalls.length).toBe(1);
+    expect(drawCalls[0].fn).toBe("Draw_ScaledTransPic");
+    expect(drawCalls[0].args[0]).toBe(160 + 112 * 5);
+    expect(drawCalls[0].args[1]).toBe(40 + 8 * 5);
+    expect(drawCalls[0].args[3]).toBe(5);
+    expect(drawCalls[0].args[4]).toBe(menu.translationTable);
+  });
+});
+
+describe("G4 bounded menu list window", () => {
+  test("a list shorter than the window shows every row and no indicators", () => {
+    const w = menu.M_ListWindow(5, 3, 18, 0);
+    expect(w.top).toBe(0);
+    expect(w.visible).toBe(5);
+    expect(w.moreAbove).toBe(false);
+    expect(w.moreBelow).toBe(false);
+  });
+
+  test("a longer list is capped at the window and follows the cursor down", () => {
+    let w = menu.M_ListWindow(40, 0, 14, 0);
+    expect(w.visible).toBe(14);
+    expect(w.top).toBe(0);
+    expect(w.moreBelow).toBe(true);
+    expect(w.moreAbove).toBe(false);
+
+    // still inside the window: no scroll
+    w = menu.M_ListWindow(40, 13, 14, w.top);
+    expect(w.top).toBe(0);
+
+    // one past the bottom: scroll by exactly one row
+    w = menu.M_ListWindow(40, 14, 14, w.top);
+    expect(w.top).toBe(1);
+    expect(w.moreAbove).toBe(true);
+
+    // jump to the last row: the window ends on it
+    w = menu.M_ListWindow(40, 39, 14, w.top);
+    expect(w.top).toBe(40 - 14);
+    expect(w.moreBelow).toBe(false);
+  });
+
+  test("the cursor wrapping to the top scrolls the window back", () => {
+    let w = menu.M_ListWindow(40, 39, 14, 26);
+    expect(w.top).toBe(26);
+    w = menu.M_ListWindow(40, 0, 14, w.top);
+    expect(w.top).toBe(0);
+  });
+
+  test("a cursor outside the list leaves the window where it was", () => {
+    const w = menu.M_ListWindow(40, -1, 14, 7);
+    expect(w.top).toBe(7);
+  });
+
+  test("a shrinking list pulls the window back inside it", () => {
+    const w = menu.M_ListWindow(4, -1, 14, 26);
+    expect(w.top).toBe(0);
+    expect(w.visible).toBe(4);
+  });
+});
+
+describe("G4 level select scrolls and never draws outside its list area", () => {
+  const root = mkdtempSync(join(scratchRoot, "menu-g4-longlist-"));
+  const MANY = 40;
+  const MAPDB_TEXT = JSON.stringify({
+    episodes: [{ dir: "id1", name: "$m_quake" }],
+    maps: Array.from({ length: MANY }, (_v, i) => ({
+      title: `Level ${i}`,
+      bsp: `e1m${i}`,
+      episode: "id1",
+      game: "id1",
+      sp: true,
+    })),
+  });
+
+  beforeEach(() => {
+    setComSearchpaths(null);
+    mkdirSync(join(root, "id1"), { recursive: true });
+    writeFileSync(join(root, "id1", "mapdb.json"), MAPDB_TEXT);
+    COM_InitArgv(["q1ts", "-rerelease", root]);
+    COM_InitFilesystem();
+    vid.width = 1920;
+    vid.height = 1080;
+  });
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Every y a row of menu text or a character was drawn at, in canvas units. */
+  function drawnCanvasRows(): number[] {
+    const s = menu.M_CanvasScale();
+    const oy = menu.M_CanvasY(0);
+    const ys = new Set<number>();
+    for (const c of drawCalls) {
+      const y = c.args[1];
+      if (typeof y !== "number") continue;
+      ys.add((y - oy) / s);
+    }
+    return [...ys].sort((a, b) => a - b);
+  }
+
+  function openLevels(): void {
+    menu.menuState.m_singleplayer_cursor = 0;
+    setMState(menu.MStateT.m_singleplayer);
+    sv.active = false;
+    setKeyDest(KeydestT.key_menu);
+    menu.M_SinglePlayer_Key(K_ENTER); // -> episode picker
+    menu.M_QexEpisodes_Key(K_ENTER); // -> level select
+  }
+
+  test("a 40-map episode draws 14 level rows, all inside 40..184", () => {
+    openLevels();
+    drawCalls.length = 0;
+    menu.M_QexLevels_Draw();
+
+    const rows = drawnCanvasRows();
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0]).toBeGreaterThanOrEqual(4); // the plaque's own row
+    expect(rows[rows.length - 1]).toBeLessThanOrEqual(184);
+
+    // The list itself: 14 rows at 40, 48, ... 144.
+    const listRows = rows.filter((y) => y >= 40 && y <= 144);
+    expect(listRows).toEqual([40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144]);
+  });
+
+  test("walking the cursor past the window scrolls it and keeps every row in the area", () => {
+    openLevels();
+    for (let i = 0; i < 25; i++) menu.M_QexLevels_Key(K_DOWNARROW);
+    expect(menu.menuState.qexLevelCursor).toBe(25);
+
+    drawCalls.length = 0;
+    menu.M_QexLevels_Draw();
+    expect(menu.menuState.qexLevelTop).toBe(25 - 14 + 1);
+
+    const rows = drawnCanvasRows();
+    expect(rows[rows.length - 1]).toBeLessThanOrEqual(184);
+    // never fewer or more than the window's own 14 rows
+    expect(rows.filter((y) => y >= 40 && y <= 144).length).toBe(14);
+  });
+
+  test("the cursor parked on Start does not move the window, and Start is the last row", () => {
+    openLevels();
+    for (let i = 0; i < 25; i++) menu.M_QexLevels_Key(K_DOWNARROW);
+    menu.M_QexLevels_Draw();
+    const parked = menu.menuState.qexLevelTop;
+
+    menu.menuState.qexLevelCursor = MANY + 2; // the Start row
+    drawCalls.length = 0;
+    menu.M_QexLevels_Draw();
+    expect(menu.menuState.qexLevelTop).toBe(parked);
+    expect(drawnCanvasRows()).toContain(184); // Start
+  });
+
+  test("the whole screen stays inside the scaled canvas at 1920x1080", () => {
+    openLevels();
+    for (let i = 0; i < 25; i++) menu.M_QexLevels_Key(K_DOWNARROW);
+    drawCalls.length = 0;
+    menu.M_QexLevels_Draw();
+
+    for (const c of drawCalls) {
+      const x = c.args[0];
+      const y = c.args[1];
+      expect(typeof x === "number" && x >= 160 && x < 160 + 320 * 5).toBe(true);
+      expect(typeof y === "number" && y >= 40 && y < 40 + 200 * 5).toBe(true);
+    }
   });
 });

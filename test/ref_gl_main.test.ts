@@ -337,7 +337,7 @@ describe("SCR_CalcRefdef (gl_screen.c) -- F2b sb_lines scaling", () => {
     scr_sbarscale.string = String(v);
   }
 
-  test("scr_sbarscale at its default (1) leaves sb_lines on the unscaled 0/24/48 ladder -- byte-identical to pre-F2b", () => {
+  test("scr_sbarscale 1 leaves sb_lines on the unscaled 0/24/48 ladder -- byte-identical to pre-F2b", () => {
     vid.width = 320;
     vid.height = 200;
     scr_fov.value = 90; // CalcFov's own denominator -- 0 (this cvar's un-set default) is a Sys_Error

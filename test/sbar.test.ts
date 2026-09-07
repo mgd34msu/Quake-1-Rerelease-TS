@@ -407,6 +407,7 @@ describe("Sbar_DrawPic / Sbar_DrawTransPic scr_sbarscale (F2/F2b)", () => {
 
   test("at scale 2 (vid.width 640, scr_sbarscale 2), position and size both scale around a scale-tied anchor that stays centred and on screen", () => {
     vid.width = 640;
+    vid.height = 480; // G4: SbarScale's fit is min(floor(w/320), floor(h/144)) -- 200 rows would cap the bar at 1x
     scr_sbarscale.value = 2;
     cl.gametype = 0; // not GAME_DEATHMATCH
 
@@ -429,6 +430,7 @@ describe("Sbar_DrawPic / Sbar_DrawTransPic scr_sbarscale (F2/F2b)", () => {
 
   test("deathmatch drops the (vid.width-320*s)/2 centering term but still glues the bottom to the SCALED height, at scale 2", () => {
     vid.width = 640;
+    vid.height = 480; // G4: tall enough for the 2x fit
     scr_sbarscale.value = 2;
     cl.gametype = GAME_DEATHMATCH;
 
@@ -453,6 +455,7 @@ describe("Sbar_DrawPic / Sbar_DrawTransPic scr_sbarscale (F2/F2b)", () => {
     const savedLayout = cl_splitscreen_layout.value;
     try {
       vid.width = 1280; // two 640-wide side-by-side panes
+      vid.height = 480; // G4: tall enough for the 2x fit
       scr_sbarscale.value = 2;
       cl.gametype = 0;
       cl_splitscreen_layout.value = SPLIT_LAYOUT_SIDE_BY_SIDE;
@@ -462,15 +465,15 @@ describe("Sbar_DrawPic / Sbar_DrawTransPic scr_sbarscale (F2/F2b)", () => {
       SS_ActivateSeat(1); // the right-hand pane: x = halfW, width = vid.width - halfW
 
       const pane = SS_Canvas();
-      expect(pane).toEqual({ x: 640, y: 0, width: 640, height: 200 });
+      expect(pane).toEqual({ x: 640, y: 0, width: 640, height: 480 });
 
       Sbar_DrawPic(10, 5, sb_scorebar);
 
       // pane cap = max(1, pane.width/320) = 2, so scr_sbarscale 2 is NOT
       // capped down here (unlike a quarter-screen pane would be) -- anchor is
       // pane.x + (pane.width - 320*2)/2 = 640 + 0 = 640, pane.bottom -
-      // SBAR_HEIGHT*2 = 200 - 48 = 152.
-      expect(fake.calls).toEqual([{ fn: "Draw_ScaledPic", x: 640 + 10 * 2, y: 152 + 5 * 2, picName: "scorebar", scale: 2 }]);
+      // SBAR_HEIGHT*2 = 480 - 48 = 432.
+      expect(fake.calls).toEqual([{ fn: "Draw_ScaledPic", x: 640 + 10 * 2, y: 432 + 5 * 2, picName: "scorebar", scale: 2 }]);
     } finally {
       SS_ActivateSeat(0);
       SS_SetSeats(1);

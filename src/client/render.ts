@@ -640,8 +640,14 @@ export interface Renderer {
   // closed that identical seam gap) instead of dropping it -- reached only
   // when a fake `Renderer` omits this member; a real renderer never falls
   // into it.
+  //
+  // G4: `translation` is the scaled counterpart of Draw_TransPicTranslate's
+  // own last argument -- the Setup screen's player preview is the one pic in
+  // the menu tree that draws through a translation table, and it scales with
+  // the rest of the menu canvas. Optional and last, so sbar.ts's existing
+  // four-argument calls and both renderers' existing wiring are unchanged.
   Draw_ScaledPic?(x: number, y: number, pic: QpicT, scale: number): void;
-  Draw_ScaledTransPic?(x: number, y: number, pic: QpicT, scale: number): void;
+  Draw_ScaledTransPic?(x: number, y: number, pic: QpicT, scale: number, translation?: Uint8Array): void;
 
   //
   // the particle drawing half of r_part.c's R_DrawParticles

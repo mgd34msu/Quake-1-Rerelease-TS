@@ -22,7 +22,7 @@
 // (test/cmd.test.ts's own file header: "no console mock to intercept
 // Con_Printf's output").
 
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, afterAll, spyOn } from "bun:test";
 import {
   Con_Init,
   Con_Print,
@@ -42,6 +42,8 @@ import { re, type Renderer } from "../src/client/render";
 import { TextureT } from "../src/common/model";
 import { keyState, KeydestT } from "../src/client/keys";
 import { COM_InitArgv, setComGamedir } from "../src/common/common";
+import { Sys_Printf } from "../src/platform/sys";
+import { Text_LineHeight, con_font, scr_usekfont, test_ResetGlyphCache } from "../src/client/kfont_text";
 
 function requireConText(): Uint8Array {
   if (con_text === null) throw new Error("con_text not allocated -- Con_Init must run first");
@@ -146,6 +148,7 @@ describe("Con_Init / Con_CheckResize", () => {
 
   test("Con_CheckResize reflow at 640 keeps a known line", () => {
     vid.width = 320;
+    vid.height = 200; // scr_conscale auto (G4) is 1 below 600 rows, so the virtual width is the real one here
     Con_Init();
     expect(conState.con_linewidth).toBe(38);
 
@@ -153,6 +156,7 @@ describe("Con_Init / Con_CheckResize", () => {
     const text = requireConText();
 
     vid.width = 640;
+    vid.height = 480;
     Con_CheckResize();
     expect(conState.con_linewidth).toBe(78); // (640>>3)-2
 
@@ -330,5 +334,143 @@ describe("Con_DebugLog (D2: -condebug with a not-yet-existing -game directory)",
 
     Con_Init();
     expect(() => Con_Printf("this must not crash the engine\n")).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G3: the re-release pickup lines Mike reported as garbled notify rows, and
+// the console's own alt (|0x80) handling.
+// ---------------------------------------------------------------------------
+
+describe("G3: re-release print text reaches the console as printable code points", () => {
+  const savedFont = con_font.string;
+  const savedUsekfont = scr_usekfont.value;
+
+  beforeEach(() => {
+    sysState.isDedicated = false;
+    con_font.string = "classic";
+    scr_usekfont.value = 0;
+    test_ResetGlyphCache();
+  });
+
+  afterAll(() => {
+    con_font.string = savedFont;
+    con_font.value = 0;
+    scr_usekfont.value = savedUsekfont;
+    scr_usekfont.string = String(savedUsekfont);
+    test_ResetGlyphCache();
+    sysState.isDedicated = false;
+    test_ResetGlyphCache();
+  });
+
+  // The exact strings the re-release id1 progs.dat puts on the wire for a
+  // pickup, resolved through its own localization/loc_english.txt: read back
+  // off the touch functions of e1m1's weapon_nailgun / item_spikes /
+  // item_health with the retail data mounted (G3's own investigation).
+  const PICKUPS = ["You got the Nailgun\n", "You got the nails\n", "You receive 100 health\n"];
+
+  test("every byte a pickup line leaves in con_text is printable -- no control bytes reach the notify rows", () => {
+    vid.width = 320;
+    Con_Init();
+    const text = requireConText();
+    const { renderer } = makeFakeRenderer();
+    re.current = renderer;
+
+    for (const line of PICKUPS) {
+      text.fill(0x20, 0, CON_TEXTSIZE);
+      conState.con_x = 0;
+      Con_Print(line);
+      const offenders: string[] = [];
+      for (let i = 0; i < CON_TEXTSIZE; i++) {
+        const cell = text[i]! & 0x7f;
+        if (cell < 0x20 || cell === 0x7f) offenders.push(`${i}:0x${cell.toString(16)}`);
+      }
+      expect(offenders).toEqual([]);
+    }
+  });
+
+});
+
+describe("G3: console cells carry the alt bit as `alt`, not as a code point", () => {
+  test("a colored (\\002-prefixed) line still reaches Draw_Character as the same |0x80 byte the classic console drew", () => {
+    vid.width = 320;
+    con_font.string = "classic";
+    scr_usekfont.value = 0;
+    test_ResetGlyphCache();
+    Con_Init();
+    conState.con_linewidth = 4;
+    conState.con_totallines = 3;
+    conState.con_current = 1;
+    conState.con_backscroll = 0;
+    const text = requireConText();
+    text.fill(0x20, 0, CON_TEXTSIZE);
+    text[1 * 4 + 0] = "Y".charCodeAt(0) | 0x80;
+    text[1 * 4 + 1] = "o".charCodeAt(0);
+
+    const { renderer, draws } = makeFakeRenderer();
+    re.current = renderer;
+    Con_DrawConsole(24, false);
+
+    const row = draws.filter((d) => d.x === 8);
+    expect(row.length).toBeGreaterThan(0);
+    expect(row.some((d) => d.num === ("Y".charCodeAt(0) | 0x80))).toBe(true);
+    expect(draws.some((d) => d.x === 16 && d.num === "o".charCodeAt(0))).toBe(true);
+  });
+});
+
+describe("G3: multi-line console callers advance one drawn line, not a hardcoded 8", () => {
+  test("Con_DrawConsole's rows are Text_LineHeight() apart at ConsoleScale 1", () => {
+    vid.width = 320;
+    con_font.string = "classic";
+    scr_usekfont.value = 0;
+    test_ResetGlyphCache();
+    Con_Init();
+    conState.con_linewidth = 3;
+    conState.con_totallines = 4;
+    conState.con_current = 3;
+    conState.con_backscroll = 0;
+    const text = requireConText();
+    text.fill(0x20, 0, CON_TEXTSIZE);
+    for (let line = 0; line < 4; line++) text[line * 3] = "A".charCodeAt(0) + line;
+
+    const { renderer, draws } = makeFakeRenderer();
+    re.current = renderer;
+    Con_DrawConsole(40, false);
+
+    const ys = [...new Set(draws.map((d) => d.y))].sort((a, b) => a - b);
+    expect(ys.length).toBeGreaterThan(1);
+    for (let i = 1; i < ys.length; i++) expect(ys[i]! - ys[i - 1]!).toBe(Text_LineHeight());
+  });
+});
+
+describe("G3: Sys_Printf's control-byte filter", () => {
+  const chunks: string[] = [];
+  let spy: ReturnType<typeof spyOn<typeof process.stdout, "write">> | null = null;
+
+  beforeEach(() => {
+    chunks.length = 0;
+    spy = spyOn(process.stdout, "write").mockImplementation((chunk: unknown): boolean => {
+      chunks.push(typeof chunk === "string" ? chunk : String(chunk));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    spy?.mockRestore();
+    spy = null;
+  });
+
+  test("ESC (0x1b) is escaped as [1b] and never written to stdout raw", () => {
+    sysState.nostdout = 0;
+    Sys_Printf("%s", "\u001b\u001bYou got the nails\n");
+    const out = chunks.join("");
+    expect(out).toBe("[1b][1b]You got the nails\n");
+    expect(out.includes("\u001b")).toBe(false);
+  });
+
+  test("a re-release pickup line passes through unchanged -- nothing printable is escaped", () => {
+    sysState.nostdout = 0;
+    Sys_Printf("%s", "You got the nails\n");
+    expect(chunks.join("")).toBe("You got the nails\n");
   });
 });

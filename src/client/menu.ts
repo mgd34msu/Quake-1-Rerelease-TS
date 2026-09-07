@@ -199,6 +199,35 @@ centred one-line notices) measure that run with M_TextWidth instead of
 `length * 8`, which is the same number with the classic charset and the real
 drawn width with a proportional font.
 
+G4 addition (2026-09-06, "the menus scale to the window"): menu.c drew its
+fixed 320x200 layout at 1:1 device pixels, horizontally centred and pinned to
+the top of the screen (`x + ((vid.width - 320) >> 1)`), which on any modern
+window leaves the whole tree a postage stamp in the upper-left. The five
+primitives above (M_DrawCharacter, M_DrawText, M_DrawTransPic, M_DrawPic,
+M_DrawTransPicTranslate) are the only places this file reaches a renderer, so
+they now convert canvas units to window units through one transform --
+gl_draw.c GL_SetCanvas's CANVAS_MENU: a 320x200 canvas at screen.ts's
+MenuScale() (`scr_menuscale`, defaulting to the largest whole scale that
+fits), centred on both axes exactly as GL_SetCanvas centres it. Pics go
+through Draw_ScaledPic/Draw_ScaledTransPic (nearest neighbour), text through
+Text_Draw's own scale argument, and the conchars artwork M_DrawCharacter
+draws through the classic branch of Draw_GlyphAtlas -- the same atlas source
+Text_Draw's scaled classic path already uses. At scale 1 every one of the
+five emits exactly the call it did before, including the C's own
+`(vid.width - 320) >> 1` centring, so a 320x200 boot is unchanged.
+
+Nothing else moves: key handling, cursor tables and every column literal in
+this file stay in 320x200 units.
+
+The screens whose rows come from mounted data -- the mapdb episode picker and
+level select, Add-Ons and the characters.txt bots roster -- additionally draw
+a bounded window of rows that follows their cursor (M_ListWindow), because a
+full re-release install has more of them than 200 rows hold: a 32-map episode
+and a 173-entry bots roster both ran off the bottom of the screen and drew
+through gfx/qplaque.lmp on the way down. Those four screens also move their
+columns right, clear of the plaque. The Load/Save screens keep their original
+columns: 12 slots plus F3's Autosave row end at y 136, inside the canvas.
+
 M_DrawCharacter is deliberately NOT rerouted: its callers draw the blinking
 cursor (charset entries 12/13 and 10/11), the slider parts (128-131) and the
 level-select '*', none of which any kfont defines a glyph for -- they are
@@ -248,7 +277,7 @@ import { Sys_FileOpenRead, Sys_FileRead, Sys_FileClose, Sys_Error } from "../pla
 import { SAVEGAME_COMMENT_LENGTH } from "../common/quakedef";
 import { Com_sprintf } from "../common/sprintf";
 import { Con_ToggleConsole_f } from "./console";
-import { SCR_ModalMessage, SCR_BeginLoadingPlaque } from "./screen";
+import { SCR_ModalMessage, SCR_BeginLoadingPlaque, MenuScale, MENU_CANVAS_WIDTH, MENU_CANVAS_HEIGHT } from "./screen";
 import { Text_Draw, Text_RowScale, Text_Width } from "./kfont_text";
 import { S_LocalSound, S_ExtraUpdate } from "./snd_dma";
 import {
@@ -394,6 +423,14 @@ export const menuState = {
   qexSkill: 1, // Normal
   qexAddonsCursor: 0,
 
+  // G4 additions: the first visible row of each data-driven screen's bounded
+  // list window (see M_ListWindow). Not WinQuake C globals -- menu.c has no
+  // list long enough to need one.
+  qexEpisodeTop: 0,
+  qexLevelTop: 0,
+  qexAddonsTop: 0,
+  qexBotsTop: 0,
+
   // U40 additions -- see file header. Not WinQuake C globals; kept on this
   // same shared-state object per this file's own convention.
   qexBotsCursor: 0,
@@ -461,6 +498,121 @@ function ctfMounted(): boolean {
 }
 
 /*
+==============================================================================
+
+						MENU CANVAS
+
+gl_draw.c's GL_SetCanvas CANVAS_MENU: every menu screen in menu.c is laid
+out on a fixed 320x200 canvas, and that canvas is drawn scaled by
+`scr_menuscale` (screen.ts's MenuScale) and centred in the window. Position
+AND size both scale -- the five primitives below are the only places menu.c
+reaches a renderer, so this is the one transform the whole classic tree
+draws through.
+
+Layout, cursor movement and column math all stay in 320x200 units: only the
+five functions here convert. At scale 1 with a 320-wide window every one of
+them emits exactly the call menu.c's own body did, including the C's
+`x + ((vid.width - 320) >> 1)` centring for a wider window at scale 1.
+
+==============================================================================
+*/
+
+const MENU_GLYPH_SIZE = 8;
+
+/** The whole-pixel scale the menu canvas is drawn at. */
+export function M_CanvasScale(): number {
+  return MenuScale();
+}
+
+/** Canvas x -> window x. */
+export function M_CanvasX(cx: number): number {
+  const s = M_CanvasScale();
+  return Math.floor((vid.width - MENU_CANVAS_WIDTH * s) / 2) + cx * s;
+}
+
+/** Canvas y -> window y. */
+export function M_CanvasY(cy: number): number {
+  const s = M_CanvasScale();
+  return Math.floor((vid.height - MENU_CANVAS_HEIGHT * s) / 2) + cy * s;
+}
+
+/*
+==============================================================================
+
+						MENU LIST WINDOW
+
+G4: the screens whose rows come from mounted data (menu_content.ts's
+episodes, per-episode level lists, add-on gamedirs and the characters.txt
+bots roster) have no fixed row count -- a full re-release install lists far
+more rows than the 200-row canvas holds, and drawing them all ran the column
+off the bottom of the screen and through gfx/qplaque.lmp on the way down.
+Each of those screens draws a bounded window of rows that follows its own
+cursor instead, with a `^`/`v` indicator in the cursor gutter when there are
+rows outside the window.
+
+The geometry below is in canvas units. gfx/qplaque.lmp is 32x144 drawn at
+(16, 4), so it covers x 16..48 and y 4..148: a list column at x 72 with its
+cursor gutter at x 56 clears it entirely. The title pic on each of these
+screens is 24 tall at y 4, so the first list row sits at y 40 with the "more
+above" indicator in the row above it.
+
+==============================================================================
+*/
+
+const MENU_LIST_X = 72; // list text column, clear of the plaque
+const MENU_LIST_CURSOR_X = 56; // blinking cursor and scroll indicators
+const MENU_LIST_MARK_X = 64; // the level screen's selected-level '*'
+const MENU_LIST_TOP = 40; // first visible row
+const MENU_LIST_UP_Y = 32; // "more above" indicator
+
+/** A pure list: rows 40..176, "more below" at 184. */
+const MENU_LIST_ROWS = 18;
+/** The level screen: rows 40..144, "more below" at 152, then the three
+ * fixed rows below the gap. */
+const MENU_LEVEL_LIST_ROWS = 14;
+const MENU_LEVEL_FIXED_Y: readonly number[] = [168, 176, 184]; // Ruleset, Difficulty, Start
+/** The bots page: two fixed rows at 40/48, "more above" at 56, roster rows
+ * 64..160, "more below" at 168, Add Random at 176, the disabled note at 184. */
+const MENU_BOTS_LIST_TOP = 64;
+const MENU_BOTS_LIST_ROWS = 13;
+const MENU_BOTS_UP_Y = 56;
+const MENU_BOTS_DOWN_Y = 168;
+const MENU_BOTS_ADD_RANDOM_Y = 176;
+
+export interface MenuListWindowT {
+  /** index of the first visible row */
+  readonly top: number;
+  /** how many rows are drawn */
+  readonly visible: number;
+  readonly moreAbove: boolean;
+  readonly moreBelow: boolean;
+}
+
+/**
+ * The window of `capacity` rows out of `total` that contains `cursor`,
+ * scrolled as little as possible from `prevTop`. A `cursor` outside
+ * [0, total) leaves the window where it was (the level screen parks its
+ * cursor on the Ruleset/Difficulty/Start rows below the list).
+ */
+export function M_ListWindow(total: number, cursor: number, capacity: number, prevTop: number): MenuListWindowT {
+  const visible = total < capacity ? total : capacity;
+  let top = Number.isFinite(prevTop) ? Math.trunc(prevTop) : 0;
+  const maxTop = total - visible;
+  if (top > maxTop) top = maxTop;
+  if (top < 0) top = 0;
+  if (cursor >= 0 && cursor < total) {
+    if (cursor < top) top = cursor;
+    else if (cursor >= top + visible) top = cursor - visible + 1;
+  }
+  return { top, visible, moreAbove: top > 0, moreBelow: top + visible < total };
+}
+
+function M_DrawListIndicators(x: number, upY: number, downY: number, w: MenuListWindowT): void {
+  if (w.moreAbove) M_DrawCharacter(x, upY, "^".charCodeAt(0));
+  if (w.moreBelow) M_DrawCharacter(x, downY, "v".charCodeAt(0));
+}
+
+/*
 ================
 M_DrawCharacter
 
@@ -468,7 +620,22 @@ Draws one solid graphics character
 ================
 */
 export function M_DrawCharacter(cx: number, line: number, num: number): void {
-  getRenderer().Draw_Character(cx + ((vid.width - 320) >> 1), line, num);
+  const s = M_CanvasScale();
+  const x = M_CanvasX(cx);
+  const y = M_CanvasY(line);
+  const r = getRenderer();
+  if (s === 1 || r.Draw_GlyphAtlas === undefined) {
+    r.Draw_Character(x, y, num);
+    return;
+  }
+  // The conchars artwork this function's callers draw (the blinking cursor,
+  // the slider parts, the level-select '*') scaled through the same
+  // classic-charset atlas source Text_Draw's own scaled branch uses.
+  num = num & 0xff;
+  if (num === 32) return; // Draw_Character's own space check
+  const row = num >> 4;
+  const col = num & 15;
+  r.Draw_GlyphAtlas(x, y, MENU_GLYPH_SIZE * s, MENU_GLYPH_SIZE * s, { kind: "classic" }, col * 8, row * 8, 8, 8, null);
 }
 
 /* Every menu screen in menu.c is laid out on a fixed 8-pixel row grid. */
@@ -499,7 +666,7 @@ function M_TextWidth(str: string): number {
  * localized string, which menu.c had no way to draw at all -- wraps into the
  * charset instead of running off the end of it). */
 function M_DrawText(cx: number, cy: number, str: string, alt: boolean): void {
-  Text_Draw(cx + ((vid.width - 320) >> 1), cy, str, alt, menuTextScale());
+  Text_Draw(M_CanvasX(cx), M_CanvasY(cy), str, alt, menuTextScale() * M_CanvasScale());
 }
 
 export function M_Print(cx: number, cy: number, str: string): void {
@@ -508,6 +675,15 @@ export function M_Print(cx: number, cy: number, str: string): void {
 
 export function M_PrintWhite(cx: number, cy: number, str: string): void {
   M_DrawText(cx, cy, str, false);
+}
+
+/* G4: a menu label drawn at a MULTIPLE of the 8px row grid, for the one row
+ * that has to match a picture row's glyph size rather than the text grid --
+ * gfx/mp_menu.lmp is a fixed three-item graphic, so U40's fourth item has no
+ * art of its own. `mult` multiplies the canvas scale, so the label tracks
+ * scr_menuscale like everything else. */
+function M_PrintBig(cx: number, cy: number, str: string, mult: number): void {
+  Text_Draw(M_CanvasX(cx), M_CanvasY(cy), str, true, menuTextScale() * M_CanvasScale() * mult);
 }
 
 /* D7: a menu label the retail localization tables have a key for. `english`
@@ -574,11 +750,21 @@ function cachePic(path: string): QpicT {
 }
 
 export function M_DrawTransPic(x: number, y: number, pic: QpicT): void {
-  getRenderer().Draw_TransPic(x + ((vid.width - 320) >> 1), y, pic);
+  const s = M_CanvasScale();
+  const r = getRenderer();
+  const dx = M_CanvasX(x);
+  const dy = M_CanvasY(y);
+  if (s === 1 || r.Draw_ScaledTransPic === undefined) r.Draw_TransPic(dx, dy, pic);
+  else r.Draw_ScaledTransPic(dx, dy, pic, s);
 }
 
 export function M_DrawPic(x: number, y: number, pic: QpicT): void {
-  getRenderer().Draw_Pic(x + ((vid.width - 320) >> 1), y, pic);
+  const s = M_CanvasScale();
+  const r = getRenderer();
+  const dx = M_CanvasX(x);
+  const dy = M_CanvasY(y);
+  if (s === 1 || r.Draw_ScaledPic === undefined) r.Draw_Pic(dx, dy, pic);
+  else r.Draw_ScaledPic(dx, dy, pic, s);
 }
 
 export const identityTable = new Uint8Array(256);
@@ -603,7 +789,12 @@ export function M_BuildTranslationTable(top: number, bottom: number): void {
 }
 
 export function M_DrawTransPicTranslate(x: number, y: number, pic: QpicT): void {
-  getRenderer().Draw_TransPicTranslate(x + ((vid.width - 320) >> 1), y, pic, translationTable);
+  const s = M_CanvasScale();
+  const r = getRenderer();
+  const dx = M_CanvasX(x);
+  const dy = M_CanvasY(y);
+  if (s === 1 || r.Draw_ScaledTransPic === undefined) r.Draw_TransPicTranslate(dx, dy, pic, translationTable);
+  else r.Draw_ScaledTransPic(dx, dy, pic, s, translationTable);
 }
 
 export function M_DrawTextBox(x: number, y: number, width: number, lines: number): void {
@@ -1106,11 +1297,17 @@ export function M_QexEpisodes_Draw(): void {
   M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
 
   const episodes = qexModel().episodes;
-  for (let i = 0; i < episodes.length; i++) {
-    M_Print(48, 32 + i * 8, LocalizedEpisodeName(episodes[i].nameKey, qexLocLoaded));
-  }
+  const w = M_ListWindow(episodes.length, menuState.qexEpisodeCursor, MENU_LIST_ROWS, menuState.qexEpisodeTop);
+  menuState.qexEpisodeTop = w.top;
 
-  if (episodes.length > 0) M_DrawCharacter(32, 32 + menuState.qexEpisodeCursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
+  for (let i = 0; i < w.visible; i++) {
+    M_Print(MENU_LIST_X, MENU_LIST_TOP + i * 8, LocalizedEpisodeName(episodes[w.top + i].nameKey, qexLocLoaded));
+  }
+  M_DrawListIndicators(MENU_LIST_CURSOR_X, MENU_LIST_UP_Y, MENU_LIST_TOP + MENU_LIST_ROWS * 8, w);
+
+  if (episodes.length > 0) {
+    M_DrawCharacter(MENU_LIST_CURSOR_X, MENU_LIST_TOP + (menuState.qexEpisodeCursor - w.top) * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
+  }
 }
 
 export function M_QexEpisodes_Key(key: number): void {
@@ -1174,31 +1371,37 @@ export function M_QexLevels_Draw(): void {
   M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
 
   const maps = episode.maps;
-  const rulesetRow = maps.length;
-  const difficultyRow = maps.length + 1;
-  const startRow = maps.length + 2;
+  const cursor = menuState.qexLevelCursor;
 
-  for (let i = 0; i < maps.length; i++) {
-    M_Print(24, 32 + i * 8, maps[i].title);
+  // The cursor only steers the window while it is ON a level row; parked on
+  // Ruleset/Difficulty/Start it leaves the window where the player left it.
+  const w = M_ListWindow(maps.length, cursor < maps.length ? cursor : -1, MENU_LEVEL_LIST_ROWS, menuState.qexLevelTop);
+  menuState.qexLevelTop = w.top;
+
+  for (let i = 0; i < w.visible; i++) {
+    M_Print(MENU_LIST_X, MENU_LIST_TOP + i * 8, maps[w.top + i].title);
   }
-  if (menuState.qexSelectedLevel >= 0 && menuState.qexSelectedLevel < maps.length) {
-    M_DrawCharacter(16, 32 + menuState.qexSelectedLevel * 8, "*".charCodeAt(0));
+  const selected = menuState.qexSelectedLevel;
+  if (selected >= w.top && selected < w.top + w.visible) {
+    M_DrawCharacter(MENU_LIST_MARK_X, MENU_LIST_TOP + (selected - w.top) * 8, "*".charCodeAt(0));
   }
+  M_DrawListIndicators(MENU_LIST_CURSOR_X, MENU_LIST_UP_Y, MENU_LIST_TOP + MENU_LEVEL_LIST_ROWS * 8, w);
 
   const ruleset = RULESETS[menuState.qexRulesetIndex].id;
-  M_Print(24, 32 + rulesetRow * 8, `Ruleset: ${RULESETS[menuState.qexRulesetIndex].name}`);
+  M_Print(MENU_LIST_X, MENU_LEVEL_FIXED_Y[0], `Ruleset: ${RULESETS[menuState.qexRulesetIndex].name}`);
 
   const diffCount = EpisodeAllowsNightmare(episode.dir, ruleset) ? 4 : 3;
   if (menuState.qexSkill >= diffCount) menuState.qexSkill = diffCount - 1;
   M_Print(
-    24,
-    32 + difficultyRow * 8,
+    MENU_LIST_X,
+    MENU_LEVEL_FIXED_Y[1],
     `${M_Loc("$m_difficulty", "Difficulty")}: ${M_DifficultyName(menuState.qexSkill)}`,
   );
 
-  M_Print(24, 32 + startRow * 8, M_Loc("$m_start", "Start"));
+  M_Print(MENU_LIST_X, MENU_LEVEL_FIXED_Y[2], M_Loc("$m_start", "Start"));
 
-  M_DrawCharacter(8, 32 + menuState.qexLevelCursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
+  const cursorY = cursor < maps.length ? MENU_LIST_TOP + (cursor - w.top) * 8 : (MENU_LEVEL_FIXED_Y[cursor - maps.length] ?? MENU_LEVEL_FIXED_Y[0]);
+  M_DrawCharacter(MENU_LIST_CURSOR_X, cursorY, 12 + (Math.trunc(host.realtime * 4) & 1));
 }
 
 export function M_QexLevels_Key(key: number): void {
@@ -1305,9 +1508,13 @@ export function M_QexAddons_Draw(): void {
   M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
 
   const rows = qexAddonsRows();
-  for (let i = 0; i < rows.length; i++) M_Print(40, 32 + i * 8, rows[i]);
+  const w = M_ListWindow(rows.length, menuState.qexAddonsCursor, MENU_LIST_ROWS, menuState.qexAddonsTop);
+  menuState.qexAddonsTop = w.top;
 
-  M_DrawCharacter(24, 32 + menuState.qexAddonsCursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
+  for (let i = 0; i < w.visible; i++) M_Print(MENU_LIST_X, MENU_LIST_TOP + i * 8, rows[w.top + i]);
+  M_DrawListIndicators(MENU_LIST_CURSOR_X, MENU_LIST_UP_Y, MENU_LIST_TOP + MENU_LIST_ROWS * 8, w);
+
+  M_DrawCharacter(MENU_LIST_CURSOR_X, MENU_LIST_TOP + (menuState.qexAddonsCursor - w.top) * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
 }
 
 export function M_QexAddons_Key(key: number): void {
@@ -1374,10 +1581,11 @@ export function M_MultiPlayer_Draw(): void {
   M_DrawTransPic(72, 32, cachePic("gfx/mp_menu.lmp"));
 
   // U40 addition: gfx/mp_menu.lmp is a fixed 3-item graphic (Join a
-  // Game/New Game/Setup), so a fourth item has no matching art -- printed as
-  // plain menu text below it instead, the same way M_QexAddons_Draw prints
-  // its own rows with no bespoke pic.
-  if (BotsMenuAvailable()) M_Print(72, 92, "Bots");
+  // Game/New Game/Setup), so a fourth item has no matching art -- drawn as
+  // text instead. G4: at twice the text grid, centred in the same 20-pixel
+  // row pitch the three picture rows use, so it reads as a fourth row of
+  // that graphic rather than as a caption under it.
+  if (BotsMenuAvailable()) M_PrintBig(72, 32 + 3 * 20 + 2, "BOTS", 2);
 
   const f = Math.trunc(host.time * 10) % 6;
 
@@ -1465,23 +1673,34 @@ export function M_QexBots_Draw(): void {
 
   const model = BuildBotsPageModel(currentOrSelectedMapName());
 
-  M_Print(16, 32, M_Loc("$m_num_bots", "Bot Count"));
-  M_Print(200, 32, `${model.count}`);
-  M_Print(16, 40, M_Loc("$m_bot_skill", "Bot Skill"));
-  M_Print(200, 40, model.skillNames[model.skillIndex] ?? "");
+  M_Print(MENU_LIST_X, MENU_LIST_TOP, M_Loc("$m_num_bots", "Bot Count"));
+  M_Print(232, MENU_LIST_TOP, `${model.count}`);
+  M_Print(MENU_LIST_X, MENU_LIST_TOP + 8, M_Loc("$m_bot_skill", "Bot Skill"));
+  M_Print(232, MENU_LIST_TOP + 8, model.skillNames[model.skillIndex] ?? "");
 
-  const rowY: number[] = [32, 40];
-  let y = 56;
-  for (const row of model.roster) {
-    M_Print(16, y, row.funName);
+  // The roster is the only unbounded part of this page: rows 0 and 1 are Bot
+  // Count/Bot Skill and the last row is Add Random, so the window runs over
+  // cursor positions 2 .. roster.length + 1.
+  const cursor = menuState.qexBotsCursor;
+  const rosterCursor = cursor >= 2 && cursor < model.roster.length + 2 ? cursor - 2 : -1;
+  const w = M_ListWindow(model.roster.length, rosterCursor, MENU_BOTS_LIST_ROWS, menuState.qexBotsTop);
+  menuState.qexBotsTop = w.top;
+
+  for (let i = 0; i < w.visible; i++) {
+    const row = model.roster[w.top + i];
+    const y = MENU_BOTS_LIST_TOP + i * 8;
+    M_Print(MENU_LIST_X, y, row.funName);
     M_Print(240, y, row.active ? M_Loc("$m_kick", "Kick") : "Add");
-    rowY.push(y);
-    y += 8;
   }
-  M_Print(16, y, "Add Random");
-  rowY.push(y);
+  M_DrawListIndicators(MENU_LIST_CURSOR_X, MENU_BOTS_UP_Y, MENU_BOTS_DOWN_Y, w);
 
-  M_DrawCharacter(8, rowY[menuState.qexBotsCursor] ?? rowY[0], 12 + (Math.trunc(host.realtime * 4) & 1));
+  M_Print(MENU_LIST_X, MENU_BOTS_ADD_RANDOM_Y, "Add Random");
+
+  let cursorY: number;
+  if (cursor <= 1) cursorY = MENU_LIST_TOP + cursor * 8;
+  else if (rosterCursor >= 0) cursorY = MENU_BOTS_LIST_TOP + (rosterCursor - w.top) * 8;
+  else cursorY = MENU_BOTS_ADD_RANDOM_Y;
+  M_DrawCharacter(MENU_LIST_CURSOR_X, cursorY, 12 + (Math.trunc(host.realtime * 4) & 1));
 
   if (!BotsPageEnabled(model)) {
     const note = !model.available
@@ -2351,6 +2570,13 @@ export function M_Menu_Video_f(): void {
 }
 
 export function M_Video_Draw(): void {
+  // vid_menu.c's own VID_MenuDraw draws gfx/vidmodes.lmp centred at y 4
+  // above its rows; this port's video menu lives in src/platform/vid_menu.ts
+  // (shared with the QuakeWorld client) and had no title of its own, so the
+  // screen came up as four bare rows. Drawn here, ahead of the hook, so both
+  // clients get it and vid_menu.ts stays the one place the ROWS are laid out.
+  const p = getRenderer().Draw_CachePic("gfx/vidmodes.lmp");
+  if (p !== null) M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
   vidMenuHooks.vid_menudrawfn?.();
 }
 

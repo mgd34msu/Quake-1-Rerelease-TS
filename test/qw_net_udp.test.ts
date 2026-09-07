@@ -14,6 +14,7 @@ import {
   net_local_adr,
   net_from,
   NET_Init,
+  NET_LocalAdr,
   NET_Ready,
   NET_Shutdown,
   NET_GetPacket,
@@ -26,6 +27,8 @@ import {
   NET_IsClientLegal,
   PORT_ANY,
 } from "../src/qw/net_udp";
+import { com_argc, com_argv, setComArgc, setComArgv } from "../src/common/common";
+import { PORT_CLIENT } from "../src/qw/protocol";
 
 // This unit's assigned UDP range is 26200-26299.
 const TEST_PORT = 26220;
@@ -254,5 +257,50 @@ describe("NET_Init bind failure reaches the caller synchronously", () => {
       blocker.close();
       setHostShutdown(null);
     }
+  });
+});
+
+/*
+`-clientport <n>` (src/qw/net_udp.ts's addition, no C equivalent): the port
+the CLIENT socket binds, for a machine that already has a QuakeWorld client
+sitting on the compiled-in PORT_CLIENT -- a listen server's own client half,
+whose guest would otherwise die in UDP_OpenSocket's bind. The server side
+reads `-port` and is untouched by it.
+
+Rule 15: this block owns the module's sockets for its duration (the file's
+top-level socket is already gone by here, closed by the block above), and it
+saves and restores com_argc/com_argv, which COM_CheckParm reads.
+*/
+describe("-clientport", () => {
+  const OVERRIDE_PORT = 26223;
+  const SERVER_PORT = 26224;
+  let savedArgc = 0;
+  let savedArgv: string[] = [];
+
+  beforeAll(() => {
+    savedArgc = com_argc;
+    savedArgv = com_argv;
+    NET_Shutdown();
+    setComArgv(["quake", "-clientport", String(OVERRIDE_PORT)]);
+    setComArgc(3);
+  });
+
+  afterAll(() => {
+    NET_Shutdown();
+    setComArgv(savedArgv);
+    setComArgc(savedArgc);
+  });
+
+  test("the client socket binds the port it names instead of PORT_CLIENT", async () => {
+    NET_Init(PORT_CLIENT);
+    await NET_Ready();
+    expect(NET_LocalAdr("client").port).toBe(OVERRIDE_PORT);
+    expect(OVERRIDE_PORT).not.toBe(PORT_CLIENT);
+  });
+
+  test("the server socket still binds the port its own caller asked for", async () => {
+    NET_Init(SERVER_PORT, "server");
+    await NET_Ready();
+    expect(NET_LocalAdr("server").port).toBe(SERVER_PORT);
   });
 });

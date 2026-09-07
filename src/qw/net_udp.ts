@@ -390,6 +390,27 @@ function NET_GetLocalAddress(side: NetSideT): void {
 }
 
 /*
+`-clientport <n>` (addition, no C equivalent): QW/client/cl_main.c's Host_Init
+calls NET_Init(PORT_CLIENT), and PORT_CLIENT is 27001 compiled in, which is
+all a machine running ONE qwcl ever needs -- the C's two binaries could not
+put a second QuakeWorld client on a host anyway. This binary can be a
+QuakeWorld LISTEN server, whose own client half holds 27001, and a second
+QuakeWorld client on the same machine (another player at the same box, a seat
+joining that listen server) then has no port to bind and dies in
+UDP_OpenSocket's Sys_Error. This parameter moves the CLIENT socket, the way
+`-port` moves the server's; both defaults are unchanged, and a value that is
+not a usable port number is ignored rather than taken as 0 (PORT_ANY).
+*/
+function clientPort(port: number): number {
+  const i = COM_CheckParm("-clientport");
+  if (i === 0 || i >= com_argv.length - 1) return port;
+  const raw = com_argv[i + 1];
+  if (raw === undefined) return port;
+  const n = Q_atoi(raw);
+  return n > 0 && n < 65536 ? n : port;
+}
+
+/*
 ====================
 NET_Init
 ====================
@@ -399,7 +420,7 @@ export function NET_Init(port: number, side: NetSideT = "client"): void {
   // open the single socket to be used for all communications
   // (one per side in this port -- see the file header's U41 note)
   //
-  net_sockets[side] = UDP_OpenSocket(port);
+  net_sockets[side] = UDP_OpenSocket(side === "client" ? clientPort(port) : port);
 
   //
   // init the message buffer

@@ -172,6 +172,37 @@ export const scr_showturtle = new CvarT("showturtle", "0");
 export const scr_showpause = new CvarT("showpause", "1");
 export const scr_printspeed = new CvarT("scr_printspeed", "8");
 
+/* The fixed canvas every menu screen in menu.c is laid out on. */
+export const MENU_CANVAS_WIDTH = 320;
+export const MENU_CANVAS_HEIGHT = 200;
+
+// G4 addition, not from screen.c: Ironwail/QuakeSpasm gl_screen.c's
+// `cvar_t scr_menuscale = {"scr_menuscale", "1", CVAR_ARCHIVE}`, the scale
+// gl_draw.c's GL_SetCanvas applies for CANVAS_MENU. This port's default is 0
+// rather than 1, which means "fit the window" (MenuFitScale below): at
+// anything past 320x200 a scale of 1 leaves the whole classic menu tree a
+// 320x200 stamp in the middle of the window.
+export const scr_menuscale = new CvarT("scr_menuscale", "0", true);
+
+/* The largest whole-pixel scale at which the menu's 320x200 canvas still
+ * fits the window -- gl_draw.c GL_SetCanvas's
+ * `s = q_min(vid.guiwidth/320, vid.guiheight/200)`, floored to an integer so
+ * a nearest-neighbour blit lands on whole source pixels. */
+export function MenuFitScale(): number {
+  const fit = Math.min(Math.floor(vid.width / MENU_CANVAS_WIDTH), Math.floor(vid.height / MENU_CANVAS_HEIGHT));
+  return fit < 1 ? 1 : fit;
+}
+
+/* GL_SetCanvas's `s = CLAMP(1.0f, scr_menuscale.value, s)`, with 0 (this
+ * port's default) meaning the fit itself. */
+export function MenuScale(): number {
+  const fit = MenuFitScale();
+  const v = scr_menuscale.value;
+  if (!(v > 0)) return fit;
+  if (v < 1) return 1;
+  return v > fit ? fit : v;
+}
+
 let scr_initialized = false; // ready to draw
 
 let scr_ram: QpicT | null = null;
@@ -426,6 +457,7 @@ export function SCR_Init(): void {
   Cvar_RegisterVariable(scr_showpause);
   Cvar_RegisterVariable(scr_centertime);
   Cvar_RegisterVariable(scr_printspeed);
+  Cvar_RegisterVariable(scr_menuscale); // G4: the menu canvas scale
   KfontText_RegisterCvars(); // U19: scr_usekfont, con_font, scr_conscale, scr_sbarscale, scr_crosshairscale
 
   //

@@ -389,6 +389,41 @@ describe("draw.ts (WinQuake draw.c)", () => {
     expect(vid.buffer?.[3]).toBe(SENTINEL);
   });
 
+  test("G4: Draw_ScaledTransPic remaps every drawn pixel through a translation table", () => {
+    vid.buffer = freshVidBuffer();
+    const pic = new QpicT();
+    pic.width = 2;
+    pic.height = 1;
+    pic.data = new Uint8Array([5, 255]);
+
+    const translation = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) translation[i] = i;
+    translation[5] = 77;
+
+    Draw_ScaledTransPic(0, 0, pic, 2, translation);
+
+    // source index 5 is drawn as its translated index 77, over the whole 2x2 block
+    expect(vid.buffer?.[0]).toBe(77);
+    expect(vid.buffer?.[1]).toBe(77);
+    expect(vid.buffer?.[vid.rowbytes]).toBe(77);
+    expect(vid.buffer?.[vid.rowbytes + 1]).toBe(77);
+    // TRANSPARENT_COLOR is still skipped BEFORE the table is consulted
+    expect(vid.buffer?.[2]).toBe(SENTINEL);
+    expect(vid.buffer?.[3]).toBe(SENTINEL);
+  });
+
+  test("G4: Draw_ScaledTransPic with no table is unchanged (the F2 callers pass none)", () => {
+    vid.buffer = freshVidBuffer();
+    const pic = new QpicT();
+    pic.width = 1;
+    pic.height = 1;
+    pic.data = new Uint8Array([5]);
+
+    Draw_ScaledTransPic(0, 0, pic, 2);
+    expect(vid.buffer?.[0]).toBe(5);
+    expect(vid.buffer?.[vid.rowbytes + 1]).toBe(5);
+  });
+
   test("Draw_TransPic skips TRANSPARENT_COLOR (255)", () => {
     vid.buffer = freshVidBuffer();
     const pic = new QpicT();

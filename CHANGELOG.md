@@ -75,6 +75,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clock they touch so the dedicated boot test passes in any file order.
 
 ### Changed
+- The classic conchars charset is the default text source for the menus,
+  console, notify lines, centerprints and HUD on ALL content, including the
+  2021 re-release trees: `con_font` now defaults to `classic` (it was
+  `kfont`). `con_font kfont` / `con_font ttf:<name>` still switch every
+  surface to a high-resolution font. `scr_usekfont` stopped being a
+  whole-UI font switch and became the unicode-coverage opt-in its own
+  comment in the re-release's `quake.rc` describes ("opt into unicode font
+  rendering"): with the charset selected, a code point it has no cell for
+  (Cyrillic, Greek, CJK out of a `loc_<lang>.txt`) is drawn from
+  `fonts/qfont.kfont` fitted to the same row, and everything the charset can
+  draw still comes from the charset. Mixing is per code point, so a Russian
+  label draws its Latin and Cyrillic letters side by side at one row height.
 - The engine writes to a per-user directory by default instead of the game
   install: `$XDG_DATA_HOME/q1rets` (`~/.local/share/q1rets` when unset),
   mirrored per game directory and created on demand, mounted at the head of
@@ -132,6 +144,25 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- Text drawn through the kfont/TTF path landed at the font's raw atlas size
+  instead of the text cell its caller had laid out, so with a
+  high-resolution font selected (which the re-release trees got by default)
+  the console, the notify lines, centerprints and the HUD drew 28-pixel
+  letters on an 8-pixel grid: rows overlapped the rows beneath them, glyphs
+  overlapped their right-hand neighbours, and a string mixing font glyphs
+  with charset fallbacks for the code points the retail `qfont.kfont` omits
+  (`:`, `?`, `(`, `'` and 23 more) drew at two sizes on one row. `Text_Draw`
+  and `Text_Width`'s `scale` is now stated in classic text cells for every
+  font source, `Text_LineHeight` reports the drawn line height rather than
+  the atlas's declaration, and `Text_RowScale` is 1 at the classic 8-pixel
+  row -- which also un-squeezed the menu rows F14 had been shrinking to 8/28
+  of their size (the Options, Keys, Multiplayer and New Game screens).
+- The console's scrollback stores a "colored line" as the charset's high bit
+  (`c | 0x80`); that whole byte was being handed to the glyph provider as a
+  CODE POINT, so a coloured `Y` asked for U+00D9 and a kfont answered with
+  an accented capital. The console now splits the cell into a code point and
+  the alt flag, which reaches the charset's own golden-row select exactly as
+  before and a golden tint on a kfont glyph.
 - A zero-byte, truncated or otherwise malformed `.bsp` is refused by name
   (`Mod_LoadBrushModel: <map> is empty` / `is too short` / `has unsupported
   version` / `has lump N out of range`) on both servers, which keep running
@@ -291,6 +322,40 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   every restart, so `vid_ref gl; vid_restart` works after a `-vid_ref soft`
   boot. Minimizing the window releases the mouse like losing focus, and
   restoring re-activates only when the window has input focus.
+- The menus, status bar and console drew at 1x on a 320x200 layout in the
+  top-left of any larger window (8 px glyphs on a 1080p screen). The
+  classic menu tree now draws through one centred 320x200 canvas at
+  `scr_menuscale` (default auto: 3x at 720p, 5x at 1080p) in both renderers,
+  with the episode, add-on, level, Load/Save and Bots lists paged to the
+  rows that fit; the status bar follows `scr_sbarscale` auto (4x at 720p,
+  6x at 1080p) and the console, notify lines and centerprint follow
+  `scr_conscale` auto (2x at 720p, 3x at 1080p). The Multiplayer menu's
+  "Bots" row is drawn at the picture rows' height, and the Video menu has
+  its `gfx/vidmodes.lmp` plaque.
+- A `connect host:port` typed from a default (NetQuake) boot reached the
+  QuakeWorld server and was then torn down by quake.rc's `startdemos`,
+  which still sat behind the boot cfg in the command buffer: the
+  QuakeWorld connect branch now clears the demo loop like WinQuake's
+  `Host_Connect_f` does. `-clientport <n>` (an addition) moves the
+  QuakeWorld client's fixed UDP port 27001 so two clients, or a listen
+  server's own client and a guest, can share one host.
+- A `-vid_ref gl` boot whose config.cfg had archived `vid_ref "soft"` ran GL
+  while the cvar still read soft, so the first `vid_restart` (or the video
+  menu's Apply) silently dropped to the software renderer. Host_Init now
+  re-asserts the command-line renderer after quake.rc and everything it
+  execs have run.
+- The Multiplayer menu's Bots page "Add" row (and `addbot` at the console)
+  added a bot that the `bot_count` auto-fill kicked again on the next server
+  frame, because the fill compared `bot_count` to the whole roster. It now
+  governs only the bots it created: `bot_count 3` plus two hand-added bots
+  is five bots, and a hand-added bot stays until `kickbot`. The "server is
+  full" line is printed only for a hand-typed `addbot`, not once per frame
+  by the auto-fill.
+- A listen server booted without `-listen` had a fixed pool of 4 client
+  slots, so `maxplayers 8` silently clamped to 4 and the Bots page could
+  never seat a fourth bot. The pool is always the full 16-entry scoreboard
+  (`svs.maxclients` still carries the `-listen`/`-dedicated`/`maxplayers`
+  choice), as the re-release hosts 16 from a plain boot.
 - Every mg1 Horde map aborted the client with "Illegible server message":
   when the player's weapon field is 0 (horde.qc spawns it that way) the
   non-`standard_quake` clientdata writer skipped the weapon byte the client

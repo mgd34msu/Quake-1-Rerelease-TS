@@ -506,6 +506,16 @@ export function CL_Connect_f(): void {
   }
 
   if (connectProfileFor(server, cl_protocol.string) === "qw") {
+    // U38 addition, with no line behind it in QW/client/cl_main.c's
+    // CL_Connect_f: qwcl never read id1's quake.rc, so nothing there could
+    // arm the demo loop, while this binary's QuakeWorld connect can be typed
+    // from a NetQuake boot that did. quake.rc's `startdemos` sits BEHIND the
+    // boot cfg in the command buffer, so it runs after the handshake has
+    // opened, and Host_Startdemos_f's `cls.demonum != -1` guard would start
+    // demo1 and disconnect the QuakeWorld session. WinQuake's own
+    // Host_Connect_f stops the loop for exactly this reason (the assignment
+    // on the NetQuake branch below); one binary has to do it on both.
+    cls.demonum = -1; // stop demo loop in case this fails
     CL_Disconnect();
     CL_InitQwProfile();
     setClientProfile("qw");

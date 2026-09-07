@@ -8,7 +8,10 @@ Every seat is the one compiled binary; there is no separate `qwsv`/`qwcl`
 build any more (`qwsv` IS `src/main.ts -dedicated -qw`, `qwcl` IS
 `src/main.ts -qw`). The scenarios run STRICTLY one after another, because
 QuakeWorld's client port is the hardcoded `PORT_CLIENT = 27001` in
-src/qw/protocol.ts and only one QuakeWorld client can be alive on a host:
+src/qw/protocol.ts and only one QuakeWorld client can be alive on a host at
+that port. Scenario 4 needs two at once -- a listen server's own client half
+plus a guest -- and moves the guest's socket with src/qw/net_udp.ts's
+`-clientport`, which is the only place in this family that does:
 
   1. `-dedicated -qw` server with qwprogs on the asked-for protocol, one `-qw`
      client: the player enters, moves and fires. A client that could not read
@@ -53,10 +56,11 @@ import {
   startPolledQwClient,
   startServer,
   summary,
+  type SeatT,
   svQuery,
   waitFor,
 } from "./t_lib";
-import { homedirArgs, homedirRoot } from "./q1data";
+import { homedirArgs } from "./q1data";
 
 const protocolArg = argValue("protocol", "28");
 const basePort = Number(argValue("port", "26340"));
@@ -190,11 +194,24 @@ await sleep(1000);
 // 4. a QuakeWorld LISTEN server from a default boot (--protocol 28 only)
 // ---------------------------------------------------------------------------
 
+const extraSeats: SeatT[] = [];
+
 if (protocolArg === "28") {
   const port4 = basePort + 3;
-  const listen = startPolledQwClient(
+  /*
+  A DEFAULT boot, so its opening cfg has to sit somewhere a NETQUAKE search
+  path reaches. `<basedir>/qw`, where startPolledQwClient writes, is mounted
+  only once the QuakeWorld profile comes up -- which is what this cfg exists
+  to cause -- so the seat runs out of a writable `-game` directory under the
+  homedir, the same place scenario 2's NetQuake seat runs from. `-basedir
+  BASE` stays: `sv_profile qw` + `map dm1` needs this family's own writable
+  `qw/qwprogs.dat` (t_lib's qwBasedir).
+  */
+  const listenGame = "e2e_t_qwl";
+  const listen = startPolledClient(
     "t_qw_listen_host",
-    ["-basedir", BASE, "-homedir", homedirRoot(), "-nosound", "-port", String(port4)],
+    listenGame,
+    ["-basedir", BASE, ...homedirArgs(listenGame), "-game", listenGame, "-nosound", "-port", String(port4)],
     ["cl_shownet 0", "disconnect", "sv_profile qw", "map dm1"],
   );
   const spawned = await waitFor(listen.seat, /Server protocol \d+ \(flags/, 150000);
@@ -211,18 +228,40 @@ if (protocolArg === "28") {
     (readLog(listen.seat).match(/.*entered the game.*/g) ?? []).slice(-1).join("") || `the listen server never announced a player entering (${listen.seat.log})`,
   );
 
-  const guest = startPolledQwClient("t_qw_listen_guest", ["-qw", "-basedir", BASE, "-nosound"], ["cl_shownet 0", `connect 127.0.0.1:${port4}`, "+forward", "+attack"]);
-  const twoIn = await waitFor(listen.seat, /entered the game[\s\S]*entered the game/, 180000);
+  /*
+  Two things the guest needs that a lone QuakeWorld client does not.
+
+  `-clientport`, because the listen host's own client half is already sitting
+  on QuakeWorld's hardcoded PORT_CLIENT (27001) and a second QuakeWorld client
+  on this machine has nothing left to bind -- it dies in UDP_OpenSocket's
+  Sys_Error. The two players are on one box only because this is a test; the
+  parameter is src/qw/net_udp.ts's addition for exactly that case.
+
+  And a name of its own, because the listen process prints "entered the game"
+  TWICE for ONE player: once where its server half broadcasts the line and
+  once where its client half receives it. A count of that line is therefore no
+  evidence that a second player arrived. The guest's cfg runs under the
+  QuakeWorld profile, where `name` is QW's userinfo cvar, so the name reaches
+  the server in the connect's userinfo string and the check below reads it out
+  of the listen server's own announcement.
+  */
+  const guest = startPolledQwClient(
+    "t_qw_listen_guest",
+    ["-qw", "-basedir", BASE, "-nosound", "-clientport", String(port4 + 1)],
+    ["cl_shownet 0", "name qwguest", `connect 127.0.0.1:${port4}`, "+forward", "+attack"],
+  );
+  const guestIn = await waitFor(listen.seat, /qwguest entered the game/, 180000);
   check(
     "a -qw client joins the listen server",
-    twoIn,
-    `${(readLog(listen.seat).match(/entered the game/g) ?? []).length} players entered; guest log ${guest.seat.log}`,
+    guestIn,
+    (readLog(listen.seat).match(/.*entered the game.*/g) ?? []).join(" | ") || `no player entered; guest log ${guest.seat.log}`,
   );
+  extraSeats.push(listen.seat, guest.seat);
   killSeat(guest.seat);
   killSeat(listen.seat);
 }
 
-const allLogs = [sv1, cl1.seat, sv2, cl2.seat, sv3].map(readLog).join("\n");
+const allLogs = [sv1, cl1.seat, sv2, cl2.seat, sv3, ...extraSeats].map(readLog).join("\n");
 check("no QuakeWorld seat hit a fatal engine error", !/Sys_Error|SysError|Fatal:|Host_Error/.test(allLogs), allLogs.match(/.*(Sys_Error|Fatal:|Host_Error).*/g)?.slice(0, 2).join(" | ") ?? "");
 
 summary(`t_qw ${protocolArg}`);

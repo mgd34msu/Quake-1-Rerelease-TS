@@ -278,14 +278,47 @@ beforeEach(() => {
 });
 
 describe("kfont_text.ts -- con_font/scr_usekfont resolution", () => {
-  test("scr_usekfont=0 (the default) falls back to classic regardless of con_font", () => {
+  test("G3: con_font=kfont selects the font on its own -- scr_usekfont is the unicode-coverage opt-in, not the font switch", () => {
     scr_usekfont.value = 0;
     con_font.string = "kfont";
     const { renderer, draws } = makeFakeRenderer(false);
     re.current = renderer;
 
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      Text_Draw(0, 0, "A");
+      expect(draws).toEqual([]); // not the classic per-character primitive
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]![4]).toMatchObject({ kind: "custom" });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  test("G3: con_font=classic with scr_usekfont=0 draws every ASCII code point through Draw_Character (pure WinQuake)", () => {
+    scr_usekfont.value = 0;
+    con_font.string = "classic";
+    const { renderer, draws } = makeFakeRenderer(false);
+    re.current = renderer;
+
     Text_Draw(0, 0, "AB");
     expect(draws.map((d) => d.num)).toEqual(["A".charCodeAt(0), "B".charCodeAt(0)]);
+  });
+
+  test("G3: con_font=classic with scr_usekfont=1 STILL draws the charset for everything it has a cell for", () => {
+    scr_usekfont.value = 1;
+    con_font.string = "classic";
+    const { renderer, draws } = makeFakeRenderer(false);
+    re.current = renderer;
+
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      Text_Draw(0, 0, "AB");
+      expect(draws.map((d) => d.num)).toEqual(["A".charCodeAt(0), "B".charCodeAt(0)]);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("con_font=classic forces classic even when scr_usekfont=1", () => {
@@ -578,14 +611,15 @@ describe("kfont_text.ts -- Text_Draw glyph rects (synthetic kfont atlas, softwar
     test_ResetGlyphCache();
 
     const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    const { renderer, draws } = makeFakeRenderer(false);
+    re.current = renderer;
     try {
       Text_Draw(0, 0, "…");
-      expect(spy).toHaveBeenCalledTimes(1);
-      const qmarkCodepoint = "?".charCodeAt(0); // 63
-      const [, , dstW, dstH, source, srcX, srcY, srcW, srcH] = spy.mock.calls[0]!;
-      expect(source).toEqual({ kind: "classic" });
-      expect([dstW, dstH]).toEqual([8, 8]);
-      expect([srcX, srcY, srcW, srcH]).toEqual([(qmarkCodepoint & 15) * 8, (qmarkCodepoint >> 4) * 8, 8, 8]);
+      // G3: a string whose every code point resolves to the charset draws at
+      // the classic size through the classic per-character primitive, even
+      // under con_font=kfont -- same cell, same place, one call.
+      expect(spy).not.toHaveBeenCalled();
+      expect(draws).toEqual([{ x: 0, y: 0, num: "?".charCodeAt(0) }]);
     } finally {
       spy.mockRestore();
       writeFileSync(join(scratchDir, "fonts", "qfont.kfont"), originalKfont);
@@ -655,13 +689,96 @@ describe.skipIf(!HAVE_REAL_Q1)("kfont_text.ts -- real QuakeEX.kpf fonts/qfont.kf
     re.current = makeFakeRenderer(true).renderer;
   });
 
-  test("fonts/qfont.kfont's real ASCII glyph metrics resolve through Text_Width (codepoint 56 '8' is 22px wide, spot-checked against the extracted file)", () => {
-    expect(Text_Width("8")).toBe(22);
+  test("G3: fonts/qfont.kfont's real ASCII glyph metrics (codepoint 56 '8' is 22 ATLAS px wide, spot-checked against the extracted file) reach Text_Width fitted to the classic cell", () => {
+    // 22 atlas px at the font's declared 28px line, fitted onto the 8px cell.
+    expect(Text_Width("8")).toBeCloseTo((22 * 8) / 28, 10);
+    expect(Text_Width("8", 2)).toBeCloseTo((22 * 16) / 28, 10);
   });
 
-  test("F14: the real font's line height is its 28px cell, so an 8px menu row scales it by 8/28", () => {
-    expect(Text_LineHeight()).toBe(28);
-    expect(Text_RowScale(8)).toBeCloseTo(8 / 28, 10);
+  test("G3: the drawn line height is the classic cell under the real 28px font, so an 8px row scales by exactly 1", () => {
+    expect(Text_LineHeight()).toBe(8);
+    expect(Text_RowScale(8)).toBe(1);
+    expect(Text_RowScale(16)).toBe(2);
+  });
+
+  test("G3 REGRESSION (the garbled console/menu/centerprint rows): every glyph of a mixed real-font string is exactly one row tall, whatever its atlas cell measures", () => {
+    // ':' is one of the 27 ASCII code points fonts/qfont.kfont omits, so this
+    // string draws BOTH sources on one row -- the case that used to put a
+    // 28px kfont letter next to an 8px charset cell on an 8px grid.
+    const line = "This is the first episode:";
+    for (const scale of [1, 2]) {
+      const heights = new Set<number>();
+      const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+      try {
+        re.current = makeFakeRenderer(false).renderer;
+        Text_Draw(0, 0, line, false, scale);
+        expect(spy.mock.calls.length).toBeGreaterThan(0);
+        for (const call of spy.mock.calls) heights.add(call[3]);
+      } finally {
+        spy.mockRestore();
+      }
+      expect([...heights]).toEqual([8 * scale]);
+    }
+  });
+
+  test("G3: a mixed run's drawn width is the sum of its own advances, so no glyph overlaps the next", () => {
+    const line = "a:b";
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      re.current = makeFakeRenderer(false).renderer;
+      Text_Draw(0, 0, line, false, 1);
+      const calls = spy.mock.calls;
+      for (let i = 1; i < calls.length; i++) {
+        expect(calls[i]![0]).toBeCloseTo(calls[i - 1]![0]! + calls[i - 1]![2]!, 10);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+    expect(Text_Width(line)).toBeCloseTo(Text_Width("a") + Text_Width(":") + Text_Width("b"), 10);
+  });
+
+  test("G3: con_font=classic + scr_usekfont=1 mixes per CODE POINT -- Latin from the charset, Cyrillic from the kfont, both one row tall", () => {
+    const savedFont = con_font.string;
+    con_font.string = "classic";
+    scr_usekfont.value = 1;
+    test_ResetGlyphCache();
+    const { renderer, draws } = makeFakeRenderer(false);
+    re.current = renderer;
+
+    const spy = spyOn(softDrawModule, "Draw_GlyphAtlas");
+    try {
+      Text_Draw(0, 0, "A\u041eB"); // 'A', CYRILLIC CAPITAL O (U+041E), 'B'
+      // The two Latin letters keep the charset's own cells.
+      const classicCalls = spy.mock.calls.filter((c) => (c[4] as { kind: string }).kind === "classic");
+      const customCalls = spy.mock.calls.filter((c) => (c[4] as { kind: string }).kind === "custom");
+      expect(classicCalls.length).toBe(2);
+      expect(customCalls.length).toBe(1);
+      // and every one of them is exactly one classic cell tall.
+      for (const call of spy.mock.calls) expect(call[3]).toBe(8);
+      expect(draws).toEqual([]); // a mixed row cannot use the per-character fast path
+    } finally {
+      spy.mockRestore();
+      con_font.string = savedFont;
+      scr_usekfont.value = 1;
+      test_ResetGlyphCache();
+    }
+  });
+
+  test("G3: with scr_usekfont=0 a code point the charset cannot draw falls to the charset's own '?' -- no font is loaded at all", () => {
+    const savedFont = con_font.string;
+    con_font.string = "classic";
+    scr_usekfont.value = 0;
+    test_ResetGlyphCache();
+    const { renderer, draws } = makeFakeRenderer(false);
+    re.current = renderer;
+    try {
+      Text_Draw(0, 0, "\u041e");
+      expect(draws).toEqual([{ x: 0, y: 0, num: "?".charCodeAt(0) }]);
+    } finally {
+      con_font.string = savedFont;
+      scr_usekfont.value = 1;
+      test_ResetGlyphCache();
+    }
   });
 
   test("Text_Draw emits one real GL atlas quad (qglBegin(GL_QUADS)...qglEnd()) per character", () => {

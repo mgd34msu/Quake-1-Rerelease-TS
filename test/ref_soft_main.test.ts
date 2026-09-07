@@ -597,7 +597,7 @@ describe("SCR_CalcRefdef -- F2b sb_lines scaling", () => {
     scrState.sb_lines = savedSbLines;
   });
 
-  test("scr_sbarscale at its default (1) leaves sb_lines on the unscaled 0/24/48 ladder -- byte-identical to pre-F2b", () => {
+  test("scr_sbarscale 1 leaves sb_lines on the unscaled 0/24/48 ladder -- byte-identical to pre-F2b", () => {
     vid.width = 320;
     r_refdef.vrect.width = 320;
     r_refdef.vrect.height = 200;
@@ -617,7 +617,8 @@ describe("SCR_CalcRefdef -- F2b sb_lines scaling", () => {
   });
 
   test("scr_sbarscale 2 (vid.width wide enough that SbarScale's own CLAMP does not reduce it) scales every rung of the ladder", () => {
-    vid.width = 640; // SbarScale(): CLAMP(1, scr_sbarscale, vid.width/320) = CLAMP(1, 2, 2) = 2
+    vid.width = 640; // SbarScale(): CLAMP(1, scr_sbarscale, fit) with fit = min(floor(640/320), floor(480/144)) = 2
+    vid.height = 480;
     r_refdef.vrect.width = 640;
     r_refdef.vrect.height = 480;
     setCvar(scr_sbarscale, 2);

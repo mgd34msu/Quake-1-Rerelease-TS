@@ -642,6 +642,39 @@ describe("gl_draw.ts (WinQuake gl_draw.c)", () => {
     expect(rec.calls.some((c) => c.name === "qglVertex2f" && c.args[0] === 9 && c.args[1] === 10)).toBe(true);
   });
 
+  test("G4: Draw_ScaledTransPic with a translation table is Draw_TransPicTranslate's own upload on a scaled quad", () => {
+    const pic = new QpicT();
+    pic.width = 4;
+    pic.height = 4;
+    pic.data = new Uint8Array(16);
+
+    const translation = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) translation[i] = i;
+
+    rec.clear();
+    Draw_TransPicTranslate(5, 6, pic, translation);
+    const plainTexcoords = rec.calls.filter((c) => c.name === "qglTexCoord2f").map((c) => c.args);
+
+    rec.clear();
+    Draw_ScaledTransPic(5, 6, pic, 3, translation);
+
+    // the same whole-texture 64x64 upload, not a scrap-atlas pic
+    const upload = rec.calls.find((c) => c.name === "qglTexImage2D");
+    expect(upload).toBeDefined();
+    if (!upload) throw new Error("unreachable");
+    expect(upload.args[3]).toBe(64);
+    expect(upload.args[4]).toBe(64);
+
+    // the same 0..1 texture coordinates, on a quad three times the size
+    expect(rec.calls.filter((c) => c.name === "qglTexCoord2f").map((c) => c.args)).toEqual(plainTexcoords);
+    expect(rec.calls.filter((c) => c.name === "qglVertex2f").map((c) => c.args)).toEqual([
+      [5, 6],
+      [5 + 4 * 3, 6],
+      [5 + 4 * 3, 6 + 4 * 3],
+      [5, 6 + 4 * 3],
+    ]);
+  });
+
   test("GL_Bind respects gl_currenttexture dedup and gl_nobind, and never rebinds twice in a row", () => {
     glState.currenttexture = 42;
     rec.clear();

@@ -230,6 +230,13 @@ Cbuf_Execute();
 const afterDisconnect = clientProfile();
 
 //-- leg 2: a QuakeWorld server, over real UDP -----------------------------
+// Back to the constructed default the demo loop starts life on. Leg 1's
+// \`map\` cleared it, and a real NetQuake boot reaching a QuakeWorld server
+// has run no \`map\` -- it still carries the 0 that lets quake.rc's
+// \`startdemos\`, which sits BEHIND the boot cfg in the command buffer and so
+// runs after the handshake, take the connection down.
+cls.demonum = 0;
+
 Cbuf_AddText("connect 127.0.0.1:" + port + "\\n");
 Cbuf_Execute();
 await NET_Ready();
@@ -256,12 +263,24 @@ const qw = {
   qwUp: CL_QwProfileInitialized(),
 };
 
+// quake.rc's own last line, run where it really lands: after the join.
+Cbuf_AddText("startdemos demo1 demo2 demo3\\n");
+Cbuf_Execute();
+Host_Frame(0.05);
+
+const afterStartdemos = {
+  profile: clientProfile(),
+  demonum: cls.demonum,
+  demoplayback: cls.demoplayback,
+  stillActive: cls.state === CactiveT.ca_active,
+};
+
 Cbuf_AddText("disconnect\\n");
 Cbuf_Execute();
 
 process.stdout.write(
   "${CLIENT_MARKER}" +
-    JSON.stringify({ bootProfile, qwUpAtBoot, nq, afterDisconnect, qw, backToBoot: clientProfile() }) +
+    JSON.stringify({ bootProfile, qwUpAtBoot, nq, afterDisconnect, qw, afterStartdemos, backToBoot: clientProfile() }) +
     "\\n",
 );
 process.exit(0);
@@ -437,6 +456,14 @@ describe.skipIf(!HAVE_BOTH)("one unified client, a NetQuake connection then a Qu
 
   test("and the client is back on its boot profile afterwards", () => {
     expect(str(result.client, "backToBoot")).toBe("nq");
+  });
+
+  test("quake.rc's demo loop cannot pull the QuakeWorld session down behind it", () => {
+    const after = sub(result.client, "afterStartdemos");
+    expect(num(after, "demonum")).toBe(-1);
+    expect(bool(after, "demoplayback")).toBe(false);
+    expect(bool(after, "stillActive")).toBe(true);
+    expect(str(after, "profile")).toBe("qw");
   });
 });
 

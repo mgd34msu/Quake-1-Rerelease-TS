@@ -57,11 +57,14 @@ such fixture keeps working unchanged. A real renderer (or any fake one built
 against this member, e.g. this file's own tests) never falls into it.
 
 SCALING RULES (QuakeSpasm gl_screen.c names/semantics, this unit's SCOPE):
-- `scr_conscale`: console virtual width = `scr_conscale.value > 0 ?
-  vid.width / scr_conscale.value : vid.width` (0 or negative = native
-  resolution, no upscaling), clamped to [320, vid.width] and rounded down to
-  a multiple of 8 -- QuakeSpasm's own SCR_Conwidth_f formula, ported into
-  ConsoleVirtualWidth() below. screen.ts writes the result into
+- `scr_conscale`: console virtual width = `vid.width / scale`, clamped to
+  [320, vid.width] and rounded down to a multiple of 8 -- QuakeSpasm's own
+  SCR_Conwidth_f formula, ported into ConsoleVirtualWidth() below. The scale
+  is the cvar when it is positive; 0 (the default, G4/2026-09-07) means AUTO:
+  `max(1, floor(vid.height / 300))`, i.e. 1 below 600 rows, 2 at 720p, 3 at
+  1080p, 4 at 1440p -- about the re-release's own 28 px console line at
+  1080p. QuakeSpasm has no auto and defaults to 1 (native, 8 px glyphs on a
+  1080p screen), which is what Mike saw and rejected. screen.ts writes the result into
   `vid.conwidth`/`vid.conheight` once a frame (SCR_Init and the top of
   SCR_UpdateScreen), which lights up src/ref_gl/gl_draw.ts's and
   src/ref_soft/draw.ts's OWN pre-existing vid.conwidth-aware code (the
@@ -73,8 +76,12 @@ SCALING RULES (QuakeSpasm gl_screen.c names/semantics, this unit's SCOPE):
   computes its position in that same virtual space, then asks
   Draw_GlyphAtlas for a destination rect scaled by `vid.width/vid.conwidth`
   -- see ConsoleScale() below.
-- `scr_sbarscale`: `CLAMP(1, scr_sbarscale.value, vid.width/320)`, ported as
-  SbarScale() below. This unit (U19) applied it narrowly: only the status
+- `scr_sbarscale`: `CLAMP(1, scr_sbarscale.value, fit)` with `fit =
+  max(1, min(floor(vid.width/320), floor(vid.height/144)))`, ported as
+  SbarScale() below; 0 (the default, G4/2026-09-07) means AUTO = `fit`, so the
+  classic 320-wide bar spans the window like it did at 320x200 (4x at 720p,
+  6x at 1080p) while never taking more than a third of the height.
+  QuakeSpasm's own clamp is `vid.width/320` with a default of 1. This unit (U19) applied it narrowly: only the status
   bar's TEXT (Sbar_DrawCharacter/Sbar_DrawString in sbar.ts, which this unit
   routes through Text_Draw) scaled; the status bar's PIC-based elements
   (health/ammo digit pics, weapon/item icons, `Sbar_DrawPic`) did not, since
@@ -147,6 +154,53 @@ two never disagree on an advance width:
      case); otherwise the classic charset's own '?' cell (still scaled).
 Every one of these draws or explicitly no-ops (case 2) -- none of them skip
 a character silently.
+
+G3 (2026-09-07) -- TWO CORRECTIONS, both from Mike playing the re-release
+id1 tree in a large GL window and finding every text surface unreadable.
+
+(1) WHAT `scale` MEANS. Text_Draw/Text_Width's `scale` is now stated in
+CLASSIC TEXT CELLS -- one line of text occupies CLASSIC_GLYPH_SIZE * scale
+real pixels under EVERY font source, and a kfont/TTF glyph is multiplied by
+`atlasFit` below so its declared line height lands on exactly that. That is
+the unit every caller was already laying out in and the one none of them
+could satisfy before: console.ts's rows are `8 * ConsoleScale()` apart,
+screen.ts's centerprint rows are 8 apart, sbar.ts's are `8 * SbarScale()`,
+and menu.c's are a fixed 8 -- while Text_Draw was handing back glyphs at
+their raw ATLAS size. The retail fonts/qfont.kfont declares a 28px line and
+8-31px glyphs, so every one of those surfaces was drawing 28-pixel letters
+on an 8-pixel grid: rows overlapped the rows under them, glyphs overlapped
+their right-hand neighbours, and a mixed string (F17's classic-charset
+fallback for a code point the font omits, drawn at 8px next to 28px kfont
+letters -- the retail font has no ':' , '?' or '(' ) drew at two sizes on
+one row. Text_LineHeight() therefore reports the DRAWN line height (the
+classic cell) rather than the atlas's own declaration, and Text_RowScale is
+`rowHeight / CLASSIC_GLYPH_SIZE` for every source -- so menu.ts's
+Text_RowScale(MENU_ROW_HEIGHT) is 1 again instead of the 8/28 that squeezed
+the Options and Multiplayer rows down to unreadable 5x8 smudges (F14 read
+the atlas declaration and Text_Draw consumed a different unit, so the two
+ends of that call disagreed by the font's own line height).
+
+(2) WHICH FONT DRAWS. Mike's ruling, 2026-09-07: the classic conchars
+charset is the default text source for the menus, console, notify lines,
+centerprints and HUD on ALL content, re-release included. The high
+resolution fonts are used only when they are asked for or when the charset
+genuinely cannot draw the text:
+  - `con_font` (default "classic", was "kfont") selects the source for ALL
+    text: "classic", "kfont" (fonts/qfont.kfont + its PNG atlas), or
+    "ttf:<name>".
+  - `scr_usekfont` (default 0; the re-release id1 tree's own quake.rc sets
+    it to 1, with the comment "opt into unicode font rendering") no longer
+    switches every surface over to the kfont. It now means what that comment
+    says: with `con_font classic` in force, a code point the byte-indexed
+    charset has no cell for (cp > 0xFF -- Cyrillic, Greek, CJK from a
+    loc_<lang>.txt) is drawn from the kfont, fitted to the same row as the
+    classic cells around it, and everything the charset CAN draw still comes
+    from the charset. Mixing is per code point, not per string, because
+    correction (1) put both sources on one row height.
+A pure-classic string at scale 1 still emits the identical per-character
+renderer.Draw_Character sequence menu.c/console.c/sbar.c wrote, byte for
+byte, and that fast path is now taken whenever every code point in the
+string resolves to the charset -- not only when no font is loaded at all.
 */
 
 import { CvarT, Cvar_FindVar, Cvar_RegisterVariable } from "../common/cvar";
@@ -168,9 +222,11 @@ import type * as SoftDrawModule from "../ref_soft/draw";
 //=============================================================================
 
 // QuakeSpasm gl_screen.c: `cvar_t scr_usekfont = {"scr_usekfont", "0",
-// CVAR_NONE};` -- not archived, default off; the re-release's own quake.rc
-// sets it to 1 for re-release content (grepped: no other module in this
-// tree registers it).
+// CVAR_NONE};` -- not archived, default off; the re-release id1 tree's own
+// quake.rc sets it to 1, under its own comment "opt into unicode font
+// rendering" (grepped: no other module in this tree registers it). G3 gives
+// it exactly that meaning -- the unicode COVERAGE opt-in, not a whole-UI
+// font switch; see this file's header.
 export const scr_usekfont = new CvarT("scr_usekfont", "0");
 
 // This project's own addition -- no QuakeSpasm counterpart (that engine's
@@ -181,8 +237,10 @@ export const scr_usekfont = new CvarT("scr_usekfont", "0");
 // (`con_font kfont`) or a per-string fallback for code points the charset lacks.
 export const con_font = new CvarT("con_font", "classic", true);
 
-// QuakeSpasm gl_screen.c: all three default to "1", CVAR_ARCHIVE.
-export const scr_conscale = new CvarT("scr_conscale", "1", true);
+// QuakeSpasm gl_screen.c: all three default to "1", CVAR_ARCHIVE. Here the
+// console and status-bar scales default to "0" = auto (see the header's
+// SCALING RULES); the crosshair keeps QuakeSpasm's 1.
+export const scr_conscale = new CvarT("scr_conscale", "0", true);
 export const scr_sbarscale = new CvarT("scr_sbarscale", "1", true);
 export const scr_crosshairscale = new CvarT("scr_crosshairscale", "1", true);
 
@@ -214,12 +272,19 @@ function clamp(lo: number, v: number, hi: number): number {
   return v;
 }
 
+/** The console scale `scr_conscale 0` (auto) resolves to: one until the
+ * window is 600 rows tall, then one more step per 300 rows (2 at 720p, 3 at
+ * 1080p). See the header's SCALING RULES. */
+export function ConsoleAutoScale(): number {
+  return Math.max(1, Math.floor(vid.height / 300));
+}
+
 /** SCR_Conwidth_f's `vid.conwidth` formula (gl_screen.c), minus the
  * `scr_conwidth` cvar this project does not port (not in the unit brief's
- * cvar list). 0 or negative scr_conscale means "native resolution". */
+ * cvar list). 0 or negative scr_conscale means auto (ConsoleAutoScale). */
 export function ConsoleVirtualWidth(): number {
-  const s = scr_conscale.value;
-  let w = s > 0 ? vid.width / s : vid.width;
+  const s = scr_conscale.value > 0 ? scr_conscale.value : ConsoleAutoScale();
+  let w = vid.width / s;
   w = clamp(320, w, Math.max(320, vid.width));
   w = Math.floor(w) & ~7; // & 0xFFFFFFF8 in the C
   return w < 8 ? 8 : w; // defensive floor; vid.width is always >= 320 once video is up
@@ -237,11 +302,19 @@ export function ConsoleScale(): number {
   return vw > 0 ? vid.width / vw : 1;
 }
 
-/** gl_draw.c GL_SetCanvas's CANVAS_SBAR scale: `CLAMP(1, scr_sbarscale.value,
- * glwidth/320)`. */
+/** The largest whole scale at which the classic 320-wide status bar fits the
+ * window and stays under a third of its height: `max(1, min(floor(w/320),
+ * floor(h/144)))` (144 = three bar heights of 48). */
+export function SbarFitScale(): number {
+  return Math.max(1, Math.min(Math.floor(vid.width / 320), Math.floor(vid.height / 144)));
+}
+
+/** gl_draw.c GL_SetCanvas's CANVAS_SBAR scale, `CLAMP(1, scr_sbarscale.value,
+ * glwidth/320)`, with two changes: the ceiling is SbarFitScale() (whole
+ * steps, height-aware) and a non-positive cvar means auto = that ceiling. */
 export function SbarScale(): number {
-  const maxScale = vid.width / 320;
-  return clamp(1, scr_sbarscale.value, Math.max(1, maxScale));
+  const fit = SbarFitScale();
+  return scr_sbarscale.value > 0 ? clamp(1, scr_sbarscale.value, fit) : fit;
 }
 
 /** gl_draw.c GL_SetCanvas's CANVAS_CROSSHAIR scale: `CLAMP(1,
@@ -298,7 +371,7 @@ function currentLanguage(): string {
 // scr_usekfont/con_font/the TTF pixel size (which itself depends on the
 // console scale) changes.
 let cachedKey = "";
-let cachedFont: ActiveFontT | null = null; // null = classic fallback
+let cachedMode: TextModeT | null = null;
 
 function loadKfontFont(): ActiveFontT | null {
   const kBytes = COM_LoadTempFile("fonts/qfont.kfont");
@@ -373,20 +446,39 @@ function loadTtfFont(nameArg: string): ActiveFontT | null {
   };
 }
 
-function loadFont(): ActiveFontT | null {
-  const mode = con_font.string.trim().toLowerCase();
-  if (mode === "classic") return null;
-  if (scr_usekfont.value === 0) return null; // master toggle, matches QuakeSpasm's own cvar name/intent
-  if (mode.startsWith("ttf:")) return loadTtfFont(mode.slice(4)) ?? null;
-  return loadKfontFont() ?? null; // "kfont" (the default) or anything unrecognized
+/**
+ * How the two font cvars combine (see this file's G3 header note).
+ * - "classic": the conchars charset draws everything it has a cell for.
+ *   `unicode` is the kfont consulted for the code points it does not
+ *   (cp > 0xFF), or null when `scr_usekfont` is off or no kfont loaded.
+ * - "font": `con_font` names a high-resolution font, and it draws all text.
+ */
+type TextModeT =
+  | { readonly kind: "classic"; readonly unicode: ActiveFontT | null }
+  | { readonly kind: "font"; readonly font: ActiveFontT };
+
+function loadNamedFont(name: string): ActiveFontT | null {
+  if (name.startsWith("ttf:")) return loadTtfFont(name.slice(4));
+  return loadKfontFont(); // "kfont" or anything unrecognized
 }
 
-function resolveFont(): ActiveFontT | null {
+function loadMode(): TextModeT {
+  const name = con_font.string.trim().toLowerCase();
+  if (name !== "" && name !== "classic") {
+    const font = loadNamedFont(name);
+    // A named font that will not load leaves the charset drawing, which is
+    // what a missing fonts/qfont.kfont has always meant here.
+    if (font) return { kind: "font", font };
+  }
+  return { kind: "classic", unicode: scr_usekfont.value !== 0 ? loadKfontFont() : null };
+}
+
+function resolveMode(): TextModeT {
   const key = `${scr_usekfont.value}|${con_font.string}|${con_font.string.trim().toLowerCase().startsWith("ttf:") ? ttfPixelSize() : 0}`;
-  if (key === cachedKey) return cachedFont;
+  if (key === cachedKey && cachedMode !== null) return cachedMode;
   cachedKey = key;
-  cachedFont = loadFont();
-  return cachedFont;
+  cachedMode = loadMode();
+  return cachedMode;
 }
 
 /** Test-only: drop the cached font so the next Text_Width/Text_Draw call
@@ -394,7 +486,7 @@ function resolveFont(): ActiveFontT | null {
  * `test_` prefix convention for test-only entry points. */
 export function test_ResetGlyphCache(): void {
   cachedKey = "";
-  cachedFont = null;
+  cachedMode = null;
 }
 
 //=============================================================================
@@ -446,141 +538,165 @@ function fallbackGlyph(font: ActiveFontT): GlyphRectT | null {
 
 const CLASSIC_QMARK_CODEPOINT = "?".charCodeAt(0);
 
-// F17: what Text_Width/Text_Draw do with a code point `font.glyph(cp)` did
-// not resolve -- see this file's header "GLYPH FALLBACK POLICY" paragraph
-// for the full policy writeup and case numbering (cases 2-4 below).
+/* The classic charset is byte-indexed: it has a cell for every code point up
+ * to this one and none above it. */
+const CLASSIC_MAX_CODEPOINT = 0xff;
+
+// F17 (the code-point-not-in-the-font policy) and G3 (which source draws a
+// code point at all) -- see this file's header for both writeups.
 type GlyphResolutionT =
-  | { readonly draw: "atlas"; readonly glyph: GlyphRectT }
+  | { readonly draw: "atlas"; readonly glyph: GlyphRectT; readonly font: ActiveFontT }
   | { readonly draw: "classic"; readonly codepoint: number }
   | { readonly draw: "none" };
 
-function resolveGlyph(font: ActiveFontT, cp: number): GlyphResolutionT {
+function atlasGlyph(font: ActiveFontT, cp: number): GlyphResolutionT | null {
   const g = font.glyph(cp);
-  if (g) return { draw: "atlas", glyph: g }; // case 1
+  return g ? { draw: "atlas", glyph: g, font } : null;
+}
+
+function resolveGlyph(mode: TextModeT, cp: number): GlyphResolutionT {
+  if (mode.kind === "classic") {
+    // The charset draws everything it has a cell for, which is every code
+    // point that fits in a byte (F17 case 3's reuse of its 256 cells).
+    if (cp <= CLASSIC_MAX_CODEPOINT) return { draw: "classic", codepoint: cp };
+    const font = mode.unicode;
+    if (font) {
+      const g = atlasGlyph(font, cp) ?? (fallbackGlyph(font) !== null ? atlasGlyph(font, CLASSIC_QMARK_CODEPOINT) : null);
+      if (g) return g;
+    }
+    return { draw: "classic", codepoint: CLASSIC_QMARK_CODEPOINT };
+  }
+
+  const font = mode.font;
+  const g = atlasGlyph(font, cp);
+  if (g) return g; // case 1
   if (cp === 0x20) return { draw: "none" }; // case 2
-  if (cp <= 0xff) return { draw: "classic", codepoint: cp }; // case 3
-  const fb = fallbackGlyph(font);
-  if (fb) return { draw: "atlas", glyph: fb }; // case 4, font's own '?'
+  if (cp <= CLASSIC_MAX_CODEPOINT) return { draw: "classic", codepoint: cp }; // case 3
+  const fb = atlasGlyph(font, CLASSIC_QMARK_CODEPOINT);
+  if (fb) return fb; // case 4, font's own '?'
   return { draw: "classic", codepoint: CLASSIC_QMARK_CODEPOINT }; // case 4, charset '?'
+}
+
+/*
+G3: ATLAS pixels -> real pixels. One line of `font` occupies exactly the
+CLASSIC_GLYPH_SIZE * scale real pixels one classic charset cell does at the
+same scale, so a kfont/TTF glyph sits on the row its caller laid out and a
+classic-charset fallback glyph on the same row is the same height. See this
+file's header for why every caller needs that and none of them could get it
+before.
+*/
+function atlasFit(font: ActiveFontT, scale: number): number {
+  const declared = font.lineHeight > 0 ? font.lineHeight : CLASSIC_GLYPH_SIZE;
+  return (CLASSIC_GLYPH_SIZE * scale) / declared;
 }
 
 /** The real-pixel advance width `resolveGlyph`'s result contributes, at the
  * given scale. Shared by Text_Width and Text_Draw so the two never
- * disagree: an atlas glyph advances by its own (possibly non-8px) width, and
- * every classic-charset or no-op case advances by one classic cell. */
+ * disagree: an atlas glyph advances by its own (possibly non-8px) width
+ * fitted to the row, and every classic-charset or no-op case advances by one
+ * classic cell. */
 function resolvedAdvance(r: GlyphResolutionT, scale: number): number {
-  return r.draw === "atlas" ? r.glyph.w * scale : CLASSIC_GLYPH_SIZE * scale;
+  return r.draw === "atlas" ? r.glyph.w * atlasFit(r.font, scale) : CLASSIC_GLYPH_SIZE * scale;
 }
 
-/** The active font's declared line height, in atlas pixels. The classic
- * charset has no declaration of its own: its 8px cell IS its line. */
+/** The DRAWN height of one line of text at scale 1, in real pixels. G3: the
+ * classic charset's 8px cell IS the line under every font source, because
+ * `atlasFit` scales a kfont/TTF line onto exactly that cell -- so a
+ * multi-line caller advances its rows by `Text_LineHeight() * scale`
+ * whatever `con_font` says. */
 export function Text_LineHeight(): number {
-  const font = resolveFont();
-  return font !== null && font.lineHeight > 0 ? font.lineHeight : CLASSIC_GLYPH_SIZE;
+  return CLASSIC_GLYPH_SIZE;
 }
 
-/** The Text_Draw/Text_Width scale that fits one line of the active font into
- * `rowHeight` real pixels. Exactly 1 on the classic charset path at the
- * classic 8px row height, so a caller laid out on that grid keeps its
- * classic geometry unchanged. */
+/** The Text_Draw/Text_Width scale that fits one line of text into
+ * `rowHeight` real pixels. Exactly 1 at the classic 8px row height, so a
+ * caller laid out on that grid (menu.c's fixed 8-pixel rows) keeps its
+ * classic geometry under every font source. */
 export function Text_RowScale(rowHeight: number): number {
   return rowHeight / Text_LineHeight();
 }
 
 /** Total advance width, in real pixels, of `s` at the given scale. */
 export function Text_Width(s: string, scale = 1): number {
-  const font = resolveFont();
-  if (!font) return s.length * CLASSIC_GLYPH_SIZE * scale;
+  const mode = resolveMode();
 
   let w = 0;
   // DEFECT D6 FIX: iterate real Unicode code points (`for...of` over a JS
   // string decodes surrogate pairs), not UTF-16 code units -- a codepoint
   // past the Basic Multilingual Plane is two `charCodeAt` units, and
   // measuring/drawing each half separately would look up two bogus
-  // half-codepoints instead of the one real glyph. None of this project's
-  // kfont/loc data currently ships a codepoint that high (the retail
-  // fonts/qfont.kfont's own highest entry is U+1E9E, still in the BMP -- see
-  // src/lib/kfont.ts's own U31 header note), so this has no observable
-  // effect on today's fixtures; it is still the correct general contract.
+  // half-codepoints instead of the one real glyph.
   for (const ch of s) {
-    const cp = ch.codePointAt(0)!;
-    w += resolvedAdvance(resolveGlyph(font, cp), scale);
+    w += resolvedAdvance(resolveGlyph(mode, ch.codePointAt(0)!), scale);
   }
   return w;
 }
 
 /**
  * Draws `s` with its top-left glyph cell at real-pixel (x, y), at the given
- * scale (a plain multiplier on both glyph size and advance -- callers
- * compute their own already-real destination coordinates; see this file's
- * header on why no ambient canvas/ortho state is used). `alt` requests the
- * classic golden charset under "classic" (Draw_Alt_String's own `| 0x80`
- * row-select) or a golden runtime tint under kfont/ttf (see ALT_TINT).
+ * scale (a multiplier on the CLASSIC TEXT CELL -- see this file's G3 header
+ * note; callers compute their own already-real destination coordinates, so
+ * no ambient canvas/ortho state is used). `alt` requests the classic golden
+ * charset (Draw_Alt_String's own `| 0x80` row-select) or, for a kfont/ttf
+ * glyph, a golden runtime tint (see ALT_TINT).
  */
 export function Text_Draw(x: number, y: number, s: string, alt = false, scale = 1): void {
-  const font = resolveFont();
+  const mode = resolveMode();
 
-  if (!font) {
-    if (scale === 1) {
-      // Preserves the EXACT pre-U19 call sequence (renderer.Draw_Character,
-      // once per character, same x/y/num) at classic/scale 1 -- the case
-      // every existing test (console.test.ts, sbar.test.ts, screen.test.ts,
-      // both renderers' own suites) already covers. Draw_Character's own
-      // body already skips drawing a space (`num === 32`) while still
-      // advancing the cursor, exactly like the loop below.
-      const r = getRenderer();
-      let cx = x;
-      for (let i = 0; i < s.length; i++) {
-        r.Draw_Character(cx, y, (s.charCodeAt(i) & 0xff) | (alt ? 0x80 : 0));
-        cx += CLASSIC_GLYPH_SIZE;
-      }
-      return;
-    }
+  const resolved: GlyphResolutionT[] = [];
+  let allClassic = true;
+  for (const ch of s) {
+    const r = resolveGlyph(mode, ch.codePointAt(0)!);
+    if (r.draw !== "classic") allClassic = false;
+    resolved.push(r);
+  }
 
-    // A scaled classic charset has no pre-U19 counterpart to match -- routed
-    // through the new Draw_GlyphAtlas primitive, sourcing the SAME
-    // char_texture/draw_chars atlas Draw_Character itself reads (see that
-    // primitive's own doc comment in gl_draw.ts/draw.ts).
+  if (allClassic && scale === 1) {
+    // Preserves the EXACT pre-U19 call sequence (renderer.Draw_Character,
+    // once per character, same x/y/num) for text the charset draws at the
+    // classic size -- which G3 made the default for every surface, not just
+    // a boot with no font loaded. Draw_Character's own body already skips
+    // drawing a space (`num === 32`) while still advancing the cursor,
+    // exactly like the loop below.
+    const r = getRenderer();
     let cx = x;
-    for (let i = 0; i < s.length; i++) {
-      const num = (s.charCodeAt(i) & 0xff) | (alt ? 0x80 : 0);
-      if (num !== 0x20 /* Draw_Character's own space check, before any alt bit would apply */) {
-        const row = num >> 4;
-        const col = num & 15;
-        drawGlyphAtlas(cx, y, CLASSIC_GLYPH_SIZE * scale, CLASSIC_GLYPH_SIZE * scale, { kind: "classic" }, col * 8, row * 8, 8, 8, null);
-      }
-      cx += CLASSIC_GLYPH_SIZE * scale;
+    for (const g of resolved) {
+      if (g.draw !== "classic") continue;
+      r.Draw_Character(cx, y, (g.codepoint & 0xff) | (alt ? 0x80 : 0));
+      cx += CLASSIC_GLYPH_SIZE;
     }
     return;
   }
 
-  const source: GlyphAtlasSourceT = { kind: "custom", id: font.atlasId, width: font.width, height: font.height, pixels: font.pixels ?? new Uint8Array(0) };
   const tint = alt ? ALT_TINT : null;
 
   let cx = x;
-  // DEFECT D6 FIX: code points, not UTF-16 units -- see Text_Width's own
-  // comment above for why (a decoded loc string can contain any Unicode
-  // text now that src/lib/loc.ts decodes as UTF-8).
-  for (const ch of s) {
-    const cp = ch.codePointAt(0)!;
-    const r = resolveGlyph(font, cp);
-    if (r.draw === "atlas") {
-      const dstW = r.glyph.w * scale;
-      const dstH = r.glyph.h * scale;
-      drawGlyphAtlas(cx, y, dstW, dstH, source, r.glyph.x, r.glyph.y, r.glyph.w, r.glyph.h, r.glyph.color ? null : tint);
+  for (const g of resolved) {
+    if (g.draw === "atlas") {
+      const fit = atlasFit(g.font, scale);
+      const dstW = g.glyph.w * fit;
+      const dstH = g.glyph.h * fit;
+      const source: GlyphAtlasSourceT = {
+        kind: "custom",
+        id: g.font.atlasId,
+        width: g.font.width,
+        height: g.font.height,
+        pixels: g.font.pixels ?? new Uint8Array(0),
+      };
+      drawGlyphAtlas(cx, y, dstW, dstH, source, g.glyph.x, g.glyph.y, g.glyph.w, g.glyph.h, g.glyph.color ? null : tint);
       cx += dstW;
-    } else if (r.draw === "classic") {
-      // F17: the classic charset fallback -- see this file's header "GLYPH
-      // FALLBACK POLICY" paragraph. Sources the SAME char_texture/draw_chars
-      // atlas the font-less branch above and Draw_Character itself read,
-      // scaled to the row like every other glyph on this line; `alt`
-      // reaches the same baked golden-row selection Draw_Alt_String uses
-      // (`| 0x80`), not a runtime tint (there is no baked golden variant to
-      // tint -- see ALT_TINT's own doc comment on kfont/ttf glyphs).
-      const num = r.codepoint | (alt ? 0x80 : 0);
-      const row = num >> 4;
-      const col = num & 15;
-      drawGlyphAtlas(cx, y, CLASSIC_GLYPH_SIZE * scale, CLASSIC_GLYPH_SIZE * scale, { kind: "classic" }, col * 8, row * 8, 8, 8, null);
+    } else if (g.draw === "classic") {
+      // F17: the classic charset, scaled to the row like every other glyph
+      // on it. Sources the SAME char_texture/draw_chars atlas the fast path
+      // above and Draw_Character itself read; `alt` reaches the same baked
+      // golden-row selection Draw_Alt_String uses (`| 0x80`), not a runtime
+      // tint (there is no baked golden variant to tint -- see ALT_TINT).
+      const num = g.codepoint | (alt ? 0x80 : 0);
+      if (num !== 0x20 /* Draw_Character's own space check */) {
+        const row = num >> 4;
+        const col = num & 15;
+        drawGlyphAtlas(cx, y, CLASSIC_GLYPH_SIZE * scale, CLASSIC_GLYPH_SIZE * scale, { kind: "classic" }, col * 8, row * 8, 8, 8, null);
+      }
       cx += CLASSIC_GLYPH_SIZE * scale;
     } else {
       cx += CLASSIC_GLYPH_SIZE * scale;

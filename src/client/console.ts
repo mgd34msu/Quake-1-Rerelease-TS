@@ -113,6 +113,17 @@ Deviations from PORTING.md / the C source:
 - `MAXCMDLINE` (256) is redeclared locally in this file exactly as console.c
   itself does (`#define MAXCMDLINE 256` sits at console.c's own top, a literal
   duplicate of keys.c's private copy of the same macro -- not an import).
+- G3: the three drawing loops (Con_DrawConsole, Con_DrawNotify,
+  Con_DrawInput) advance their ROWS by `Text_LineHeight() * scale` rather
+  than a hardcoded `8 * scale`, and pass each `con_text` cell through
+  `drawCell` below, which splits the stored byte into a code point and the
+  alt flag instead of handing the whole byte over as a code point. The
+  COLUMN pitch stays `8 * scale`: con_linewidth is a character grid
+  (Con_CheckResize divides the console's virtual width by 8) and the cells
+  of one line are placed on it one at a time, exactly as console.c does.
+  Both numbers are the same at the classic charset, so a classic console is
+  byte-identical; see kfont_text.ts's own G3 header note for what they mean
+  once a kfont/TTF font is selected.
 
 QuakeWorld track (`qw.active` fold): `diff -w WinQuake/console.c QW/client/console.c`
 (both fully read) shows a genuinely wholesale rewrite -- QW replaces the flat
@@ -664,6 +675,27 @@ const MAXCMDLINE = 256;
 
 /*
 ================
+drawCell
+
+G3. One cell of `con_text`, drawn. Con_Print stores `c | mask`, where `mask`
+is 128 for a "colored" line (a `\001`/`\002`-prefixed print) -- the classic
+charset's high bit, which selects the same glyph out of its golden rows.
+Draw_Character read that byte straight, so the two halves were never
+separated; handing the whole byte to Text_Draw as a CODE POINT instead made a
+coloured 'Y' (0xD9) ask the glyph provider for U+00D9 'U-grave', which the
+kfont answers with a real accented capital and the charset answers with the
+golden 'Y' only by coincidence of layout. Split here: the low seven bits are
+the code point, the high bit is Text_Draw's `alt`, which reaches the charset's
+own `| 0x80` row-select on the classic path (the identical byte, so a classic
+console is unchanged) and ALT_TINT on a kfont/ttf one.
+================
+*/
+function drawCell(kt: typeof KfontTextModule, x: number, y: number, byte: number, scale: number): void {
+  kt.Text_Draw(x, y, String.fromCharCode(byte & 0x7f), (byte & 0x80) !== 0, scale);
+}
+
+/*
+================
 Con_DrawInput
 
 The input line scrolls horizontally if typing goes beyond the right edge
@@ -698,9 +730,10 @@ export function Con_DrawInput(): void {
   // this unit's changes.
   const kt = kfontTextMod();
   const scale = kt.ConsoleScale();
-  const y = conState.con_vislines - 16 * scale; // con_vislines is already real-pixel (see Con_DrawConsole); only the reserved 2-row offset scales
+  const row = kt.Text_LineHeight() * scale; // G3: one drawn line, whatever con_font selects
+  const y = conState.con_vislines - 2 * row; // con_vislines is already real-pixel (see Con_DrawConsole); only the reserved 2-row offset scales
   for (let i = 0; i < conState.con_linewidth; i++) {
-    kt.Text_Draw((i + 1) * 8 * scale, y, String.fromCharCode(scratch[base + i] ?? 0), false, scale);
+    drawCell(kt, (i + 1) * 8 * scale, y, scratch[base + i] ?? 0, scale);
   }
 
   // remove cursor -- nothing to restore: `scratch` is a local drawing
@@ -723,6 +756,7 @@ export function Con_DrawNotify(): void {
   // byte-identical to the pre-U19 per-character Draw_Character loop.
   const kt = kfontTextMod();
   const scale = kt.ConsoleScale();
+  const row = kt.Text_LineHeight() * scale; // G3: see drawCell / Con_DrawConsole
 
   if (con_text !== null) {
     const host = hostMod().host;
@@ -739,10 +773,10 @@ export function Con_DrawNotify(): void {
       scrState.scr_copytop = 1;
 
       for (let x = 0; x < conState.con_linewidth; x++) {
-        kt.Text_Draw((x + 1) * 8 * scale, v, String.fromCharCode(con_text[lineOffset + x]), false, scale);
+        drawCell(kt, (x + 1) * 8 * scale, v, con_text[lineOffset + x], scale);
       }
 
-      v += 8 * scale;
+      v += row;
     }
   }
 
@@ -760,7 +794,7 @@ export function Con_DrawNotify(): void {
       x++;
     }
     kt.Text_Draw((x + 5) * 8 * scale, v, String.fromCharCode(10 + (Math.trunc(hostMod().host.realtime * CON_CURSORSPEED) & 1)), false, scale);
-    v += 8 * scale;
+    v += row;
   }
 
   if (v > conState.con_notifylines) conState.con_notifylines = v;
@@ -794,20 +828,21 @@ export function Con_DrawConsole(lines: number, drawinput: boolean): void {
   // report). Byte-identical to the pre-U19 formula at scale 1.
   const kt = kfontTextMod();
   const scale = kt.ConsoleScale();
-  const cell = 8 * scale;
+  const cell = 8 * scale; // one column of the character grid
+  const row = kt.Text_LineHeight() * scale; // G3: one drawn line of text
 
-  const rows = Math.floor((lines - 2 * cell) / cell); // rows of text to draw
-  let y = lines - 2 * cell - rows * cell; // may start slightly negative
+  const rows = Math.floor((lines - 2 * row) / row); // rows of text to draw
+  let y = lines - 2 * row - rows * row; // may start slightly negative
 
   if (con_text !== null) {
     const text = con_text;
-    for (let i = conState.con_current - rows + 1; i <= conState.con_current; i++, y += cell) {
+    for (let i = conState.con_current - rows + 1; i <= conState.con_current; i++, y += row) {
       let j = i - conState.con_backscroll;
       if (j < 0) j = 0;
       const lineOffset = (j % conState.con_totallines) * conState.con_linewidth;
 
       for (let x = 0; x < conState.con_linewidth; x++) {
-        kt.Text_Draw((x + 1) * cell, y, String.fromCharCode(text[lineOffset + x]), false, scale);
+        drawCell(kt, (x + 1) * cell, y, text[lineOffset + x], scale);
       }
     }
   }

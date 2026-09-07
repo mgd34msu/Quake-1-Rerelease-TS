@@ -990,15 +990,34 @@ see above), so Draw_ScaledTransPic is the same function under the two
 names, matching that convention.
 ================
 */
-function drawScaledPicGl(x: number, y: number, pic: QpicT, scale: number): void {
+function drawScaledPicGl(x: number, y: number, pic: QpicT, scale: number, translation?: Uint8Array): void {
+  const w = pic.width * scale;
+  const h = pic.height * scale;
+  const q = qgl();
+
+  // G4: with a translation table this is Draw_TransPicTranslate's own
+  // 64x64 upload (the whole texture, so 0..1 texture coordinates) at a
+  // scaled destination size, not a scrap-atlas pic.
+  if (translation !== undefined) {
+    uploadTranslatedPlayerPic(pic, translation);
+    q.qglColor3f(1, 1, 1);
+    q.qglBegin(GL_QUADS);
+    q.qglTexCoord2f(0, 0);
+    q.qglVertex2f(x, y);
+    q.qglTexCoord2f(1, 0);
+    q.qglVertex2f(x + w, y);
+    q.qglTexCoord2f(1, 1);
+    q.qglVertex2f(x + w, y + h);
+    q.qglTexCoord2f(0, 1);
+    q.qglVertex2f(x, y + h);
+    q.qglEnd();
+    return;
+  }
+
   if (scrap_dirty) Scrap_Upload();
   const gl = picGl.get(pic);
   if (!gl) return; // Draw_PicFromWad/Draw_CachePic/Draw_Init not yet run for this pic
 
-  const w = pic.width * scale;
-  const h = pic.height * scale;
-
-  const q = qgl();
   q.qglColor4f(1, 1, 1, 1);
   GL_Bind(gl.texnum);
   q.qglBegin(GL_QUADS);
@@ -1017,8 +1036,8 @@ export function Draw_ScaledPic(x: number, y: number, pic: QpicT, scale: number):
   drawScaledPicGl(x, y, pic, scale);
 }
 
-export function Draw_ScaledTransPic(x: number, y: number, pic: QpicT, scale: number): void {
-  drawScaledPicGl(x, y, pic, scale);
+export function Draw_ScaledTransPic(x: number, y: number, pic: QpicT, scale: number, translation?: Uint8Array): void {
+  drawScaledPicGl(x, y, pic, scale, translation);
 }
 
 /*
@@ -1028,10 +1047,7 @@ Draw_TransPicTranslate
 Only used for the player color selection menu
 =============
 */
-export function Draw_TransPicTranslate(x: number, y: number, pic: QpicT, translation: Uint8Array): void {
-  x = x | 0;
-  y = y | 0;
-
+function uploadTranslatedPlayerPic(pic: QpicT, translation: Uint8Array): void {
   GL_Bind(translate_texture);
 
   // unsigned trans[64*64] -- see file header: `dest[u] = p` when p==255
@@ -1051,7 +1067,15 @@ export function Draw_TransPicTranslate(x: number, y: number, pic: QpicT, transla
 
   q.qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
   q.qglTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+}
 
+export function Draw_TransPicTranslate(x: number, y: number, pic: QpicT, translation: Uint8Array): void {
+  x = x | 0;
+  y = y | 0;
+
+  uploadTranslatedPlayerPic(pic, translation);
+
+  const q = qgl();
   q.qglColor3f(1, 1, 1);
   q.qglBegin(GL_QUADS);
   q.qglTexCoord2f(0, 0);

@@ -47,6 +47,7 @@ import { COM_InitArgv, COM_InitFilesystem } from "../src/common/common";
 import * as common from "../src/common/common";
 import { host } from "../src/common/host";
 import { CvarT } from "../src/common/cvar";
+import { scr_sbarscale } from "../src/client/kfont_text";
 import { cl, CSHIFT_BONUS, CSHIFT_CONTENTS, CSHIFT_DAMAGE, CSHIFT_POWERUP, NUM_CSHIFTS } from "../src/client/client";
 import { IT_INVISIBILITY } from "../src/common/quakedef";
 import { getRenderer, r_refdef, re, type Renderer } from "../src/client/render";
@@ -483,9 +484,17 @@ describe("BeginFrame / EndFrame -- gl_screen.c's frame bracketing", () => {
 });
 
 describe("SCR_CalcRefdef -- gl_screen.c:255", () => {
+  // These assert the C's unscaled sb_lines ladder; scr_sbarscale's default is
+  // auto (2 at 640x480 since G4), so pin the status bar to 1x here.
+  const savedSbarscale = { value: scr_sbarscale.value, string: scr_sbarscale.string };
+  afterAll(() => {
+    scr_sbarscale.value = savedSbarscale.value;
+    scr_sbarscale.string = savedSbarscale.string;
+  });
   function calc(viewsize: number, fov: number, intermission: number): void {
     setCvar(scr_viewsize, viewsize);
     setCvar(scr_fov, fov);
+    setCvar(scr_sbarscale, 1);
     cl.intermission = intermission;
     vid.width = 640;
     vid.height = 480;

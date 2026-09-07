@@ -114,23 +114,35 @@ const ROWS = [32, 40, 48, 64];
 
 let cursor = 0;
 
+// G4: the value column used to start at x 220, which put the longest mode
+// description ("Mode 14: 1920x1080", 18 characters) at x 220..364 -- 44
+// columns past the right edge of the 320-wide menu canvas. That was invisible
+// while the menus drew 1:1 in the corner of the window (the overspill simply
+// landed on unused screen), but the canvas is scaled and centred now, so the
+// row ran off the side of the menu and, at 1920x1080, off the screen. The
+// label column is right-aligned to end at x 136 and the values start at x
+// 160, which fits the longest of them (160 + 144 = 304) inside the canvas.
+const LABEL_X = 16;
+const VALUE_X = 160;
+const CURSOR_X = 144;
+
 export function VID_MenuDraw(): void {
   const m = menu();
   m.M_DrawTransPic(16, 4, cachePic("gfx/qplaque.lmp"));
 
-  m.M_Print(16, ROWS[ROW_MODE], "           Video mode");
+  m.M_Print(LABEL_X, ROWS[ROW_MODE], "     Video mode");
   const mode = VID_MODES[Math.trunc(vid_mode.value)];
-  m.M_Print(220, ROWS[ROW_MODE], mode ? mode.description : "?");
+  m.M_Print(VALUE_X, ROWS[ROW_MODE], mode ? mode.description : "?");
 
-  m.M_Print(16, ROWS[ROW_FULLSCREEN], "           Fullscreen");
-  m.M_DrawCheckbox(220, ROWS[ROW_FULLSCREEN], vid_fullscreen.value !== 0);
+  m.M_Print(LABEL_X, ROWS[ROW_FULLSCREEN], "     Fullscreen");
+  m.M_DrawCheckbox(VALUE_X, ROWS[ROW_FULLSCREEN], vid_fullscreen.value !== 0);
 
-  m.M_Print(16, ROWS[ROW_RENDERER], "             Renderer");
-  m.M_Print(220, ROWS[ROW_RENDERER], vid_ref.string);
+  m.M_Print(LABEL_X, ROWS[ROW_RENDERER], "       Renderer");
+  m.M_Print(VALUE_X, ROWS[ROW_RENDERER], vid_ref.string);
 
-  m.M_Print(16, ROWS[ROW_APPLY], "                Apply");
+  m.M_Print(LABEL_X, ROWS[ROW_APPLY], "          Apply");
 
-  m.M_DrawCharacter(200, ROWS[cursor], 12 + (Math.trunc(host.realtime * 4) & 1));
+  m.M_DrawCharacter(CURSOR_X, ROWS[cursor], 12 + (Math.trunc(host.realtime * 4) & 1));
 }
 
 function adjustCursorValue(dir: number): void {

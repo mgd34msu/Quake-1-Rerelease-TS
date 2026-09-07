@@ -24,6 +24,7 @@ import { cl, CactiveT, cls } from "../src/client/client";
 import { GAME_DEATHMATCH } from "../src/common/protocol";
 import { Sbar_DrawCharacter, Sbar_DrawString, SBAR_HEIGHT } from "../src/client/sbar";
 import {
+  ConsoleAutoScale,
   ConsoleScale,
   ConsoleVirtualWidth,
   CrosshairScale,
@@ -33,6 +34,8 @@ import {
   SbarScale,
   test_ResetGlyphCache,
 } from "../src/client/kfont_text";
+import { CvarT } from "../src/common/cvar";
+import { MenuFitScale, MenuScale, scr_menuscale } from "../src/client/screen";
 import * as softDrawModule from "../src/ref_soft/draw";
 import type { GlyphAtlasSourceT } from "../src/client/kfont_text";
 
@@ -106,6 +109,7 @@ const savedHeight = vid.height;
 const savedConscale = scr_conscale.value;
 const savedSbarscale = scr_sbarscale.value;
 const savedCrosshairscale = scr_crosshairscale.value;
+const savedMenuscale = { value: scr_menuscale.value, string: scr_menuscale.string };
 
 afterAll(() => {
   vid.width = savedWidth;
@@ -113,13 +117,34 @@ afterAll(() => {
   scr_conscale.value = savedConscale;
   scr_sbarscale.value = savedSbarscale;
   scr_crosshairscale.value = savedCrosshairscale;
+  scr_menuscale.value = savedMenuscale.value;
+  scr_menuscale.string = savedMenuscale.string;
 });
 
 describe("kfont_text.ts -- ConsoleVirtualWidth/ConsoleScale (QuakeSpasm SCR_Conwidth_f formula)", () => {
-  test("scr_conscale=0 ('auto') is native resolution: no scaling", () => {
+  test("scr_conscale=0 (the default, auto) is one step per 300 rows: 3 at 1280x960, 2 at 720p, 1 at 480p", () => {
     vid.width = 1280;
     vid.height = 960;
     scr_conscale.value = 0;
+    expect(ConsoleAutoScale()).toBe(3);
+    expect(ConsoleVirtualWidth()).toBe(424); // floor(1280/3) & ~7
+    expect(ConsoleScale()).toBeCloseTo(1280 / 424, 6);
+
+    vid.width = 1280;
+    vid.height = 720;
+    expect(ConsoleAutoScale()).toBe(2);
+    expect(ConsoleVirtualWidth()).toBe(640);
+
+    vid.width = 640;
+    vid.height = 480;
+    expect(ConsoleAutoScale()).toBe(1);
+    expect(ConsoleVirtualWidth()).toBe(640);
+  });
+
+  test("scr_conscale=1 is native resolution: no scaling", () => {
+    vid.width = 1280;
+    vid.height = 960;
+    scr_conscale.value = 1;
     expect(ConsoleVirtualWidth()).toBe(1280);
     expect(ConsoleScale()).toBe(1);
   });
@@ -160,7 +185,7 @@ describe("console.ts -- Con_CheckResize reads the scaled console width", () => {
     expect(conState.con_linewidth).toBe((640 >> 3) - 2); // 78
   });
 
-  test("scr_conscale=1 (the default) matches the pre-U19 vid.width-based formula exactly", () => {
+  test("scr_conscale=1 matches the pre-U19 vid.width-based formula exactly", () => {
     vid.width = 1280;
     vid.height = 960;
     scr_conscale.value = 1;
@@ -171,18 +196,37 @@ describe("console.ts -- Con_CheckResize reads the scaled console width", () => {
 });
 
 describe("kfont_text.ts -- SbarScale/CrosshairScale (QuakeSpasm CLAMP formulas)", () => {
-  test("SbarScale: CLAMP(1, scr_sbarscale.value, vid.width/320)", () => {
+  test("SbarScale: CLAMP(1, scr_sbarscale.value, fit) with fit = min(floor(w/320), floor(h/144))", () => {
     vid.width = 320;
+    vid.height = 200;
     scr_sbarscale.value = 1;
     expect(SbarScale()).toBe(1);
 
     vid.width = 640;
-    scr_sbarscale.value = 3; // clamped down to vid.width/320 = 2
+    vid.height = 480;
+    scr_sbarscale.value = 3; // clamped down to the fit, floor(640/320) = 2
     expect(SbarScale()).toBe(2);
 
     vid.width = 640;
-    scr_sbarscale.value = 0; // clamped up to the minimum of 1
+    vid.height = 200; // too short for 2x: floor(200/144) = 1
+    scr_sbarscale.value = 3;
     expect(SbarScale()).toBe(1);
+  });
+
+  test("SbarScale: 0 (the default) is auto = the fit: 1 at 320x200 and 640x480 below 2 bars, 4 at 720p, 6 at 1080p", () => {
+    scr_sbarscale.value = 0;
+    vid.width = 320;
+    vid.height = 200;
+    expect(SbarScale()).toBe(1);
+    vid.width = 640;
+    vid.height = 480;
+    expect(SbarScale()).toBe(2);
+    vid.width = 1280;
+    vid.height = 720;
+    expect(SbarScale()).toBe(4);
+    vid.width = 1920;
+    vid.height = 1080;
+    expect(SbarScale()).toBe(6);
   });
 
   test("CrosshairScale: CLAMP(1, scr_crosshairscale.value, 10)", () => {
@@ -353,5 +397,79 @@ describe("src/ref_soft/draw.ts -- Draw_GlyphAtlas nearest-neighbour scaling", ()
     };
     softDrawModule.Draw_GlyphAtlas(0, 0, 4, 4, transparentSource, 0, 0, 1, 1, null);
     expect(vid.buffer32!.slice(0, 16).every((v) => v === 0)).toBe(true);
+  });
+});
+
+//=============================================================================
+// G4: screen.ts's scr_menuscale (gl_draw.c GL_SetCanvas CANVAS_MENU).
+
+describe("screen.ts -- MenuFitScale/MenuScale (GL_SetCanvas CANVAS_MENU)", () => {
+  function setMenuscale(v: number): void {
+    scr_menuscale.value = v;
+    scr_menuscale.string = String(v);
+  }
+
+  test("the fit is the largest whole scale at which 320x200 still fits", () => {
+    vid.width = 1920;
+    vid.height = 1080;
+    expect(MenuFitScale()).toBe(5); // min(floor(1920/320)=6, floor(1080/200)=5)
+    vid.width = 1280;
+    vid.height = 720;
+    expect(MenuFitScale()).toBe(3); // min(4, 3)
+    vid.width = 640;
+    vid.height = 480;
+    expect(MenuFitScale()).toBe(2);
+    vid.width = 320;
+    vid.height = 240;
+    expect(MenuFitScale()).toBe(1);
+    vid.width = 320;
+    vid.height = 200;
+    expect(MenuFitScale()).toBe(1);
+  });
+
+  test("a window smaller than the canvas still reports 1, never 0", () => {
+    vid.width = 256;
+    vid.height = 160;
+    expect(MenuFitScale()).toBe(1);
+    setMenuscale(0);
+    expect(MenuScale()).toBe(1);
+  });
+
+  test("scr_menuscale 0 is auto: the fit itself", () => {
+    setMenuscale(0);
+    vid.width = 1920;
+    vid.height = 1080;
+    expect(MenuScale()).toBe(5);
+    vid.width = 640;
+    vid.height = 480;
+    expect(MenuScale()).toBe(2);
+    vid.width = 320;
+    vid.height = 240;
+    expect(MenuScale()).toBe(1);
+  });
+
+  test("an explicit scr_menuscale is CLAMP(1, value, fit)", () => {
+    vid.width = 1920;
+    vid.height = 1080;
+    setMenuscale(2);
+    expect(MenuScale()).toBe(2);
+    setMenuscale(5);
+    expect(MenuScale()).toBe(5);
+    setMenuscale(12);
+    expect(MenuScale()).toBe(5); // clamped down to the fit
+    setMenuscale(0.5);
+    expect(MenuScale()).toBe(1); // clamped up to 1
+
+    // The same explicit 2 clamps down at a window the canvas barely fits.
+    vid.width = 320;
+    vid.height = 240;
+    setMenuscale(2);
+    expect(MenuScale()).toBe(1);
+  });
+
+  test("a fresh cvar's construction default is 0 (auto), archived", () => {
+    const fresh = new CvarT("scr_menuscale", "0", true);
+    expect(fresh.value).toBe(0);
+    expect(fresh.archive).toBe(true);
   });
 });
