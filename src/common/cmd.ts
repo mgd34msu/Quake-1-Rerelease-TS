@@ -439,12 +439,23 @@ export function Cmd_Exec_f(): void {
 
   // f carries one trailing NUL byte (common.ts's COM_LoadHunkFile ruling);
   // drop it so Cbuf_InsertText sees exactly what the C's Q_strlen(f) would.
-  const text = latin1BytesToString(f.subarray(0, f.length - 1));
+  let text = latin1BytesToString(f.subarray(0, f.length - 1));
   // A file whose last line has no terminator would otherwise be spliced
   // straight onto whatever was already queued behind the exec -- see the
   // file header's F5 note.
-  Cbuf_InsertText(text.endsWith("\n") ? text : `${text}\n`);
+  if (!text.endsWith("\n")) text += "\n";
+  // config.cfg is the archive of every cvar a previous build wrote; the
+  // format upgrades (host.ts's Host_MigrateConfig, `cfg_migrate`) belong
+  // right behind its lines, before anything a +command or the next rc line
+  // queues can act on the archived values or quit.
+  if (isConfigCfg(Cmd_Argv(1)) && Cmd_Exists("cfg_migrate")) text += "cfg_migrate\n";
+  Cbuf_InsertText(text);
   Hunk_FreeToLowMark(mark);
+}
+
+function isConfigCfg(path: string): boolean {
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  return path.slice(slash + 1).toLowerCase() === "config.cfg";
 }
 
 // Just prints the rest of the line to the console

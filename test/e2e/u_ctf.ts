@@ -26,6 +26,22 @@ function argOf(flag: string): string | undefined {
   return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : undefined;
 }
 
+// G7 (family review, 2026-09-07) measured ctf9's two bases at roughly 4400
+// units apart -- about 30s of pure running one way -- and flagged the
+// default 60s window as possibly too tight to fit a round trip. Checked two
+// ways: the actual tree run (this file, no --maps filter) has passed ctf9's
+// capture check at the plain 60s on every seeded run this unit made, before
+// and after its own fixes (u_ctf_run2.log, u_ctf_run3.log: byte-identical
+// `FLAG-CAPTURE lines=1`) -- the roster carried over from the previous map
+// in the loop already has whatever position and weapons it earned there, so
+// a capture on ctf9 does not have to start from a cold stop. A `--maps ctf9`
+// repro in isolation is a materially different, harder scenario (a fresh
+// roster with no carried-over state) and failed to capture even at 150s
+// (2.5x) despite heavy engagement -- both flags carried, 18 FLAG-PICKUP/
+// DROP/RECOVERY events, 39 frags -- which is F18's already-tracked
+// capture-completion gap surfacing on a cold roster, not evidence this
+// tree's own window is too short. No change made: the manifest's actual
+// invocation was never red here.
 const seconds = Number(argOf("--seconds") ?? "60");
 const wantBots = Number(argOf("--bots") ?? "8");
 const only = argOf("--maps");

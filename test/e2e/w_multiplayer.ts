@@ -7,7 +7,7 @@ import { K_ESCAPE, K_ENTER, K_UPARROW, K_DOWNARROW, K_LEFTARROW, K_RIGHTARROW, K
 import { LoadContentModel, RULESETS, SV_PROTOCOLS, CL_PROTOCOLS, BotsMenuAvailable, BuildBotsPageModel, AvailableBotSkillNames } from "../../src/client/menu_content";
 import { tcpipAvailable } from "../../src/common/net_main";
 import { sv, svs } from "../../src/server/server";
-import { Bot_Slots, Bot_Count } from "../../src/bots";
+import { Bot_Roster, Bot_Slots, Bot_Count } from "../../src/bots";
 import { Q1TS_DATA } from "./q1data";
 
 const BASE = Q1TS_DATA;
@@ -229,7 +229,7 @@ if (enterGameOptions()) {
   // G6: `bot_count` governs the auto-filled bots only; the bot the Bots page
   // added by hand above (Add Random) survives the map change as an extra, so
   // the auto-filled count is what the row promises, not the slot total.
-  const autoFilled = [...Bot_Slots().values()].filter((s) => s.auto).length;
+  const autoFilled = Bot_Roster().filter((e) => e.auto).length;
   check("GameOptions Begin Game: the started server actually uses bot_count (auto-fill spawned bots)", autoFilled === 2, `auto-filled=${autoFilled} of ${Bot_Slots().size} slots, want=2 auto (deathmatch-off under ctf teamplay is a defect candidate -- see report)`);
 }
 

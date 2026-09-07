@@ -350,6 +350,9 @@ describe("Cmd_Exec_f and a file with no trailing newline", () => {
     writeFileSync(join(scratchDir, "f5_bare.cfg"), 'testrecord fromfile\r\nalias f5_alias "testrecord aliased"');
     // The same file WinQuake's own quake.rc shape: terminated with CRLF.
     writeFileSync(join(scratchDir, "f5_crlf.cfg"), 'testrecord fromfile\r\nalias f5_alias "testrecord aliased"\r\n');
+    // The archive a previous build wrote: `exec config.cfg` queues the
+    // format upgrade right behind its lines (the cfg_version migration).
+    writeFileSync(join(scratchDir, "config.cfg"), "testrecord fromconfig\n");
 
     COM_AddGameDirectory(scratchDir);
   });
@@ -365,6 +368,24 @@ describe("Cmd_Exec_f and a file with no trailing newline", () => {
     // Without the terminator the buffer reads
     // `alias f5_alias "testrecord aliased"testrecord queued` as ONE line, so
     // the alias takes a mangled body and `testrecord queued` never runs.
+    expect(recorded).toEqual(["testrecord|fromfile", "testrecord|queued"]);
+  });
+
+  test("exec config.cfg queues cfg_migrate behind the file's lines and ahead of what was already waiting", () => {
+    recorded = [];
+    // host.ts registers the real command on a host boot; when this file runs
+    // alone a recorder stands in for it.
+    const real = Cmd_Exists("cfg_migrate");
+    if (!real) Cmd_AddCommand("cfg_migrate", () => { recorded.push("cfg_migrate|ran"); });
+    Cbuf_AddText("exec config.cfg\ntestrecord queued\n");
+    Cbuf_Execute();
+    expect(recorded).toEqual(real ? ["testrecord|fromconfig", "testrecord|queued"] : ["testrecord|fromconfig", "cfg_migrate|ran", "testrecord|queued"]);
+  });
+
+  test("exec of any other file queues nothing extra", () => {
+    recorded = [];
+    Cbuf_AddText("exec f5_crlf.cfg\ntestrecord queued\n");
+    Cbuf_Execute();
     expect(recorded).toEqual(["testrecord|fromfile", "testrecord|queued"]);
   });
 

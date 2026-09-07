@@ -24,6 +24,7 @@ over a pak to ask.
 import { existsSync, openSync, readSync, closeSync } from "node:fs";
 import { Sys_Main_Init, runFrames } from "../../src/main";
 import { Cbuf_AddText } from "../../src/common/cmd";
+import { Q_SeedRandom } from "../../src/common/mathlib";
 import * as consoleMod from "../../src/client/console";
 import { conState } from "../../src/client/console";
 import { FL_ONGROUND, svs } from "../../src/server/server";
@@ -134,6 +135,20 @@ export function boot(tree: TreeName, maxclients: number, port: number, extra: st
   ];
   if (tree !== "id1") argv.push(`-${tree}`);
   Sys_Main_Init([...argv, ...extra]);
+
+  // G7 (family review, 2026-09-07): `+sv_randomseed` on the command line only
+  // sets the CVAR early -- src/server/sv_main.ts's SV_SpawnServer is what
+  // actually calls Q_SeedRandom, and it does that at the first `map`, not at
+  // boot. Anything that draws from Q_rand() (mathlib.ts) before this driver's
+  // first `map` command would still fall back to Math.random(), unseeded, no
+  // matter what the cvar already reads. No driver in this family draws from
+  // it that early today (nothing runs before the first `map` with a server
+  // active), but that is a property of what each driver happens to do before
+  // its first `map`, not something this shared boot() can guarantee on their
+  // behalf -- so it seeds the generator itself, directly, right here, closing
+  // the window instead of relying on it staying empty. SV_SpawnServer's own
+  // call still re-applies the seed at every subsequent `map`, unchanged.
+  Q_SeedRandom(SEED);
 
   // Host_Init leaves `exec quake.rc` sitting in the command buffer. Two echoes
   // queued behind it measure whether that buffer survives the exec chain; the
