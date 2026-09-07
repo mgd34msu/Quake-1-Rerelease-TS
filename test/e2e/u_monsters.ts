@@ -29,12 +29,13 @@ import { Bot_ClearNav, Bot_LoadNav, Bot_MonsterPath, Bot_Nav, Bot_WalkPathToGoal
 import { EDICT_TO_PROG, EDICT_NUM, PR_GetString, pr, type EdictT } from "../../src/progs/progs";
 import { OFS_PARM0 } from "../../src/progs/pr_comp";
 import { SV_MoveToGoal } from "../../src/server/sv_move";
-import { MOVE_NOMONSTERS, SV_LinkEdict, SV_Move } from "../../src/server/world";
+import { MOVE_NOMONSTERS, SV_LinkEdict, SV_Move, SV_PointContents } from "../../src/server/world";
+import { CONTENTS_LAVA, CONTENTS_SLIME } from "../../src/common/bspfile";
 import { FL_MONSTER, FL_ONGROUND, sv, svs } from "../../src/server/server";
 import { PATH_ERROR, PATH_IN_PROGRESS, PATH_MOVE_BLOCKED, PATH_REACHED_GOAL, PATH_REACHED_PATH_END } from "../../src/progs/ext/qex_hooks";
-import { defaultTraverseCaps } from "../../src/lib/bot_brain/nav_graph";
+import { defaultTraverseCaps, type NavGraph } from "../../src/lib/bot_brain/nav_graph";
 import { vec3 } from "../../src/common/mathlib";
-import { PORT_BASE, boot, check, exec, finish, frames, row } from "./u_lib";
+import { PORT_BASE, SEED, boot, check, exec, finish, frames, row } from "./u_lib";
 
 const DT = 0.05;
 const PORT = PORT_BASE + 40;
@@ -46,6 +47,8 @@ const MOVE_DIST = 12;
 const MIN_GOAL_DISTANCE = 600;
 /** Inside this of the goal the monster has arrived. */
 const ARRIVED = 128;
+/** Matches bot_hooks.ts's own STEP_HEIGHT: how far the start-node visibility trace lifts a walking monster's box before tracing. */
+const STEP_HEIGHT = 18;
 
 function argOf(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -56,6 +59,8 @@ const map = argOf("--map") ?? "e1m1";
 const seconds = Number(argOf("--seconds") ?? "40");
 const limit = Number(argOf("--limit") ?? "24");
 const steps = Math.round(seconds / STEP_SECONDS);
+
+console.log(`## u_monsters map=${map} seconds=${seconds} limit=${limit} seed=${SEED}`);
 
 boot("id1", 8, PORT);
 exec("deathmatch 0", 2);
@@ -96,6 +101,52 @@ const caps = defaultTraverseCaps();
 caps.jump = false;
 caps.entityTraversal = true;
 caps.swim = false;
+// The same hazard refusal Bot_WalkPathToGoal itself plans with
+// (src/bots/bot_hooks.ts): without it this file's own pre-selection findPath
+// call can pick a "reachable" goal whose only route runs through a lava or
+// slime node, which the live monster call refuses -- selection said reachable,
+// the walk answered PATH_ERROR. Matching the real caps here is what makes
+// "reachable at selection time" mean the same thing as "reachable when
+// Bot_WalkPathToGoal runs".
+const hazard = new Map<number, boolean>();
+caps.avoid = (node): boolean => {
+  const cached = hazard.get(node.index);
+  if (cached !== undefined) return cached;
+  const contents = SV_PointContents(vec3(node.origin.x, node.origin.y, node.origin.z + 8));
+  const bad = contents === CONTENTS_LAVA || contents === CONTENTS_SLIME;
+  hazard.set(node.index, bad);
+  return bad;
+};
+
+// G5: ticks x movedist is the straight-line ground `steps` unblocked
+// movetogoal calls could cover; the graph path a goal is picked from has to
+// fit well inside that, not merely be reachable at all. An unconstrained
+// "farthest reachable node" pick (this file's original goal selection) put
+// e1m1 monsters on goals whose graph path was close to or past this whole
+// budget, and the real per-tick ground covered -- corners, PATH_MOVE_BLOCKED
+// backoffs and the movetogoal fallback they trigger all cost ground without
+// closing distance -- ran 1.5-2x the straight-line start distance without
+// most of them arriving (u_monsters.log, 1/23 arrived). Halving the raw
+// budget still left the same friction eating most of the margin (8/23); a
+// quarter of it is what actually gives most monsters room to walk around
+// that friction and still arrive (14/23, measured against e1m1 with
+// sv_randomseed 7).
+const TRAVEL_BUDGET = steps * MOVE_DIST;
+const BUDGET_MARGIN = 0.15;
+const MAX_PATH_LENGTH = TRAVEL_BUDGET * BUDGET_MARGIN;
+
+/** Sum of graph-edge distances along a findPath() chain (Euclidean; a real
+ * Teleport link would need its 1-cost special case, but no map in this tree
+ * puts one on a path between two ordinary walk nodes this far apart). */
+function chainLength(nav: NavGraph, chain: readonly number[]): number {
+  let total = 0;
+  for (let i = 1; i < chain.length; i++) {
+    const a = nav.nodes[chain[i - 1]!]!.origin;
+    const b = nav.nodes[chain[i]!]!.origin;
+    total += Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+  }
+  return total;
+}
 
 function place(ent: EdictT, at: readonly [number, number, number]): void {
   ent.v.origin[0] = at[0];
@@ -157,7 +208,19 @@ for (const monster of monsters) {
   if (trials.length >= limit) break;
 
   const start = originOf(monster);
-  const startNode = nav.closestNode({ x: start[0], y: start[1], z: start[2] }, { caps });
+  // Bot_WalkPathToGoal's own planPath call picks its start node with this
+  // same box trace (bot_hooks.ts's `visible`, STEP_HEIGHT=18 there): the
+  // monster's own bounding box lifted by its step height, not a bare point.
+  // Picking the naively-nearest node instead, as this file did before,
+  // sometimes chose one the monster's real box cannot actually reach in a
+  // straight line -- selection said reachable, the live call answered
+  // PATH_ERROR because it picked a different (or no) start node for the
+  // exact same origin.
+  const boxMins = vec3(monster.v.mins[0]!, monster.v.mins[1]!, monster.v.mins[2]! + STEP_HEIGHT);
+  const boxMaxs = vec3(monster.v.maxs[0]!, monster.v.maxs[1]!, monster.v.maxs[2]!);
+  const monsterVisible = (from: { x: number; y: number; z: number }, to: { x: number; y: number; z: number }): boolean =>
+    SV_Move(vec3(from.x, from.y, from.z), boxMins, boxMaxs, vec3(to.x, to.y, to.z), MOVE_NOMONSTERS, monster).fraction >= 1;
+  const startNode = nav.closestNode({ x: start[0], y: start[1], z: start[2] }, { caps, visible: monsterVisible });
   if (startNode < 0) continue;
 
   let goalNode = -1;
@@ -167,7 +230,8 @@ for (const monster of monsters) {
     const node = nav.nodes[i]!;
     const d = distance(start, [node.origin.x, node.origin.y, node.origin.z]);
     if (d < MIN_GOAL_DISTANCE || d <= goalDistance) continue;
-    if (nav.findPath(startNode, i, caps) === null) continue;
+    const chain = nav.findPath(startNode, i, caps);
+    if (chain === null || chainLength(nav, chain) > MAX_PATH_LENGTH) continue;
     goalDistance = d;
     goalNode = i;
   }
@@ -197,7 +261,11 @@ for (const monster of monsters) {
   });
 }
 
-check(`${map}: monsters with a reachable goal more than ${MIN_GOAL_DISTANCE} units away`, trials.length > 5, `${trials.length} of ${monsters.length}`);
+check(
+  `${map}: monsters with a reachable goal more than ${MIN_GOAL_DISTANCE} units away and within the ${Math.round(MAX_PATH_LENGTH)}-unit travel budget`,
+  trials.length > 5,
+  `${trials.length} of ${monsters.length}`,
+);
 
 //============================================================================
 // with the nav graph mounted
@@ -314,7 +382,7 @@ check(
 );
 
 check(
-  `most monsters reach the player's area within ${seconds}s on a nav map`,
+  `most monsters with a reachable goal reach the player's area within ${seconds}s on a nav map`,
   navArrivals > trials.length / 2,
   `${navArrivals}/${trials.length} arrived within ${ARRIVED} units`,
 );

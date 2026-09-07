@@ -5,9 +5,15 @@ every u_*.ts driver is a standalone script run as `bun test/e2e/u_<name>.ts`.
 Everything here runs one in-process engine (`Sys_Main_Init` + `runFrames`, the
 same boot a_lib.ts and b_lib.ts use) with `-listen 12`, which is what makes
 `svs.maxclients` big enough for a full bot roster plus the local player:
-Host_InitLocal reads `-listen`'s argument straight into `svs.maxclients` and
-sets `svs.maxclientslimit` from it, so a `maxplayers` typed after boot can
-never raise the ceiling past what the command line asked for.
+Host_FindMaxClients reads `-listen`'s argument straight into `svs.maxclients`,
+the cap this file's callers actually rely on. `svs.maxclientslimit` (the
+`svs.clients` array's own size) is a different, wider number since G6
+(2026-09-07): it is always MAX_SCOREBOARD regardless of `-listen`, because the
+re-release's Multiplayer menu and Bots page host up to a full scoreboard from
+a plain boot with no `-listen` at all. A `maxplayers` typed after this file's
+boot() can therefore raise `svs.maxclients` as high as MAX_SCOREBOARD, not
+capped at whatever `-listen` asked for -- no driver in this family does that,
+but a future one reading this comment should not assume the old ceiling.
 
 The nav map list is read out of the mounted pak directories rather than
 written down here. "Every map that has a .nav in this tree" has to keep
@@ -21,7 +27,7 @@ import { Cbuf_AddText } from "../../src/common/cmd";
 import * as consoleMod from "../../src/client/console";
 import { conState } from "../../src/client/console";
 import { FL_ONGROUND, svs } from "../../src/server/server";
-import { Bot_Add, Bot_RemoveAll, Bot_Slots } from "../../src/bots";
+import { Bot_Add, Bot_RemoveAll, Bot_Slots, bot_count } from "../../src/bots";
 import { Q1TS_DATA, homedirArgs } from "./q1data";
 
 //============================================================================
@@ -69,6 +75,40 @@ export function requireTree(name: string | undefined): TreeName {
 export const PORT_BASE = 26400;
 
 /**
+ * F13 registered `sv_randomseed` (SV_SpawnServer reseeds the QuakeC
+ * random(), SV_MoveToGoal's chase-direction roll and, per bot_client.ts's
+ * Bot_SpawnServer, addbot's own character/brain picks) but left every
+ * family-u driver unseeded, so two runs of the same scenario are two
+ * different matches. G5: `--seed <n>` on the command line, else Q1TS_SEED,
+ * else 7 -- a default that is itself a seed, not 0, so a plain `bun
+ * test/e2e/u_commands.ts` with no flags is replayable too. Passing 0 either
+ * way asks for sv_randomseed's own default: WinQuake's unseeded engine.
+ */
+function seedArg(): string | undefined {
+  const i = process.argv.indexOf("--seed");
+  return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : undefined;
+}
+
+export const DEFAULT_SEED = 7;
+
+export function resolveSeed(): number {
+  const arg = seedArg();
+  if (arg !== undefined) {
+    const n = Math.trunc(Number(arg));
+    if (!Number.isNaN(n)) return n;
+  }
+  const env = process.env.Q1TS_SEED;
+  if (env !== undefined && env !== "") {
+    const n = Math.trunc(Number(env));
+    if (!Number.isNaN(n)) return n;
+  }
+  return DEFAULT_SEED;
+}
+
+/** Resolved once per process, so every boot() in a driver pins the same run. */
+export const SEED = resolveSeed();
+
+/**
  * One listen server with room for `maxclients` slots. `-basedir Q1TS_DATA`
  * auto-detects the nested rerelease/ root; the episode trees come in on their
  * own flag, exactly as the re-release's own launcher passes them.
@@ -77,7 +117,21 @@ export function boot(tree: TreeName, maxclients: number, port: number, extra: st
   // F18: writes go to the per-family home directory like every other family;
   // without it the engine's default per-user directory (or the retail tree)
   // would receive this family's config and autosaves.
-  const argv = ["quake", "-basedir", Q1TS_DATA, "-game", "e2e_u", ...homedirArgs("e2e_u"), "-nosound", "-port", String(port), "-listen", String(maxclients)];
+  const argv = [
+    "quake",
+    "-basedir",
+    Q1TS_DATA,
+    "-game",
+    "e2e_u",
+    ...homedirArgs("e2e_u"),
+    "-nosound",
+    "-port",
+    String(port),
+    "-listen",
+    String(maxclients),
+    "+sv_randomseed",
+    String(SEED),
+  ];
   if (tree !== "id1") argv.push(`-${tree}`);
   Sys_Main_Init([...argv, ...extra]);
 
@@ -301,12 +355,28 @@ export function liveBots(): number[] {
  * if the slot map and the client array have gone out of step. `recovered`
  * says the roster had to be rebuilt, which is the observable a caller asserts
  * on.
+ *
+ * G6 (2026-09-07, src/bots/bot_client.ts): `bot_count` now reconciles only
+ * the auto-filled part of the roster; a hand-added bot is permanently
+ * "extra" and neither counted nor removed by it. When `want` is what
+ * `bot_count` is already asking for -- every per-map fallback in this family
+ * (`bot_count N` set once, then `ensureBots(N)` after a map whose own
+ * auto-fill came up short) -- the top-up is standing in for that quota, and
+ * has to be added the same way the quota's own bots would be (`auto: true`),
+ * or it becomes a bot the roster carries forever, uncounted, that the very
+ * next bot-flagged map's real auto-fill then tops up *again* on top of --
+ * doubling the roster and never coming back down (u_navmaps.ts's id1 sweep:
+ * every real deathmatch map after the first vault/utility one measured 8
+ * live bots against a `bot_count 4`). Only a caller asking for more than
+ * `bot_count` currently wants (u_commands.ts's no-nav scenario, `bot_count
+ * 0`) gets real hand-added extras, matching what the `addbot` command does.
  */
 export function ensureBots(want: number): { live: number; recovered: boolean } {
   const before = liveBots().length;
   if (before >= want) return { live: before, recovered: false };
   if (Bot_Slots().size > before) Bot_RemoveAll();
-  while (liveBots().length < want && Bot_Add("random", "") >= 0);
+  const auto = Math.trunc(bot_count.value) === want;
+  while (liveBots().length < want && Bot_Add("random", "", auto) >= 0);
   return { live: liveBots().length, recovered: true };
 }
 
@@ -437,13 +507,21 @@ export class BotWatch {
         // holds every client for ~5 s) is not a stuck bot: that time does
         // not count toward the standstill.
         const frozenByProgs = (ent.v.movetype | 0) === 0;
-        if (frozenByProgs) {
+        // G5: a bot the brain isn't asking to go anywhere -- no forward or
+        // side command, and no live combat target -- is holding position on
+        // purpose (brain.ts's own defend/camp behavior for CTF: "the base a
+        // carrier runs to, a defender guards, and an attacker camps"), not
+        // stuck. brain.ts's own wedge timer draws the identical line: it is
+        // gated on "pressing a move", because a standstill with nothing
+        // commanded says nothing about whether the bot CAN move.
+        const brain = Bot_Slots().get(s.clientnum)?.brain;
+        const holdingOnPurpose = client.cmd.forwardmove === 0 && client.cmd.sidemove === 0 && (brain?.currentTarget() ?? -1) < 0;
+        if (frozenByProgs || holdingOnPurpose) {
           s.still = 0;
         } else if (step < STILL_STEP) {
           s.still += 1;
           if (s.still > s.longestStill) {
             s.longestStill = s.still;
-            const brain = Bot_Slots().get(s.clientnum)?.brain;
             s.stillSnapshot = {
               origin,
               health,
@@ -459,7 +537,7 @@ export class BotWatch {
         } else {
           s.still = 0;
         }
-        if ((Bot_Slots().get(s.clientnum)?.brain.currentTarget() ?? -1) >= 0) s.targetFrames += 1;
+        if ((brain?.currentTarget() ?? -1) >= 0) s.targetFrames += 1;
         // A respawn refills items, health, armour and ammo in one frame; the
         // frame after a death is not a pickup.
         const items = ent.v.items | 0;

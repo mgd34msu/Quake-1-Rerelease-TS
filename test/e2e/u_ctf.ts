@@ -16,7 +16,7 @@ event precisely.
 import { Bot_Nav } from "../../src/bots";
 import { EDICT_NUM, PR_GetString } from "../../src/progs/progs";
 import { SOLID_TRIGGER, sv, svs } from "../../src/server/server";
-import { BotWatch, PORT_BASE, boot, check, conMark, conSince, consoleErrors, ensureBots, exec, finish, frames, liveBots, navMaps, pumpGuarded, row } from "./u_lib";
+import { BotWatch, PORT_BASE, SEED, boot, check, conMark, conSince, consoleErrors, ensureBots, exec, finish, frames, liveBots, navMaps, pumpGuarded, row } from "./u_lib";
 
 const DT = 0.05;
 const PORT = PORT_BASE + 20;
@@ -34,7 +34,7 @@ const onlySet = only === undefined ? null : new Set(only.split(",").map((s) => s
 const all = navMaps("ctf");
 const maps = onlySet === null ? all : all.filter((m) => onlySet.has(m.map));
 
-console.log(`## u_ctf maps=${maps.length}/${all.length} bots=${wantBots} seconds=${seconds}`);
+console.log(`## u_ctf maps=${maps.length}/${all.length} bots=${wantBots} seconds=${seconds} seed=${SEED}`);
 if (maps.length === 0) {
   check("ctf: has .nav maps", false, "the ctf tree ships no bots/navigation/*.nav with a matching .bsp");
   finish();
