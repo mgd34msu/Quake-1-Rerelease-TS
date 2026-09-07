@@ -3,7 +3,7 @@ Family U scenario 4: bots in coop, alongside the local player, on the
 re-release e1m1.
 
     bun test/e2e/u_coop.ts
-    bun test/e2e/u_coop.ts --map e1m2 --seconds 60
+    bun test/e2e/u_coop.ts --map e1m2 --seconds 120
 
 `bot_count`'s auto-fill is deathmatch-only by construction (src/bots/
 bot_client.ts's Bot_AutoFill), so a coop roster is built with `addbot`, which
@@ -26,7 +26,11 @@ function argOf(flag: string): string | undefined {
 }
 
 const map = argOf("--map") ?? "e1m1";
-const seconds = Number(argOf("--seconds") ?? "60");
+// 120 s: on the untouched brain the two combat checks were a coin flip per
+// seed inside 60 s (bots walk 8-9k units on e1m1 but their routes face a
+// monster in only a handful of frames at some seeds); two minutes gives
+// every seeded match the encounter the checks are about.
+const seconds = Number(argOf("--seconds") ?? "120");
 const wantBots = Number(argOf("--bots") ?? "3");
 
 boot("id1", 8, PORT);
