@@ -79,6 +79,80 @@ Deviations from PORTING.md / the C source:
   `CL_Init`/`Host_Init`, or a future qw.active-gated second hook slot on
   host.ts, out of this unit's SCOPE) should call `Sbar_Init()` directly
   instead. Flagged as a follow-up.
+
+G9 addition (2026-09-07, "the QuakeWorld client's own 2D tree scales to the
+window"): this file's own comment above ("drawing routines are relative to
+the status bar location -- QW's own Sbar_DrawPic/Sbar_DrawTransPic/
+Sbar_DrawCharacter/Sbar_DrawString comment out the `((vid.width-320)>>1)`
+centering WinQuake's versions apply") is now only true at `SbarScale() === 1`
+in a 320-wide window: QW's classic bar genuinely drew flush against the
+window's left edge at 1:1 device pixels, a real (if minor) difference from
+WinQuake's own centred bar, and at 1920x1080 that meant an 8px-glyph HUD
+pinned to the bottom-left corner. Mike's ruling (this unit's brief) is to
+give the QW bar the SAME scaled, bottom-CENTRED anchor
+src/client/sbar.ts's own F2/F2b already gives the WinQuake bar -- a
+documented quality-of-life deviation from QW's original flush-left
+placement, not a fidelity break (the charter's "quality-of-life changes are
+welcome and documented as additions" covers it), using the exact same
+`sbarCenterX`/`sbarAnchorY` formulas and the same shared `SbarScale()`
+(scr_sbarscale, one cvar for both tracks). Sbar_DrawPic/Sbar_DrawTransPic/
+Sbar_DrawCharacter/Sbar_DrawString now scale and centre through it; digits
+(Sbar_DrawNum -> Sbar_DrawTransPic) and the frags row above the bar
+(Sbar_DrawFrags, whose background colour swatches went through a raw
+`Draw_Fill` call the wrappers don't reach) scale and centre along with it.
+
+QW's own "headsup" HUD (`cl_sbar 0`, a compact icon strip docked to the
+REAL window edges -- `Sbar_DrawInventory`'s `if (headsup) {...}` branches,
+positioned at literal `vid.width - N` / `0` with NO relation to the 320-wide
+canvas at all) is a genuinely different, edge-anchored layout, not a
+scaled-down view of the classic bar, so it keeps drawing at 1:1 device
+pixels exactly as before -- those three `Sbar_DrawCharacter` call sites now
+go through a local `sbarRawCharacter` (the pre-G9 body, kept verbatim) so
+the new centring/scaling in `Sbar_DrawCharacter` itself never reaches them.
+`Sbar_DrawSubPic` (only ever called from those same headsup branches -- see
+this file's earlier deviation note) is UNCHANGED for the identical reason,
+and additionally because `Renderer` has no `Draw_ScaledSubPic` member to
+scale it with; adding one means touching src/client/render.ts and both
+renderer modules, outside this unit's SCOPE -- reported as a follow-up if
+headsup mode is ever brought into this scaling model.
+
+`Sbar_DeathmatchOverlay`/`Sbar_TeamOverlay` (the `+showscores` full-screen
+rankings) and `Sbar_MiniDeathmatchOverlay` (the sidebar shown when there's
+room beside the bar) are NOT part of the 320-wide canvas -- they already lay
+themselves out against the real `vid.width`/`vid.height` and adapt their own
+row count to the window, unlike the fixed-canvas bar -- but their glyphs
+were still fixed 8px `Draw_String`/`Draw_Character`/`Draw_Alt_String` calls,
+unreadable at 1080p same as everything else this unit fixes. Per the brief
+("frags/teamplay overlays and the mini deathmatch scoreboard -- they scale
+with it"), every position and glyph in these three functions now scales by
+the SAME `SbarScale()`: each function computes `s = SbarScale()` once, lays
+itself out in the ORIGINAL virtual units against `vid.width/s`/`vid.height/s`
+(so the existing row-count/wrap arithmetic is unchanged), and every draw call
+multiplies its real destination by `s` (`Text_Draw(x*s, y*s, str, alt, s)`
+replacing `Draw_String`/`Draw_Character`/`Draw_Alt_String`, `Draw_Fill`'s
+x/y/w/h all multiplied by `s`, the ranking.lmp title pic through the same
+Draw_ScaledPic path menu.ts uses). One deliberate simplification, documented
+rather than silent: `Sbar_MiniDeathmatchOverlay`'s `x = 324` was already only
+loosely "beside the bar" (a constant 4px past the OLD flush-left bar's right
+edge, not a computed offset from it) -- now that the main bar is centred,
+that coupling is gone at any scale beyond 1 regardless of whether this
+overlay scales too, so `x = 324` is kept as the same virtual-units constant
+(now `324 * s` real pixels) rather than chased into a new bar-relative
+formula; the two panels no longer collide (both still anchor to
+`vid.height`), they just no longer visually abut. Its own room checks
+(originally plain `vid.width < 512` / `>= 640` / `< 640` comparisons against
+the C's own virtual-unit thresholds) are scaled by `s` too, so the panel
+correctly decides it has no room and skips itself entirely once the
+scaled-up bar leaves less than 512 (or 640, for the team columns) virtual
+units of real width -- caught by a live headless run at 1920x1080
+(`SbarFitScale()` 6, unguarded `x = 324*6 = 1944` walked past `vid.width`
+and the renderer logged "Bad Draw_Fill" every frame), not by inspection;
+fixed before landing. `Sbar_FinaleOverlay` (the
+already-centred, already full-picture `gfx/finale.lmp` intermission screen)
+and `Sbar_IntermissionNumber` (positioned entirely by its screen.ts-owned
+caller, outside this unit's console/notify/centerprint-only screen.ts SCOPE)
+are unchanged -- neither is one of the rows the brief calls out, and
+`Sbar_IntermissionNumber`'s caller is not in this unit's SCOPE to update.
 */
 
 import { cl, cls } from "../../client/client";
@@ -86,6 +160,7 @@ import { getRenderer } from "../../client/render";
 import { vid } from "../../client/vid";
 import { scrState } from "../../client/screen_types";
 import { scr_viewsize } from "../../client/screen";
+import { SbarScale, Text_Draw } from "../../client/kfont_text";
 import { host } from "../../common/host";
 import { MSG_WriteByte, SZ_Print } from "../../common/sizebuf";
 import { Com_sprintf } from "../../common/sprintf";
@@ -312,7 +387,24 @@ export function Sbar_Init(): void {
 // drawing routines are relative to the status bar location -- QW's own
 // Sbar_DrawPic/Sbar_DrawTransPic/Sbar_DrawCharacter/Sbar_DrawString comment
 // out the `((vid.width-320)>>1)` centering WinQuake's versions apply; ported
-// with that centering dropped, exactly as commented out.
+// with that centering dropped, exactly as commented out at SbarScale() 1 in
+// a 320-wide window. See this file's header's G9 note for the scaled,
+// centred anchor these five now share (mirroring src/client/sbar.ts's own
+// F2/F2b sbarCenterX/sbarAnchorY/sbarSeatScale) and the documented headsup
+// carve-out.
+
+/** G9: mirrors src/client/sbar.ts's own sbarCenterX -- the bottom bar's
+ * bottom-CENTRE anchor, scaled. QW has no splitscreen seats, so there is no
+ * per-seat pane to cap against (unlike sbarSeatScale's own cap): `SbarScale()`
+ * is already capped to `vid.width/320` via its own SbarFitScale. */
+function sbarCenterX(s = 1): number {
+  return Math.floor((vid.width - 320 * s) / 2);
+}
+
+/** G9: mirrors src/client/sbar.ts's own sbarAnchorY. */
+function sbarAnchorY(s = 1): number {
+  return vid.height - SBAR_HEIGHT * s;
+}
 
 /*
 =============
@@ -321,7 +413,18 @@ Sbar_DrawPic
 */
 export function Sbar_DrawPic(x: number, y: number, pic: QpicT | null): void {
   if (!pic) return;
-  getRenderer().Draw_Pic(x, y + (vid.height - SBAR_HEIGHT), pic);
+  const r = getRenderer();
+  const s = SbarScale();
+  const anchorX = sbarCenterX(s);
+  const anchorY = sbarAnchorY(s);
+  if (s === 1) {
+    r.Draw_Pic(anchorX + x, anchorY + y, pic);
+    return;
+  }
+  const dx = anchorX + x * s;
+  const dy = anchorY + y * s;
+  if (r.Draw_ScaledPic === undefined) r.Draw_Pic(dx, dy, pic);
+  else r.Draw_ScaledPic(dx, dy, pic, s);
 }
 
 /*
@@ -329,6 +432,10 @@ export function Sbar_DrawPic(x: number, y: number, pic: QpicT | null): void {
 Sbar_DrawSubPic
 
 JACK: Draws a portion of the picture in the status bar.
+
+G9: only ever called from Sbar_DrawInventory's headsup branches (see this
+file's header) -- kept at 1:1 device pixels like the rest of that mode, and
+because `Renderer` has no scaled-subpic member to draw it with otherwise.
 =============
 */
 export function Sbar_DrawSubPic(x: number, y: number, pic: QpicT | null, srcx: number, srcy: number, width: number, height: number): void {
@@ -343,7 +450,18 @@ Sbar_DrawTransPic
 */
 export function Sbar_DrawTransPic(x: number, y: number, pic: QpicT | null): void {
   if (!pic) return;
-  getRenderer().Draw_TransPic(x, y + (vid.height - SBAR_HEIGHT), pic);
+  const r = getRenderer();
+  const s = SbarScale();
+  const anchorX = sbarCenterX(s);
+  const anchorY = sbarAnchorY(s);
+  if (s === 1) {
+    r.Draw_TransPic(anchorX + x, anchorY + y, pic);
+    return;
+  }
+  const dx = anchorX + x * s;
+  const dy = anchorY + y * s;
+  if (r.Draw_ScaledTransPic === undefined) r.Draw_TransPic(dx, dy, pic);
+  else r.Draw_ScaledTransPic(dx, dy, pic, s);
 }
 
 /*
@@ -354,6 +472,20 @@ Draws one solid graphics character
 ================
 */
 export function Sbar_DrawCharacter(x: number, y: number, num: number): void {
+  // U19-style: routed through kfont_text.ts's Text_Draw and scaled by
+  // SbarScale() around the same scaled, centred anchor Sbar_DrawPic/
+  // Sbar_DrawTransPic/Sbar_DrawString use. At SbarScale() 1 this is
+  // byte-identical to the pre-G9 formula (`x+4`, `y+vid.height-SBAR_HEIGHT`).
+  const s = SbarScale();
+  const anchorX = sbarCenterX(s);
+  const anchorY = sbarAnchorY(s);
+  Text_Draw(anchorX + (x + 4) * s, anchorY + y * s, String.fromCharCode(num & 0xff), false, s);
+}
+
+/** G9: the pre-G9 body of Sbar_DrawCharacter, kept verbatim for
+ * Sbar_DrawInventory's headsup branches -- see this file's header. Not a
+ * ported C name. */
+function sbarRawCharacter(x: number, y: number, num: number): void {
   getRenderer().Draw_Character(x + 4, y + vid.height - SBAR_HEIGHT, num);
 }
 
@@ -363,7 +495,11 @@ Sbar_DrawString
 ================
 */
 export function Sbar_DrawString(x: number, y: number, str: string): void {
-  getRenderer().Draw_String(x, y + vid.height - SBAR_HEIGHT, str);
+  // G9: see Sbar_DrawCharacter's own note just above.
+  const s = SbarScale();
+  const anchorX = sbarCenterX(s);
+  const anchorY = sbarAnchorY(s);
+  Text_Draw(anchorX + x * s, anchorY + y * s, str, false, s);
 }
 
 /*
@@ -597,9 +733,9 @@ export function Sbar_DrawInventory(): void {
     const num = Com_sprintf("%3i", cl.stats[STAT_SHELLS + i]);
     if (headsup) {
       Sbar_DrawSubPic(hudswap ? 0 : vid.width - 42, -24 - (4 - i) * 11, sb_ibar, 3 + i * 48, 0, 42, 11);
-      if (num[0] !== " ") Sbar_DrawCharacter(hudswap ? 3 : vid.width - 39, -24 - (4 - i) * 11, 18 + num.charCodeAt(0) - 48);
-      if (num[1] !== " ") Sbar_DrawCharacter(hudswap ? 11 : vid.width - 31, -24 - (4 - i) * 11, 18 + num.charCodeAt(1) - 48);
-      if (num[2] !== " ") Sbar_DrawCharacter(hudswap ? 19 : vid.width - 23, -24 - (4 - i) * 11, 18 + num.charCodeAt(2) - 48);
+      if (num[0] !== " ") sbarRawCharacter(hudswap ? 3 : vid.width - 39, -24 - (4 - i) * 11, 18 + num.charCodeAt(0) - 48);
+      if (num[1] !== " ") sbarRawCharacter(hudswap ? 11 : vid.width - 31, -24 - (4 - i) * 11, 18 + num.charCodeAt(1) - 48);
+      if (num[2] !== " ") sbarRawCharacter(hudswap ? 19 : vid.width - 23, -24 - (4 - i) * 11, 18 + num.charCodeAt(2) - 48);
     } else {
       if (num[0] !== " ") Sbar_DrawCharacter((6 * i + 1) * 8 - 2, -24, 18 + num.charCodeAt(0) - 48);
       if (num[1] !== " ") Sbar_DrawCharacter((6 * i + 2) * 8 - 2, -24, 18 + num.charCodeAt(1) - 48);
@@ -647,7 +783,15 @@ export function Sbar_DrawFrags(): void {
   const l = scoreboardlines <= 4 ? scoreboardlines : 4;
 
   let x = 23;
-  const y = vid.height - SBAR_HEIGHT - 23;
+  // G9: the pre-G9 formula was `vid.height - SBAR_HEIGHT - 23`, an absolute
+  // real-pixel row above the (then unscaled, flush-left) bar; now expressed
+  // against the same scaled, centred anchor Sbar_DrawCharacter draws this
+  // row's own digits through (that call passes canvas y -24, i.e.
+  // `sbarAnchorY(s) - 24*s`), one virtual unit lower to match the original's
+  // -23 offset -- byte-identical to the old formula at s === 1.
+  const scale = SbarScale();
+  const anchorX = sbarCenterX(scale);
+  const y = sbarAnchorY(scale) - 23 * scale;
 
   const r = getRenderer();
 
@@ -666,8 +810,8 @@ export function Sbar_DrawFrags(): void {
     top = Sbar_ColorForMap(top);
     bottom = Sbar_ColorForMap(bottom);
 
-    r.Draw_Fill(x * 8 + 10, y, 28, 4, top);
-    r.Draw_Fill(x * 8 + 10, y + 4, 28, 3, bottom);
+    r.Draw_Fill(anchorX + (x * 8 + 10) * scale, y, 28 * scale, 4 * scale, top);
+    r.Draw_Fill(anchorX + (x * 8 + 10) * scale, y + 4 * scale, 28 * scale, 3 * scale, bottom);
 
     // draw number
     const f = s.frags;
@@ -866,14 +1010,24 @@ export function Sbar_TeamOverlay(): void {
   scrState.scr_copyeverything = 1;
   scrState.scr_fullupdate = 0;
 
+  // G9: full-screen overlay, not the 320-wide canvas -- see this file's
+  // header. Laid out in the ORIGINAL virtual units against `vid.height/s`;
+  // every draw call multiplies its destination by `s`.
+  const s = SbarScale();
+  const vHeight = vid.height / s;
+
   const pic = r.Draw_CachePic("gfx/ranking.lmp");
-  if (pic) r.Draw_Pic(160 - Math.trunc(pic.width / 2), 0, pic);
+  if (pic) {
+    const px = 160 - Math.trunc(pic.width / 2);
+    if (s === 1 || r.Draw_ScaledPic === undefined) r.Draw_Pic(px, 0, pic);
+    else r.Draw_ScaledPic(px * s, 0, pic, s);
+  }
 
   let y = 24;
   const x = 36;
-  r.Draw_String(x, y, "low/avg/high team total players");
+  Text_Draw(x * s, y * s, "low/avg/high team total players", false, s);
   y += 8;
-  r.Draw_String(x, y, "\x1d\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1f \x1d\x1e\x1e\x1f \x1d\x1e\x1e\x1e\x1f \x1d\x1e\x1e\x1e\x1e\x1e\x1f");
+  Text_Draw(x * s, y * s, "\x1d\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1f \x1d\x1e\x1e\x1f \x1d\x1e\x1e\x1e\x1f \x1d\x1e\x1e\x1e\x1e\x1e\x1f", false, s);
   y += 8;
 
   // sort the teams
@@ -881,7 +1035,7 @@ export function Sbar_TeamOverlay(): void {
 
   const myTeam = Info_ValueForKey(cl.qw.players[cl.qw.playernum].userinfo, "team");
 
-  for (let i = 0; i < scoreboardteams && y <= vid.height - 10; i++) {
+  for (let i = 0; i < scoreboardteams && y <= vHeight - 10; i++) {
     const k = teamsort[i];
     const tm = teams[k];
 
@@ -896,23 +1050,23 @@ export function Sbar_TeamOverlay(): void {
     if (pavg < 0 || pavg > 999) pavg = 999;
 
     let num = Com_sprintf("%3i/%3i/%3i", plow, pavg, phigh);
-    r.Draw_String(x, y, num);
+    Text_Draw(x * s, y * s, num, false, s);
 
     // draw team
     const team = tm.team.slice(0, 4);
-    r.Draw_String(x + 104, y, team);
+    Text_Draw((x + 104) * s, y * s, team, false, s);
 
     // draw total
     num = Com_sprintf("%5i", tm.frags);
-    r.Draw_String(x + 104 + 40, y, num);
+    Text_Draw((x + 104 + 40) * s, y * s, num, false, s);
 
     // draw players
     num = Com_sprintf("%5i", tm.players);
-    r.Draw_String(x + 104 + 88, y, num);
+    Text_Draw((x + 104 + 88) * s, y * s, num, false, s);
 
     if (myTeam.slice(0, 16) === tm.team.slice(0, 16)) {
-      r.Draw_Character(x + 104 - 8, y, 16);
-      r.Draw_Character(x + 104 + 32, y, 17);
+      Text_Draw((x + 104 - 8) * s, y * s, String.fromCharCode(16), false, s);
+      Text_Draw((x + 104 + 32) * s, y * s, String.fromCharCode(17), false, s);
     }
 
     y += 8;
@@ -946,9 +1100,20 @@ export function Sbar_DeathmatchOverlay(start: number): void {
   scrState.scr_copyeverything = 1;
   scrState.scr_fullupdate = 0;
 
+  // G9: full-screen overlay, not the 320-wide canvas -- see this file's
+  // header. `start` (Sbar_TeamOverlay's own `y`, when nonzero) is already a
+  // virtual-units value; laid out against `vid.height/s`, every draw call
+  // multiplies its destination by `s`.
+  const s = SbarScale();
+  const vHeight = vid.height / s;
+
   if (!start) {
     const pic = r.Draw_CachePic("gfx/ranking.lmp");
-    if (pic) r.Draw_Pic(160 - Math.trunc(pic.width / 2), 0, pic);
+    if (pic) {
+      const px = 160 - Math.trunc(pic.width / 2);
+      if (s === 1 || r.Draw_ScaledPic === undefined) r.Draw_Pic(px, 0, pic);
+      else r.Draw_ScaledPic(px * s, 0, pic, s);
+    }
   }
 
   // scores
@@ -962,94 +1127,95 @@ export function Sbar_DeathmatchOverlay(start: number): void {
   if (teamplay) {
     x = 4;
     //                            0    40 64   104   152  192
-    r.Draw_String(x, y, "ping pl time frags team name");
+    Text_Draw(x * s, y * s, "ping pl time frags team name", false, s);
     y += 8;
-    r.Draw_String(
-      x,
-      y,
+    Text_Draw(
+      x * s,
+      y * s,
       "\x1d\x1e\x1e\x1f \x1d\x1f \x1d\x1e\x1e\x1f \x1d\x1e\x1e\x1e\x1f \x1d\x1e\x1e\x1f \x1d\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1f",
+      false,
+      s,
     );
     y += 8;
   } else {
     x = 16;
     //                            0    40 64   104   152
-    r.Draw_String(x, y, "ping pl time frags name");
+    Text_Draw(x * s, y * s, "ping pl time frags name", false, s);
     y += 8;
-    r.Draw_String(x, y, "\x1d\x1e\x1e\x1f \x1d\x1f \x1d\x1e\x1e\x1f \x1d\x1e\x1e\x1e\x1f \x1d\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1f");
+    Text_Draw(x * s, y * s, "\x1d\x1e\x1e\x1f \x1d\x1f \x1d\x1e\x1e\x1f \x1d\x1e\x1e\x1e\x1f \x1d\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1e\x1f", false, s);
     y += 8;
   }
 
-  for (let i = 0; i < l && y <= vid.height - 10; i++) {
+  for (let i = 0; i < l && y <= vHeight - 10; i++) {
     const k = fragsort[i];
-    const s = cl.qw.players[k];
-    if (s.name.length === 0) continue;
+    const s2 = cl.qw.players[k];
+    if (s2.name.length === 0) continue;
 
     // draw ping
-    let p = s.ping;
+    let p = s2.ping;
     if (p < 0 || p > 999) p = 999;
     let num = Com_sprintf("%4i", p);
-    r.Draw_String(x, y, num);
+    Text_Draw(x * s, y * s, num, false, s);
 
     // draw pl
-    p = s.pl;
+    p = s2.pl;
     num = Com_sprintf("%3i", p);
-    if (p > 25) r.Draw_Alt_String(x + 32, y, num);
-    else r.Draw_String(x + 32, y, num);
+    Text_Draw((x + 32) * s, y * s, num, p > 25, s);
 
-    if (s.spectator) {
-      r.Draw_String(x + 40, y, "(spectator)");
+    if (s2.spectator) {
+      Text_Draw((x + 40) * s, y * s, "(spectator)", false, s);
       // draw name
-      if (teamplay) r.Draw_String(x + 152 + 40, y, s.name);
-      else r.Draw_String(x + 152, y, s.name);
+      if (teamplay) Text_Draw((x + 152 + 40) * s, y * s, s2.name, false, s);
+      else Text_Draw((x + 152) * s, y * s, s2.name, false, s);
       y += skip;
       continue;
     }
 
     // draw time
     let total: number;
-    if (cl.intermission) total = cl.completed_time - s.entertime;
-    else total = host.realtime - s.entertime;
+    if (cl.intermission) total = cl.completed_time - s2.entertime;
+    else total = host.realtime - s2.entertime;
     const minutes = Math.trunc(total / 60);
     num = Com_sprintf("%4i", minutes);
-    r.Draw_String(x + 64, y, num);
+    Text_Draw((x + 64) * s, y * s, num, false, s);
 
     // draw background
-    let top = s.topcolor;
-    let bottom = s.bottomcolor;
+    let top = s2.topcolor;
+    let bottom = s2.bottomcolor;
     top = Sbar_ColorForMap(top);
     bottom = Sbar_ColorForMap(bottom);
 
-    if (largegame) r.Draw_Fill(x + 104, y + 1, 40, 3, top);
-    else r.Draw_Fill(x + 104, y, 40, 4, top);
-    r.Draw_Fill(x + 104, y + 4, 40, 4, bottom);
+    if (largegame) r.Draw_Fill((x + 104) * s, (y + 1) * s, 40 * s, 3 * s, top);
+    else r.Draw_Fill((x + 104) * s, y * s, 40 * s, 4 * s, top);
+    r.Draw_Fill((x + 104) * s, (y + 4) * s, 40 * s, 4 * s, bottom);
 
     // draw number
-    const f = s.frags;
+    const f = s2.frags;
     num = Com_sprintf("%3i", f);
 
-    r.Draw_Character(x + 112, y, num.charCodeAt(0));
-    r.Draw_Character(x + 120, y, num.charCodeAt(1));
-    r.Draw_Character(x + 128, y, num.charCodeAt(2));
+    Text_Draw((x + 112) * s, y * s, num[0], false, s);
+    Text_Draw((x + 120) * s, y * s, num[1], false, s);
+    Text_Draw((x + 128) * s, y * s, num[2], false, s);
 
     if (k === cl.qw.playernum) {
-      r.Draw_Character(x + 104, y, 16);
-      r.Draw_Character(x + 136, y, 17);
+      Text_Draw((x + 104) * s, y * s, String.fromCharCode(16), false, s);
+      Text_Draw((x + 136) * s, y * s, String.fromCharCode(17), false, s);
     }
 
     // team
     if (teamplay) {
-      const team = Info_ValueForKey(s.userinfo, "team").slice(0, 4);
-      r.Draw_String(x + 152, y, team);
+      const team = Info_ValueForKey(s2.userinfo, "team").slice(0, 4);
+      Text_Draw((x + 152) * s, y * s, team, false, s);
     }
 
     // draw name
-    if (teamplay) r.Draw_String(x + 152 + 40, y, s.name);
-    else r.Draw_String(x + 152, y, s.name);
+    if (teamplay) Text_Draw((x + 152 + 40) * s, y * s, s2.name, false, s);
+    else Text_Draw((x + 152) * s, y * s, s2.name, false, s);
 
     y += skip;
   }
 
-  if (y >= vid.height - 10)
+  if (y >= vHeight - 10)
     // we ran over the screen size, squish
     largegame = true;
 }
@@ -1064,7 +1230,20 @@ displayed to right of status bar if there's room
 ==================
 */
 export function Sbar_MiniDeathmatchOverlay(): void {
-  if (vid.width < 512 || !scrState.sb_lines) return; // not enuff room
+  // G9: see this file's header. `scrState.sb_lines` is already scaled by
+  // SbarScale() (each renderer's own SCR_CalcRefdef, F2b), so `y` stays a
+  // real-pixel value like the pre-G9 formula; the row height/every
+  // within-row offset below is multiplied by `s` instead, so the text scales
+  // without needing a separate virtual coordinate space here. The room
+  // checks below (originally plain `vid.width` comparisons against the C's
+  // own 512/640 virtual-unit thresholds) are scaled by `s` too -- `x = 324*s`
+  // is itself a scaled real-pixel coordinate (this file's header note), and
+  // without this fix it walked straight off the right edge of the window at
+  // high scale (1920x1080 -> SbarFitScale() 6 -> x = 1944, past vid.width) --
+  // caught by a real headless run (Draw_Fill rejecting the out-of-bounds
+  // rect every frame), not by inspection.
+  const s = SbarScale();
+  if (vid.width < 512 * s || !scrState.sb_lines) return; // not enuff room
 
   const r = getRenderer();
 
@@ -1075,13 +1254,14 @@ export function Sbar_MiniDeathmatchOverlay(): void {
 
   // scores
   Sbar_SortFrags(false);
-  if (vid.width >= 640) Sbar_SortTeams();
+  if (vid.width >= 640 * s) Sbar_SortTeams();
 
   if (!scoreboardlines) return; // no one there?
 
   // draw the text
   let y = vid.height - scrState.sb_lines - 1;
-  const numlines = Math.trunc(scrState.sb_lines / 8);
+  const rowH = 8 * s;
+  const numlines = Math.trunc(scrState.sb_lines / rowH);
   if (numlines < 3) return; // not enough room
 
   // find us
@@ -1097,56 +1277,56 @@ export function Sbar_MiniDeathmatchOverlay(): void {
   if (i > scoreboardlines - numlines) i = scoreboardlines - numlines;
   if (i < 0) i = 0;
 
-  let x = 324;
+  let x = 324 * s;
 
-  for (; i < scoreboardlines && y < vid.height - 8 + 1; i++) {
+  for (; i < scoreboardlines && y < vid.height - rowH + 1; i++) {
     const k = fragsort[i];
-    const s = cl.qw.players[k];
-    if (s.name.length === 0) continue;
+    const s2 = cl.qw.players[k];
+    if (s2.name.length === 0) continue;
 
     // draw ping
-    let top = s.topcolor;
-    let bottom = s.bottomcolor;
+    let top = s2.topcolor;
+    let bottom = s2.bottomcolor;
     top = Sbar_ColorForMap(top);
     bottom = Sbar_ColorForMap(bottom);
 
-    r.Draw_Fill(x, y + 1, 40, 3, top);
-    r.Draw_Fill(x, y + 4, 40, 4, bottom);
+    r.Draw_Fill(x, y + 1 * s, 40 * s, 3 * s, top);
+    r.Draw_Fill(x, y + 4 * s, 40 * s, 4 * s, bottom);
 
     // draw number
-    const f = s.frags;
+    const f = s2.frags;
     const num = Com_sprintf("%3i", f);
 
-    r.Draw_Character(x + 8, y, num.charCodeAt(0));
-    r.Draw_Character(x + 16, y, num.charCodeAt(1));
-    r.Draw_Character(x + 24, y, num.charCodeAt(2));
+    Text_Draw(x + 8 * s, y, num[0], false, s);
+    Text_Draw(x + 16 * s, y, num[1], false, s);
+    Text_Draw(x + 24 * s, y, num[2], false, s);
 
     if (k === cl.qw.playernum) {
-      r.Draw_Character(x, y, 16);
-      r.Draw_Character(x + 32, y, 17);
+      Text_Draw(x, y, String.fromCharCode(16), false, s);
+      Text_Draw(x + 32 * s, y, String.fromCharCode(17), false, s);
     }
 
     // team
     if (teamplay) {
-      const team = Info_ValueForKey(s.userinfo, "team").slice(0, 4);
-      r.Draw_String(x + 48, y, team);
+      const team = Info_ValueForKey(s2.userinfo, "team").slice(0, 4);
+      Text_Draw(x + 48 * s, y, team, false, s);
     }
 
     // draw name
-    const name = s.name.slice(0, 16);
-    if (teamplay) r.Draw_String(x + 48 + 40, y, name);
-    else r.Draw_String(x + 48, y, name);
-    y += 8;
+    const name = s2.name.slice(0, 16);
+    if (teamplay) Text_Draw(x + (48 + 40) * s, y, name, false, s);
+    else Text_Draw(x + 48 * s, y, name, false, s);
+    y += rowH;
   }
 
   // draw teams if room
-  if (vid.width < 640 || !teamplay) return;
+  if (vid.width < 640 * s || !teamplay) return;
 
   // draw seperator
-  x += 208;
-  for (y = vid.height - scrState.sb_lines; y < vid.height - 6; y += 2) r.Draw_Character(x, y, 14);
+  x += 208 * s;
+  for (y = vid.height - scrState.sb_lines; y < vid.height - 6 * s; y += 2 * s) Text_Draw(x, y, String.fromCharCode(14), false, s);
 
-  x += 16;
+  x += 16 * s;
 
   const myTeam = Info_ValueForKey(cl.qw.players[cl.qw.playernum].userinfo, "team");
 
@@ -1157,18 +1337,18 @@ export function Sbar_MiniDeathmatchOverlay(): void {
 
     // draw pings
     const team = tm.team.slice(0, 4);
-    r.Draw_String(x, y, team);
+    Text_Draw(x, y, team, false, s);
 
     // draw total
     const num = Com_sprintf("%5i", tm.frags);
-    r.Draw_String(x + 40, y, num);
+    Text_Draw(x + 40 * s, y, num, false, s);
 
     if (myTeam.slice(0, 16) === tm.team.slice(0, 16)) {
-      r.Draw_Character(x - 8, y, 16);
-      r.Draw_Character(x + 32, y, 17);
+      Text_Draw(x - 8 * s, y, String.fromCharCode(16), false, s);
+      Text_Draw(x + 32 * s, y, String.fromCharCode(17), false, s);
     }
 
-    y += 8;
+    y += rowH;
   }
 }
 

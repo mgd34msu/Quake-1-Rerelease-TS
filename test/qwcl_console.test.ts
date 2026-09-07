@@ -54,6 +54,7 @@ import { re, type Renderer } from "../src/client/render";
 import { TextureT } from "../src/common/model";
 import { FileHandle, COM_InitArgv, setComGamedir } from "../src/common/common";
 import { clMainState } from "../src/qw/client/cl_main";
+import { scr_conscale } from "../src/client/kfont_text";
 
 // This file's own beforeEach (below) parks cls.state at ca_active for every
 // test, but every other field it touches there is reset back to its own
@@ -185,6 +186,17 @@ beforeEach(() => {
   re.current = null;
 
   conState.con_ormask = 0;
+
+  // G9: Con_Resize/Con_DrawInput/Con_DrawNotify/Con_DrawConsole now read
+  // ConsoleVirtualWidth()/ConsoleScale() (src/client/kfont_text.ts), which
+  // derive from vid.height and scr_conscale -- neither was a global this
+  // suite read before. Pinned to the values that keep ConsoleScale() at 1
+  // (vid.height 200 -> ConsoleAutoScale() 1; scr_conscale 0 -> auto) so
+  // every pixel-position assertion below (written against the pre-G9,
+  // always-scale-1 formulas) stays deterministic regardless of what another
+  // suite left these shared singletons at (rule 15).
+  vid.height = 200;
+  scr_conscale.value = 0;
 });
 
 // ============================================================================
@@ -236,6 +248,30 @@ describe("Con_Init / Con_CheckResize", () => {
     // here rather than assumed.
     expect(con_chat.current).toBe(chatCurrentBefore);
     expect(con_chat.display).toBe(chatDisplayBefore);
+  });
+});
+
+describe("G9: con_linewidth from the virtual console width, not the real window width", () => {
+  test("1920x1080 (auto scale 3): con_linewidth comes from ConsoleVirtualWidth(), not raw vid.width", () => {
+    // ConsoleAutoScale() at vid.height 1080 is floor(1080/300) = 3;
+    // ConsoleVirtualWidth() = clamp(320, 1920/3, 1920) = 640, already a
+    // multiple of 8. Raw vid.width (1920>>3)-2 = 238 would be the pre-G9
+    // answer -- this asserts the scaled one instead.
+    vid.width = 1920;
+    vid.height = 1080;
+    Con_Init();
+
+    expect(conState.con_linewidth).toBe((640 >> 3) - 2);
+    expect(conState.con_linewidth).not.toBe((1920 >> 3) - 2);
+  });
+
+  test("scr_conscale set explicitly overrides the auto scale", () => {
+    vid.width = 1920;
+    vid.height = 1080;
+    scr_conscale.value = 1; // native 1:1 glyphs, the pre-G9-default shape
+    Con_Init();
+
+    expect(conState.con_linewidth).toBe((1920 >> 3) - 2);
   });
 });
 
@@ -392,6 +428,15 @@ describe("Con_ClearNotify / notify timing", () => {
     const { renderer, draws } = makeFakeRenderer();
     re.current = renderer;
 
+    // G9: Con_DrawNotify now reads ConsoleScale(), which divides by vid.width
+    // -- the `vid.width = 0` set above (deliberately, for Con_Resize's own
+    // video-uninitialized branch) would make ConsoleScale() 0 here, not 1,
+    // taking Text_Draw's non-classic-fast-path branch (needing a
+    // Draw_GlyphAtlas this suite's fake renderer does not implement) and
+    // drawing nothing. A real boot never calls Con_DrawNotify before video
+    // is up, so this restores a real width first.
+    vid.width = 320;
+
     clMainState.realtime = 5; // no time elapsed yet -- within con_notifytime.value
     Con_DrawNotify();
     expect(draws.length).toBeGreaterThan(0);
@@ -449,9 +494,17 @@ describe("Con_DrawNotify chat prompt", () => {
 
     Con_DrawNotify();
 
-    expect(strings).toEqual([{ x: 8, y: 0, str: "say:" }]);
+    // G9: the "say:" label now routes through kfont_text.ts's Text_Draw
+    // (ConsoleScale()-aware), which at ConsoleScale() 1 with the classic
+    // charset takes its "one Draw_Character per glyph" fast path instead of
+    // a single Draw_String call -- see console.ts's own drawCell/G9 note.
+    expect(strings.length).toBe(0);
+    const labelDraws = draws.filter((d) => d.y === 0 && d.x < 40);
+    expect(labelDraws.map((d) => d.x)).toEqual([8, 16, 24, 32]);
+    expect(labelDraws.map((d) => d.num)).toEqual([..."say:"].map((c) => c.charCodeAt(0)));
+
     // skip=5: chat chars start at x=(0+5)<<3=40, (1+5)<<3=48, ...
-    const chatDraws = draws.filter((d) => d.y === 0);
+    const chatDraws = draws.filter((d) => d.y === 0 && d.x >= 40);
     expect(chatDraws[0]).toEqual({ x: 40, y: 0, num: "h".charCodeAt(0) });
     expect(chatDraws[1]).toEqual({ x: 48, y: 0, num: "i".charCodeAt(0) });
     expect(chatDraws.length).toBe(3); // "h", "i", the trailing cursor glyph
@@ -471,9 +524,14 @@ describe("Con_DrawNotify chat prompt", () => {
 
     Con_DrawNotify();
 
-    expect(strings).toEqual([{ x: 8, y: 0, str: "say_team:" }]);
+    // G9: see the "chat_team false" test's own note just above.
+    expect(strings.length).toBe(0);
+    const labelDraws = draws.filter((d) => d.y === 0 && d.x < 88);
+    expect(labelDraws.map((d) => d.x)).toEqual([8, 16, 24, 32, 40, 48, 56, 64, 72]);
+    expect(labelDraws.map((d) => d.num)).toEqual([..."say_team:"].map((c) => c.charCodeAt(0)));
+
     // skip=11: chat chars start at x=(0+11)<<3=88, (1+11)<<3=96, ...
-    const chatDraws = draws.filter((d) => d.y === 0);
+    const chatDraws = draws.filter((d) => d.y === 0 && d.x >= 88);
     expect(chatDraws[0]).toEqual({ x: 88, y: 0, num: "h".charCodeAt(0) });
     expect(chatDraws[1]).toEqual({ x: 96, y: 0, num: "i".charCodeAt(0) });
     expect(chatDraws.length).toBe(3);

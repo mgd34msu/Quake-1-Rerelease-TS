@@ -27,12 +27,14 @@ import { QpicT } from "../src/common/wad";
 import { STAT_HEALTH } from "../src/common/quakedef";
 
 import { cl_sbar, cl_hudswap } from "../src/qw/client/cl_main";
+import { scr_sbarscale } from "../src/client/kfont_text";
 
 import {
   Sbar_ColorForMap,
   Sbar_DeathmatchOverlay,
   Sbar_Draw,
   Sbar_DrawInventory,
+  Sbar_DrawNormal,
   Sbar_Init,
   Sbar_SortFrags,
   Sbar_SortTeams,
@@ -204,6 +206,34 @@ function setMState(v: MStateT): void {
   menuState.m_state = v;
 }
 
+// G9: src/qw/client/sbar.ts's Sbar_TeamOverlay/Sbar_DeathmatchOverlay/
+// Sbar_MiniDeathmatchOverlay now route their text through kfont_text.ts's
+// Text_Draw (SbarScale()-aware) instead of calling Draw_String/
+// Draw_Alt_String/Draw_Character on the renderer directly. At SbarScale() 1
+// with the classic charset, Text_Draw's own fast path draws one
+// Draw_Character per glyph (never Draw_String), so a test that wants to
+// assert on one of these functions' STRINGS reconstructs them from
+// consecutive same-row Draw_Character calls instead of reading `Draw_String`
+// calls off the fake renderer. Groups by y, then by contiguous 8px-apart x
+// (one glyph cell at scale 1) -- a gap in x starts a new run, matching how
+// separate Text_Draw calls (different fields on the same row) never abut.
+function reconstructRuns(calls: DrawCall[]): Array<{ y: number; x0: number; text: string; anyAlt: boolean }> {
+  const chars = (calls.filter((c): c is Extract<DrawCall, { fn: "Draw_Character" }> => c.fn === "Draw_Character") as Extract<DrawCall, { fn: "Draw_Character" }>[])
+    .slice()
+    .sort((a, b) => a.y - b.y || a.x - b.x);
+  const runs: Array<{ y: number; x0: number; text: string; anyAlt: boolean }> = [];
+  for (const c of chars) {
+    const last = runs[runs.length - 1];
+    if (last && last.y === c.y && c.x === last.x0 + last.text.length * 8) {
+      last.text += String.fromCharCode(c.num & 0x7f);
+      if ((c.num & 0x80) !== 0) last.anyAlt = true;
+    } else {
+      runs.push({ y: c.y, x0: c.x, text: String.fromCharCode(c.num & 0x7f), anyAlt: (c.num & 0x80) !== 0 });
+    }
+  }
+  return runs;
+}
+
 function resetMenuState(): void {
   menuState.m_state = MStateT.m_none;
   menuState.m_entersound = false;
@@ -238,6 +268,13 @@ beforeEach(() => {
   cl_sbar.value = 0;
   cl_hudswap.value = 0;
   scr_viewsize.value = 100;
+  // G9: Sbar_DrawPic/Sbar_DrawTransPic/Sbar_DrawCharacter/Sbar_DrawString now
+  // read scr_sbarscale (src/client/kfont_text.ts, a shared singleton this
+  // suite did not read before) -- pinned to its own registered default (1)
+  // so every pre-G9 assertion above stays deterministic regardless of what
+  // another suite left it at (rule 15); the scale-specific tests below set
+  // it explicitly for their own body.
+  scr_sbarscale.value = 1;
 
   // The host clock is a process-wide singleton: zeroing realtime while
   // oldrealtime keeps an earlier suite's value makes Host_FilterTime reject
@@ -478,14 +515,19 @@ describe("Sbar_DeathmatchOverlay", () => {
 
     Sbar_DeathmatchOverlay(0);
 
-    const strings = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_String" }> => c.fn === "Draw_String").map((c) => c.str);
+    // G9: see this file's own reconstructRuns note -- Draw_String calls no
+    // longer happen for this text at SbarScale() 1. The ping field (4 cols)
+    // and pl field (3 cols, at x+32) sit edge to edge with no gap, so they
+    // reconstruct as ONE contiguous run ("  42  1") rather than two --
+    // checked with `.includes` rather than an exact-run match for that reason.
+    const runs = reconstructRuns(fake.calls).map((r) => r.text);
 
-    expect(strings).toContain("Alice");
-    expect(strings).toContain("Bob");
-    expect(strings).toContain("  42"); // ping, Com_sprintf("%4i", 42)
+    expect(runs).toContain("Alice");
+    expect(runs).toContain("Bob");
+    expect(runs.some((r) => r.includes("  42"))).toBe(true); // ping, Com_sprintf("%4i", 42)
   });
 
-  test("packet loss over 25 goes through Draw_Alt_String, at or under 25 through Draw_String", () => {
+  test("packet loss over 25 draws with the golden (alt) charset, at or under 25 without it", () => {
     scr_viewsize.value = 100;
     cl.qw.serverinfo = "\\teamplay\\0";
     cl.qw.last_ping_request = host.realtime;
@@ -500,11 +542,79 @@ describe("Sbar_DeathmatchOverlay", () => {
 
     Sbar_DeathmatchOverlay(0);
 
-    const alt = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_Alt_String" }> => c.fn === "Draw_Alt_String").map((c) => c.str);
-    const plain = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_String" }> => c.fn === "Draw_String").map((c) => c.str);
+    // G9: Draw_Alt_String is gone from this call path -- the >25 case now
+    // reaches Text_Draw with `alt: true`, which sets the classic charset's
+    // golden-row high bit (0x80) on each Draw_Character call instead of a
+    // separate renderer entry point. See this file's own reconstructRuns note.
+    // ping (unset, "   0") and pl sit edge to edge with no gap (see the
+    // previous test's own note), so each reconstructs merged with its
+    // neighbour ("   0 26" / "   0 25") rather than as an isolated run.
+    const runs = reconstructRuns(fake.calls);
+    const altRun = runs.find((r) => r.text.includes(" 26"));
+    const plainRun = runs.find((r) => r.text.includes(" 25"));
 
-    expect(alt).toEqual([" 26"]);
-    expect(plain).toContain(" 25");
+    expect(altRun?.anyAlt).toBe(true);
+    expect(plainRun?.anyAlt).toBe(false);
+  });
+});
+
+describe("G9: Sbar_DrawPic/Sbar_DrawCharacter scale and centre with SbarScale()", () => {
+  test("1280x720 fits scr_sbarscale up to 4: the bar centres and its bottom edge stays flush with the window", () => {
+    vid.width = 1280;
+    vid.height = 720;
+    scr_sbarscale.value = 4; // SbarFitScale() at this resolution is min(1280/320, 720/144) = min(4,5) = 4
+
+    cl_sbar.value = 1;
+    scrState.sb_lines = 24;
+
+    fake.calls.length = 0;
+    Sbar_DrawNormal();
+
+    const pics = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_Pic" }> => c.fn === "Draw_Pic");
+    const sbar = pics.find((p) => p.picName === "sbar");
+    expect(sbar).toBeDefined();
+    // sbarCenterX(4) = floor((1280 - 320*4)/2) = 0; sbarAnchorY(4) = 720 - 24*4 = 624
+    expect(sbar?.x).toBe(0);
+    expect(sbar?.y).toBe(624);
+  });
+
+  test("scr_sbarscale above the fit clamps down to it", () => {
+    vid.width = 1280;
+    vid.height = 720;
+    scr_sbarscale.value = 99;
+
+    cl_sbar.value = 1;
+    scrState.sb_lines = 24;
+
+    fake.calls.length = 0;
+    Sbar_DrawNormal();
+
+    const pics = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_Pic" }> => c.fn === "Draw_Pic");
+    const sbar = pics.find((p) => p.picName === "sbar");
+    expect(sbar?.x).toBe(0); // still centred at the clamped scale (4), not 99
+    expect(sbar?.y).toBe(624);
+  });
+});
+
+describe("G9: QuakeWorld status bar bottom-centre anchor deviation from the classic flush-left placement", () => {
+  test("at a wider-than-320 window and scale 1, the bar is now centred (not flush against x=0)", () => {
+    vid.width = 640;
+    vid.height = 480;
+    scr_sbarscale.value = 1;
+
+    cl_sbar.value = 1;
+    scrState.sb_lines = 24;
+
+    fake.calls.length = 0;
+    Sbar_DrawNormal();
+
+    const pics = fake.calls.filter((c): c is Extract<DrawCall, { fn: "Draw_Pic" }> => c.fn === "Draw_Pic");
+    const sbar = pics.find((p) => p.picName === "sbar");
+    expect(sbar).toBeDefined();
+    // sbarCenterX(1) = floor((640-320)/2) = 160 -- the documented G9 deviation
+    // from QW's original flush-left `x` (which would have been 0 here).
+    expect(sbar?.x).toBe(160);
+    expect(sbar?.y).toBe(480 - 24);
   });
 });
 

@@ -216,6 +216,7 @@ import type * as ClMainModule from "./cl_main";
 import type * as KeysModule from "../../client/keys";
 import type * as ScreenModule from "./screen";
 import type * as RenderModule from "../../client/render";
+import type * as KfontTextModule from "../../client/kfont_text";
 
 // see the file header's import-cycle note
 function clientMod(): typeof ClientModule {
@@ -232,6 +233,12 @@ function screenMod(): typeof ScreenModule {
 }
 function renderMod(): typeof RenderModule {
   return require("../../client/render");
+}
+// G9: this file's own header note's import-cycle reasoning applies here too
+// -- kfont_text.ts is reached lazily the same way every other module in this
+// list is.
+function kfontTextMod(): typeof KfontTextModule {
+  return require("../../client/kfont_text");
 }
 
 export const CON_TEXTSIZE = 16384;
@@ -377,7 +384,17 @@ nothing outside this file calls it).
 ================
 */
 function Con_Resize(target: ConsoleT): void {
-  const width = (vid.width >> 3) - 2;
+  // G9: QuakeSpasm's own one-line change for `scr_conscale` (see
+  // src/client/console.ts's own U19 Con_CheckResize note) -- use the virtual
+  // console width instead of the real window width, so `con_linewidth`
+  // shrinks as `scr_conscale`/auto-scale grows the glyph cell. `vid.width < 1`
+  // (video not yet initialized) is checked directly first to keep reaching
+  // the "video hasn't been initialized yet" branch below exactly as before
+  // this unit (ConsoleVirtualWidth() always clamps to >= 320). Computed the
+  // same way for both Con_Resize calls (con_main then con_chat), so the C's
+  // own "second call is a same-width no-op" quirk (this file's header) is
+  // unchanged.
+  const width = vid.width < 1 ? (vid.width >> 3) - 2 : (kfontTextMod().ConsoleVirtualWidth() >> 3) - 2;
 
   if (width === conState.con_linewidth) return;
 
@@ -630,6 +647,23 @@ const MAXCMDLINE = 256;
 
 /*
 ================
+drawCell
+
+G9, not a ported C name: mirrors src/client/console.ts's own drawCell --
+routes one already-computed console byte through kfont_text.ts's Text_Draw
+(the classic charset's high bit, `byte & 0x80`, becomes Text_Draw's `alt`
+flag instead of being handed to Draw_Character as part of the raw byte).
+Text_Draw's classic-charset fast path emits the exact renderer.Draw_Character
+call this file's own Con_DrawInput/Con_DrawNotify/Con_DrawConsole made before
+this unit at ConsoleScale() 1, so a classic-charset boot is unchanged.
+================
+*/
+function drawCell(kt: typeof KfontTextModule, x: number, y: number, byte: number, scale: number): void {
+  kt.Text_Draw(x, y, String.fromCharCode(byte & 0x7f), (byte & 0x80) !== 0, scale);
+}
+
+/*
+================
 Con_DrawInput
 
 The input line scrolls horizontally if typing goes beyond the right edge
@@ -660,11 +694,21 @@ export function Con_DrawInput(): void {
   let base = 0;
   if (linepos >= conState.con_linewidth) base = 1 + linepos - conState.con_linewidth;
 
-  // draw it -- `y = con_vislines-22;` is computed in the C but never read
-  // (the loop uses the literal expression again); dropped, not carried as
-  // an unused local (see file header).
-  const renderer = renderMod().getRenderer();
-  for (let i = 0; i < conState.con_linewidth; i++) renderer.Draw_Character((i + 1) << 3, conState.con_vislines - 22, scratch[base + i] ?? 0);
+  // draw it -- G9: routed through kfont_text.ts's Text_Draw (one call per
+  // character, matching Draw_Character's own per-character contract) and
+  // scaled by ConsoleScale(), mirroring src/client/console.ts's own U19/G3
+  // Con_DrawInput. `y = con_vislines-22;` is computed in the C but never
+  // read (the loop uses the literal expression again); dropped, not carried
+  // as an unused local (see file header) -- the same generalized offset
+  // (`2*row + 6`, see Con_DrawConsole's own note) is used here for the row
+  // this file's own loop actually draws at, so the two stay in lockstep.
+  const kt = kfontTextMod();
+  const scale = kt.ConsoleScale();
+  const row = kt.Text_LineHeight() * scale;
+  const y = conState.con_vislines - (2 * row + 6);
+  for (let i = 0; i < conState.con_linewidth; i++) {
+    drawCell(kt, (i + 1) * 8 * scale, y, scratch[base + i] ?? 0, scale);
+  }
 }
 
 /*
@@ -675,8 +719,16 @@ Draws the last few lines of output transparently over the game top
 ================
 */
 export function Con_DrawNotify(): void {
-  const renderer = renderMod().getRenderer();
   const con = conState.con;
+
+  // G9: routed through kfont_text.ts's Text_Draw and ConsoleScale() --
+  // mirrors src/client/console.ts's own Con_DrawNotify. `scale` multiplies
+  // every 8px unit (glyph size and line pitch alike), so at ConsoleScale()'s
+  // default (1) this is byte-identical to the pre-G9 per-character
+  // Draw_Character loop.
+  const kt = kfontTextMod();
+  const scale = kt.ConsoleScale();
+  const row = kt.Text_LineHeight() * scale;
 
   let v = 0;
   for (let i = con.current - NUM_CON_TIMES + 1; i <= con.current; i++) {
@@ -691,9 +743,9 @@ export function Con_DrawNotify(): void {
     scrState.clearnotify = 0;
     scrState.scr_copytop = 1;
 
-    for (let x = 0; x < conState.con_linewidth; x++) renderer.Draw_Character((x + 1) << 3, v, con.text[lineOffset + x]);
+    for (let x = 0; x < conState.con_linewidth; x++) drawCell(kt, (x + 1) * 8 * scale, v, con.text[lineOffset + x], scale);
 
-    v += 8;
+    v += row;
   }
 
   const keys = keysMod();
@@ -703,29 +755,32 @@ export function Con_DrawNotify(): void {
 
     let skip: number;
     if (keys.keyState.team_message) {
-      renderer.Draw_String(8, v, "say_team:");
+      kt.Text_Draw(8 * scale, v, "say_team:", false, scale);
       skip = 11;
     } else {
-      renderer.Draw_String(8, v, "say:");
+      kt.Text_Draw(8 * scale, v, "say:", false, scale);
       skip = 5;
     }
 
     // chat_bufferlen (the C's separate static counter, Key_Message's own) is
     // not exported by keys.ts -- see file header. keyState.chat_buffer.length
-    // stands in for it.
+    // stands in for it. G9: the visible-column budget is now the VIRTUAL
+    // width (ConsoleVirtualWidth()), not the real vid.width, so it matches
+    // `conState.con_linewidth` (also derived from ConsoleVirtualWidth() --
+    // see Con_Resize) at any scale.
     const chat = keys.keyState.chat_buffer;
     const chatLen = chat.length;
-    const threshold = (vid.width >> 3) - (skip + 1);
+    const threshold = (kt.ConsoleVirtualWidth() >> 3) - (skip + 1);
     let sOffset = 0;
     if (chatLen > threshold) sOffset = chatLen - threshold;
 
     let x = 0;
     while (sOffset + x < chat.length) {
-      renderer.Draw_Character((x + skip) << 3, v, chat.charCodeAt(sOffset + x));
+      drawCell(kt, (x + skip) * 8 * scale, v, chat.charCodeAt(sOffset + x), scale);
       x++;
     }
-    renderer.Draw_Character((x + skip) << 3, v, 10 + (Math.trunc(clMainMod().clMainState.realtime * CON_CURSORSPEED) & 1));
-    v += 8;
+    drawCell(kt, (x + skip) * 8 * scale, v, 10 + (Math.trunc(clMainMod().clMainState.realtime * CON_CURSORSPEED) & 1), scale);
+    v += row;
   }
 
   if (v > conState.con_notifylines) conState.con_notifylines = v;
@@ -751,27 +806,40 @@ export function Con_DrawConsole(lines: number): void {
 
   const con = conState.con;
 
-  // changed to line things up better
-  let rows = (lines - 22) >> 3; // rows of text to draw
-  let y = lines - 30;
+  // G9: every "8" (one classic glyph cell) below is `8 * scale`/`row`, so
+  // text grows with `scr_conscale` while `lines` (the console's real-pixel
+  // slide height, driven by screen.ts independently of text scale) is
+  // untouched -- mirrors src/client/console.ts's own U19/G3 Con_DrawConsole.
+  // The C's own "changed to line things up better" magic numbers (22, 30)
+  // are `2*row + 6` and `3*row + 6` at row === 8 (this file's own
+  // Con_DrawInput uses the same `2*row + 6` for its own, separately-drawn
+  // row) -- generalized the same way rather than left as literal classic
+  // pixel constants. Byte-identical to the pre-G9 formula at ConsoleScale() 1.
+  const kt = kfontTextMod();
+  const scale = kt.ConsoleScale();
+  const row = kt.Text_LineHeight() * scale;
+  const pad = 2 * row + 6;
+
+  let rows = Math.floor((lines - pad) / row); // rows of text to draw
+  let y = lines - (pad + row);
 
   // draw from the bottom up
   if (con.display !== con.current) {
     // draw arrows to show the buffer is backscrolled
-    for (let x = 0; x < conState.con_linewidth; x += 4) renderer.Draw_Character((x + 1) << 3, y, "^".charCodeAt(0));
+    for (let x = 0; x < conState.con_linewidth; x += 4) drawCell(kt, (x + 1) * 8 * scale, y, "^".charCodeAt(0), scale);
 
-    y -= 8;
+    y -= row;
     rows--;
   }
 
-  let row = con.display;
-  for (let i = 0; i < rows; i++, y -= 8, row--) {
-    if (row < 0) break;
-    if (con.current - row >= conState.con_totallines) break; // past scrollback wrap point
+  let displayRow = con.display;
+  for (let i = 0; i < rows; i++, y -= row, displayRow--) {
+    if (displayRow < 0) break;
+    if (con.current - displayRow >= conState.con_totallines) break; // past scrollback wrap point
 
-    const lineOffset = (row % conState.con_totallines) * conState.con_linewidth;
+    const lineOffset = (displayRow % conState.con_totallines) * conState.con_linewidth;
 
-    for (let x = 0; x < conState.con_linewidth; x++) renderer.Draw_Character((x + 1) << 3, y, con.text[lineOffset + x]);
+    for (let x = 0; x < conState.con_linewidth; x++) drawCell(kt, (x + 1) * 8 * scale, y, con.text[lineOffset + x], scale);
   }
 
   // draw the download bar
@@ -804,9 +872,11 @@ export function Con_DrawConsole(lines: number): void {
 
     dlbar += Com_sprintf(" %02d%%", percent);
 
-    // draw it
-    const barY = conState.con_vislines - 22 + 8;
-    for (let i = 0; i < dlbar.length; i++) renderer.Draw_Character((i + 1) << 3, barY, dlbar.charCodeAt(i));
+    // draw it -- G9: matches Con_DrawInput's own `pad` offset (both are the
+    // same generalized `2*row + 6` the C's literal 22 stood for), one row
+    // below it.
+    const barY = conState.con_vislines - pad + row;
+    for (let i = 0; i < dlbar.length; i++) drawCell(kt, (i + 1) * 8 * scale, barY, dlbar.charCodeAt(i), scale);
   }
 
   // draw the input prompt, user text, and cursor if desired

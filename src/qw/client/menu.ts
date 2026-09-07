@@ -114,6 +114,37 @@ Deviations from PORTING.md / the C source:
 - `M_SinglePlayer_Key`/`M_MultiPlayer_Key(key)` are old-style K&R C with no
   declared parameter type (implicit `int`) in the source; ported with an
   explicit `key: number` parameter, no behavioral difference.
+
+G9 addition (2026-09-07, "the QuakeWorld client's own 2D tree scales to the
+window"): QW's menu.c drew its fixed 320x200 layout at 1:1 device pixels,
+horizontally centred and pinned to the top of the screen
+(`x + ((vid.width - 320) >> 1)`), identically to WinQuake's own menu.c -- see
+src/client/menu.ts's G4 header for the full writeup of the problem and the
+fix this mirrors. The six primitives above (M_DrawCharacter, M_Print,
+M_PrintWhite, M_DrawTransPic, M_DrawPic, M_DrawTransPicTranslate) are the
+only places this file reaches a renderer, so they now convert canvas units
+to window units through the SAME transform src/client/menu.ts's M_CanvasScale/
+M_CanvasX/M_CanvasY use: a 320x200 canvas at screen.ts's shared MenuScale()
+(`scr_menuscale`, one cvar for both client tracks), centred on both axes.
+Pics go through Draw_ScaledPic/Draw_ScaledTransPic (nearest neighbour), and
+M_DrawCharacter draws through the classic branch of Draw_GlyphAtlas past
+scale 1 -- the same atlas source src/client/kfont_text.ts's Text_Draw already
+uses for its own scaled classic path, and the same technique src/client/
+menu.ts's own M_DrawCharacter uses. At scale 1 every one of the six emits
+exactly the call it did before, including the C's own
+`(vid.width - 320) >> 1` centring, so a 320x200 boot is unchanged.
+
+Nothing else moves: key handling, cursor tables and every column literal in
+this file stay in 320x200 units. QW's menu tree has no data-driven list long
+enough to exceed the 200-row canvas (SinglePlayer/MultiPlayer are one-screen
+text boxes, Keys' 18-row bindnames list ends at y 48+18*8=192), so no
+M_ListWindow analogue is needed here.
+
+src/platform/vid_menu.ts's Video-mode screen (M_Menu_Video_f/M_Video_Draw/
+M_Video_Key here just forward to vidMenuHooks) draws entirely through THIS
+file's M_Print/M_DrawCharacter/M_DrawTransPic when `clientProfile() ===
+"qw"` (that file's own `menu()` dispatcher), so it scales for free once
+these primitives do -- no change needed in vid_menu.ts itself.
 */
 
 import { getRenderer, TOP_RANGE, BOTTOM_RANGE } from "../../client/render";
@@ -144,6 +175,7 @@ import { Con_ToggleConsole_f } from "./console";
 import { S_LocalSound, S_ExtraUpdate } from "../../client/snd_dma";
 import { Cmd_AddCommand, Cbuf_AddText, Cbuf_InsertText } from "../cmd";
 import { CL_NextDemo, CL_Disconnect, cl_sbar, cl_hudswap } from "./cl_main";
+import { MenuScale, MENU_CANVAS_WIDTH, MENU_CANVAS_HEIGHT } from "../../client/screen";
 
 /*
 ==============================================================================
@@ -199,6 +231,39 @@ export const menuState = {
 };
 
 /*
+==============================================================================
+
+						MENU CANVAS
+
+G9: mirrors src/client/menu.ts's own M_CanvasScale/M_CanvasX/M_CanvasY --
+see this file's header. gl_draw.c's GL_SetCanvas CANVAS_MENU is one shared
+concept for both client tracks: this file's 320x200 canvas is drawn scaled
+by the SAME `scr_menuscale` (screen.ts's MenuScale) and centred in the
+window, exactly like the WinQuake track's.
+
+==============================================================================
+*/
+
+const MENU_GLYPH_SIZE = 8;
+
+/** The whole-pixel scale the menu canvas is drawn at. */
+export function M_CanvasScale(): number {
+  return MenuScale();
+}
+
+/** Canvas x -> window x. */
+export function M_CanvasX(cx: number): number {
+  const s = M_CanvasScale();
+  return Math.floor((vid.width - MENU_CANVAS_WIDTH * s) / 2) + cx * s;
+}
+
+/** Canvas y -> window y. */
+export function M_CanvasY(cy: number): number {
+  const s = M_CanvasScale();
+  return Math.floor((vid.height - MENU_CANVAS_HEIGHT * s) / 2) + cy * s;
+}
+
+/*
 ================
 M_DrawCharacter
 
@@ -206,7 +271,21 @@ Draws one solid graphics character
 ================
 */
 export function M_DrawCharacter(cx: number, line: number, num: number): void {
-  getRenderer().Draw_Character(cx + ((vid.width - 320) >> 1), line, num);
+  const s = M_CanvasScale();
+  const x = M_CanvasX(cx);
+  const y = M_CanvasY(line);
+  const r = getRenderer();
+  if (s === 1 || r.Draw_GlyphAtlas === undefined) {
+    r.Draw_Character(x, y, num);
+    return;
+  }
+  // See src/client/menu.ts's own M_DrawCharacter: the same classic-charset
+  // atlas source Text_Draw's scaled classic path uses.
+  num = num & 0xff;
+  if (num === 32) return; // Draw_Character's own space check
+  const row = num >> 4;
+  const col = num & 15;
+  r.Draw_GlyphAtlas(x, y, MENU_GLYPH_SIZE * s, MENU_GLYPH_SIZE * s, { kind: "classic" }, col * 8, row * 8, 8, 8, null);
 }
 
 export function M_Print(cx: number, cy: number, str: string): void {
@@ -236,11 +315,21 @@ function cachePic(path: string): QpicT {
 }
 
 export function M_DrawTransPic(x: number, y: number, pic: QpicT): void {
-  getRenderer().Draw_TransPic(x + ((vid.width - 320) >> 1), y, pic);
+  const s = M_CanvasScale();
+  const r = getRenderer();
+  const dx = M_CanvasX(x);
+  const dy = M_CanvasY(y);
+  if (s === 1 || r.Draw_ScaledTransPic === undefined) r.Draw_TransPic(dx, dy, pic);
+  else r.Draw_ScaledTransPic(dx, dy, pic, s);
 }
 
 export function M_DrawPic(x: number, y: number, pic: QpicT): void {
-  getRenderer().Draw_Pic(x + ((vid.width - 320) >> 1), y, pic);
+  const s = M_CanvasScale();
+  const r = getRenderer();
+  const dx = M_CanvasX(x);
+  const dy = M_CanvasY(y);
+  if (s === 1 || r.Draw_ScaledPic === undefined) r.Draw_Pic(dx, dy, pic);
+  else r.Draw_ScaledPic(dx, dy, pic, s);
 }
 
 export const identityTable = new Uint8Array(256);
@@ -267,7 +356,12 @@ export function M_BuildTranslationTable(top: number, bottom: number): void {
 
 // dead code -- see file header
 export function M_DrawTransPicTranslate(x: number, y: number, pic: QpicT): void {
-  getRenderer().Draw_TransPicTranslate(x + ((vid.width - 320) >> 1), y, pic, translationTable);
+  const s = M_CanvasScale();
+  const r = getRenderer();
+  const dx = M_CanvasX(x);
+  const dy = M_CanvasY(y);
+  if (s === 1 || r.Draw_ScaledTransPic === undefined) r.Draw_TransPicTranslate(dx, dy, pic, translationTable);
+  else r.Draw_ScaledTransPic(dx, dy, pic, s, translationTable);
 }
 
 export function M_DrawTextBox(x: number, y: number, width: number, lines: number): void {
@@ -818,6 +912,18 @@ export function M_Menu_Video_f(): void {
 }
 
 export function M_Video_Draw(): void {
+  // G9, matching src/client/menu.ts's own M_Video_Draw (that file's own
+  // comment: vid_menu.c's VID_MenuDraw draws gfx/vidmodes.lmp centred at
+  // canvas y 4 above its rows; this port's video menu lives in
+  // src/platform/vid_menu.ts, shared with the NetQuake client, and had no
+  // title of its own here either -- the QW screen came up as bare rows with
+  // no plaque, caught from a real headless screenshot, not by inspection.
+  // Drawn here, ahead of the hook, through THIS file's own M_DrawPic (so it
+  // scales and centres through the same canvas transform as everything
+  // else in this file), so vid_menu.ts stays the one place the ROWS are
+  // laid out for both client trees.
+  const p = getRenderer().Draw_CachePic("gfx/vidmodes.lmp");
+  if (p !== null) M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
   vidMenuHooks.vid_menudrawfn?.();
 }
 

@@ -118,6 +118,30 @@ Deviations from PORTING.md / the C source:
   renderer. `r_netgraph` itself lives in src/client/render.ts's shared-cvar
   block (both renderers declare it with the same initializer, and no client
   module may import a renderer).
+
+G9 addition (2026-09-07, "the QuakeWorld client's own 2D tree scales to the
+window"): SCR_DrawCenterString/SCR_EraseCenterString/SCR_DrawNotifyString
+drew their `Draw_Character` calls at fixed 8px glyph cells regardless of
+window size -- unreadable at 1080p same as the console/status bar this
+unit's sibling changes fix. Per the brief ("console, notify lines and
+centerprint use ConsoleVirtualWidth()/ConsoleScale() like src/client/
+console.ts does after G3"), all three now route through kfont_text.ts's
+Text_Draw and scale by the shared `ConsoleScale()` (the same cvar
+src/qw/client/console.ts's own G9 addition scales the console/notify text
+by): one glyph cell is `8 * ConsoleScale()` real pixels, one drawn line is
+`Text_LineHeight() * ConsoleScale()`. Horizontal centering stays against the
+real `vid.width` (these are full-window overlays, not console.ts's own
+virtual-width-driven word wrap -- the 40-character line-break limit is
+unchanged, classic layout logic, not a scale concern) and the `else y = 48`
+top margin (many-line centerprint) scales with the text so it stays roughly
+the same number of rows from the top at any scale. Byte-identical to the
+pre-G9 formulas at ConsoleScale() 1. NOTE: this deliberately goes further
+than src/client/screen.ts's own WinQuake-track SCR_DrawCenterString, which
+that unit's own header documents as staying unscaled ("centerprint uses
+QuakeSpasm's own CANVAS_MENU... out of this unit's SCOPE") -- this unit's
+brief scopes screen.ts explicitly to "the console/notify/centerprint canvas"
+for the QuakeWorld track, so that WinQuake-side gap is not this unit's to
+close, but the QW-side one is.
 */
 
 import { Cmd_AddCommand } from "../../common/cmd";
@@ -152,6 +176,7 @@ import { cl_sbar, clMainState, host_basepal, name, show_fps } from "./cl_main";
 import { CL_IsUploading, CL_StartUpload } from "./cl_parse";
 import { Sbar_Changed, Sbar_Draw, Sbar_FinaleOverlay, Sbar_IntermissionOverlay } from "./sbar";
 import { PCX_DATA_OFS } from "./client";
+import { ConsoleScale, Text_Draw, Text_LineHeight } from "../../client/kfont_text";
 
 let oldscreensize = 0;
 let oldfov = 0;
@@ -228,12 +253,17 @@ export function SCR_EraseCenterString(): void {
     return;
   }
 
+  // G9: matches SCR_DrawCenterString's own `y`/`row` -- see that function's
+  // note. Mirrors src/client/console.ts's own G3 ConsoleScale()-driven row
+  // math (this file's SCOPE is the console/notify/centerprint canvas).
+  const scale = ConsoleScale();
+  const row = Text_LineHeight() * scale;
   if (scr_center_lines <= 4) y = (vid.height * 0.35) | 0;
-  else y = 48;
+  else y = 48 * scale;
 
   scrState.scr_copytop = 1;
   // QW clamps the clear height to the screen bottom; WinQuake's does not.
-  getRenderer().SCR_SoftwareTileClear(0, y, vid.width, Math.min(8 * scr_erase_lines, vid.height - y - 1));
+  getRenderer().SCR_SoftwareTileClear(0, y, vid.width, Math.min(row * scr_erase_lines, vid.height - y - 1));
 }
 
 export function SCR_DrawCenterString(): void {
@@ -248,23 +278,31 @@ export function SCR_DrawCenterString(): void {
   scr_erase_center = 0;
   let start = 0;
 
-  if (scr_center_lines <= 4) y = (vid.height * 0.35) | 0;
-  else y = 48;
+  // G9: routed through kfont_text.ts's Text_Draw and scaled by
+  // ConsoleScale() -- mirrors src/client/console.ts's own G3 row math (one
+  // glyph cell is `8 * scale` real pixels, one drawn line is
+  // `Text_LineHeight() * scale`). Still character-by-character so the
+  // intermission "typewriter" `remaining` budget decrements exactly as
+  // before. Byte-identical to the pre-G9 formula at ConsoleScale() 1.
+  const scale = ConsoleScale();
+  const cell = 8 * scale;
+  const row = Text_LineHeight() * scale;
 
-  const re = getRenderer();
+  if (scr_center_lines <= 4) y = (vid.height * 0.35) | 0;
+  else y = 48 * scale;
 
   for (;;) {
     for (l = 0; l < 40; l++) {
       const c = strAt(scr_centerstring, start + l);
       if (c === 10 || c === 0) break;
     }
-    x = ((vid.width - l * 8) / 2) | 0;
-    for (let j = 0; j < l; j++, x += 8) {
-      re.Draw_Character(x, y, strAt(scr_centerstring, start + j));
+    x = ((vid.width - l * cell) / 2) | 0;
+    for (let j = 0; j < l; j++, x += cell) {
+      Text_Draw(x, y, String.fromCharCode(strAt(scr_centerstring, start + j)), false, scale);
       if (remaining-- === 0) return;
     }
 
-    y += 8;
+    y += row;
 
     while (strAt(scr_centerstring, start) !== 0 && strAt(scr_centerstring, start) !== 10) start++;
 
@@ -718,17 +756,20 @@ export function SCR_DrawNotifyString(): void {
 
   y = (vid.height * 0.35) | 0;
 
-  const re = getRenderer();
+  // G9: see SCR_DrawCenterString's own note just above.
+  const scale = ConsoleScale();
+  const cell = 8 * scale;
+  const row = Text_LineHeight() * scale;
 
   for (;;) {
     for (l = 0; l < 40; l++) {
       const c = strAt(scr_notifystring, start + l);
       if (c === 10 || c === 0) break;
     }
-    x = ((vid.width - l * 8) / 2) | 0;
-    for (let j = 0; j < l; j++, x += 8) re.Draw_Character(x, y, strAt(scr_notifystring, start + j));
+    x = ((vid.width - l * cell) / 2) | 0;
+    for (let j = 0; j < l; j++, x += cell) Text_Draw(x, y, String.fromCharCode(strAt(scr_notifystring, start + j)), false, scale);
 
-    y += 8;
+    y += row;
 
     while (strAt(scr_notifystring, start) !== 0 && strAt(scr_notifystring, start) !== 10) start++;
 

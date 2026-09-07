@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:tes
 
 import type { ModelLoaderHooks, TextureT } from "../src/common/model";
 import type { QpicT } from "../src/common/wad";
-import type { EntityT, ParticleT, Renderer } from "../src/client/render";
+import type { EntityT, ParticleT, GlyphAtlasSourceT, Renderer } from "../src/client/render";
 import type { VrectT } from "../src/client/vid";
 
 // This suite exercises the Q023b QuakeWorld deltas: view.ts's qw.active fold
@@ -30,6 +30,7 @@ import * as screenTypesMod from "../src/client/screen_types";
 import * as viewMod from "../src/client/view";
 import * as screenMod from "../src/qw/client/screen";
 import * as rPartMod from "../src/qw/client/r_part";
+import { scr_conscale } from "../src/client/kfont_text";
 
 const { qw } = quakedefMod;
 const { vec3 } = mathMod;
@@ -67,6 +68,21 @@ const hooks: ModelLoaderHooks = {
 };
 
 const tileClears: Array<{ x: number; y: number; w: number; h: number }> = [];
+// G9: SCR_DrawCenterString/SCR_DrawNotifyString now scale by ConsoleScale()
+// (src/client/kfont_text.ts, see screen.ts's own G9 header note) -- the
+// existing `calls` array only records the call NAME, not enough to assert a
+// scaled glyph's exact position/size, so Draw_Character also pushes into
+// this parallel array. Purely additive: no existing test in this file reads
+// it, so nothing else changes shape.
+const charDraws: Array<{ x: number; y: number; num: number }> = [];
+// G9: SCR_DrawCenterString/SCR_DrawNotifyString scale their glyphs through
+// kfont_text.ts's Text_Draw, which past scale 1 draws even the classic
+// charset through Draw_GlyphAtlas (not Draw_Character) -- see that file's
+// own G3 header. Recorded here (this Renderer member is optional, so a fake
+// omitting it falls back to a lazy require of a REAL renderer module
+// instead, which would draw nothing into this file's own tracking arrays)
+// so the scale > 1 tests below can assert on it directly.
+const glyphDraws: Array<{ x: number; y: number; w: number; h: number }> = [];
 
 const fake: Renderer = {
   modelHooks: hooks,
@@ -99,8 +115,9 @@ const fake: Renderer = {
   draw_disc: null,
 
   Draw_Init(): void {},
-  Draw_Character(_x: number, _y: number, _num: number): void {
+  Draw_Character(x: number, y: number, num: number): void {
     calls.push("Draw_Character");
+    charDraws.push({ x, y, num });
   },
   Draw_DebugChar(_num: number): void {},
   Draw_Pic(_x: number, _y: number, _pic: QpicT): void {
@@ -165,6 +182,10 @@ const fake: Renderer = {
   SCR_ScreenShot_f(): void {
     calls.push("SCR_ScreenShot_f");
   },
+  Draw_GlyphAtlas(dstX: number, dstY: number, dstW: number, dstH: number, _source: GlyphAtlasSourceT, _srcX: number, _srcY: number, _srcW: number, _srcH: number): void {
+    calls.push("Draw_GlyphAtlas");
+    glyphDraws.push({ x: dstX, y: dstY, w: dstW, h: dstH });
+  },
 };
 
 beforeAll(() => {
@@ -182,6 +203,8 @@ afterAll(() => {
 function resetState(): void {
   calls.length = 0;
   tileClears.length = 0;
+  charDraws.length = 0;
+  glyphDraws.length = 0;
 
   re.current = fake;
   fake.r_cache_thrash = false;
@@ -205,6 +228,14 @@ function resetState(): void {
   vid.height = 200;
   vid.numpages = 2;
   vid.recalc_refdef = 0;
+
+  // G9: SCR_DrawCenterString/SCR_DrawNotifyString/SCR_EraseCenterString now
+  // read ConsoleScale() (src/client/kfont_text.ts), which derives from
+  // vid.height and scr_conscale -- a shared singleton this file did not
+  // touch before. Pinned to auto (0) so byte-identical-at-scale-1 tests
+  // above stay deterministic at vid.height 200 (ConsoleAutoScale() 1); the
+  // G9 scaling tests below set vid.height/scr_conscale explicitly.
+  scr_conscale.value = 0;
 
   pmState.onground = -1;
 
@@ -562,5 +593,41 @@ describe("R_DrawParticles (qw) -- gravity is a literal 800, not movevars.gravity
     expect(calls).toContain("D_StartParticles");
     expect(calls).toContain("D_DrawParticle");
     expect(calls).toContain("D_EndParticles");
+  });
+});
+
+describe("G9: SCR_DrawCenterString/SCR_DrawNotifyString scale through ConsoleScale()", () => {
+  test("1920x1080 (auto scale 3): centerprint text draws at 3x glyph cells, centred against the real window", () => {
+    vid.width = 1920;
+    vid.height = 1080; // ConsoleAutoScale() = floor(1080/300) = 3, scr_conscale 0 (auto)
+
+    screenMod.SCR_CenterPrint("AB");
+    screenMod.SCR_DrawCenterString();
+
+    // Past scale 1, Text_Draw's classic-charset path draws through
+    // Draw_GlyphAtlas (not Draw_Character) -- see this file's own
+    // glyphDraws note above.
+    const y = Math.trunc(vid.height * 0.35); // scr_center_lines (1) <= 4
+    const row = glyphDraws.filter((d) => d.y === y);
+    expect(charDraws.length).toBe(0);
+    expect(row.length).toBe(2);
+    // cell = 8*scale = 24; x = (vid.width - 2*cell)/2 |0 = (1920-48)/2 = 936
+    expect(row[0]).toEqual({ x: 936, y, w: 24, h: 24 });
+    expect(row[1]).toEqual({ x: 960, y, w: 24, h: 24 });
+  });
+
+  test("320x240 (scale 1): centerprint text is byte-identical to the pre-G9 formula", () => {
+    vid.width = 320;
+    vid.height = 240;
+
+    screenMod.SCR_CenterPrint("AB");
+    screenMod.SCR_DrawCenterString();
+
+    const y = Math.trunc(vid.height * 0.35);
+    const row = charDraws.filter((d) => d.y === y);
+    expect(row.length).toBe(2);
+    // cell = 8; x = (320 - 2*8)/2 |0 = 152 -- the C's own formula, untouched
+    expect(row[0]).toEqual({ x: 152, y, num: "A".charCodeAt(0) });
+    expect(row[1]).toEqual({ x: 160, y, num: "B".charCodeAt(0) });
   });
 });
