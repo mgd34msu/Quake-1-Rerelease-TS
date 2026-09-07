@@ -1,17 +1,17 @@
 {
   "family": "v",
   "drivers": [
-    { "name": "v_seats_2_classic_soft", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "2", "--layout", "auto", "--tree", "classic", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 180, "needs": ["classic"] },
-    { "name": "v_seats_2_classic_gl", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "2", "--layout", "auto", "--tree", "classic", "--vid", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 180, "needs": ["classic", "gl"] },
-    { "name": "v_seats_3_classic_soft", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "3", "--layout", "auto", "--tree", "classic", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 180, "needs": ["classic"] },
-    { "name": "v_seats_3_classic_gl", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "3", "--layout", "auto", "--tree", "classic", "--vid", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 180, "needs": ["classic", "gl"] },
-    { "name": "v_seats_4_classic_soft", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "4", "--layout", "auto", "--tree", "classic", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 180, "needs": ["classic"] },
-    { "name": "v_seats_2_rerelease_soft", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "2", "--layout", "auto", "--tree", "rerelease", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 300, "needs": ["rerelease", "long"] },
-    { "name": "v_seats_2_rerelease_gl", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "2", "--layout", "auto", "--tree", "rerelease", "--vid", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 300, "needs": ["rerelease", "gl", "long"] },
-    { "name": "v_seats_3_rerelease_soft", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "3", "--layout", "side", "--tree", "rerelease", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 300, "needs": ["rerelease", "long"] },
-    { "name": "v_input_classic_soft", "cmd": ["bun", "test/e2e/v_input.ts", "--tree", "classic", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["classic"] },
-    { "name": "v_input_classic_gl", "cmd": ["bun", "test/e2e/v_input.ts", "--tree", "classic", "--vid", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 120, "needs": ["classic", "gl"] },
-    { "name": "v_teardown_classic_soft", "cmd": ["bun", "test/e2e/v_teardown.ts", "--tree", "classic", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 120, "needs": ["classic"] },
-    { "name": "v_teardown_classic_gl", "cmd": ["bun", "test/e2e/v_teardown.ts", "--tree", "classic", "--vid", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 120, "needs": ["classic", "gl"] }
+    { "name": "v_seats_2_classic_soft", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "2", "--layout", "auto", "--tree", "classic", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 180, "lock": "vseat", "needs": ["classic"] },
+    { "name": "v_seats_2_classic_gl", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "2", "--layout", "auto", "--tree", "classic", "--vid", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 180, "lock": "vseat", "needs": ["classic", "gl"] },
+    { "name": "v_seats_3_classic_soft", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "3", "--layout", "auto", "--tree", "classic", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 180, "lock": "vseat", "needs": ["classic"] },
+    { "name": "v_seats_3_classic_gl", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "3", "--layout", "auto", "--tree", "classic", "--vid", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 180, "lock": "vseat", "needs": ["classic", "gl"] },
+    { "name": "v_seats_4_classic_soft", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "4", "--layout", "auto", "--tree", "classic", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 180, "lock": "vseat", "needs": ["classic"] },
+    { "name": "v_seats_2_rerelease_soft", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "2", "--layout", "auto", "--tree", "rerelease", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 300, "lock": "vseat", "needs": ["rerelease", "long"] },
+    { "name": "v_seats_2_rerelease_gl", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "2", "--layout", "auto", "--tree", "rerelease", "--vid", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 300, "lock": "vseat", "needs": ["rerelease", "gl", "long"] },
+    { "name": "v_seats_3_rerelease_soft", "cmd": ["bun", "test/e2e/v_seats.ts", "--seats", "3", "--layout", "side", "--tree", "rerelease", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 300, "lock": "vseat", "needs": ["rerelease", "long"] },
+    { "name": "v_input_classic_soft", "cmd": ["bun", "test/e2e/v_input.ts", "--tree", "classic", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 120, "lock": "vseat", "needs": ["classic"] },
+    { "name": "v_input_classic_gl", "cmd": ["bun", "test/e2e/v_input.ts", "--tree", "classic", "--vid", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 120, "lock": "vseat", "needs": ["classic", "gl"] },
+    { "name": "v_teardown_classic_soft", "cmd": ["bun", "test/e2e/v_teardown.ts", "--tree", "classic", "--vid", "soft"], "env": { "SDL_VIDEODRIVER": "dummy" }, "timeoutSec": 120, "lock": "vseat", "needs": ["classic"] },
+    { "name": "v_teardown_classic_gl", "cmd": ["bun", "test/e2e/v_teardown.ts", "--tree", "classic", "--vid", "gl"], "env": { "SDL_VIDEODRIVER": "offscreen" }, "timeoutSec": 120, "lock": "vseat", "needs": ["classic", "gl"] }
   ]
 }

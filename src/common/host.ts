@@ -694,12 +694,15 @@ const CFG_VERSION_CURRENT = 2;
 export function Host_MigrateConfig(): void {
   const from = Math.trunc(cfg_version.value);
   if (from < 2) {
-    for (const [name, value] of [
-      ["scr_sbarscale", "0"],
-      ["scr_conscale", "0"],
-      ["con_font", "classic"],
+    // Only a value still sitting at the OLD default is the archive's doing;
+    // anything else was a choice and stays.
+    for (const [name, oldDefault, value] of [
+      ["scr_sbarscale", "1", "0"],
+      ["scr_conscale", "1", "0"],
+      ["con_font", "kfont", "classic"],
     ] as const) {
-      if (Cvar_FindVar(name) !== null) Cvar_Set(name, value);
+      const cvar = Cvar_FindVar(name);
+      if (cvar !== null && cvar.string === oldDefault) Cvar_Set(name, value);
     }
   }
   if (from !== CFG_VERSION_CURRENT) Cvar_Set("cfg_version", String(CFG_VERSION_CURRENT));

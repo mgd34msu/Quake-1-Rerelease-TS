@@ -250,6 +250,13 @@ describe.skipIf(!HAVE_PROGS106)("Host_Init (-dedicated)", () => {
       Host_MigrateConfig();
       expect(Cvar_VariableString("scr_sbarscale")).toBe("1");
       expect(Cvar_VariableValue("cfg_version")).toBe(2);
+
+      // An old config whose value is NOT the old default was a choice: kept.
+      Cvar_Set("scr_sbarscale", "2");
+      Cvar_Set("cfg_version", "0");
+      Host_MigrateConfig();
+      expect(Cvar_VariableString("scr_sbarscale")).toBe("2");
+      expect(Cvar_VariableValue("cfg_version")).toBe(2);
     } finally {
       Cvar_Set("cfg_version", savedCfg);
       Cvar_Set("scr_sbarscale", savedProbe);

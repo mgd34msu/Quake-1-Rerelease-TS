@@ -429,10 +429,14 @@ export function Bot_PutInServer(clientnum: number): void {
   SZ_Clear(client.message);
 
   // Every human on the server still learns this slot's name and colour, the
-  // same three messages Host_Spawn_f sends about a joining player.
+  // same three messages Host_Spawn_f sends about a joining player. Only a
+  // SPAWNED human: a client still in its signon (the local player across a
+  // map change, before the new serverinfo has sized its scoreboard) gets
+  // every slot's name from Host_Spawn_f itself, and an svc_updatename that
+  // arrives ahead of svc_serverinfo is a Host_Error on the client.
   for (let i = 0; i < svs.maxclients; i++) {
     const other = svs.clients[i]!;
-    if (!other.active || other.netconnection === null) continue;
+    if (!other.active || !other.spawned || other.netconnection === null) continue;
     MSG_WriteByte(other.message, SvcOpsT.svc_updatename);
     MSG_WriteByte(other.message, clientnum);
     MSG_WriteString(other.message, client.name);
@@ -485,7 +489,7 @@ export function Bot_Remove(clientnum: number, forget = true): boolean {
 
   for (let i = 0; i < svs.maxclients; i++) {
     const other = svs.clients[i]!;
-    if (!other.active || other.netconnection === null) continue;
+    if (!other.active || !other.spawned || other.netconnection === null) continue; // see botSeat's note
     MSG_WriteByte(other.message, SvcOpsT.svc_updatename);
     MSG_WriteByte(other.message, clientnum);
     MSG_WriteString(other.message, "");
