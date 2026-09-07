@@ -158,8 +158,13 @@ export class WavinfoT {
 // User-setable variables
 // ====================================================================
 
-export const MAX_CHANNELS = 128;
-export const MAX_DYNAMIC_CHANNELS = 8;
+// ericw/johnfitz raised both past WinQuake's originals (128/8) to cover
+// re-release maps with many more static sounds/loopers than WinQuake ever
+// shipped without hitting `S_StaticSound`'s "total_channels == MAX_CHANNELS"
+// overflow guard (e.g. the re-release's mge1m1); see quakespasm/ironwail's
+// q_sound.h.
+export const MAX_CHANNELS = 1024; // ericw -- was 512 /* johnfitz -- was 128 */
+export const MAX_DYNAMIC_CHANNELS = 128; // johnfitz -- was 8
 
 // snd_dma.c: `#define MAX_SFX 512`
 export const MAX_SFX = 512;

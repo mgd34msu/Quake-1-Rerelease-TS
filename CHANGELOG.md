@@ -145,6 +145,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checked `fopen` for NULL (config.cfg, saves, demo record, the GL mesh
   cache, QuakeWorld downloads and config) fails with its original message
   instead of aborting the engine.
+- Sound channels: 1024 channels and 128 dynamic channels (QuakeSpasm's
+  values) replace WinQuake's 128 and 8; the re-release's mg1 maps placed
+  more static sounds than the old cap and printed
+  `total_channels == MAX_CHANNELS` while loading.
 - `sv_protocol 15` refuses a map it cannot carry (BSP2 or extents past
   +-4096) with a message naming the pairing instead of serving a world its
   13.3 coordinates cannot address; `auto` is unchanged.

@@ -10,7 +10,7 @@ captured before and restored in afterAll, since `bun test` runs every file
 in one process (test/main_boot.test.ts's own header note).
 */
 
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { COM_InitArgv, COM_InitFilesystem, host_parms } from "../src/common/common";
@@ -18,6 +18,7 @@ import { cmdHost, Cmd_Exists } from "../src/common/cmd";
 import { Cvar_FindVar } from "../src/common/cvar";
 import { Cache_Alloc, Cache_Check } from "../src/common/zone";
 import { DotProduct, vec3, VectorNormalize, type Vec3 } from "../src/common/mathlib";
+import * as consoleMod from "../src/client/console";
 import { cl } from "../src/client/client";
 import {
   ChannelT,
@@ -31,6 +32,7 @@ import {
   listener_origin,
   listener_right,
   paintedtime,
+  setPaintedtime,
   setShm,
   setTotalChannels,
   shm,
@@ -201,6 +203,22 @@ for (let i = 0; i < TEST_WAV_SAMPLES; i++) testWavPcm[i] = i; // arbitrary, non-
 
 const testWavBytes = buildWav({ channels: 1, rate: 11025, widthBytes: 1, pcm: testWavPcm });
 
+// A looped fixture for S_StaticSound: `S_StaticSound` bails with "Sound %s
+// not looped" (and skips `ss.sfx =`, so nothing reaches the mixer) whenever
+// `sc.loopstart === -1`, which `testWavBytes` above deliberately is. This one
+// carries a cue/LIST loop so channels registered through it actually mix.
+const LOOP_WAV_SAMPLES = 400;
+const loopWavPcm = new Uint8Array(LOOP_WAV_SAMPLES);
+for (let i = 0; i < LOOP_WAV_SAMPLES; i++) loopWavPcm[i] = i * 7; // arbitrary, non-silent values (wraps as a byte)
+
+const loopWavBytes = buildWav({
+  channels: 1,
+  rate: 11025,
+  widthBytes: 1,
+  pcm: loopWavPcm,
+  loop: { loopstart: 0, loopLength: LOOP_WAV_SAMPLES },
+});
+
 const savedCmdInitialized = cmdHost.initialized;
 const savedMemsize = host_parms.memsize;
 const savedViewentity = cl.viewentity;
@@ -224,7 +242,10 @@ afterAll(() => {
 
 beforeAll(() => {
   ensureDir(join(baseDir, "id1"));
-  writePakToDisk(pakPath, [{ name: "sound/test.wav", data: testWavBytes }]);
+  writePakToDisk(pakPath, [
+    { name: "sound/test.wav", data: testWavBytes },
+    { name: "sound/loop.wav", data: loopWavBytes },
+  ]);
 });
 
 // This unit registers hostClientHooks.sShutdown = S_Shutdown (correctly --
@@ -478,6 +499,66 @@ describe("S_StaticSound", () => {
     expect(() => S_StaticSound(sfx, listener_origin, 1, 1)).not.toThrow();
 
     expect(total_channels).toBe(MAX_CHANNELS); // unchanged: the overflow guard returned early
+
+    S_StopAllSounds(true); // restore baseline for any later test
+  });
+
+  // E9's finding: the re-release's mge1m1 places more static sounds than
+  // WinQuake's original 128-channel MAX_CHANNELS/8-channel
+  // MAX_DYNAMIC_CHANNELS caps allow, printing "total_channels ==
+  // MAX_CHANNELS" three times while loading. Quakespasm/ironwail's
+  // q_sound.h raises both to 1024/128; this registers more static sounds
+  // than the OLD 128-channel MAX_CHANNELS cap ever allowed and confirms
+  // the overflow message never fires, then mixes them.
+  test("registers more static sounds than WinQuake's old 128-channel cap without the overflow message, and mixes", () => {
+    resetSoundState();
+    S_StopAllSounds(true); // baseline: total_channels back to MAX_DYNAMIC_CHANNELS + NUM_AMBIENTS
+
+    const sfx = S_FindName("loop.wav");
+    const baseline = total_channels;
+
+    const STATICS_TO_REGISTER = 150; // > WinQuake's old MAX_CHANNELS (128)
+    const printSpy = spyOn(consoleMod, "Con_Printf");
+
+    for (let i = 0; i < STATICS_TO_REGISTER; i++) {
+      // same origin as the listener (as the sibling overflow test above
+      // does): keeps SND_Spatialize's distance term at 0 regardless of
+      // whatever listener_origin/cl.viewentity earlier tests left behind.
+      // 255 (full master_vol), not the sibling test's 1: snd_scaletable is
+      // indexed by `leftvol >> 3` (SND_PaintChannelFrom8/16), so a
+      // master_vol of 1 always lands on row 0, which is silent by design --
+      // this test wants to observe real mixed energy, not just the
+      // overflow guard.
+      S_StaticSound(sfx, listener_origin, 255, 1);
+    }
+
+    for (const call of printSpy.mock.calls) {
+      expect(call[0]).not.toBe("total_channels == MAX_CHANNELS\n");
+    }
+    printSpy.mockRestore();
+
+    expect(total_channels).toBe(baseline + STATICS_TO_REGISTER);
+    expect(total_channels).toBeGreaterThan(128); // past WinQuake's old cap
+    expect(total_channels).toBeLessThan(MAX_CHANNELS); // still well under the new one
+
+    // mixes: S_Update_ walks channels up to total_channels (well past the
+    // old 128-slot array) without throwing, and the static channels just
+    // registered actually produce sound energy. paintedtime/GetSoundtime's
+    // buffer-wrap bookkeeping (gs_buffers/gs_oldsamplepos, both private to
+    // snd_dma.ts) accumulate across every test in this shared bun process,
+    // with no way for this test to restore them (they are not exported);
+    // resetting paintedtime to 0 first guarantees GetSoundtime's own
+    // "paintedtime < soundtime" catch-up branch fires here regardless of
+    // whatever an earlier test in the file left behind.
+    setPaintedtime(0);
+    S_Update_();
+    expect(paintedtime).toBeGreaterThan(0);
+
+    if (!shm?.buffer) throw new Error("expected shm.buffer to be set");
+    const view = new Int16Array(shm.buffer.buffer, shm.buffer.byteOffset, shm.buffer.byteLength / 2);
+    let energy = 0;
+    for (let i = 0; i < view.length; i++) energy += Math.abs(view[i]);
+    expect(energy).toBeGreaterThan(0);
 
     S_StopAllSounds(true); // restore baseline for any later test
   });
