@@ -433,7 +433,13 @@ export class BotWatch {
       if (!dead && !s.wasDead && !s.skipNext) {
         if (step < TELEPORT_STEP) s.distance += step;
         s.aliveFrames += 1;
-        if (step < STILL_STEP) {
+        // A player the progs hold with MOVETYPE_NONE (hip1m1's spawn freeze
+        // holds every client for ~5 s) is not a stuck bot: that time does
+        // not count toward the standstill.
+        const frozenByProgs = (ent.v.movetype | 0) === 0;
+        if (frozenByProgs) {
+          s.still = 0;
+        } else if (step < STILL_STEP) {
           s.still += 1;
           if (s.still > s.longestStill) {
             s.longestStill = s.still;
