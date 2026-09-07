@@ -176,7 +176,10 @@ export const scr_usekfont = new CvarT("scr_usekfont", "0");
 // This project's own addition -- no QuakeSpasm counterpart (that engine's
 // scr_usekfont is a bare on/off toggle with no TTF option). See this file's
 // header for the three accepted values.
-export const con_font = new CvarT("con_font", "kfont", true);
+// Default "classic" (Mike, 2026-09-06): the Quake charset is the look of the
+// menus, console and HUD on every content tree; the re-release kfont is opt-in
+// (`con_font kfont`) or a per-string fallback for code points the charset lacks.
+export const con_font = new CvarT("con_font", "classic", true);
 
 // QuakeSpasm gl_screen.c: all three default to "1", CVAR_ARCHIVE.
 export const scr_conscale = new CvarT("scr_conscale", "1", true);
