@@ -1,0 +1,33 @@
+{
+  "family": "z",
+  "drivers": [
+    {
+      "name": "z_soak_dm_bots_10m",
+      "cmd": ["bun", "test/e2e/z_soak.ts", "--minutes", "10", "--scenario", "dm-bots"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 900,
+      "needs": ["binary", "rerelease", "long"]
+    },
+    {
+      "name": "z_soak_sp_3m",
+      "cmd": ["bun", "test/e2e/z_soak.ts", "--minutes", "3", "--scenario", "sp"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 420,
+      "needs": ["binary", "rerelease", "long"]
+    },
+    {
+      "name": "z_soak_coop_bots_3m",
+      "cmd": ["bun", "test/e2e/z_soak.ts", "--minutes", "3", "--scenario", "coop-bots"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 420,
+      "needs": ["binary", "rerelease", "long"]
+    },
+    {
+      "name": "z_soak_splitscreen_3m",
+      "cmd": ["bun", "test/e2e/z_soak.ts", "--minutes", "3", "--scenario", "splitscreen"],
+      "env": { "SDL_VIDEODRIVER": "dummy", "SDL_AUDIODRIVER": "dummy" },
+      "timeoutSec": 420,
+      "needs": ["binary", "rerelease", "long"]
+    }
+  ]
+}
