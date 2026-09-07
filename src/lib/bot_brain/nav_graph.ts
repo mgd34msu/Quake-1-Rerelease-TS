@@ -108,34 +108,6 @@ export function defaultTraverseCaps(): NavTraverseCapsT {
   return { jump: true, walkOffLedge: true, entityTraversal: true, swim: true, maxDrop: 0, maxJumpHeight: 0 };
 }
 
-/**
- * What the caller lends the string puller so it can tell a shortcut that
- * exists on the map from one that only exists on paper.
- */
-export interface NavPullOptsT {
-  /** Line of sight between two points, which is what a nearest-node lookup needs. */
-  visible?: (from: BotVec3, to: BotVec3) => boolean;
-  /**
-   * Whether a body the follower's own size gets from one point to the other
-   * in a straight line. Sight is not enough: a zero-width line goes through
-   * a gap in the railing beside a doorway that a 32-unit-wide player cannot
-   * fit through, and a follower handed that shortcut walks into the wall
-   * next to the door until its plan expires.
-   */
-  fits?: (from: BotVec3, to: BotVec3) => boolean;
-  /**
-   * Where the follower actually is, when the caller wants the first cut
-   * measured from there rather than from the node the chain starts at:
-   * those are two different places -- the plan starts at the nearest node,
-   * which is as often behind the follower as in front of it -- and a
-   * shortcut that is clear from the node can be a wall from where the
-   * follower stands. Only a caller whose `fits` copes with its follower's
-   * origin and a graph node being measured from different heights should
-   * set it; a bare sight line strung between the two does not.
-   */
-  from?: BotVec3;
-}
-
 export interface NavPathT {
   /** The node chain A* found, start node first, goal node last. */
   nodes: number[];
@@ -497,12 +469,11 @@ export class NavGraph {
    * teleporter mouth or a plat has to be hit exactly -- and pulling stops
    * there and restarts on the far side.
    *
-   * `opts.visible` and `opts.fits` are the caller's own traces; without
-   * them this falls back to a purely geometric test (the skipped node must
-   * lie within its own radius of the straight line being cut), which is
-   * what the unit tests use.
+   * `visible` is the caller's own trace; without one this falls back to a
+   * purely geometric test (the skipped node must lie within its own radius
+   * of the straight line being cut), which is what the unit tests use.
    */
-  stringPull(chain: number[], goal: BotVec3, opts: NavPullOptsT = {}): NavPathT {
+  stringPull(chain: number[], goal: BotVec3, visible?: (from: BotVec3, to: BotVec3) => boolean): NavPathT {
     const points: BotVec3[] = [];
     const links: Array<NavGraphLinkT | null> = [];
     let cost = 0;
@@ -551,7 +522,7 @@ export class NavGraph {
       for (let j = i + 1; j < chain.length; j++) {
         const step = this.linkBetween(chain[j - 1]!, chain[j]!);
         if (step === null || step.type !== NavLinkType.Walk) break;
-        if (!this.canCut(chain, i === 0 ? -1 : i, j, points, opts)) break;
+        if (!this.canCut(chain, i === 0 ? -1 : i, j, points, visible)) break;
         far = j;
       }
 
@@ -576,20 +547,12 @@ export class NavGraph {
     return { nodes: chain, points, links, cost };
   }
 
-  /** Whether the straight line from `chain[from]` (or where the follower stands) to `chain[to]` is walkable and still covers every node it skips. */
-  private canCut(chain: number[], fromIdx: number, toIdx: number, emitted: BotVec3[], opts: NavPullOptsT): boolean {
-    const start = fromIdx < 0 ? (emitted.length > 0 ? emitted[emitted.length - 1]! : opts.from ?? this.nodes[chain[0]!]!.origin) : this.nodes[chain[fromIdx]!]!.origin;
+  /** Whether the straight line from `chain[from]` (or the last emitted point) to `chain[to]` still covers every node it skips. */
+  private canCut(chain: number[], fromIdx: number, toIdx: number, emitted: BotVec3[], visible?: (from: BotVec3, to: BotVec3) => boolean): boolean {
+    const start = fromIdx < 0 ? (emitted.length > 0 ? emitted[emitted.length - 1]! : this.nodes[chain[0]!]!.origin) : this.nodes[chain[fromIdx]!]!.origin;
     const end = this.nodes[chain[toIdx]!]!.origin;
 
-    // A body that fits answers the question a sight line was only ever
-    // standing in for, so it replaces it rather than stacking with it: the
-    // two endpoints of a first cut are a follower's origin and a graph
-    // node, which do not measure from the same height, and a sight line
-    // strung between them dips into the floor and vetoes cuts that are
-    // there.
-    if (opts.fits !== undefined) {
-      if (!opts.fits(start, end)) return false;
-    } else if (opts.visible !== undefined && !opts.visible(start, end)) return false;
+    if (visible !== undefined && !visible(start, end)) return false;
 
     const dir = bvecSub(end, start);
     const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
@@ -614,7 +577,7 @@ export class NavGraph {
   planPath(
     start: BotVec3,
     goal: BotVec3,
-    opts: { caps?: NavTraverseCapsT; maxRadius?: number } & NavPullOptsT = {},
+    opts: { caps?: NavTraverseCapsT; visible?: (from: BotVec3, to: BotVec3) => boolean; maxRadius?: number } = {},
   ): NavPathT | null {
     const caps = opts.caps ?? defaultTraverseCaps();
     const startNode = this.closestNode(start, { visible: opts.visible, caps, maxRadius: opts.maxRadius });
@@ -624,7 +587,7 @@ export class NavGraph {
 
     const chain = this.findPath(startNode, goalNode, caps);
     if (chain === null) return null;
-    return this.stringPull(chain, goal, { visible: opts.visible, fits: opts.fits, from: opts.from });
+    return this.stringPull(chain, goal, opts.visible);
   }
 }
 

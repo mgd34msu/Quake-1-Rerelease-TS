@@ -384,25 +384,6 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   actual console it disconnects and exits immediately, matching NetQuake;
   reached with the game or a menu focused it still opens the confirm menu
   exactly as before.
-- A bot validated its corner cuts with a zero-width sight line, so the
-  string puller approved shortcuts a 32-unit-wide player cannot fit
-  through: on `ctf9` a flag carrier was handed a first steering point some
-  750 units away through a gap beside a doorway, leaned on the wall next to
-  the door until its two-second plan expired, and was then given the same
-  route again. A cut is now checked by sweeping a box the size of the bot's
-  own body, against the world and the brush models bolted to it and nothing
-  else -- a team-mate standing in a doorway is not a reason to call the
-  doorway too narrow, and whoever was standing there has moved by the time
-  the bot walks the plan. Both ends of the sweep are dropped to the ground
-  they stand on first, because the two kinds of point being joined do not
-  measure from the same place: a `.nav` node sits on the floor and a player
-  origin sits its own height above it. And the first cut is measured from
-  where the bot actually stands rather than from the nav node the plan
-  starts at, which is as often behind it as in front. `BotWorldT.traceBox`
-  takes an `ignoreEntities` option (the Quake 1 binding answers it with
-  `MOVE_NOMONSTERS`) and `BotWorldT.hull` lets a binding name a body other
-  than the default `BOT_PLAYER_HULL`, which is the player of both Quake 1
-  and Quake II; everything under `src/lib/bot_brain` stays game-agnostic.
 - A `-vid_ref gl` boot whose config.cfg had archived `vid_ref "soft"` ran GL
   while the cvar still read soft, so the first `vid_restart` (or the video
   menu's Apply) silently dropped to the software renderer. Host_Init now

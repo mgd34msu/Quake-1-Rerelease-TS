@@ -46,7 +46,6 @@ import {
   type BotEntityT,
   type BotSelfT,
   type BotSoundT,
-  type BotTraceOptsT,
   type BotTraceT,
   type BotVec3,
   type BotWorldT,
@@ -532,51 +531,6 @@ describe("nav graph: string pulling", () => {
     const pulled = graph.stringPull([0, 1, 2], bvec(256, 0, 0));
     expect(pulled.points.length).toBe(2);
     expect(pulled.points[0]).toEqual({ x: 128, y: 200, z: 0 });
-  });
-
-  test("a cut the sight line clears but a body does not is refused", () => {
-    // Four nodes in a straight corridor, so geometry approves the whole run
-    // as one cut and so does a zero-width sight line, which fits through
-    // the few-unit gap beside the doorway at x=192. A 32-unit body does not.
-    const positions = [bvec(0, 0, 0), bvec(128, 0, 0), bvec(256, 0, 0), bvec(384, 0, 0)];
-    const graph = navGraphFromNav2(buildNav(positions, chainLinks(4)));
-    const DOORWAY_X = 192;
-    const fits = (from: BotVec3, to: BotVec3): boolean => (from.x - DOORWAY_X) * (to.x - DOORWAY_X) > 0;
-
-    // Sight alone: one steering point, the far end, straight through the wall.
-    expect(graph.stringPull([0, 1, 2, 3], bvec(384, 0, 0), { visible: () => true }).points).toEqual([{ x: 384, y: 0, z: 0 }]);
-
-    // The body's own width: the run stops at the node this side of the
-    // doorway, and the walk resumes on the far side.
-    const pulled = graph.stringPull([0, 1, 2, 3], bvec(384, 0, 0), { visible: () => true, fits });
-    expect(pulled.points).toEqual([
-      { x: 128, y: 0, z: 0 },
-      { x: 384, y: 0, z: 0 },
-    ]);
-
-    // And the body is the test, not a second opinion on it: a sight line
-    // strung between a follower's origin and a node on the floor dips into
-    // the floor, and does not get to veto a cut the body clears.
-    expect(graph.stringPull([0, 1, 2, 3], bvec(384, 0, 0), { visible: () => false, fits: () => true }).points).toEqual([{ x: 384, y: 0, z: 0 }]);
-  });
-
-  test("the first cut is measured from where the follower stands, not from the node the chain starts at", () => {
-    const positions = [bvec(0, 0, 0), bvec(128, 0, 0), bvec(256, 0, 0)];
-    const graph = navGraphFromNav2(buildNav(positions, chainLinks(3)));
-    const asked: BotVec3[] = [];
-    const fits = (from: BotVec3): boolean => {
-      asked.push(from);
-      return true;
-    };
-    const follower = bvec(-64, 96, 0);
-    graph.planPath(follower, bvec(256, 0, 0), { visible: () => true, fits, from: follower });
-    expect(asked[0]).toEqual(follower);
-
-    // And a caller that does not say where its follower stands still gets
-    // the old measurement, from the node the chain starts at.
-    asked.length = 0;
-    graph.planPath(follower, bvec(256, 0, 0), { visible: () => true, fits });
-    expect(asked[0]).toEqual(bvec(0, 0, 0));
   });
 
   test("planPath goes from world point to world point in one call", () => {
@@ -1074,10 +1028,6 @@ class StubWorld implements BotWorldT {
   graph: NavGraph | null = null;
   /** Every trace answers "clear" unless this is set. */
   blocked = false;
-  /** A wall only a body runs into: the sight line beside it stays clear. */
-  boxBlocked: ((start: BotVec3, end: BotVec3) => boolean) | null = null;
-  /** Every box trace asked for, and what it asked for. */
-  readonly boxTraces: Array<{ start: BotVec3; end: BotVec3; mins: BotVec3; maxs: BotVec3; ignoreEntities: boolean }> = [];
 
   constructor(origin: BotVec3) {
     this.selfState = {
@@ -1111,10 +1061,8 @@ class StubWorld implements BotWorldT {
   traceLine(_start: BotVec3, end: BotVec3): BotTraceT {
     return { fraction: this.blocked ? 0.5 : 1, endpos: end, startsolid: false, hitId: -1 };
   }
-  traceBox(start: BotVec3, mins: BotVec3, maxs: BotVec3, end: BotVec3, opts?: BotTraceOptsT): BotTraceT {
-    this.boxTraces.push({ start, end, mins, maxs, ignoreEntities: opts?.ignoreEntities === true });
-    const stopped = this.boxBlocked !== null && this.boxBlocked(start, end);
-    return { fraction: this.blocked || stopped ? 0.5 : 1, endpos: end, startsolid: false, hitId: -1 };
+  traceBox(_start: BotVec3, _mins: BotVec3, _maxs: BotVec3, end: BotVec3): BotTraceT {
+    return { fraction: this.blocked ? 0.5 : 1, endpos: end, startsolid: false, hitId: -1 };
   }
   pointContents(): number {
     return 0;
@@ -1297,42 +1245,6 @@ describe("brain", () => {
     brain.think(world);
     const secondEnd = brain.currentPath()!.points[brain.currentPath()!.points.length - 1]!;
     expect(bvecDistance(secondEnd, bvec(768, 0, 0))).toBeLessThan(1);
-  });
-
-  test("a shortcut the bot can see through but not fit through is not planned", () => {
-    // The measured ctf9 case, in miniature: a corridor of collinear nodes
-    // with a doorway across it. The sight line the plan used to be checked
-    // with goes straight through, so the whole run collapses to one long
-    // diagonal and the bot walks into the wall beside the door; the bot's
-    // own body does not fit, so the plan keeps the node this side of the
-    // doorway as its first steering point.
-    const positions = [bvec(0, 0, 0), bvec(128, 0, 0), bvec(256, 0, 0), bvec(384, 0, 0)];
-    const DOORWAY_X = 192;
-
-    const open = new StubWorld(bvec(0, 0, 0));
-    open.graph = navGraphFromNav2(buildNav(positions, chainLinks(4)));
-    const seeing = makeBrain(3);
-    seeing.requestMoveToPoint(bvec(384, 0, 0));
-    runFrames(seeing, open, 1);
-    expect(seeing.currentPath()!.points[0]!.x).toBe(384);
-
-    const walled = new StubWorld(bvec(0, 0, 0));
-    walled.graph = navGraphFromNav2(buildNav(positions, chainLinks(4)));
-    walled.boxBlocked = (from, to): boolean => (from.x - DOORWAY_X) * (to.x - DOORWAY_X) <= 0;
-    const walking = makeBrain(3);
-    walking.requestMoveToPoint(bvec(384, 0, 0));
-    runFrames(walking, walled, 1);
-    expect(walking.currentPath()!.points[0]!.x).toBe(128);
-
-    // The clearance sweep is the bot's own body, ignoring who is standing
-    // where: a 32-unit-wide box, tall enough to be a body and lifted clear
-    // of the floor by the step height.
-    const sweep = walled.boxTraces[0]!;
-    expect(sweep.ignoreEntities).toBe(true);
-    expect(sweep.maxs.x - sweep.mins.x).toBe(32);
-    expect(sweep.maxs.y - sweep.mins.y).toBe(32);
-    expect(sweep.mins.z).toBe(18);
-    expect(sweep.maxs.z).toBe(56);
   });
 
   test("chats go out through the callback, and chance 0 never fires", () => {
