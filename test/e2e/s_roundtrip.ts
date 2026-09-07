@@ -12,7 +12,7 @@
 import { Q1TS_REPO } from "./q1data";
 import {
   boot, check, cl, classOf, directMap, edictIndex, exec, finish, frames,
-  gamedir, existsSync, isDead, killMonster, liveEdicts, pickUp, player, sv,
+  gamedir, existsSync, isDead, killMonster, liveEdicts, noclipDisplace, pickUp, player, settle, sv,
   readFileSync, STAT_MONSTERS, treeConfig, isTreeName, Cvar_VariableValue, SOLID_NOT, waitInGame, FL_GODMODE,
 } from "./s_lib";
 
@@ -110,17 +110,14 @@ check("edicts-present", baselineEdicts > 10, `sv.num_edicts=${baselineEdicts} at
 // kill itself; this sets it for the whole rest of the run.
 player().v.flags = (player().v.flags | 0) | FL_GODMODE;
 
-// ---- move: noclip a lap so the saved origin differs from the spawn point --
+// ---- move: displace the player so the saved origin differs from the spawn
+// point. See s_lib.ts's noclipDisplace() for why this isn't a plain
+// "noclip, +forward, noclip off" walk anymore -- that reverted to the spawn
+// point on classic-hipnotic/hipnotic (hip1m1) and classic-rogue/rogue
+// (r1m1), whose spawns face straight into geometry too tight for the
+// walking hull a short distance out.
 const spawnOrigin: [number, number, number] = [player().v.origin[0], player().v.origin[1], player().v.origin[2]];
-exec("noclip");
-await frames(5);
-exec("+forward");
-await frames(40);
-exec("-forward");
-await frames(10);
-exec("noclip");
-await frames(5);
-const movedOrigin: [number, number, number] = [player().v.origin[0], player().v.origin[1], player().v.origin[2]];
+const movedOrigin = await noclipDisplace();
 const moveDist = Math.hypot(movedOrigin[0] - spawnOrigin[0], movedOrigin[1] - spawnOrigin[1], movedOrigin[2] - spawnOrigin[2]);
 check("moved", moveDist > 16, `spawn ${JSON.stringify(spawnOrigin)} -> ${JSON.stringify(movedOrigin)}, dist=${moveDist.toFixed(1)}`);
 
@@ -171,6 +168,12 @@ if (monsterKilled) check("kill-count", killsAfter > killsBefore, `STAT_MONSTERS 
 const preSaveSkill = Cvar_VariableValue("skill");
 check("cvar-change", preSaveSkill === nonDefaultSkill, `skill cvar after spawn: ${preSaveSkill} (set to ${nonDefaultSkill} before "map ${cfg.map}", default is 1)`);
 
+// ---- settle before saving: pickUp()/killMonster()'s own noclip hops leave
+// the player wherever that left them, not necessarily on the ground -- see
+// s_lib.ts's settle() for why a save taken mid-fall reads back as an 8.64
+// unit z drop on load that looks like (but isn't) a save/load defect.
+await settle();
+
 // ---- snapshot right before saving ---------------------------------------
 const preSaveOrigin: [number, number, number] = [player().v.origin[0], player().v.origin[1], player().v.origin[2]];
 const preSaveHealth = player().v.health;
@@ -196,14 +199,7 @@ if (saveExists) {
 }
 
 // ---- move away + diverge state, then load in the SAME process ----------
-exec("noclip");
-await frames(5);
-exec("+back");
-await frames(30);
-exec("-back");
-await frames(5);
-exec("noclip");
-await frames(5);
+await noclipDisplace(); // see s_lib.ts's own note -- same stuck-on-noclip-off hazard as the first move leg
 exec("skill 1"); // diverge the live cvar; Host_Loadgame_f must set it back from the file
 await frames(2);
 

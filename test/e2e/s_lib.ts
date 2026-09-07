@@ -22,8 +22,8 @@ import { Cvar_Set, Cvar_VariableValue } from "../../src/common/cvar";
 import { cl, cls, SIGNONS, CactiveT } from "../../src/client/client";
 import * as common from "../../src/common/common";
 import { STAT_HEALTH, STAT_MONSTERS, STAT_TOTALMONSTERS } from "../../src/common/quakedef";
-import { sv, svs, MOVETYPE_NOCLIP, SOLID_NOT, FL_GODMODE } from "../../src/server/server";
-import { SV_LinkEdict } from "../../src/server/world";
+import { sv, svs, MOVETYPE_NOCLIP, SOLID_NOT, FL_GODMODE, FL_ONGROUND } from "../../src/server/server";
+import { SV_LinkEdict, SV_TestEntityPosition } from "../../src/server/world";
 import { EDICT_NUM, PR_GetString } from "../../src/progs/progs";
 import type { EdictT } from "../../src/progs/progs";
 import { Q1TS_DATA } from "./q1data";
@@ -342,6 +342,97 @@ export async function pickUp(item: EdictT): Promise<void> {
   // straight after a noclip hop carries the stale oldorigin and a load
   // then puts the player back there (F8's finding on the ctf leg).
   await frames(1);
+}
+
+/**
+ * Fly the player to a nearby spot that isn't embedded in solid once
+ * MOVETYPE_WALK collision resumes, then settle it there with one real walk
+ * frame. This replaces a plain "noclip, +forward for N frames, noclip off"
+ * sequence, which reverted the player to the spawn point on hip1m1
+ * (hipnotic/classic-hipnotic) and r1m1 (rogue/classic-rogue): SV_CheckStuck
+ * (src/server/sv_phys.ts) runs on every MOVETYPE_WALK frame and snaps the
+ * entity back to v.oldorigin whenever SV_TestEntityPosition finds the
+ * current origin startsolid. A noclip flight never updates oldorigin (it
+ * isn't MOVETYPE_WALK), so oldorigin is still the spawn point, and those two
+ * spawns face straight into geometry too tight for the player's walking
+ * hull a short distance out -- confirmed by probing: the noclip fly moves
+ * the origin correctly and stays there right up until "noclip OFF" flips
+ * movetype back to WALK, at which point SV_CheckStuck finds the landing
+ * spot startsolid and reverts it (see this unit's report). Probing several
+ * yaws at increasing distances with SV_TestEntityPosition before committing
+ * to one -- "a yaw toward open space measured from the map" -- gives every
+ * tree a real, deterministic, unstuck displacement instead.
+ */
+export async function noclipDisplace(minDist = 64): Promise<[number, number, number]> {
+  const p = player();
+  const from: [number, number, number] = [p.v.origin[0], p.v.origin[1], p.v.origin[2]];
+  const savedMovetype = p.v.movetype;
+  p.v.movetype = MOVETYPE_NOCLIP;
+
+  const baseYaw = p.v.angles[1];
+  const yaws = [0, 45, 90, 135, 180, 225, 270, 315, 22.5, 67.5, 112.5, 157.5, 202.5, 247.5, 292.5, 337.5].map(
+    (d) => baseYaw + d,
+  );
+  const distances = [minDist, minDist * 2, minDist * 4, minDist * 8];
+
+  let landed: [number, number, number] | null = null;
+  for (const dist of distances) {
+    for (const yaw of yaws) {
+      const rad = (yaw * Math.PI) / 180;
+      const candidate: [number, number, number] = [from[0] + Math.cos(rad) * dist, from[1] + Math.sin(rad) * dist, from[2]];
+      p.v.origin[0] = candidate[0];
+      p.v.origin[1] = candidate[1];
+      p.v.origin[2] = candidate[2];
+      p.v.velocity[0] = p.v.velocity[1] = p.v.velocity[2] = 0;
+      SV_LinkEdict(p, false);
+      if (SV_TestEntityPosition(p) === null) {
+        landed = candidate;
+        break;
+      }
+    }
+    if (landed) break;
+  }
+  if (!landed) {
+    // Every candidate embedded -- extremely unlikely (16 yaws x 4 distances
+    // all inside solid); stay at the spawn point rather than commit to one
+    // that SV_CheckStuck would just revert anyway.
+    landed = from;
+    p.v.origin[0] = from[0];
+    p.v.origin[1] = from[1];
+    p.v.origin[2] = from[2];
+    SV_LinkEdict(p, false);
+  }
+
+  p.v.movetype = savedMovetype;
+  // One walking frame so SV_CheckStuck refreshes oldorigin at the new spot
+  // (same reasoning as pickUp's own comment above) before anything reads or
+  // saves this position.
+  await frames(1);
+  return [p.v.origin[0], p.v.origin[1], p.v.origin[2]];
+}
+
+/**
+ * Run walk frames until FL_ONGROUND is set (or maxFrames elapses), so a
+ * snapshot taken right after this call isn't mid-fall. A save taken while
+ * the player is still falling (this driver's own pickUp()/killMonster()
+ * noclip hops leave the player wherever that left them, not necessarily on
+ * the ground) records the live falling velocity; Host_Loadgame_f restores
+ * that same velocity and gravity keeps acting on it across the reconnect
+ * frames before origin is read back -- indistinguishable from a real
+ * save/load defect unless the pre-save snapshot is taken with the player
+ * already onground. This is exactly what produced s_roundtrip_ctf_p999's
+ * 8.64-unit z delta: ctf1's item_rockets sits above the floor with room to
+ * fall, pickUp()'s own single settle frame (added for oldorigin, not for
+ * gravity) isn't enough frames for the player to reach the ground, and the
+ * three reconnect frames after load let that same fall continue.
+ */
+export async function settle(maxFrames = 60): Promise<boolean> {
+  const p = player();
+  for (let i = 0; i < maxFrames; i++) {
+    await frames(1);
+    if (((p.v.flags | 0) & FL_ONGROUND) !== 0) return true;
+  }
+  return false;
 }
 
 export function ammoSnapshot(p: EdictT): { shells: number; nails: number; rockets: number; cells: number; health: number } {
