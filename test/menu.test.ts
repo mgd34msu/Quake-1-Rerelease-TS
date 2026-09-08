@@ -414,7 +414,6 @@ function resetMenuState(): void {
   menu.menuState.m_serverInfoMessage = false;
 
   // U40 additions.
-  menu.menuState.qexBotsCursor = 0;
   menu.menuState.gameoptionsRulesetIndex = 1;
   menu.menuState.gameoptionsProtocolIndex = 0;
   menu.menuState.gameoptionsBotCount = 0;
@@ -434,7 +433,6 @@ function resetMenuState(): void {
   menu.menuState.qexSelectedLevel = 0;
   menu.menuState.qexAddonsCursor = 0;
   menu.menuState.qexAddonsTop = 0;
-  menu.menuState.qexBotsTop = 0;
 }
 
 beforeEach(() => {
@@ -868,7 +866,7 @@ describe("U17 re-release content screens", () => {
   });
 
   test("Add-Ons screen (from Options) lists Base Game and navigates/switches", () => {
-    menu.menuState.options_cursor = 19;
+    menu.menuState.options_cursor = 18;
     setMState(menu.MStateT.m_options);
     setKeyDest(KeydestT.key_menu);
 
@@ -914,7 +912,7 @@ describe("U17 re-release content screens", () => {
 
   test("Options' language row cycles through the mounted loc files", () => {
     Cvar_Set("language", "english");
-    menu.menuState.options_cursor = 17; // language row
+    menu.menuState.options_cursor = 16; // language row
     menu.M_Options_Key(K_RIGHTARROW);
     expect(Cvar_VariableString("language")).toBe("french");
     menu.M_Options_Key(K_RIGHTARROW);
@@ -937,21 +935,24 @@ describe("U17 re-release content screens", () => {
 // see this file's header note).
 
 describe("M_Options_Key / M_AdjustSliders: U17 rows", () => {
-  test("gl_coloredlight and joy_enable toggle 0/1", () => {
-    Cvar_Set("gl_coloredlight", "1");
-    menu.menuState.options_cursor = 13;
-    menu.M_AdjustSliders(1);
-    expect(Cvar_VariableValue("gl_coloredlight")).toBe(0);
-
+  test("joy_enable toggles 0/1; colored lighting is no longer an Options row (it lives in Video Options, P3)", () => {
     Cvar_Set("joy_enable", "0");
-    menu.menuState.options_cursor = 18;
+    menu.menuState.options_cursor = 17;
     menu.M_AdjustSliders(1);
     expect(Cvar_VariableValue("joy_enable")).toBe(1);
+
+    Cvar_Set("gl_coloredlight", "1");
+    for (let row = 0; row < menu.OPTIONS_ITEMS; row++) {
+      if (row === 12 || row === 18) continue; // action rows
+      menu.menuState.options_cursor = row;
+      menu.M_AdjustSliders(1);
+    }
+    expect(Cvar_VariableValue("gl_coloredlight")).toBe(1);
   });
 
   test("snd_speed cycles through the fixed rate list", () => {
     Cvar_SetValue("snd_speed", 44100);
-    menu.menuState.options_cursor = 14;
+    menu.menuState.options_cursor = 13;
     menu.M_AdjustSliders(1);
     expect(Cvar_VariableValue("snd_speed")).toBe(48000);
     menu.M_AdjustSliders(1);
@@ -960,7 +961,7 @@ describe("M_Options_Key / M_AdjustSliders: U17 rows", () => {
 
   test("cl_weaponswitch is a 3-way cycle (0=only new, 1=never, 2=always), not a checkbox", () => {
     Cvar_Set("cl_weaponswitch", "0");
-    menu.menuState.options_cursor = 16;
+    menu.menuState.options_cursor = 15;
     menu.M_AdjustSliders(1);
     expect(Cvar_VariableValue("cl_weaponswitch")).toBe(1);
     menu.M_AdjustSliders(1);
@@ -973,7 +974,7 @@ describe("M_Options_Key / M_AdjustSliders: U17 rows", () => {
 
   test("sv_autosave toggles 0/1", () => {
     Cvar_Set("sv_autosave", "1");
-    menu.menuState.options_cursor = 15;
+    menu.menuState.options_cursor = 14;
     menu.M_AdjustSliders(1);
     expect(Cvar_VariableValue("sv_autosave")).toBe(0);
   });
@@ -993,7 +994,7 @@ describe("M_Options_Key / M_AdjustSliders: U17 rows", () => {
       COM_InitFilesystem();
 
       const before = Cvar_VariableString("language");
-      menu.menuState.options_cursor = 17;
+      menu.menuState.options_cursor = 16;
       menu.M_AdjustSliders(1);
       expect(Cvar_VariableString("language")).toBe(before);
     } finally {
@@ -1001,7 +1002,7 @@ describe("M_Options_Key / M_AdjustSliders: U17 rows", () => {
     }
   });
 
-  test("OPTIONS_ITEMS wraps at the new last row (19, Add-Ons)", () => {
+  test("OPTIONS_ITEMS wraps at the last row (18, Add-Ons)", () => {
     menu.menuState.options_cursor = menu.OPTIONS_ITEMS - 1;
     menu.M_Options_Key(K_DOWNARROW);
     expect(menu.menuState.options_cursor).toBe(0);
@@ -1186,8 +1187,8 @@ describe("U40: bots/rulesets/protocols, ctf-and-bots root mounted", () => {
     Bot_ForgetMapdb();
 
     // Refreshes menu.ts's own cached content model against this mount --
-    // ctfMounted()/mpEpisodesForCurrentGameType() (GameOptions, the Bots
-    // page's currentOrSelectedMapName, and Setup's Team row) all read that
+    // ctfMounted()/mpEpisodesForCurrentGameType() (GameOptions and Setup's
+    // Team row) all read that
     // cache rather than re-scanning the filesystem on every call, the same
     // way M_Menu_QexAddons_f refreshes it on entry.
     menu.M_Menu_GameOptions_f();
@@ -1197,86 +1198,6 @@ describe("U40: bots/rulesets/protocols, ctf-and-bots root mounted", () => {
 
   afterAll(() => {
     rmSync(root, { recursive: true, force: true });
-  });
-
-  //---------------------------------------------------------------------
-  // Multiplayer -> Bots
-
-  test("Multiplayer gains a fourth Bots item, reaching m_qex_bots", () => {
-    setMState(menu.MStateT.m_multiplayer);
-    menu.menuState.m_multiplayer_cursor = 3;
-    menu.M_MultiPlayer_Key(K_ENTER);
-    expect(menu.menuState.m_state).toBe(menu.MStateT.m_qex_bots);
-  });
-
-  test("K_ESCAPE from the Bots page returns to Multiplayer", () => {
-    setMState(menu.MStateT.m_qex_bots);
-    menu.M_QexBots_Key(K_ESCAPE);
-    expect(menu.menuState.m_state).toBe(menu.MStateT.m_multiplayer);
-  });
-
-  //---------------------------------------------------------------------
-  // Bots page: enable/disable by map flag
-
-  test("enabled on dm1 (mapdb bots:true), disabled on dm5 (bots:false)", () => {
-    // Game Type defaults to Deathmatch, so resolveGameOptionsMap()'s mapdb-
-    // driven dm list is [dm1, dm5]; startlevel selects between them.
-    menu.menuState.startlevel = 0;
-    expect(menu.M_QexBots_Draw).not.toThrow(); // sanity: Draw runs over both states below
-
-    menu.menuState.qexBotsCursor = 2; // Grunt's roster row
-    menu.M_QexBots_Key(K_ENTER);
-    expect(cbufAddTextSpy).toHaveBeenCalledWith('addbot "grunt" "medium"\n');
-
-    cbufAddTextSpy.mockClear();
-    menu.menuState.startlevel = 1; // dm5, bots:false
-    menu.M_QexBots_Key(K_ENTER);
-    expect(cbufAddTextSpy).not.toHaveBeenCalled();
-  });
-
-  test("Draw prints a note when disabled", () => {
-    menu.menuState.startlevel = 1; // dm5, bots:false
-    setMState(menu.MStateT.m_qex_bots);
-    expect(() => menu.M_QexBots_Draw()).not.toThrow();
-  });
-
-  //---------------------------------------------------------------------
-  // Bots page: roster add/kick and Add Random, issued through Cbuf
-
-  test("roster row ENTER (inactive) issues addbot \"<characterName>\" \"<skill>\"", () => {
-    menu.menuState.startlevel = 0; // dm1, bots:true
-    Cvar_Set("bot_skill", "easy");
-    menu.menuState.qexBotsCursor = 3; // Ogre's roster row (0=count,1=skill,2=Grunt,3=Ogre)
-    menu.M_QexBots_Key(K_ENTER);
-    expect(cbufAddTextSpy).toHaveBeenCalledWith('addbot "ogre" "easy"\n');
-  });
-
-  test("Add Random row issues addbot random \"<skill>\"", () => {
-    menu.menuState.startlevel = 0; // dm1, bots:true
-    Cvar_Set("bot_skill", "medium");
-    menu.menuState.qexBotsCursor = 4; // 2 roster rows + Add Random == row 4
-    menu.M_QexBots_Key(K_ENTER);
-    expect(cbufAddTextSpy).toHaveBeenCalledWith('addbot random "medium"\n');
-  });
-
-  test("Bot Count/Bot Skill rows adjust bot_count/bot_skill only when enabled", () => {
-    menu.menuState.startlevel = 0; // dm1, bots:true
-    Cvar_SetValue("bot_count", 2);
-    menu.menuState.qexBotsCursor = 0;
-    menu.M_QexBots_Key(K_RIGHTARROW);
-    expect(Cvar_VariableValue("bot_count")).toBe(3);
-
-    Cvar_Set("bot_skill", "easy");
-    menu.menuState.qexBotsCursor = 1;
-    menu.M_QexBots_Key(K_RIGHTARROW);
-    expect(Cvar_VariableString("bot_skill")).toBe("medium");
-
-    // disabled (dm5, bots:false): no-op
-    menu.menuState.startlevel = 1;
-    Cvar_SetValue("bot_count", 2);
-    menu.menuState.qexBotsCursor = 0;
-    menu.M_QexBots_Key(K_RIGHTARROW);
-    expect(Cvar_VariableValue("bot_count")).toBe(2);
   });
 
   //---------------------------------------------------------------------

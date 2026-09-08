@@ -260,7 +260,13 @@ export function QEX_AfterLoadProgs(): void {
   // engine already chose the value, which is what QEX_SetCampaign records.
   if (campaignEngineSet) setGlobalFloat("campaign_valid", 1);
 
-  if (SV_RulesetIsRerelease()) QEX_LoadLocalization();
+  // The loc table follows the progs, not the forced profile: a re-release
+  // QuakeC prints `$key` strings whatever `sv_ruleset` says, and with the
+  // table dropped they reached the player as the raw key glued to its
+  // argument ("qc_ks_gruntplayer" -- P5, 2026-09-07, mg1 under a forced
+  // classic ruleset). Only a progs that never uses loc keys (detected
+  // classic, not forced to re-release) runs with no table, as WinQuake did.
+  if (detectedRuleset === RULESET_RERELEASE || SV_RulesetIsRerelease()) QEX_LoadLocalization();
   else QEX_UnloadLocalization();
 }
 

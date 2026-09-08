@@ -551,6 +551,12 @@ let com_base_searchpaths: SearchPathT | null = null;
 // "game" switch, in mount order -- COM_GetGameNames()'s source, and how
 // COM_ResetGameDirectories skips a name that's already loaded.
 let com_gamenames: string[] = [];
+// com_gamedir as the boot left it once the base tier was pinned (the id1 home
+// mirror, or <basedir>/id1 under -nohomedir). COM_ResetGameDirectories starts
+// from it: without this, `game id1` after a mod left com_gamedir -- and so
+// config.cfg, saves and screenshots -- in the mod's directory (found 2026-09-07
+// while checking P8 from the player's side).
+let com_base_gamedir = "";
 // The content root generic (non-mission-pack) gamedir mounts -- -game
 // <dir>, and any plain directory name passed to the "game" command -- are
 // resolved against as the FIRST preference (episodeRoot() also uses this
@@ -1524,6 +1530,19 @@ per-user location then, so the engine falls back to writing into the
 basedir exactly as -nohomedir does.
 ================
 */
+/**
+ * The home tier for this boot: `-homedir <dir>`, or nothing under
+ * `-nohomedir`, or COM_DefaultHomeDir(). Shared with the QuakeWorld track's
+ * own COM_InitFilesystem so a `-dedicated -qw` boot honours the parameter the
+ * same way (it used to ignore it and write into <basedir>/qw).
+ */
+export function COM_ResolveHomeDir(): string {
+  const i = COM_CheckParm("-homedir");
+  if (i && i < com_argc - 1) return stripTrailingSlash(com_argv[i + 1]!);
+  if (COM_CheckParm("-nohomedir")) return "";
+  return COM_DefaultHomeDir();
+}
+
 export function COM_DefaultHomeDir(): string {
   // Q1TS_NOHOMEDIR=1 is the test harness's -nohomedir: `bun test` and the
   // e2e runner export it so a boot with no explicit -homedir/-nohomedir never
@@ -1676,11 +1695,35 @@ export function COM_GetGameNames(): string {
   return com_gamenames.length > 0 ? com_gamenames.join(";") : GAMENAME;
 }
 
+/**
+ * Whether `newgamedirs` names exactly the gamedir layer that is mounted now,
+ * after the same normalisation COM_ResetGameDirectories applies (id1 is the
+ * base and never counts, repeats are dropped, names compare case-blind).
+ * Host_Game_f uses it the way Ironwail's COM_Game_f does: a `game` for the
+ * layer already active is a no-op, NOT a teardown and quake.rc re-exec --
+ * that re-exec runs default.cfg (unbindall, every default) and then the
+ * config.cfg of the last clean shutdown, which threw away every bind, option
+ * and console setting made since boot each time the menus started a new game
+ * in the same content.
+ */
+export function COM_GameNamesEqual(newgamedirs: readonly string[]): boolean {
+  const wanted: string[] = [];
+  for (const raw of newgamedirs) {
+    if (Q_strcasecmp(raw, GAMENAME) === 0) continue;
+    if (wanted.some((g) => Q_strcasecmp(g, raw) === 0)) continue;
+    wanted.push(raw);
+  }
+  if (wanted.length !== com_gamenames.length) return false;
+  for (let i = 0; i < wanted.length; i++) if (Q_strcasecmp(wanted[i]!, com_gamenames[i]!) !== 0) return false;
+  return true;
+}
+
 // Tears down every search-path entry mounted above the base tier
 // (com_base_searchpaths) and mounts `newgamedirs` fresh -- src/common/
 // host_cmd.ts's "game" command (Host_Game_f) is the only caller today.
 export function COM_ResetGameDirectories(newgamedirs: readonly string[]): void {
   com_searchpaths = com_base_searchpaths;
+  if (com_base_gamedir !== "") com_gamedir = com_base_gamedir;
   for (const name of MISSION_PACK_DIRS) setMissionPackFlag(name, false);
   standard_quake = true;
   com_gamenames = [];
@@ -1738,10 +1781,7 @@ export function COM_InitFilesystem(): void {
   // -homedir <path> / -nohomedir (re-release addition, U10; default changed
   // in F3): see com_homedir's own comment, COM_DefaultHomeDir, and
   // COM_AddGameDirectory's home-directory-tier mount.
-  i = COM_CheckParm("-homedir");
-  if (i && i < com_argc - 1) com_homedir = stripTrailingSlash(com_argv[i + 1]);
-  else if (COM_CheckParm("-nohomedir")) com_homedir = "";
-  else com_homedir = COM_DefaultHomeDir();
+  com_homedir = COM_ResolveHomeDir();
 
   // -classic <dir> / -rerelease <dir> (re-release addition, U10): override
   // COM_IsRereleaseRootDir's auto-detection instead of deriving both roots
@@ -1794,6 +1834,7 @@ export function COM_InitFilesystem(): void {
   // runtime "game" command tear down and rebuild everything ABOVE this,
   // never this itself (Ironwail common.c:3209's com_base_searchpaths).
   com_base_searchpaths = com_searchpaths;
+  com_base_gamedir = com_gamedir;
   com_gamenames = [];
 
   // add mission pack requests (only one should normally be specified) --
@@ -1858,6 +1899,7 @@ export function COM_InitFilesystem(): void {
     // -path fully replaces the generated search path, base tier included --
     // there is no more "mission pack layer" left to distinguish it from.
     com_base_searchpaths = com_searchpaths;
+  com_base_gamedir = com_gamedir;
   }
 
   if (COM_CheckParm("-proghack")) proghack = true;

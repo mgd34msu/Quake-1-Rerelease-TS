@@ -280,9 +280,9 @@ import {
   GL_BACK,
   qgl,
 } from "./qgl";
-import { GL_Bind } from "./gl_draw";
+import { GL_Bind, gl_overbright_models } from "./gl_draw";
 // U29: re-release MD5 replacement models -- see gl_md5.ts's own header.
-import { GL_DrawMd5AliasFrame, GL_DrawMd5Shadow, getMd5GlPayload, r_enhancedmodels } from "./gl_md5";
+import { GL_DrawMd5AliasFrame, GL_DrawMd5Shadow, GL_Md5PlayerSkin, getMd5GlPayload, r_enhancedmodels } from "./gl_md5";
 import { GL_DisableMultitexture, R_DrawBrushModel, R_DrawWaterSurfaces, R_DrawWorld, R_MarkLeaves, R_RenderBrushPoly } from "./gl_rsurf";
 import { R_AnimateLight, R_LightPoint, R_RenderDlights, lightcolor, lightspot } from "./gl_rlight";
 import { Fog_DisableGFog, Fog_EnableGFog, Fog_SetupFrame } from "./gl_fog";
@@ -989,6 +989,12 @@ export function R_DrawAliasModel(e: EntityT): void {
     }
 
     rmainState.shadelightColor[c] = shadec / 200.0;
+    // QuakeSpasm/Ironwail gl_overbright_models (default on, as in the
+    // re-release's own look): GLQuake's models sit at a third of the room's
+    // brightness on a lit floor ("bright room, dark model", P9 2026-09-07);
+    // the modern engines double the model light and let the framebuffer
+    // clamp. The cvar was registered but never read before this.
+    if (gl_overbright_models.value) rmainState.shadelightColor[c] *= 2;
   }
 
   const an = (e.angles[1] / 180) * M_PI;
@@ -1087,7 +1093,15 @@ export function R_DrawAliasModel(e: EntityT): void {
   rmainState.alpha = entAlpha;
 
   if (md5Payload) {
-    GL_DrawMd5AliasFrame(md5Payload, currententity, aliasFrameLerp.pose1, aliasFrameLerp.pose2, aliasFrameLerp.blend, shadevector, rmainState.shadelightColor, rmainState.alpha);
+    // the classic playertextures rule (the `!md5Payload` block above) for a
+    // player-slot entity drawn through its MD5 replacement: bind that slot's
+    // colour-translated copy of the MD5 skin (P14).
+    let playerSkin: number | null = null;
+    if (!qwActive() && currententity.colormap !== vid.colormap && !gl_nocolors.value) {
+      const slot = cl_entities.indexOf(currententity);
+      if (slot >= 1 && slot <= cl.maxclients) playerSkin = GL_Md5PlayerSkin(md5Payload, currententity.skinnum, slot - 1, cl.scores[slot - 1]?.colors ?? 0);
+    }
+    GL_DrawMd5AliasFrame(md5Payload, currententity, aliasFrameLerp.pose1, aliasFrameLerp.pose2, aliasFrameLerp.blend, shadevector, rmainState.shadelightColor, rmainState.alpha, playerSkin);
     rmainState.lastpose1 = aliasFrameLerp.pose1;
     rmainState.lastpose2 = aliasFrameLerp.pose2;
     rmainState.lastblend = aliasFrameLerp.blend;

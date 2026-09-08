@@ -258,6 +258,7 @@ export const lightmaps = new Uint8Array(4 * MAX_LIGHTMAPS * BLOCK_WIDTH * BLOCK_
 
 export type GlRsurfStateT = {
   lightmap_bytes: number; // 1, 2, or 4
+  lightmaps_colored: boolean; // built with RGB samples (see lightmapsBuiltColored)
   active_lightmaps: number;
   // For gl_texsort 0
   skychain: MsurfaceT | null;
@@ -270,6 +271,7 @@ export type GlRsurfStateT = {
 
 export const glRsurfState: GlRsurfStateT = {
   lightmap_bytes: 0,
+  lightmaps_colored: false,
   active_lightmaps: 0,
   skychain: null,
   waterchain: null,
@@ -346,6 +348,26 @@ function coloredLightmapsAvailable(): boolean {
   return gl_coloredlight.value !== 0 && worldmodel !== null && worldmodel.lightdata_rgb !== null;
 }
 
+/**
+ * The format the lightmap textures were actually BUILT in: every draw-time
+ * decision (texenv GL_MODULATE vs GL_BLEND, the blend func, the sample source
+ * of a dynamic-light rebuild) reads this, never the live cvar. Toggling
+ * gl_coloredlight mid-map used to switch the texenv under RGBA lightmaps
+ * that store true brightness -- GL_BLEND then inverted them and the whole
+ * world washed out to white (P10, 2026-09-07). GL_CheckLightmapFormat
+ * rebuilds the lightmaps when the cvar and the built format disagree.
+ */
+function lightmapsBuiltColored(): boolean {
+  return glRsurfState.lightmaps_colored;
+}
+
+export function GL_CheckLightmapFormat(): void {
+  if (cl.worldmodel === null) return;
+  if (glRsurfState.lightmap_bytes === 0) return; // nothing built yet (R_NewMap does the first build)
+  if (glRsurfState.lightmaps_colored === coloredLightmapsAvailable()) return;
+  GL_BuildLightmaps();
+}
+
 /*
 ===============
 R_BuildLightMap
@@ -365,8 +387,10 @@ export function R_BuildLightMap(surf: MsurfaceT, dest: Uint8Array, destOfs: numb
 
   // U15: the real RGB sample source, when colored lighting is active for
   // this map (see coloredLightmapsAvailable's header note on why this reads
-  // cl.worldmodel rather than the surface's own owning model).
-  const colored = coloredLightmapsAvailable();
+  // cl.worldmodel rather than the surface's own owning model). Reads the
+  // BUILT format so a dynamic-light rebuild of one rect never mixes sample
+  // sources inside a lightmap texture built the other way.
+  const colored = lightmapsBuiltColored();
   const rgbLightdata = colored && worldmodel !== null ? worldmodel.lightdata_rgb : null;
   const rgbSamples = rgbLightdata !== null && surf.lightofs !== -1 ? rgbLightdata.subarray(surf.lightofs * 3) : null;
 
@@ -661,7 +685,7 @@ export function R_DrawSequentialPoly(s: MsurfaceT): void {
       uploadModifiedLightmapRect(s.lightmaptexturenum);
       // U15: a real color multiply needs GL_MODULATE, not the classic
       // invert-and-GL_BLEND-texenv trick (see this file's header note).
-      gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, coloredLightmapsAvailable() ? GL_MODULATE : GL_BLEND);
+      gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, lightmapsBuiltColored() ? GL_MODULATE : GL_BLEND);
       gl.qglBegin(GL_POLYGON);
       for (let i = 0, v = 0; i < p.numverts; i++, v += VERTEXSIZE) {
         mtex(TEXTURE0_SGIS, p.verts[v + 3], p.verts[v + 4]);
@@ -748,7 +772,7 @@ export function R_DrawSequentialPoly(s: MsurfaceT): void {
     GL_Bind(glState.lightmap_textures + s.lightmaptexturenum);
     uploadModifiedLightmapRect(s.lightmaptexturenum);
     // U15: see the multitexture branch above -- real color needs GL_MODULATE.
-    gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, coloredLightmapsAvailable() ? GL_MODULATE : GL_BLEND);
+    gl.qglTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, lightmapsBuiltColored() ? GL_MODULATE : GL_BLEND);
     gl.qglBegin(GL_TRIANGLE_FAN);
     for (let i = 0, v = 0; i < p.numverts; i++, v += VERTEXSIZE) {
       mtex(TEXTURE0_SGIS, p.verts[v + 3], p.verts[v + 4]);
@@ -851,7 +875,7 @@ export function R_BlendLightmaps(): void {
   // U15: colored lightmaps store true (uninverted) brightness, so the
   // framebuffer multiply needs GL_SRC_COLOR, not the classic invert-and-
   // blend-to-black trick the other formats use (see this file's header).
-  const colored = coloredLightmapsAvailable();
+  const colored = lightmapsBuiltColored();
   if (colored) gl.qglBlendFunc(GL_ZERO, GL_SRC_COLOR);
   else if (glDrawState.gl_lightmap_format === GL_LUMINANCE) gl.qglBlendFunc(GL_ZERO, GL_ONE_MINUS_SRC_COLOR);
   else if (glDrawState.gl_lightmap_format === GL_INTENSITY) {
@@ -1394,6 +1418,7 @@ export function R_DrawWorld(): void {
   glState.currenttexture = -1;
 
   gl.qglColor3f(1, 1, 1);
+  GL_CheckLightmapFormat(); // gl_coloredlight toggled since the build -> rebuild (P10)
   lightmap_polys.fill(null);
 
   R_RecursiveWorldNode(worldmodel.nodes[0]);
@@ -1629,6 +1654,7 @@ export function GL_ClearLightmapState(): void {
     lightmap_rectchange[i].h = 0;
   }
   glRsurfState.lightmap_bytes = 0;
+  glRsurfState.lightmaps_colored = false;
   glRsurfState.active_lightmaps = 0;
   glRsurfState.skychain = null;
   glRsurfState.waterchain = null;
@@ -1668,7 +1694,8 @@ export function GL_BuildLightmaps(): void {
   // Runs after every -lm_* override above, so those still behave exactly as
   // before whenever color is not active (gl_coloredlight 0, or the map has
   // no RGB samples); see this file's header note.
-  if (coloredLightmapsAvailable()) glDrawState.gl_lightmap_format = GL_RGBA;
+  glRsurfState.lightmaps_colored = coloredLightmapsAvailable();
+  if (glRsurfState.lightmaps_colored) glDrawState.gl_lightmap_format = GL_RGBA;
 
   switch (glDrawState.gl_lightmap_format) {
     case GL_RGBA:

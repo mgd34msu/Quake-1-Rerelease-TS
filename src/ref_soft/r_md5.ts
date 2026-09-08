@@ -395,6 +395,17 @@ function md5TexCoordFixed(coord: number, size: number): number {
 }
 
 function lightFinalVert(fv: FinalvertT, nx: number, ny: number, nz: number): void {
+  // r_alias.c's R_AliasTransformFinalVert lights against a UNIT normal
+  // (r_avertexnormals[]); the skinned MD5 normal is a weight-blended vector
+  // and must be normalised first, or |lightcos| runs past 1 and the light
+  // index overshoots the colormap (re-release view weapons and pickups drew
+  // black in the software renderer -- P16, 2026-09-07).
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (len > 0) {
+    nx /= len;
+    ny /= len;
+    nz /= len;
+  }
   const lightcos = nx * r_plightvec[0] + ny * r_plightvec[1] + nz * r_plightvec[2];
   let temp = rState.r_ambientlight;
   if (lightcos < 0) {

@@ -134,18 +134,12 @@ protocols and the unified client"): no WinQuake C original for any of this --
 menu.c predates bots, `sv_ruleset`/`sv_protocol`/`cl_protocol` and QuakeWorld
 entirely.
 
-- Multiplayer gains a fourth "Bots" item (`m_qex_bots`, a new screen with no
-  C original) whenever BotsMenuAvailable() is true (bots/ data mounted in the
-  current game directory -- every classic-only install has none, so the
-  classic 3-item Multiplayer menu is unchanged, byte-for-byte, with no
-  re-release data mounted). The page lists Bot Count/Bot Skill plus a roster
-  read from characters.txt (menu_content.ts's BuildBotsPageModel), with
-  add/kick per row and an "Add Random" row, all issued through Cbuf
-  (`addbot`/`kickbot`) rather than calling src/bots's Bot_Add/Bot_Remove
-  directly -- this file's SCOPE excludes src/bots/**, and the console command
-  path is what a human player would type anyway. Every control is a no-op
-  when BotsPageEnabled() is false (no bots data, or the current/selected map
-  lacks mapdb.json's `bots` flag); the Draw function prints a note instead.
+- The Multiplayer menu stays the classic three-item picture menu. Bots are
+  configured on the Start Server (GameOptions) screen's Bot Count / Bot Skill
+  rows and join when the game begins; the separate "Bots" page with a named
+  roster (U40) was removed on 2026-09-07 (P1/P2: drawn in the wrong font,
+  its count/skill rows could not be selected, and it offered no way to start
+  a game or pick the mode).
 - GameOptions (the classic "New Game" -- start a listen server) keeps its
   original nine rows (0-8) untouched, byte-for-byte, and gains four more
   (9 Ruleset, 10 Protocol, 11 Bot Count, 12 Bot Skill) appended after them --
@@ -284,7 +278,6 @@ import {
   type ContentModel,
   type ContentEpisode,
   type MpEpisode,
-  type BotsPageModel,
   RULESETS,
   DIFFICULTIES,
   SV_PROTOCOLS,
@@ -300,12 +293,6 @@ import {
   BuildMpEpisodes,
   CtfMaps,
   AvailableBotSkillNames,
-  BotsMenuAvailable,
-  BuildBotsPageModel,
-  BotsPageEnabled,
-  BotAddCommand,
-  BotKickCommand,
-  BotAddRandomCommand,
 } from "./menu_content";
 
 // net_ser.c / IPX were not ported; see file header.
@@ -346,8 +333,6 @@ export enum MStateT {
   m_qex_episodes,
   m_qex_levels,
   m_qex_addons,
-  // U40 addition -- see file header.
-  m_qex_bots,
 }
 
 // see file header: every scalar file-scope global in menu.c lives here.
@@ -429,11 +414,9 @@ export const menuState = {
   qexEpisodeTop: 0,
   qexLevelTop: 0,
   qexAddonsTop: 0,
-  qexBotsTop: 0,
 
   // U40 additions -- see file header. Not WinQuake C globals; kept on this
   // same shared-state object per this file's own convention.
-  qexBotsCursor: 0,
   gameoptionsRulesetIndex: 1, // RULESETS[1] === "rerelease"
   gameoptionsProtocolIndex: 0, // SV_PROTOCOLS[0] === "auto"
   gameoptionsBotCount: 0,
@@ -574,7 +557,6 @@ const MENU_LEVEL_FIXED_Y: readonly number[] = [168, 176, 184]; // Ruleset, Diffi
 /** The bots page: two fixed rows at 40/48, "more above" at 56, roster rows
  * 64..160, "more below" at 168, Add Random at 176, the disabled note at 184. */
 const MENU_BOTS_LIST_TOP = 64;
-const MENU_BOTS_LIST_ROWS = 13;
 const MENU_BOTS_UP_Y = 56;
 const MENU_BOTS_DOWN_Y = 168;
 const MENU_BOTS_ADD_RANDOM_Y = 176;
@@ -1557,16 +1539,7 @@ export function M_QexAddons_Key(key: number): void {
 //=============================================================================
 /* MULTIPLAYER MENU */
 
-// The classic item count -- kept unchanged for the byte-identical no-bots-
-// data case. See multiplayerItemCount below for the U40 dynamic count.
 export const MULTIPLAYER_ITEMS = 3;
-
-// U40 addition: a fourth "Bots" item, only when bots/ data is mounted (see
-// file header). With no re-release data mounted this returns MULTIPLAYER_ITEMS
-// unchanged, so the classic 3-item menu's wraparound is byte-identical.
-function multiplayerItemCount(): number {
-  return BotsMenuAvailable() ? MULTIPLAYER_ITEMS + 1 : MULTIPLAYER_ITEMS;
-}
 
 export function M_Menu_MultiPlayer_f(): void {
   keyState.key_dest = KeydestT.key_menu;
@@ -1580,12 +1553,6 @@ export function M_MultiPlayer_Draw(): void {
   M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
   M_DrawTransPic(72, 32, cachePic("gfx/mp_menu.lmp"));
 
-  // U40 addition: gfx/mp_menu.lmp is a fixed 3-item graphic (Join a
-  // Game/New Game/Setup), so a fourth item has no matching art -- drawn as
-  // text instead. G4: at twice the text grid, centred in the same 20-pixel
-  // row pitch the three picture rows use, so it reads as a fourth row of
-  // that graphic rather than as a caption under it.
-  if (BotsMenuAvailable()) M_PrintBig(72, 32 + 3 * 20 + 2, "BOTS", 2);
 
   const f = Math.trunc(host.time * 10) % 6;
 
@@ -1596,7 +1563,7 @@ export function M_MultiPlayer_Draw(): void {
 }
 
 export function M_MultiPlayer_Key(key: number): void {
-  const items = multiplayerItemCount();
+  const items = MULTIPLAYER_ITEMS;
 
   switch (key) {
     case K_ESCAPE:
@@ -1629,142 +1596,8 @@ export function M_MultiPlayer_Key(key: number): void {
         case 2:
           M_Menu_Setup_f();
           break;
-
-        case 3: // U40 addition -- only reachable when items > MULTIPLAYER_ITEMS
-          M_Menu_QexBots_f();
-          break;
       }
       break;
-  }
-}
-
-//=============================================================================
-/* BOTS PAGE (U40 addition -- see file header; no WinQuake C original).
-   Reached from Multiplayer's fourth item. Rows: Bot Count, Bot Skill, one
-   per characters.txt roster entry (Add/Kick), then Add Random. */
-
-// The map the Bots page gates on: the running server's own map when one is
-// active, else whatever the New Game (GameOptions) screen currently has
-// selected -- resolveGameOptionsMap is defined in the GameOptions section
-// below (a top-level function declaration, hoisted, so the forward reference
-// here is fine).
-function currentOrSelectedMapName(): string {
-  if (sv.active) return sv.name;
-  return resolveGameOptionsMap().bsp;
-}
-
-function botsPageRowCount(model: BotsPageModel): number {
-  return model.roster.length + 3; // Bot Count, Bot Skill, roster..., Add Random
-}
-
-export function M_Menu_QexBots_f(): void {
-  keyState.key_dest = KeydestT.key_menu;
-  menuState.m_state = MStateT.m_qex_bots;
-  menuState.m_entersound = true;
-  const model = BuildBotsPageModel(currentOrSelectedMapName());
-  const rows = botsPageRowCount(model);
-  if (menuState.qexBotsCursor < 0 || menuState.qexBotsCursor >= rows) menuState.qexBotsCursor = 0;
-}
-
-export function M_QexBots_Draw(): void {
-  M_DrawTransPic(16, 4, cachePic("gfx/qplaque.lmp"));
-  const p = cachePic("gfx/p_multi.lmp");
-  M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
-
-  const model = BuildBotsPageModel(currentOrSelectedMapName());
-
-  M_Print(MENU_LIST_X, MENU_LIST_TOP, M_Loc("$m_num_bots", "Bot Count"));
-  M_Print(232, MENU_LIST_TOP, `${model.count}`);
-  M_Print(MENU_LIST_X, MENU_LIST_TOP + 8, M_Loc("$m_bot_skill", "Bot Skill"));
-  M_Print(232, MENU_LIST_TOP + 8, model.skillNames[model.skillIndex] ?? "");
-
-  // The roster is the only unbounded part of this page: rows 0 and 1 are Bot
-  // Count/Bot Skill and the last row is Add Random, so the window runs over
-  // cursor positions 2 .. roster.length + 1.
-  const cursor = menuState.qexBotsCursor;
-  const rosterCursor = cursor >= 2 && cursor < model.roster.length + 2 ? cursor - 2 : -1;
-  const w = M_ListWindow(model.roster.length, rosterCursor, MENU_BOTS_LIST_ROWS, menuState.qexBotsTop);
-  menuState.qexBotsTop = w.top;
-
-  for (let i = 0; i < w.visible; i++) {
-    const row = model.roster[w.top + i];
-    const y = MENU_BOTS_LIST_TOP + i * 8;
-    M_Print(MENU_LIST_X, y, row.funName);
-    M_Print(240, y, row.active ? M_Loc("$m_kick", "Kick") : "Add");
-  }
-  M_DrawListIndicators(MENU_LIST_CURSOR_X, MENU_BOTS_UP_Y, MENU_BOTS_DOWN_Y, w);
-
-  M_Print(MENU_LIST_X, MENU_BOTS_ADD_RANDOM_Y, "Add Random");
-
-  let cursorY: number;
-  if (cursor <= 1) cursorY = MENU_LIST_TOP + cursor * 8;
-  else if (rosterCursor >= 0) cursorY = MENU_BOTS_LIST_TOP + (rosterCursor - w.top) * 8;
-  else cursorY = MENU_BOTS_ADD_RANDOM_Y;
-  M_DrawCharacter(MENU_LIST_CURSOR_X, cursorY, 12 + (Math.trunc(host.realtime * 4) & 1));
-
-  if (!BotsPageEnabled(model)) {
-    const note = !model.available
-      ? "This game directory has no bots data"
-      : `"${model.mapName || "this map"}" is not flagged for bots`;
-    M_PrintWhite(Math.trunc(320 / 2 - M_TextWidth(note) / 2), 184, note);
-  }
-}
-
-export function M_QexBots_Key(key: number): void {
-  const mapName = currentOrSelectedMapName();
-  const model = BuildBotsPageModel(mapName);
-  const rows = botsPageRowCount(model);
-  const addRandomRow = rows - 1;
-
-  switch (key) {
-    case K_ESCAPE:
-      M_Menu_MultiPlayer_f();
-      return;
-
-    case K_UPARROW:
-      S_LocalSound("misc/menu1.wav");
-      menuState.qexBotsCursor--;
-      if (menuState.qexBotsCursor < 0) menuState.qexBotsCursor = rows - 1;
-      return;
-
-    case K_DOWNARROW:
-      S_LocalSound("misc/menu1.wav");
-      menuState.qexBotsCursor++;
-      if (menuState.qexBotsCursor >= rows) menuState.qexBotsCursor = 0;
-      return;
-
-    case K_LEFTARROW:
-    case K_RIGHTARROW: {
-      if (!BotsPageEnabled(model)) return;
-      const dir = key === K_RIGHTARROW ? 1 : -1;
-      if (menuState.qexBotsCursor === 0) {
-        let n = model.count + dir;
-        if (n < 0) n = 8;
-        if (n > 8) n = 0;
-        S_LocalSound("misc/menu3.wav");
-        Cvar_SetValue("bot_count", n);
-      } else if (menuState.qexBotsCursor === 1) {
-        const idx = (model.skillIndex + dir + model.skillNames.length) % model.skillNames.length;
-        S_LocalSound("misc/menu3.wav");
-        Cvar_Set("bot_skill", model.skillNames[idx]);
-      }
-      return;
-    }
-
-    case K_ENTER: {
-      if (!BotsPageEnabled(model)) return;
-      const skillName = model.skillNames[model.skillIndex] ?? "medium";
-      if (menuState.qexBotsCursor === addRandomRow) {
-        menuState.m_entersound = true;
-        Cbuf_AddText(BotAddRandomCommand(skillName));
-      } else if (menuState.qexBotsCursor >= 2 && menuState.qexBotsCursor < addRandomRow) {
-        const row = model.roster[menuState.qexBotsCursor - 2];
-        if (row === undefined) return;
-        menuState.m_entersound = true;
-        Cbuf_AddText(row.active ? BotKickCommand(row.funName) : BotAddCommand(row.characterName, skillName));
-      }
-      return;
-    }
   }
 }
 
@@ -2092,13 +1925,14 @@ export function M_Net_Key(k: number): void {
 /* OPTIONS MENU */
 
 // non-Windows list; the _WIN32 list adds a 14th item ("Use Mouse"), dropped.
-// U17 addition: seven more rows after "Video Options" (index 12) -- see this
+// U17 addition: six more rows after "Video Options" (index 12) -- see this
 // unit's brief and file header -- for cvars this file doesn't own (read/set
-// BY NAME, same convention as every row above them): gl_coloredlight (13),
-// snd_speed (14), sv_autosave (15), cl_weaponswitch (16), language (17),
-// joy_enable (18), and an "Add-Ons" action row (19) that opens
-// M_Menu_QexAddons_f.
-export const OPTIONS_ITEMS = 20;
+// BY NAME, same convention as every row above them): snd_speed (13),
+// sv_autosave (14), cl_weaponswitch (15), language (16), joy_enable (17),
+// and an "Add-Ons" action row (18) that opens M_Menu_QexAddons_f. The
+// colored-lighting row U17 put here moved to Video Options (P3, 2026-09-07:
+// it is a video setting, and it only ever drove the GL renderer's cvar).
+export const OPTIONS_ITEMS = 19;
 
 export const SLIDER_RANGE = 10;
 
@@ -2178,11 +2012,8 @@ export function M_AdjustSliders(dir: number): void {
     // _WIN32's case 13 (_windowed_mouse) is dropped; case 12 (Video Options)
     // is an action row handled in M_Options_Key, not here.
 
-    case 13: // colored lighting -- U17 addition, gl_coloredlight
-      Cvar_SetValue("gl_coloredlight", Cvar_VariableValue("gl_coloredlight") ? 0 : 1);
-      break;
-
-    case 14: {
+    // colored lighting moved to Video Options (P3); rows 13..18 follow.
+    case 13: {
       // sound frequency -- U17 addition, snd_speed. Not a slider: cycles
       // through the sample rates snd_dma.ts's mixer actually supports.
       const rates = [11025, 22050, 44100, 48000];
@@ -2194,11 +2025,11 @@ export function M_AdjustSliders(dir: number): void {
       break;
     }
 
-    case 15: // autosave -- U17 addition, sv_autosave
+    case 14: // autosave -- U17 addition, sv_autosave
       Cvar_SetValue("sv_autosave", Cvar_VariableValue("sv_autosave") ? 0 : 1);
       break;
 
-    case 16: {
+    case 15: {
       // weapon switch -- U17 addition, cl_weaponswitch: 0=only when the
       // player didn't already have the weapon, 1=never, 2=always (cl_main.ts's
       // own header comment on this cvar) -- a 3-way cycle, not a checkbox.
@@ -2209,7 +2040,7 @@ export function M_AdjustSliders(dir: number): void {
       break;
     }
 
-    case 17: {
+    case 16: {
       // language -- U17 addition. Cycles menu_content.ts's AvailableLanguages
       // (only loc files actually mounted in the search path).
       const langs = AvailableLanguages();
@@ -2222,11 +2053,11 @@ export function M_AdjustSliders(dir: number): void {
       break;
     }
 
-    case 18: // game controller -- U17 addition, joy_enable
+    case 17: // game controller -- U17 addition, joy_enable
       Cvar_SetValue("joy_enable", Cvar_VariableValue("joy_enable") ? 0 : 1);
       break;
 
-    // case 19 (Add-Ons) is an action row handled in M_Options_Key, not here.
+    // case 18 (Add-Ons) is an action row handled in M_Options_Key, not here.
   }
 }
 
@@ -2262,10 +2093,10 @@ function M_OptionsPlaqueRows(): Array<{ y: number; width: number; label: string 
     { y: 112, width: 22, label: "Lookspring" },
     { y: 120, width: 22, label: "Lookstrafe" },
     { y: 128, width: 22, label: M_Loc("$m_video_settings", "Video Options") },
-    { y: 136, width: 22, label: M_Loc("$m_colorlightmaps", "Colored Lighting") },
-    { y: 144, width: 21, label: "Sound Frequency" },
-    { y: 152, width: 22, label: "Autosave" },
-    { y: 160, width: 21, label: M_Loc("$m_change_on_pickup", "Weapon Switch") },
+    { y: 136, width: 21, label: "Sound Frequency" },
+    { y: 144, width: 22, label: "Autosave" },
+    { y: 152, width: 21, label: M_Loc("$m_change_on_pickup", "Weapon Switch") },
+    { y: 160, width: 22, label: M_Loc("$m_language", "Language") },
   ];
 }
 
@@ -2343,32 +2174,30 @@ export function M_Options_Draw(): void {
 
   if (vidMenuHooks.vid_menudrawfn) M_PrintRight(16 + shift, 128, 22, M_Loc("$m_video_settings", "Video Options"));
 
-  // U17 additions -- see OPTIONS_ITEMS' own comment.
-  M_PrintRight(16 + shift, 136, 22, M_Loc("$m_colorlightmaps", "Colored Lighting"));
-  M_DrawCheckbox(220 + shift, 136, Cvar_VariableValue("gl_coloredlight") !== 0);
+  // U17 additions -- see OPTIONS_ITEMS' own comment. (The "Colored Lighting"
+  // row that used to sit at 136 lives in Video Options now -- P3.)
+  M_PrintRight(16 + shift, 136, 21, "Sound Frequency");
+  M_Print(220 + shift, 136, `${Math.trunc(Cvar_VariableValue("snd_speed")) || 44100}`);
 
-  M_PrintRight(16 + shift, 144, 21, "Sound Frequency");
-  M_Print(220 + shift, 144, `${Math.trunc(Cvar_VariableValue("snd_speed")) || 44100}`);
+  M_PrintRight(16 + shift, 144, 22, "Autosave");
+  M_DrawCheckbox(220 + shift, 144, Cvar_VariableValue("sv_autosave") !== 0);
 
-  M_PrintRight(16 + shift, 152, 22, "Autosave");
-  M_DrawCheckbox(220 + shift, 152, Cvar_VariableValue("sv_autosave") !== 0);
-
-  M_PrintRight(16 + shift, 160, 21, M_Loc("$m_change_on_pickup", "Weapon Switch"));
+  M_PrintRight(16 + shift, 152, 21, M_Loc("$m_change_on_pickup", "Weapon Switch"));
   const weaponSwitchLabels = [
     M_Loc("$m_onlynew", "Only New"),
     M_Loc("$m_never", "Never"),
     M_Loc("$m_always", "Always"),
   ];
   const weaponSwitchValue = Math.trunc(Cvar_VariableValue("cl_weaponswitch"));
-  M_Print(220 + shift, 160, weaponSwitchLabels[weaponSwitchValue] ?? weaponSwitchLabels[0]);
+  M_Print(220 + shift, 152, weaponSwitchLabels[weaponSwitchValue] ?? weaponSwitchLabels[0]);
 
-  M_PrintRight(16 + shift, 168, 22, M_Loc("$m_language", "Language"));
-  M_Print(220 + shift, 168, Cvar_VariableString("language") || "english");
+  M_PrintRight(16 + shift, 160, 22, M_Loc("$m_language", "Language"));
+  M_Print(220 + shift, 160, Cvar_VariableString("language") || "english");
 
-  M_PrintRight(16 + shift, 176, 21, M_Loc("$m_controller", "Game Controller"));
-  M_DrawCheckbox(220 + shift, 176, Cvar_VariableValue("joy_enable") !== 0);
+  M_PrintRight(16 + shift, 168, 21, M_Loc("$m_controller", "Game Controller"));
+  M_DrawCheckbox(220 + shift, 168, Cvar_VariableValue("joy_enable") !== 0);
 
-  M_PrintRight(16 + shift, 184, 23, M_Loc("$m_addons", "Add-Ons"));
+  M_PrintRight(16 + shift, 176, 23, M_Loc("$m_addons", "Add-Ons"));
 
   // cursor
   M_DrawCharacter(200 + shift, 32 + menuState.options_cursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
@@ -2396,7 +2225,7 @@ export function M_Options_Key(k: number): void {
         case 12:
           M_Menu_Video_f();
           break;
-        case 19: // Add-Ons -- U17 addition
+        case 18: // Add-Ons -- U17 addition
           M_Menu_QexAddons_f();
           break;
         default:
@@ -3689,7 +3518,6 @@ export function M_Init(): void {
   Cmd_AddCommand("menu_quit", M_Menu_Quit_f, "nq");
   Cmd_AddCommand("menu_addons", M_Menu_QexAddons_f); // U17 addition
   Cmd_AddCommand("menu_episodes", M_Menu_QexEpisodes_Cmd_f); // F3 addition
-  Cmd_AddCommand("menu_bots", M_Menu_QexBots_f); // U40 addition
 }
 
 export function M_Draw(): void {
@@ -3797,10 +3625,6 @@ export function M_Draw(): void {
     case MStateT.m_qex_addons:
       M_QexAddons_Draw();
       break;
-
-    case MStateT.m_qex_bots:
-      M_QexBots_Draw();
-      break;
   }
 
   if (menuState.m_entersound) {
@@ -3897,10 +3721,6 @@ export function M_Keydown(key: number): void {
 
     case MStateT.m_qex_addons:
       M_QexAddons_Key(key);
-      return;
-
-    case MStateT.m_qex_bots:
-      M_QexBots_Key(key);
       return;
   }
 }

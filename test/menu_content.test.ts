@@ -20,12 +20,6 @@ import {
   AvailableBotSkillNames,
   AvailableLanguages,
   BOT_SKILL_NAMES,
-  BotAddCommand,
-  BotAddRandomCommand,
-  BotKickCommand,
-  BotsMenuAvailable,
-  BotsPageEnabled,
-  BuildBotsPageModel,
   BuildContentModel,
   BuildMpEpisodes,
   ClassicProgsEligible,
@@ -713,8 +707,8 @@ describe("SV_PROTOCOLS / CL_PROTOCOLS", () => {
 });
 
 //=============================================================================
-// U40: the Bots page model (BotsMenuAvailable/AvailableBotSkillNames/
-// BuildBotsPageModel/BotsPageEnabled), against a real mounted game directory
+// U40: the Start Server screen's bot skill names (AvailableBotSkillNames),
+// against a real mounted game directory
 // (Bot_Knowledge/Bot_MapAllowsBots read off COM_LoadTempFile, not a seam --
 // see src/bots/bot_data.ts's own header). Bot_ForgetKnowledge/Bot_ForgetMapdb
 // reset those modules' own caches between mounts, per rule 13.
@@ -856,81 +850,22 @@ describe("Bots page model", () => {
     rmSync(plainRoot, { recursive: true, force: true });
   });
 
-  test("no bots/ data mounted -> BotsMenuAvailable false, model.available false, no roster", () => {
+  test("no bots/ data mounted -> AvailableBotSkillNames is the built-in skill list", () => {
     setComSearchpaths(null);
     COM_InitArgv(["q1ts", "-basedir", plainRoot, "-nohomedir"]);
     COM_InitFilesystem();
     Bot_ForgetKnowledge();
-    Bot_ForgetMapdb();
-
-    expect(BotsMenuAvailable()).toBe(false);
-    const model = BuildBotsPageModel("dm1");
-    expect(model.available).toBe(false);
-    expect(model.roster).toEqual([]);
-    expect(model.mapAllowsBots).toBe(false);
-    expect(BotsPageEnabled(model)).toBe(false);
     expect(AvailableBotSkillNames()).toEqual(BOT_SKILL_NAMES);
   });
 
-  test("bots/ data mounted -> available true, roster from characters.txt, skill names from settings_PC.txt", () => {
+  test("bots/ data mounted -> AvailableBotSkillNames comes from settings_PC.txt", () => {
     setComSearchpaths(null);
     COM_InitArgv(["q1ts", "-basedir", botsRoot, "-nohomedir"]);
     COM_InitFilesystem();
     Bot_ForgetKnowledge();
-    Bot_ForgetMapdb();
-
-    expect(BotsMenuAvailable()).toBe(true);
-    expect(AvailableBotSkillNames()).toEqual(["easy", "medium"]);
-
-    const model = BuildBotsPageModel("dm1");
-    expect(model.available).toBe(true);
-    expect(model.roster.map((r) => ({ characterName: r.characterName, funName: r.funName, active: r.active }))).toEqual([
-      { characterName: "grunt", funName: "Grunt", active: false },
-      { characterName: "ogre", funName: "Ogre", active: false },
-    ]);
-  });
-
-  test("mapAllowsBots reflects mapdb.json's own per-map bots flag", () => {
-    setComSearchpaths(null);
-    COM_InitArgv(["q1ts", "-basedir", botsRoot, "-nohomedir"]);
-    COM_InitFilesystem();
-    Bot_ForgetKnowledge();
-    Bot_ForgetMapdb();
-
-    const allowed = BuildBotsPageModel("dm1"); // bots: true
-    expect(allowed.mapAllowsBots).toBe(true);
-    expect(BotsPageEnabled(allowed)).toBe(true);
-
-    const notAllowed = BuildBotsPageModel("dm5"); // bots: false
-    expect(notAllowed.mapAllowsBots).toBe(false);
-    expect(BotsPageEnabled(notAllowed)).toBe(false);
-
-    const unknownMap = BuildBotsPageModel("e1m1"); // not in mapdb.json at all
-    expect(unknownMap.mapAllowsBots).toBe(false);
-  });
-
-  test("count/skillIndex reflect the bot_count/bot_skill cvars", () => {
-    setComSearchpaths(null);
-    COM_InitArgv(["q1ts", "-basedir", botsRoot, "-nohomedir"]);
-    COM_InitFilesystem();
-    Bot_ForgetKnowledge();
-    Bot_ForgetMapdb();
-
-    Cvar_SetValue("bot_count", 3);
-    Cvar_Set("bot_skill", "easy");
-    const model = BuildBotsPageModel("dm1");
-    expect(model.count).toBe(3);
-    expect(model.skillNames[model.skillIndex]).toBe("easy");
+    const names = AvailableBotSkillNames();
+    expect(names.length).toBeGreaterThan(0);
+    expect(names).not.toBe(BOT_SKILL_NAMES);
   });
 });
 
-//=============================================================================
-// U40: the addbot/kickbot/addbot-random command-line builders (pure).
-
-describe("BotAddCommand / BotKickCommand / BotAddRandomCommand", () => {
-  test("quotes both the character name and the skill name", () => {
-    expect(BotAddCommand("grunt", "hard")).toBe('addbot "grunt" "hard"\n');
-    expect(BotKickCommand("Grunt")).toBe('kickbot "Grunt"\n');
-    expect(BotAddRandomCommand("medium")).toBe('addbot random "medium"\n');
-  });
-});

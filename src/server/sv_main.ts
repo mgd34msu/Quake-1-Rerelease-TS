@@ -708,7 +708,12 @@ crosses a waterline.
 */
 
 let fatbytes = 0;
-const fatpvs = new Uint8Array(MAX_MAP_LEAFS / 8);
+// Sized for the classic MAX_MAP_LEAFS cap and grown by SV_FatPVS to the loaded
+// world's own leaf count. The fixed 1024-byte buffer meant every entity in a
+// leaf numbered 8192 or above read past it as "not in the PVS" and was never
+// sent: on the re-release's big maps (mge1m1 has 16403 leaves) monsters
+// attacked unseen and doors/brush models were missing (P4/P7, 2026-09-08).
+let fatpvs = new Uint8Array(MAX_MAP_LEAFS / 8);
 
 export function SV_AddToFatPVS(org: Vec3, nodeIn: MnodeT | MleafT): void {
   let node = nodeIn;
@@ -755,6 +760,7 @@ given point.
 export function SV_FatPVS(org: Vec3): Uint8Array {
   const worldmodel = requireWorldmodel();
   fatbytes = (worldmodel.numleafs + 31) >> 3;
+  if (fatpvs.length < fatbytes) fatpvs = new Uint8Array(fatbytes);
   fatpvs.fill(0, 0, fatbytes); // Q_memset (fatpvs, 0, fatbytes)
   SV_AddToFatPVS(org, worldmodel.nodes[0]);
   return fatpvs;

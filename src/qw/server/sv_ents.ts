@@ -130,7 +130,9 @@ crosses a waterline.
 */
 
 let fatbytes = 0;
-const fatpvs = new Uint8Array(MAX_MAP_LEAFS / 8);
+// grown to the world's leaf count by SV_FatPVS -- see src/server/sv_main.ts's
+// own fatpvs note (P4/P7: entities in leaves >= 8192 were never sent).
+let fatpvs = new Uint8Array(MAX_MAP_LEAFS / 8);
 
 export function SV_AddToFatPVS(org: Vec3, nodeIn: MnodeT | MleafT): void {
   let node = nodeIn;
@@ -177,6 +179,7 @@ given point.
 export function SV_FatPVS(org: Vec3): Uint8Array {
   const worldmodel = requireWorldmodel();
   fatbytes = (worldmodel.numleafs + 31) >> 3;
+  if (fatpvs.length < fatbytes) fatpvs = new Uint8Array(fatbytes);
   fatpvs.fill(0, 0, fatbytes); // Q_memset (fatpvs, 0, fatbytes)
   SV_AddToFatPVS(org, worldmodel.nodes[0]);
   return fatpvs;

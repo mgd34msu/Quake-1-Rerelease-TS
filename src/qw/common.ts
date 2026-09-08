@@ -356,6 +356,8 @@ import {
   setComSearchpaths,
   setComGamedir,
   com_homedir,
+  setComHomedir,
+  COM_ResolveHomeDir,
   setComModified,
   setStaticRegistered,
   setComFilesize,
@@ -940,6 +942,11 @@ export function COM_InitFilesystem(): void {
   // Overrides the system supplied base directory (under id1)
   const i = COM_CheckParm("-basedir");
   com_basedir = i && i < com_argc - 1 ? com_argv[i + 1] : host_parms.basedir;
+
+  // The home tier (-homedir / -nohomedir / the per-user default): resolved
+  // here for a boot that never ran the shared COM_InitFilesystem (`-dedicated
+  // -qw`), so COM_AddGameDirectory's home mount below sees it.
+  setComHomedir(COM_ResolveHomeDir());
 
   //
   // start up with id1 by default

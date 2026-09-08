@@ -67,7 +67,6 @@ import {
 } from "../src/bots";
 import { PATH_ERROR, PATH_IN_PROGRESS, PATH_MOVE_BLOCKED, PATH_REACHED_GOAL, PATH_REACHED_PATH_END, BOT_GOAL_ERROR, BOT_GOAL_IN_PROGRESS } from "../src/progs/ext/qex_hooks";
 import { defaultTraverseCaps } from "../src/lib/bot_brain/nav_graph";
-import { BotAddCommand, BotAddRandomCommand, BotKickCommand, BuildBotsPageModel } from "../src/client/menu_content";
 
 //=============================================================================
 // process-wide state this file changes, captured for afterAll
@@ -1217,101 +1216,3 @@ describe.skipIf(!HAVE_RERELEASE)("retail: monster walkpathtogoal on e1m1 with it
   });
 });
 
-//=============================================================================
-// guarded: the Bots page's own command sequence against the retail tree
-//=============================================================================
-
-describe.skipIf(!HAVE_RERELEASE)("retail: the Bots page's Add / Kick rows on a running dm1", () => {
-  // menu.ts's M_QexBots_Key queues exactly these three command lines through
-  // Cbuf, and labels each roster row Add or Kick from BuildBotsPageModel's
-  // `active`. This runs that sequence on a server `bot_count` is already
-  // governing, which is what the Bots page opens on.
-  let slotsBefore = 0;
-  let slotsAfterAdd = 0;
-  let slotsAfterKick = 0;
-  let slotsAfterRandom = 0;
-  let namesAfterAdd: string[] = [];
-  let addedName = "";
-  let rowActiveBefore = true;
-  let rowActiveAfterAdd = false;
-
-  function serverFrames(n: number): void {
-    host.frametime = 0.05;
-    for (let f = 0; f < n; f++) {
-      sv.time += 0.05;
-      SV_CheckForNewClients();
-      SV_RunClients();
-    }
-  }
-
-  beforeAll(() => {
-    sysState.nostdout = 1;
-    setBuiltins(pr_builtin);
-    Bot_RemoveAll();
-    bootRetail("8");
-    // quake.rc/config.cfg are still sitting in the command buffer after
-    // Host_Init; drain them before the cvars below, or the first Cbuf_Execute
-    // of a menu command line would exec config.cfg over the top of them.
-    Cbuf_Execute();
-
-    Cvar_SetValue("sv_randomseed", 11);
-    Cvar_SetValue("coop", 0);
-    Cvar_SetValue("deathmatch", 1);
-    Cvar_SetValue("bot_count", 3);
-    Cmd_ExecuteString("map dm1", CmdSourceT.src_command);
-    serverFrames(4);
-    slotsBefore = Bot_Slots().size;
-
-    const model = BuildBotsPageModel("dm1");
-    const skillName = model.skillNames[model.skillIndex] ?? "medium";
-    const row = model.roster.find((r) => !r.active)!;
-    addedName = row.funName;
-    rowActiveBefore = row.active;
-
-    Cbuf_AddText(BotAddCommand(row.characterName, skillName));
-    Cbuf_Execute();
-    serverFrames(20);
-    slotsAfterAdd = Bot_Slots().size;
-    namesAfterAdd = [...Bot_Slots().values()].map((s) => s.name);
-    rowActiveAfterAdd = BuildBotsPageModel("dm1").roster.find((r) => r.funName === addedName)?.active ?? false;
-
-    Cbuf_AddText(BotKickCommand(addedName));
-    Cbuf_Execute();
-    serverFrames(20);
-    slotsAfterKick = Bot_Slots().size;
-
-    Cbuf_AddText(BotAddRandomCommand(skillName));
-    Cbuf_Execute();
-    serverFrames(20);
-    slotsAfterRandom = Bot_Slots().size;
-  });
-
-  afterAll(() => {
-    Cvar_SetValue("bot_count", 0);
-    Cvar_SetValue("sv_randomseed", 0);
-    Bot_RemoveAll();
-  });
-
-  test("bot_count auto-fills the server the page opens on, with room to spare", () => {
-    expect(slotsBefore).toBe(3);
-    expect(svs.maxclients).toBe(8);
-  });
-
-  test("ENTER on a roster row adds that character, and it is still there twenty frames later", () => {
-    expect(rowActiveBefore).toBe(false);
-    expect(slotsAfterAdd).toBe(slotsBefore + 1);
-    expect(namesAfterAdd).toContain(addedName);
-  });
-
-  test("the roster row reads Kick once the bot is in", () => {
-    expect(rowActiveAfterAdd).toBe(true);
-  });
-
-  test("ENTER on the same row again kicks it, and bot_count keeps its own three", () => {
-    expect(slotsAfterKick).toBe(slotsBefore);
-  });
-
-  test("the Add Random row adds a bot too", () => {
-    expect(slotsAfterRandom).toBe(slotsBefore + 1);
-  });
-});

@@ -461,12 +461,21 @@ describe("G3: Sys_Printf's control-byte filter", () => {
     spy = null;
   });
 
-  test("ESC (0x1b) is escaped as [1b] and never written to stdout raw", () => {
+  test("ESC (0x1b) is rendered as its console glyph (the small '9') and never written to stdout raw", () => {
+    // P6: Sys_Printf renders control bytes through Sys_ConsoleTextToPlain
+    // (0x12..0x1b are the conchars' alternate digits) instead of the C's
+    // [xx] tokens, so the map-start bar no longer prints as [1d][1e]...[1f].
     sysState.nostdout = 0;
     Sys_Printf("%s", "\u001b\u001bYou got the nails\n");
     const out = chunks.join("");
-    expect(out).toBe("[1b][1b]You got the nails\n");
+    expect(out).toBe("99You got the nails\n");
     expect(out.includes("\u001b")).toBe(false);
+  });
+
+  test("the map-start bar (0x1d 0x1e.. 0x1f) prints as a row of '='", () => {
+    sysState.nostdout = 0;
+    Sys_Printf("%s", "\u001d\u001e\u001e\u001f The Slipgate Complex \u001d\u001e\u001e\u001f\n");
+    expect(chunks.join("")).toBe("==== The Slipgate Complex ====\n");
   });
 
   test("a re-release pickup line passes through unchanged -- nothing printable is escaped", () => {

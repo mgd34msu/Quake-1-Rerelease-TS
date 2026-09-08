@@ -27,8 +27,8 @@ import { menuState, MStateT } from "../src/client/menu";
 import { menuState as qwMenuState, MStateT as QwMStateT } from "../src/qw/client/menu";
 import { qw } from "../src/common/quakedef";
 import { getRegisteredRenderer, registerRenderer, unregisterRenderer, vid_fullscreen, vid_mode, vid_ref, VID_ResetForTests } from "../src/platform/vid";
-import { Cvar_RegisterVariable } from "../src/common/cvar";
-import { VID_MenuCursor, VID_MenuDraw, VID_MenuKey, VID_MenuSetCursorForTests } from "../src/platform/vid_menu";
+import { CvarT, Cvar_RegisterVariable, Cvar_Set, Cvar_VariableValue } from "../src/common/cvar";
+import { VID_MenuColoredLightOn, VID_MenuCursor, VID_MenuDraw, VID_MenuKey, VID_MenuSetCursorForTests } from "../src/platform/vid_menu";
 import { SDL_ResetBackendForTests } from "../src/platform/sdl";
 
 function makePic(width: number, height: number): QpicT {
@@ -171,12 +171,12 @@ describe("VID_MenuDraw", () => {
 });
 
 describe("VID_MenuKey -- cursor navigation", () => {
-  test("down/up wrap across the four rows", () => {
+  test("down/up wrap across the five rows", () => {
     VID_MenuSetCursorForTests(0);
     VID_MenuKey(K_UPARROW);
-    expect(VID_MenuCursor()).toBe(3); // wraps to the last row
+    expect(VID_MenuCursor()).toBe(4); // wraps to the last row (Apply)
 
-    VID_MenuSetCursorForTests(3);
+    VID_MenuSetCursorForTests(4);
     VID_MenuKey(K_DOWNARROW);
     expect(VID_MenuCursor()).toBe(0); // wraps back to the first row
   });
@@ -257,8 +257,34 @@ describe("VID_MenuKey -- adjusting values", () => {
     expect(vid_ref.string).toBe("soft");
   });
 
-  test("enter on the Apply row drives VID_CheckChanges without throwing (a fake renderer is registered under \"soft\")", () => {
+  // P3 (2026-09-07): the colored-lighting row moved here from Options. It
+  // shows the live renderer's cvar and writes every registered one, so the
+  // software renderer (r_coloredlight) is no longer stuck at Off.
+  test("the Colored Light row toggles the live renderer's cvar and keeps both renderers' cvars in step", () => {
+    const glCvar = new CvarT("gl_coloredlight", "1");
+    const softCvar = new CvarT("r_coloredlight", "1");
+    Cvar_RegisterVariable(glCvar);
+    Cvar_RegisterVariable(softCvar);
+    Cvar_Set("gl_coloredlight", "1");
+    Cvar_Set("r_coloredlight", "1");
+
     VID_MenuSetCursorForTests(3);
+    vid_ref.string = "soft";
+    expect(VID_MenuColoredLightOn()).toBe(true);
+    VID_MenuKey(K_ENTER);
+    expect(Cvar_VariableValue("r_coloredlight")).toBe(0);
+    expect(Cvar_VariableValue("gl_coloredlight")).toBe(0);
+    expect(VID_MenuColoredLightOn()).toBe(false);
+
+    vid_ref.string = "gl";
+    VID_MenuKey(K_RIGHTARROW);
+    expect(Cvar_VariableValue("gl_coloredlight")).toBe(1);
+    expect(Cvar_VariableValue("r_coloredlight")).toBe(1);
+    expect(VID_MenuColoredLightOn()).toBe(true);
+  });
+
+  test("enter on the Apply row drives VID_CheckChanges without throwing (a fake renderer is registered under \"soft\")", () => {
+    VID_MenuSetCursorForTests(4);
     vid_ref.string = "soft";
     expect(() => VID_MenuKey(K_ENTER)).not.toThrow();
     expect(re.current).toBe(fakeRenderer);

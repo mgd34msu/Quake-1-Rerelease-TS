@@ -688,7 +688,14 @@ function PF_checkpos(): void {}
 
 //============================================================================
 
-const checkpvs = new Uint8Array(MAX_MAP_LEAFS / 8);
+// grown to the world's leaf count (see src/progs/pr_cmds.ts's checkpvsFor)
+let checkpvs = new Uint8Array(MAX_MAP_LEAFS / 8);
+
+function checkpvsFor(numleafs: number): Uint8Array {
+  const needed = (numleafs + 7) >> 3;
+  if (checkpvs.length < needed) checkpvs = new Uint8Array(needed);
+  return checkpvs;
+}
 
 /*
 ===============

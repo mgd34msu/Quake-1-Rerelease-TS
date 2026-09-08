@@ -372,8 +372,9 @@ describe("Sys_Main_Init + runFrames -- a real qwcl boot", () => {
     expect(b.stdout).toContain("16.0 megs RAM used."); // parms.memsize = 16*1024*1024
     expect(b.stdout).toContain("Client Version 2.40 (Build ");
     // Con_Printf ("\\x1d\\x1e\\x1e\\x1e\\x1e\\x1e\\x1f QuakeWorld Initialized ...")
-    // -- Sys_Printf renders the control bytes as [1d]/[1e]/[1f], as the C's does.
-    expect(b.stdout).toContain("[1d][1e][1e][1e][1e][1e][1f] QuakeWorld Initialized [1d][1e][1e][1e][1e][1e][1f]");
+    // -- Sys_Printf renders the bar's control bytes as `=` (P6: the C's own
+    // [1d][1e]...[1f] tokens were noise on the terminal every level).
+    expect(b.stdout).toContain("======= QuakeWorld Initialized =======");
     expect(b.stdout).toContain("UDP Initialized"); // NET_Init (PORT_CLIENT)
   });
 

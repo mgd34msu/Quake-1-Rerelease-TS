@@ -4,7 +4,7 @@
 // `bun test/e2e/w_multiplayer.ts`
 import { boot, frames, exec, tap, check, summary, results, menuState, MStateT, asMState, asDest, Cvar_VariableString, Cvar_VariableValue, keyState, com_gamedir, W_HOMEDIR, conHas } from "./w_lib";
 import { K_ESCAPE, K_ENTER, K_UPARROW, K_DOWNARROW, K_LEFTARROW, K_RIGHTARROW, KeydestT } from "../../src/client/keys";
-import { LoadContentModel, RULESETS, SV_PROTOCOLS, CL_PROTOCOLS, BotsMenuAvailable, BuildBotsPageModel, AvailableBotSkillNames } from "../../src/client/menu_content";
+import { LoadContentModel, RULESETS, SV_PROTOCOLS, CL_PROTOCOLS, AvailableBotSkillNames } from "../../src/client/menu_content";
 import { tcpipAvailable } from "../../src/common/net_main";
 import { sv, svs } from "../../src/server/server";
 import { Bot_Roster, Bot_Slots, Bot_Count } from "../../src/bots";
@@ -48,79 +48,20 @@ exec("disconnect", 3);
 // retail survey), so a plain rerelease-root boot already has it mounted --
 // no extra flag needed, unlike mg1/mg3/dopa/ctf's own separate gamedirs.
 // ============================================================================
-console.log("[W] === Bots page ===");
+console.log("[W] === Multiplayer menu (three classic rows, no Bots page -- P1/P2) ===");
 exec("maxplayers 8", 2);
-exec("map dm1", 60); // id1's dm1 -- mapdb.json flags it bots:true (verified against the real file)
+exec("map dm1", 60);
 check("dm1 is up as a listen server", sv.active && sv.name === "dm1", `sv.active=${sv.active} sv.name=${sv.name}`);
 keyState.key_dest = KeydestT.key_game;
 frames(3);
-
-check("BotsMenuAvailable() is true with a rerelease root mounted", BotsMenuAvailable(), "bots/*.txt ships in id1/pak0.pak");
-
 esc();
 check("ESC opens the main menu", asDest(keyState.key_dest) === KeydestT.key_menu && asMState(menuState.m_state) === MStateT.m_main, S(menuState.m_state));
 menuState.m_main_cursor = 1;
 enter();
 check("main -> Multiplayer", asMState(menuState.m_state) === MStateT.m_multiplayer, S(menuState.m_state));
-
 menuState.m_multiplayer_cursor = 0;
-down(3); // real arrow-key navigation: only wraps past 3 back to 0 when the 4th (Bots) row exists
-check("Multiplayer menu grows a 4th (Bots) row when bots/ is mounted", menuState.m_multiplayer_cursor === 3, `cursor=${menuState.m_multiplayer_cursor} (would be 0 with no bots data)`);
-
-enter();
-check("Multiplayer -> Bots page", asMState(menuState.m_state) === MStateT.m_qex_bots, S(menuState.m_state));
-
-let model = BuildBotsPageModel("dm1");
-check("Bots page: dm1 is flagged for bots (mapdb.json)", model.available && model.mapAllowsBots, `available=${model.available} mapAllowsBots=${model.mapAllowsBots}`);
-check("Bots page: roster is read from characters.txt", model.roster.length > 0, `roster.length=${model.roster.length}`);
-console.log(`  roster sample: ${JSON.stringify(model.roster.slice(0, 3))}`);
-
-// Bot Count row (cursor 0): RIGHT increments the real `bot_count` cvar.
-menuState.qexBotsCursor = 0;
-const countBefore = Cvar_VariableValue("bot_count");
-right();
-right();
-right();
-check("Bots page: Bot Count row RIGHT changes bot_count", Cvar_VariableValue("bot_count") === countBefore + 3, `bot_count ${countBefore} -> ${Cvar_VariableValue("bot_count")}`);
-
-// Bot Skill row (cursor 1): cycles bot_skill through the real skill names.
-menuState.qexBotsCursor = 1;
-model = BuildBotsPageModel("dm1");
-const skillBefore = model.skillNames[model.skillIndex];
-right();
-model = BuildBotsPageModel("dm1");
-const skillAfter = model.skillNames[model.skillIndex];
-check("Bots page: Bot Skill row RIGHT changes bot_skill", skillAfter !== skillBefore, `bot_skill ${skillBefore} -> ${skillAfter} (cvar=${Cvar_VariableString("bot_skill")})`);
-
-// Roster row: Add, then Kick, the first character.
-model = BuildBotsPageModel("dm1");
-const firstRow = model.roster[0]!;
-menuState.qexBotsCursor = 2; // first roster row
-const slotsBefore = Bot_Slots().size;
-enter();
-frames(20);
-let slotsAfterAdd = Bot_Slots().size;
-check(`Bots page: ENTER on "${firstRow.funName}" (Add) adds a bot`, slotsAfterAdd === slotsBefore + 1, `slots ${slotsBefore} -> ${slotsAfterAdd}`);
-let anyNamed = [...Bot_Slots().values()].some((s) => s.name.toLowerCase() === firstRow.funName.toLowerCase());
-check(`Bots page: the added bot is named "${firstRow.funName}" (characters.txt fun_name)`, anyNamed, `slots=${JSON.stringify([...Bot_Slots().values()].map((s) => s.name))}`);
-
-model = BuildBotsPageModel("dm1"); // rebuild -- roster row 0's `active` should now read true
-check("Bots page: roster row now shows Kick (active=true) after Add", model.roster[0]!.active, JSON.stringify(model.roster[0]));
-menuState.qexBotsCursor = 2;
-enter(); // same row, now issues kickbot
-frames(20);
-let slotsAfterKick = Bot_Slots().size;
-check("Bots page: ENTER again (Kick) removes the bot", slotsAfterKick === slotsBefore, `slots ${slotsAfterAdd} -> ${slotsAfterKick}`);
-
-// Add Random row (last row).
-model = BuildBotsPageModel("dm1");
-const addRandomRow = model.roster.length + 2;
-menuState.qexBotsCursor = addRandomRow;
-const beforeRandom = Bot_Count();
-enter();
-frames(20);
-check("Bots page: Add Random row adds a bot", Bot_Count() === beforeRandom + 1, `Bot_Count ${beforeRandom} -> ${Bot_Count()}`);
-
+down(3); // Join a Game, New Game, Setup: three rows, so three downs wrap back to 0
+check("Multiplayer menu has exactly the three classic rows (bots live on Start Server)", menuState.m_multiplayer_cursor === 0, `cursor=${menuState.m_multiplayer_cursor}`);
 esc();
 
 // ============================================================================

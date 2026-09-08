@@ -52,7 +52,7 @@ import { getRenderer } from "../client/render";
 import type { QpicT } from "../common/wad";
 import { Sys_Error } from "./sys";
 import { host } from "../common/host";
-import { Cvar_Set, Cvar_SetValue } from "../common/cvar";
+import { Cvar_Set, Cvar_SetValue, Cvar_FindVar, Cvar_VariableValue } from "../common/cvar";
 import { S_LocalSound } from "../client/snd_dma";
 import { K_DOWNARROW, K_ENTER, K_ESCAPE, K_LEFTARROW, K_RIGHTARROW, K_UPARROW } from "../client/keys";
 import { VID_CheckChanges, VID_MODES, vid_fullscreen, vid_mode, vid_ref } from "./vid";
@@ -109,8 +109,27 @@ function cachePic(path: string): QpicT {
 const ROW_MODE = 0;
 const ROW_FULLSCREEN = 1;
 const ROW_RENDERER = 2;
-const ROW_APPLY = 3;
-const ROWS = [32, 40, 48, 64];
+const ROW_COLORLIGHT = 3; // moved here from Options (P3, 2026-09-07): it is a video setting
+const ROW_APPLY = 4;
+const ROWS = [32, 40, 48, 56, 72];
+
+// The colored-lighting switch of whichever renderer is live: gl_coloredlight
+// (ref_gl) or r_coloredlight (ref_soft). Only the active renderer registers
+// its cvar, so the row reads the live one and the toggle writes every one
+// that exists, keeping the two in step across a renderer switch. The old
+// Options row wrote gl_coloredlight only, so under the software renderer it
+// showed Off for ever and changed nothing.
+const COLORLIGHT_CVARS = ["gl_coloredlight", "r_coloredlight"];
+function coloredLightCvar(): string {
+  return vid_ref.string === "gl" ? "gl_coloredlight" : "r_coloredlight";
+}
+export function VID_MenuColoredLightOn(): boolean {
+  return Cvar_VariableValue(coloredLightCvar()) !== 0;
+}
+function toggleColoredLight(): void {
+  const next = VID_MenuColoredLightOn() ? 0 : 1;
+  for (const name of COLORLIGHT_CVARS) if (Cvar_FindVar(name) !== null) Cvar_SetValue(name, next);
+}
 
 let cursor = 0;
 
@@ -140,6 +159,9 @@ export function VID_MenuDraw(): void {
   m.M_Print(LABEL_X, ROWS[ROW_RENDERER], "       Renderer");
   m.M_Print(VALUE_X, ROWS[ROW_RENDERER], vid_ref.string);
 
+  m.M_Print(LABEL_X, ROWS[ROW_COLORLIGHT], "  Colored Light");
+  m.M_DrawCheckbox(VALUE_X, ROWS[ROW_COLORLIGHT], VID_MenuColoredLightOn());
+
   m.M_Print(LABEL_X, ROWS[ROW_APPLY], "          Apply");
 
   m.M_DrawCharacter(CURSOR_X, ROWS[cursor], 12 + (Math.trunc(host.realtime * 4) & 1));
@@ -159,6 +181,9 @@ function adjustCursorValue(dir: number): void {
       break;
     case ROW_RENDERER:
       Cvar_Set("vid_ref", vid_ref.string === "soft" ? "gl" : "soft");
+      break;
+    case ROW_COLORLIGHT:
+      toggleColoredLight();
       break;
     case ROW_APPLY:
       VID_CheckChanges();

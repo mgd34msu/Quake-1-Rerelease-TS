@@ -158,6 +158,7 @@ describe("R_BuildLightMap (colored)", () => {
   test("blocklights scales each channel independently by the lightstyle value", () => {
     const { surf, world } = coloredFixture();
     cl.worldmodel = world;
+    glRsurfState.lightmaps_colored = true; // the format GL_BuildLightmaps recorded (P10: draw follows the built format)
     d_lightstylevalue[0] = 256; // 8.8 fixed-point 1.0, for round numbers
 
     const stride = BLOCK_WIDTH * 4;
@@ -180,6 +181,7 @@ describe("R_BuildLightMap (colored)", () => {
   test("writes uninverted RGB (not the classic invert trick) with opaque alpha", () => {
     const { surf, world } = coloredFixture();
     cl.worldmodel = world;
+    glRsurfState.lightmaps_colored = true; // the format GL_BuildLightmaps recorded (P10: draw follows the built format)
     d_lightstylevalue[0] = 256;
 
     const stride = BLOCK_WIDTH * 4;
@@ -197,6 +199,7 @@ describe("R_BuildLightMap (colored)", () => {
   test("gl_coloredlight 0 forces the classic grey path even when the map has real RGB data", () => {
     const { surf, world } = coloredFixture();
     cl.worldmodel = world;
+    glRsurfState.lightmaps_colored = false; // gl_coloredlight 0 at build time: GL_BuildLightmaps records grey (P10)
     d_lightstylevalue[0] = NORMAL_LIGHT_SCALE;
     glDrawState.gl_lightmap_format = GL_LUMINANCE;
     gl_coloredlight.value = 0;
@@ -466,6 +469,7 @@ describe.skipIf(!HAVE_RERELEASE)("colored lighting against real rerelease e1m1 d
         const tmax = (surf.extents[1] >> 4) + 1;
         const stride = smax * 4;
         const buf = new Uint8Array(stride * tmax);
+        glRsurfState.lightmaps_colored = true; // what GL_BuildLightmaps records for this map (P10: the draw follows the built format)
         R_BuildLightMap(surf, buf, 0, stride);
         for (let i = 0; i < smax * tmax; i++) {
           const r = buf[i * 4];

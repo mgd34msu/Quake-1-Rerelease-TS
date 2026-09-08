@@ -27,6 +27,7 @@ import {
   SV_WriteClientdataToMessage,
   SV_WriteEntitiesToClient,
   localmodels,
+  SV_FatPVS,
 } from "../src/server/sv_main";
 import * as consoleMod from "../src/client/console";
 import { BSP_WIDTH_29, BSP_WIDTH_2PSB, BSP_WIDTH_BSP2 } from "../src/common/bspfile";
@@ -333,6 +334,31 @@ describe.skipIf(!HAVE_PROGS106)("SV_WriteEntitiesToClient", () => {
   beforeAll(() => {
     const mod = buildBsp();
     writeGameFile(baseDir, "id1/maps/pvstest.bsp", mod);
+  });
+
+  // P4/P7 (2026-09-08, Mike's mg1 session): the fat PVS buffer was a fixed
+  // MAX_MAP_LEAFS/8 bytes, so on a world with more leaves than the classic
+  // cap every entity in a leaf numbered 8192+ read past it as invisible and
+  // was never sent (monsters attacking unseen, doors missing).
+  test("SV_FatPVS grows its buffer to the world's leaf count, so leaves past MAX_MAP_LEAFS are visible", () => {
+    const loaded = Mod_ForName("maps/pvstest.bsp", true);
+    if (loaded === null) throw new Error("expected maps/pvstest.bsp to load");
+    const savedLeafs = loaded.numleafs;
+    sv.worldmodel = loaded;
+    sv.models[1] = loaded;
+    SV_ClearWorld();
+    try {
+      // the fixture has no vis lump: every leaf's PVS row is all-visible, so a
+      // bigger leaf count only changes how many bytes the row (and the fat
+      // buffer) must hold
+      loaded.numleafs = 20000;
+      const pvs = SV_FatPVS(vec3(0, 0, 50));
+      const fatbytes = (20000 + 31) >> 3;
+      expect(pvs.length).toBeGreaterThanOrEqual(fatbytes);
+      for (const leaf of [100, 9000, 16403, 19999]) expect(pvs[leaf >> 3] & (1 << (leaf & 7))).not.toBe(0);
+    } finally {
+      loaded.numleafs = savedLeafs;
+    }
   });
 
   test("baseline deltas produce the exact U_* header bits and payload", () => {

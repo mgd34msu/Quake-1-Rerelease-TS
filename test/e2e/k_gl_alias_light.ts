@@ -14,6 +14,7 @@
 // instead, so "+forward;FRAMES:12;-forward" walks the player down a hall).
 import { Sys_Main_Init, runFrames } from "../../src/main";
 import { Cbuf_AddText } from "../../src/common/cmd";
+import { Cvar_VariableValue } from "../../src/common/cvar";
 import { keyState, KeydestT } from "../../src/client/keys";
 import { cl, cl_dlights, cl_entities, cl_static_entities, cl_visedicts, clState, MAX_DLIGHTS } from "../../src/client/client";
 import { Length, VectorSubtract, vec3, type Vec3 } from "../../src/common/mathlib";
@@ -238,7 +239,9 @@ if (real !== null) {
   // scaling error (a x256 sample, an unclamped channel).
   let maxDot = 0;
   for (const d of r_avertexnormal_dots) if (d > maxDot) maxDot = d;
-  const ceiling = (256 / 200) * maxDot + 1e-6;
+  // gl_overbright_models (default 1) doubles the model light (QuakeSpasm rule)
+  const overbright = Cvar_VariableValue("gl_overbright_models") ? 2 : 1;
+  const ceiling = overbright * (256 / 200) * maxDot + 1e-6;
   const outOfRange = colors.filter((c) => !Number.isFinite(c) || c < 0 || c > ceiling);
   check(`every shade value handed to glColor3f is within glquake's own range (0..${ceiling.toFixed(3)}, the flame ceiling)`, outOfRange.length === 0, outOfRange.length === 0 ? `n=${colors.length}` : `${outOfRange.length} of ${colors.length} outside, e.g. ${outOfRange[0]}`);
 }

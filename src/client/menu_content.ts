@@ -542,7 +542,7 @@ export function CtfMaps(mapdb: Mapdb): MpMapEntry[] {
 }
 
 //=============================================================================
-// BOTS PAGE (Multiplayer -> Bots)
+// BOT SKILL NAMES (the Start Server screen's Bot Skill row)
 
 /** Mirrors src/bots/bot_client.ts's own (unexported) DEFAULT_SKILLS -- the
  * settings_*.txt skill order, used when no bots/ data is mounted at all (the
@@ -559,100 +559,4 @@ export const BOT_SKILL_NAMES: readonly string[] = ["practice", "easy", "medium",
 export function AvailableBotSkillNames(): readonly string[] {
   const knowledge = Bot_Knowledge();
   return knowledge !== null && knowledge.skills.length > 0 ? knowledge.skillNames() : BOT_SKILL_NAMES;
-}
-
-/** Whether the Multiplayer menu should offer the Bots page at all -- gates
- * on bots/ data being mounted (every classic-only install has none), not on
- * a server being active: characters.txt/settings_*.txt load off the current
- * game directory's search path regardless (src/bots/bot_data.ts's own
- * Bot_Knowledge). */
-export function BotsMenuAvailable(): boolean {
-  return Bot_Knowledge() !== null;
-}
-
-export interface BotRosterRow {
-  // characters.txt's own "name" key -- addbot's own match/argument (see
-  // src/bots/bot_client.ts's pickCharacter: it matches `knowledge.character(request)`
-  // against CharacterEntry.name, NOT fun_name).
-  characterName: string;
-  // characters.txt's "fun_name" -- the display label, and also what
-  // Bot_Add sets as the resulting client's name (BotSlot.name), which is
-  // what kickbot matches against (Bot_KickBot_f: `slot.name.toLowerCase()`).
-  funName: string;
-  // true when a live bot's name currently matches this row's funName.
-  active: boolean;
-}
-
-export interface BotsPageModel {
-  available: boolean; // Bot_Knowledge() !== null
-  mapAllowsBots: boolean; // mapdb.json's `bots` flag for `mapName`
-  mapName: string;
-  count: number; // the `bot_count` cvar's current value, truncated
-  skillNames: readonly string[];
-  skillIndex: number; // index into skillNames of the current `bot_skill`
-  roster: BotRosterRow[];
-}
-
-/**
- * BuildBotsPageModel
- *
- * Pure (well, Bot_Knowledge/Bot_MapAllowsBots/Bot_Slots read the current
- * gamedir/server state, but this function takes no filesystem/server
- * argument of its own beyond `mapName`) snapshot for the Bots page's Draw/Key
- * handlers -- menu.ts calls this once per frame/keypress with whichever map
- * name it resolves as "current or selected" (the running server's map, or
- * the New Game screen's own selection with no server active).
- */
-export function BuildBotsPageModel(mapName: string): BotsPageModel {
-  const knowledge = Bot_Knowledge();
-  const skillNames = AvailableBotSkillNames();
-  const currentSkill = Bot_SkillName().toLowerCase();
-  let skillIndex = skillNames.findIndex((s) => s.toLowerCase() === currentSkill);
-  if (skillIndex < 0) skillIndex = 0;
-
-  const activeFunNames = new Set<string>();
-  for (const slot of Bot_Slots().values()) activeFunNames.add(slot.name.toLowerCase());
-
-  const roster: BotRosterRow[] =
-    knowledge !== null
-      ? knowledge.characters.map((c) => ({
-          characterName: c.name,
-          funName: c.funName,
-          active: activeFunNames.has(c.funName.toLowerCase()),
-        }))
-      : [];
-
-  return {
-    available: knowledge !== null,
-    mapAllowsBots: mapName !== "" && Bot_MapAllowsBots(mapName),
-    mapName,
-    count: Math.trunc(Cvar_VariableValue("bot_count")),
-    skillNames,
-    skillIndex,
-    roster,
-  };
-}
-
-/** Whether the Bots page's controls (count/skill/roster add-kick/add-random)
- * should act, or show the "else a note" fallback per this unit's brief. */
-export function BotsPageEnabled(model: BotsPageModel): boolean {
-  return model.available && model.mapAllowsBots;
-}
-
-// The three console-command lines the Bots page (and the New Game screen's
-// own Bot Count/Bot Skill rows) queue through Cbuf, per this unit's brief
-// ("roster add/kick issuing addbot/kickbot through Cbuf"). Quoted the same
-// way every other menu.ts command line carrying a free-form name is (e.g.
-// M_Setup_Key's `name "${...}"`), since a fun_name/character name may itself
-// contain spaces.
-export function BotAddCommand(characterName: string, skillName: string): string {
-  return `addbot "${characterName}" "${skillName}"\n`;
-}
-
-export function BotKickCommand(funName: string): string {
-  return `kickbot "${funName}"\n`;
-}
-
-export function BotAddRandomCommand(skillName: string): string {
-  return `addbot random "${skillName}"\n`;
 }

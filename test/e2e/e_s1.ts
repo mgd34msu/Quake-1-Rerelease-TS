@@ -1,13 +1,14 @@
 // Scenario 1: qwsv console commands typed on the server's stdin, observed on
 // both sides with one qwcl connected. One line per server frame -- two lines
 // in a single read get glued together (see E.md, SV_GetConsoleCommands).
-import { Cvar_VariableString, BASEDIR, CA_ACTIVE, REPO, SERVER_HOME, bootClient, check, cl, cls, conMark, conSince, conTail, engineErrors, execPump, pump, pumpUntil, serverReady, startServer, summary } from "./e_lib";
+import { Cvar_VariableString, CA_ACTIVE, REPO, SERVER_HOME, bootClient, check, cl, cls, conMark, conSince, conTail, engineErrors, execPump, pump, pumpUntil, serverReady, startServer, summary } from "./e_lib";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 
 const PORT = 27606;
 rmSync(`${SERVER_HOME}/qw/snap`, { recursive: true, force: true });
-for (const f of readdirSync(`${BASEDIR}/qw`)) {
-  if (/^(qconsole\.log|frag_\d+\.log)$/.test(f)) rmSync(`${BASEDIR}/qw/${f}`, { force: true });
+// the server writes its console and frag logs into its home tier (-homedir SERVER_HOME)
+if (existsSync(`${SERVER_HOME}/qw`)) for (const f of readdirSync(`${SERVER_HOME}/qw`)) {
+  if (/^(qconsole\.log|frag_\d+\.log)$/.test(f)) rmSync(`${SERVER_HOME}/qw/${f}`, { force: true });
 }
 
 const sv = startServer("s1_sv", ["-port", String(PORT), "+map", "dm3"]);
@@ -124,7 +125,7 @@ async function svc(line: string, ms = 700): Promise<void> {
   await svc("fraglogfile", 900);
   await svc("say logged line", 1200);
   await svc("logfile", 900); // close so the bytes are flushed
-  const dirFiles = readdirSync(`${BASEDIR}/qw`);
+  const dirFiles = readdirSync(`${SERVER_HOME}/qw`); // the server's writable game directory is its home tier
   check("1.10 logfile writes <gamedir>/qconsole.log", dirFiles.includes("qconsole.log"), JSON.stringify(dirFiles));
   check("1.11 fraglogfile writes <gamedir>/frag_N.log", dirFiles.some((f) => /^frag_\d+\.log$/.test(f)), JSON.stringify(dirFiles));
 }

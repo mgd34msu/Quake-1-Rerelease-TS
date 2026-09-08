@@ -467,9 +467,9 @@ describe("COM_InitFilesystem / COM_Gamedir", () => {
     const homeDir = join(scratchDir, "homefs-home");
     ensureDir(join(homeDir, "qw"));
     writeLoose(join(homeDir, "qw", "marker.txt"), "HOME");
-    setComHomedir(homeDir);
 
-    COM_InitArgv(["quake", "-basedir", baseDir]);
+    // -homedir on the command line: COM_InitFilesystem resolves the tier itself
+    COM_InitArgv(["quake", "-basedir", baseDir, "-homedir", homeDir]);
     COM_InitFilesystem();
 
     expect(com_gamedir).toBe(join(homeDir, "qw"));

@@ -1031,11 +1031,10 @@ export function Host_GetConsoleCommands(): void {
 // rerelease ruleset's fixed-step accumulator clamp. Ironwail/QuakeSpasm have
 // no such decoupling to match -- this bound is this engine's own "fix your
 // timestep"-style spiral-of-death guard, not a value read from any reference
-// source. host.svTickAccumulator deliberately keeps any leftover time past
-// this many steps rather than resetting to 0: sv.time falls behind real time
-// under sustained overload (the sim runs in slow motion) instead of either
-// spiralling (uncapped catch-up work every frame drives fps to zero) or
-// silently discarding elapsed time every frame it clamps.
+// source. Elapsed time past this many steps is dropped (see the clamp in
+// Host_ServerFrame): sv.time falls behind real time under sustained overload
+// (the sim runs in slow motion) instead of spiralling, and a stall never
+// turns into a fast-forward burst afterwards.
 const SV_TICK_MAX_STEPS = 4;
 
 // Host_FilterTime's `host.realtime - host.oldrealtime` subtraction (both
@@ -1075,6 +1074,18 @@ export function Host_ServerFrame(): void {
     const dt = 1 / sv_tickrate.value;
     const realFrametime = host.frametime;
     host.svTickAccumulator += realFrametime;
+    // P11 (2026-09-07, Mike's CTF game): a run of slow frames while a map
+    // spawns (mesh caching, texture uploads, six bots joining) banked more
+    // ticks than the per-frame cap runs, and once the frames were fast again
+    // the backlog replayed at four ticks per rendered frame -- every bot
+    // moved at several times its speed for the first seconds of the game.
+    // Backlog past this frame's own elapsed time plus one tick is dropped,
+    // the ordinary fix-your-timestep rule: a steady frame rate never trips
+    // it (a frame owes its own time plus a sub-tick remainder), a stall
+    // frame replays at most SV_TICK_MAX_STEPS ticks and the sim never
+    // fast-forwards to catch up afterwards.
+    const backlogCap = realFrametime + dt;
+    if (host.svTickAccumulator > backlogCap) host.svTickAccumulator = backlogCap;
 
     let steps = 0;
     while (host.svTickAccumulator + SV_TICK_EPSILON >= dt && steps < SV_TICK_MAX_STEPS) {

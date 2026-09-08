@@ -114,13 +114,13 @@ export function Sys_Printf(fmt: string, ...args: Array<string | number>): void {
 
   if (sysState.nostdout) return;
 
-  let out = "";
-  for (let i = 0; i < text.length; i++) {
-    const p = text.charCodeAt(i) & 0x7f;
-    if ((p > 128 || p < 32) && p !== 10 && p !== 13 && p !== 9) out += Com_sprintf("[%02x]", p);
-    else out += String.fromCharCode(p);
-  }
-  process.stdout.write(out);
+  // sys_linux.c prints every control byte as `[%02x]`; the map-start bar
+  // (0x1d 0x1e ... 0x1f) and the box-drawing glyphs came out as a row of
+  // `[1d][1e][1e]...[1f]` tokens on the terminal every level (P6,
+  // 2026-09-07). They are rendered through the same table the log file
+  // uses (Sys_ConsoleTextToPlain), which draws the bar as `=` and the other
+  // control glyphs as their plain equivalents.
+  process.stdout.write(Sys_ConsoleTextToPlain(text));
 }
 
 export function Sys_Quit(): never {
@@ -211,6 +211,7 @@ export function Sys_ConsoleTextToPlain(s: string): string {
     else if (c === 0x11) c = 0x5d; // ]
     else if (c >= 0x12 && c <= 0x1b) c = 0x30 + (c - 0x12); // 0-9
     else if (c === 0x1c) c = 0x2e; // .
+    else if (c >= 0x1d && c <= 0x1f) c = 0x3d; // the console bar's left end, middle and right end: =
     else if (c < 0x20 && c !== 0x0a && c !== 0x0d && c !== 0x09) c = 0x2e;
     out += String.fromCharCode(c);
   }

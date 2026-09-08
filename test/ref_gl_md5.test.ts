@@ -58,7 +58,7 @@ import { AliashdrT, MaliasframedescT } from "../src/ref_gl/gl_model_types";
 import { GL_TRIANGLE_FAN, GL_TRIANGLES, GLPointer, QGLRecording, SetQGL, qglHolder } from "../src/ref_gl/qgl";
 import { R_DrawAliasModel, gl_nocolors, r_shadows } from "../src/ref_gl/gl_rmain";
 import * as glDraw from "../src/ref_gl/gl_draw";
-import { GL_DrawMd5AliasFrame, GL_DrawMd5Shadow, type Md5GlAliasT, attachMd5GlReplacementIfAny, getMd5GlPayload, r_enhancedmodels } from "../src/ref_gl/gl_md5";
+import { GL_DrawMd5AliasFrame, GL_DrawMd5Shadow, type Md5GlAliasT, attachMd5GlReplacementIfAny, getMd5GlPayload, md5ShadeDot, md5TranslateSkin, r_enhancedmodels } from "../src/ref_gl/gl_md5";
 import { ensureDir } from "./support/bsp_builder";
 import { writePakToDisk } from "./support/pak_builder";
 
@@ -881,5 +881,75 @@ const HAVE_ID1 = existsSync(ID1_PAK0);
 
     const bindCalls = rec.calls.filter((c) => c.name === "qglBindTexture");
     expect(bindCalls.length).toBeGreaterThan(0);
+  });
+});
+
+//=============================================================================
+// P9 (2026-09-07, Mike's play session): re-release models rendered near-black
+// because the MD5 draw handed the raw cosine (-1..1) of an UNNORMALISED
+// blended normal to glColor. The classic path reads anorm_dots.h, whose
+// entries are 1 + cos (back faces flattened to 1 + cos/8); md5ShadeDot is
+// QuakeSpasm's analytic form of that table.
+
+describe("md5ShadeDot -- MD5 vertices are lit like .mdl vertices", () => {
+  const up = vec3(0, 0, 1);
+
+  test("a face toward the light shades 1 + cos, a face away 1 + cos/8, never negative", () => {
+    expect(md5ShadeDot(0, 0, 1, up)).toBeCloseTo(2, 6);
+    expect(md5ShadeDot(1, 0, 0, up)).toBeCloseTo(1, 6);
+    expect(md5ShadeDot(0, 0, -1, up)).toBeCloseTo(1 - 1 / 8, 6);
+    for (const [x, y, z] of [[0.3, -0.7, -0.6], [-1, -1, -1], [0.1, 0.1, -0.99]]) expect(md5ShadeDot(x, y, z, up)).toBeGreaterThan(0.8);
+  });
+
+  test("the blended normal's length does not change the shade (it is normalised first)", () => {
+    expect(md5ShadeDot(0, 0, 4, up)).toBeCloseTo(md5ShadeDot(0, 0, 1, up), 6);
+    expect(md5ShadeDot(0.2, 0, 0.2, up)).toBeCloseTo(md5ShadeDot(1, 0, 1, up), 6);
+    expect(md5ShadeDot(0, 0, 0, up)).toBe(1); // a degenerate normal is unlit-but-visible, not NaN
+  });
+
+  test("stays inside anorm_dots.h's own range so the k_gl_alias_light ceiling holds", () => {
+    const sv = vec3(0.6, 0.8, 0);
+    let min = 9;
+    let max = -9;
+    for (let i = 0; i < 500; i++) {
+      const a = (i / 500) * Math.PI * 2;
+      const b = ((i * 7) % 500) / 500 * Math.PI - Math.PI / 2;
+      const d = md5ShadeDot(Math.cos(a) * Math.cos(b), Math.sin(a) * Math.cos(b), Math.sin(b), sv);
+      if (d < min) min = d;
+      if (d > max) max = d;
+    }
+    expect(min).toBeGreaterThanOrEqual(1 - 1 / 8 - 1e-6);
+    expect(max).toBeLessThanOrEqual(2 + 1e-6);
+  });
+});
+
+//=============================================================================
+// P14 (2026-09-07): under GL the MD5 path bound the untranslated skin for
+// every player, so bots wore no team colours in CTF. md5TranslateSkin is
+// gl_rmisc.c's R_TranslatePlayerSkin table applied to the 8-bit MD5 skin.
+
+describe("md5TranslateSkin -- the player colour table on an MD5 skin", () => {
+  const TOP_RANGE = 16;
+  const BOTTOM_RANGE = 96;
+
+  test("shirt and trouser texels move to the player's colour rows, everything else is untouched", () => {
+    const texels = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) texels[i] = i;
+    const colors = (4 << 4) | 13; // shirt 4 (blue), trousers 13
+    const out = md5TranslateSkin(texels, colors);
+    for (let i = 0; i < 16; i++) {
+      expect(out[TOP_RANGE + i]).toBe(4 * 16 + i); // top < 128: forwards
+      expect(out[BOTTOM_RANGE + i]).toBe(13 * 16 + 15 - i); // bottom >= 128: backwards, as the C does
+    }
+    for (let i = 0; i < 256; i++) {
+      if ((i >= TOP_RANGE && i < TOP_RANGE + 16) || (i >= BOTTOM_RANGE && i < BOTTOM_RANGE + 16)) continue;
+      expect(out[i]).toBe(i);
+    }
+    expect(out).not.toBe(texels); // the model's own skin texels are never rewritten
+  });
+
+  test("colours 0/0 is the identity for a skin that uses the default rows", () => {
+    const texels = new Uint8Array([TOP_RANGE, TOP_RANGE + 5, BOTTOM_RANGE, BOTTOM_RANGE + 15, 200, 3]);
+    expect(Array.from(md5TranslateSkin(texels, 0))).toEqual([0, 5, 0, 15, 200, 3]);
   });
 });

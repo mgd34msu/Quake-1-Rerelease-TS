@@ -45,7 +45,7 @@ import { BLOCK_WIDTH, d_lightstylevalue, glState } from "../src/ref_gl/glquake";
 import { GL_LUMINANCE, GL_RGBA, type GLPointer, QGLRecording, qglHolder } from "../src/ref_gl/qgl";
 import { GL_Upload8, gl_max_size, gl_picmip, glDrawState } from "../src/ref_gl/gl_draw";
 import { r_fullbright } from "../src/ref_gl/gl_rmain";
-import { R_BuildLightMap, blocklights } from "../src/ref_gl/gl_rsurf";
+import { R_BuildLightMap, blocklights, glRsurfState } from "../src/ref_gl/gl_rsurf";
 
 // gl_draw.c's GL_Upload32 hands glTexImage2D the same `scaled` buffer for
 // every mip level, rewriting it in place between calls, so a plain
@@ -123,6 +123,7 @@ afterAll(() => {
 beforeEach(() => {
   rec.clear();
   rec.uploads.length = 0;
+  glRsurfState.lightmaps_colored = false; // the grey format GL_BuildLightmaps records for these luxels (P10)
   blocklights.fill(0);
   d_lightstylevalue.fill(0);
   d_lightstylevalue[0] = NORMAL_LIGHT_SCALE;

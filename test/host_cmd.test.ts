@@ -753,4 +753,45 @@ describe.skipIf(!HAVE_PROGS106)("Host_Game_f re-execs quake.rc ahead of the rest
     expect(COM_GetGameNames()).toBe("id1");
     expect(Cvar_VariableString("sv_ruleset")).toBe("rerelease");
   });
+  // P8 (2026-09-07, Mike's play session): the menus queue `game <dir>` on
+  // EVERY New Game / Start Server, and the switch always re-ran quake.rc --
+  // default.cfg's unbindall and the archived config.cfg over the live
+  // settings -- so every bind, option and console setting made since boot was
+  // thrown away each time a game started. Ironwail's COM_Game_f: same layer
+  // means no switch and no re-exec.
+  test("`game` for the layer already mounted is a no-op: the live settings are kept", () => {
+    Cbuf_AddText("game rcmod\n");
+    Cbuf_Execute();
+    expect(COM_GetGameNames()).toBe("rcmod");
+    expect(Cvar_VariableString("sv_ruleset")).toBe("auto"); // rcmod's config.cfg archived it
+
+    Cvar_Set("sv_ruleset", "classic"); // a setting made during play
+    Cbuf_AddText("game rcmod\n");
+    Cbuf_Execute();
+
+    expect(COM_GetGameNames()).toBe("rcmod");
+    expect(Cvar_VariableString("sv_ruleset")).toBe("classic"); // no quake.rc re-exec
+  });
+
+  test("a real switch archives the live settings into the outgoing gamedir's config.cfg first", () => {
+    // Ironwail COM_SwitchGame: Host_WriteConfiguration before the teardown,
+    // so the settings survive into the config the next quake.rc exec reads.
+    expect(COM_GetGameNames()).toBe("rcmod");
+    const outgoing = com_gamedir;
+    Cvar_Set("sv_ruleset", "classic");
+    const savedInit = host.initialized;
+    const savedDedicated = sysState.isDedicated;
+    host.initialized = true; // Host_WriteConfiguration's client-only guard
+    sysState.isDedicated = false;
+    try {
+      Cbuf_AddText("game id1\n");
+      Cbuf_Execute();
+    } finally {
+      host.initialized = savedInit;
+      sysState.isDedicated = savedDedicated;
+    }
+    expect(COM_GetGameNames()).toBe("id1");
+    const archived = readFileSync(join(outgoing, "config.cfg"), "utf8");
+    expect(archived).toContain('sv_ruleset "classic"');
+  });
 });

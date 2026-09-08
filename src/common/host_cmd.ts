@@ -148,6 +148,7 @@ import {
   COM_GetGameNames,
   COM_Parse,
   COM_SwitchGame,
+  COM_GameNamesEqual,
   Q_atof,
   Q_atoi,
   Q_strcasecmp,
@@ -157,7 +158,7 @@ import {
   type ParseState,
   COM_CreatePath,
 } from "./common";
-import { Con_Printf } from "../client/console";
+import { Con_Printf, Con_DPrintf } from "../client/console";
 import { Com_sprintf } from "./sprintf";
 import {
   MSG_WriteByte,
@@ -240,6 +241,7 @@ import { CONTENTS_LAVA, CONTENTS_SLIME } from "./bspfile";
 import { Length } from "./mathlib";
 import {
   Host_ShutdownServer,
+  Host_WriteConfiguration,
   SV_BroadcastPrintf,
   SV_ClientPrintf,
   SV_DropClient,
@@ -2097,6 +2099,23 @@ export function Host_Game_f(): void {
   const dirs: string[] = [];
   for (let i = 1; i < Cmd_Argc(); i++) dirs.push(Cmd_Argv(i));
 
+  // Ironwail COM_Game_f: the layer asked for is the one already mounted --
+  // nothing to switch, and above all no quake.rc re-exec (which would run
+  // default.cfg's unbindall and the archived config over the live settings).
+  // The menus' New Game / Start Server launch queues `game <dir>` every time,
+  // so this is the common case, not the exception.
+  if (COM_GameNamesEqual(dirs)) {
+    Con_Printf('"game" is already "%s"\n', COM_GetGameNames());
+    return;
+  }
+
+  // Ironwail COM_SwitchGame: archive the live binds and cvars into the
+  // outgoing gamedir's config.cfg BEFORE the teardown, so nothing set since
+  // boot is lost, and the re-exec below finds them (the home mirror of every
+  // gamedir that stays mounted is still on the search path, so a content
+  // with no config.cfg of its own inherits the base game's).
+  Host_WriteConfiguration();
+
   hostClientHooks.clDisconnect?.(); // CL_Disconnect
   Host_ShutdownServer(false);
 
@@ -2121,8 +2140,26 @@ export function Host_Game_f(): void {
 Host_InitCommands
 ==================
 */
+/*
+==================
+Host_Log_f
+
+ThreeWave CTF's log.qc writes its match log by stuffing `LOG:  DEATH <victim>/
+<frags> <killer>/<frags> <weapon>` (and `LOG:  <event>`) lines through
+localcmd, for a server-side log scraper to catch. No engine defines the
+command, so every such line came back as an unknown-command print on the
+listen server's own console -- a second line for every kill, on the player's
+screen (P15, 2026-09-07). The line goes to the developer console only, which
+is the server log a scraper reads.
+==================
+*/
+function Host_Log_f(): void {
+  Con_DPrintf("%s %s\n", Cmd_Argv(0), Cmd_Args() ?? "");
+}
+
 export function Host_InitCommands(): void {
   Cmd_AddCommand("status", Host_Status_f);
+  Cmd_AddCommand("LOG:", Host_Log_f); // ThreeWave CTF's log.qc lines (see Host_Log_f)
   Cmd_AddCommand("quit", Host_Quit_f);
   Cmd_AddCommand("god", Host_God_f);
   Cmd_AddCommand("notarget", Host_Notarget_f);

@@ -100,11 +100,11 @@ DotProduct(unit_normal, shadevector) lookup) and
 `color[c] = dot * shadelightColor[c]`, with no manual clamp -- negative
 dot values reach qglColor3f/4f unclamped and GL's own fixed-function
 color clamp absorbs them. This module computes the same dot product
-directly from md5Skin's own (unnormalized, exactly as
-calc_skel_vert/r_md5.ts's lightFinalVert leave it -- no per-vertex
-renormalize on either renderer) blended vertex normal against
-`shadevector`, since MD5 has no precomputed per-normal-index table to
-look up -- same formula, computed instead of tabulated.
+from md5Skin's own blended vertex normal, renormalized per vertex, against
+`shadevector`, then mapped through QuakeSpasm's r_avertexnormal_dot()
+(md5ShadeDot below) since MD5 has no precomputed per-normal-index table to
+look up. Found 2026-09-07 (P9): the raw cosine used to be handed to glColor
+and re-release models rendered near-black.
 
 TRANSFORM. Classic alias vertices (TrivertxT) are bytes 0..255 that
 R_DrawAliasModel's own qglTranslatef(scale_origin)/qglScalef(scale) pair
@@ -165,7 +165,9 @@ import type { MdlT } from "../common/modelgen";
 import { type Vec3, vec3 } from "../common/mathlib";
 import { Sys_Error } from "../platform/sys";
 import { AliashdrT } from "./gl_model_types";
-import { GL_Bind, GL_LoadTexture } from "./gl_draw";
+import { GL_Bind, GL_LoadTexture, GL_Upload8 } from "./gl_draw";
+import { glState } from "./glquake";
+import { BOTTOM_RANGE, TOP_RANGE } from "../client/render";
 import { GL_TRIANGLES, qgl } from "./qgl";
 // read-only reuse of the software renderer's cvar object -- see this
 // file's header ("do not register twice").
@@ -193,10 +195,20 @@ export class Md5GlSkinT {
     // own draw loop never needs it (see this file's header, SKIN LOADING).
     public readonly width: number,
     public readonly height: number,
+    /** the 8-bit palette indices the skin was uploaded from, kept for the
+     * per-player colour translation (GL_Md5PlayerSkin) */
+    public readonly texels: Uint8Array,
   ) {}
 }
 
+/** A player-coloured copy of one MD5 skin: gl_rmain.c caches translated
+ * skins per player slot (playertextures) because GL cannot colormap a
+ * texture at draw time; the MD5 path keeps the same cache per model. */
+type Md5PlayerSkinT = { texturenum: number; skinnum: number; colors: number };
+
 export class Md5GlAliasT {
+  /** per player slot: the translated skin texture (see GL_Md5PlayerSkin) */
+  readonly playerSkins = new Map<number, Md5PlayerSkinT>();
   constructor(
     public readonly model: Md5ModelT,
     public readonly skins: readonly Md5GlSkinT[],
@@ -230,7 +242,7 @@ function loadMd5GlSkins(shader: string, numSkins: number): Md5GlSkinT[] {
     if (!bytes) throw new Md5FormatError(`${skinPath}: MD5 skin not found`);
     const pic = SwapPic(bytes);
     const texturenum = GL_LoadTexture(skinPath, pic.width, pic.height, pic.data, true, false);
-    skins.push(new Md5GlSkinT(texturenum, pic.width, pic.height));
+    skins.push(new Md5GlSkinT(texturenum, pic.width, pic.height, pic.data));
   }
   return skins;
 }
@@ -289,7 +301,7 @@ export function attachMd5GlReplacementIfAny(mod: ModelT, header: AliashdrT, mdl:
 // is never reentrant.
 const md5FrameSel = { frameA: 0, frameB: 0, backlerp: 1, frontlerp: 0 };
 
-export function GL_DrawMd5AliasFrame(payload: Md5GlAliasT, ent: EntityT, pose1: number, pose2: number, blend: number, shadevector: Vec3, shadelightColor: Vec3, alpha: number): void {
+export function GL_DrawMd5AliasFrame(payload: Md5GlAliasT, ent: EntityT, pose1: number, pose2: number, blend: number, shadevector: Vec3, shadelightColor: Vec3, alpha: number, skinOverride: number | null = null): void {
   if (payload.mdlNumFrames === payload.model.numFrames) {
     // the common (equal) case -- see this file's header, FRAME MAPPING.
     md5FrameSel.frameA = pose1;
@@ -313,7 +325,9 @@ export function GL_DrawMd5AliasFrame(payload: Md5GlAliasT, ent: EntityT, pose1: 
   const skin = payload.skins[skinnum];
   if (!skin) Sys_Error("GL_DrawMd5AliasFrame: model has no skins");
 
-  GL_Bind(skin.texturenum);
+  // a player entity binds its own colour-translated copy (GL_Md5PlayerSkin,
+  // chosen by R_DrawAliasModel under the classic playertextures rule)
+  GL_Bind(skinOverride ?? skin.texturenum);
 
   for (let m = 0; m < payload.model.meshes.length; m++) {
     const mesh: Md5MeshT = payload.model.meshes[m];
@@ -324,12 +338,16 @@ export function GL_DrawMd5AliasFrame(payload: Md5GlAliasT, ent: EntityT, pose1: 
     for (let i = 0; i < mesh.numIndices; i++) {
       const v = mesh.indices[i];
       const o = v * MD5_VERTEX_STRIDE;
-      const nx = skinned[o + 3];
-      const ny = skinned[o + 4];
-      const nz = skinned[o + 5];
       // the classic alias lighting rule (gl_rmain.c's GL_DrawAliasFrame,
-      // see this file's header, LIGHTING) -- unclamped, same as the C.
-      const dot = nx * shadevector[0] + ny * shadevector[1] + nz * shadevector[2];
+      // see this file's header, LIGHTING): the blended normal is made unit
+      // length and its cosine against the shade vector goes through
+      // QuakeSpasm/Ironwail's r_avertexnormal_dot() (the alias shader's
+      // reproduction of anorm_dots.h: 1 + cos, or 1 + cos/8 when the face
+      // points away), so an MD5 vertex is lit exactly like a .mdl vertex.
+      // The raw cosine (-1..1) used to be handed to glColor: every face not
+      // facing the light went black or negative, which is why re-release
+      // models (corpses, the view weapon) were near-black on a lit floor.
+      const dot = md5ShadeDot(skinned[o + 3], skinned[o + 4], skinned[o + 5], shadevector);
       const tc = mesh.tcoords[v];
 
       qgl().qglTexCoord2f(tc.s, tc.t);
@@ -339,6 +357,67 @@ export function GL_DrawMd5AliasFrame(payload: Md5GlAliasT, ent: EntityT, pose1: 
     }
     qgl().qglEnd();
   }
+}
+
+/**
+ * gl_rmisc.c's R_TranslatePlayerSkin colour table, applied to an 8-bit skin:
+ * the 16 shirt texels (TOP_RANGE..) and 16 trouser texels (BOTTOM_RANGE..)
+ * are remapped onto the player's `colors` byte (shirt << 4 | trousers), the
+ * upper half of the palette running backwards exactly as the C does.
+ */
+export function md5TranslateSkin(texels: Uint8Array, colors: number): Uint8Array {
+  const top = colors & 0xf0;
+  const bottom = (colors & 15) << 4;
+  const translate = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) translate[i] = i;
+  for (let i = 0; i < 16; i++) {
+    translate[TOP_RANGE + i] = top < 128 ? top + i : top + 15 - i;
+    translate[BOTTOM_RANGE + i] = bottom < 128 ? bottom + i : bottom + 15 - i;
+  }
+  const out = new Uint8Array(texels.length);
+  for (let i = 0; i < texels.length; i++) out[i] = translate[texels[i]!]!;
+  return out;
+}
+
+/**
+ * The texture a player-slot entity draws its MD5 skin with: the skin's
+ * texels translated to that slot's shirt/trouser colours, uploaded once per
+ * (slot, skin, colours) and reused until the colours change. The classic
+ * path keeps the same cache in gl_rmisc.c's playertextures; the MD5 path
+ * bound the untranslated skin for everyone, so under the GL renderer every
+ * bot and player wore the default colours (no team colours in CTF -- P14,
+ * 2026-09-07; the software renderer's MD5 path colormaps per draw and was
+ * right all along).
+ */
+export function GL_Md5PlayerSkin(payload: Md5GlAliasT, skinnumIn: number, playernum: number, colors: number): number {
+  const skinnum = skinnumIn >= 0 && skinnumIn < payload.skins.length ? skinnumIn : 0;
+  const skin = payload.skins[skinnum];
+  if (!skin) Sys_Error("GL_Md5PlayerSkin: model has no skins");
+  const cached = payload.playerSkins.get(playernum);
+  if (cached && cached.colors === colors && cached.skinnum === skinnum) return cached.texturenum;
+  const texturenum = cached ? cached.texturenum : glState.texture_extension_number++;
+  GL_Bind(texturenum);
+  GL_Upload8(md5TranslateSkin(skin.texels, colors), skin.width, skin.height, true, false);
+  payload.playerSkins.set(playernum, { texturenum, skinnum, colors });
+  return texturenum;
+}
+
+/**
+ * QuakeSpasm's r_avertexnormal_dot() (glsl alias shader), the analytic form of
+ * gl_rmain.c's r_avertexnormal_dots[] table for a normal that has no table
+ * index: the classic table stores `1 + cos` for lit faces and flattens the
+ * back faces to `1 + cos/8` ("reproduces anorm_dots within as reasonable a
+ * degree of tolerance"). Exported for the test.
+ */
+export function md5ShadeDot(nx: number, ny: number, nz: number, shadevector: Vec3): number {
+  const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+  if (len > 0) {
+    nx /= len;
+    ny /= len;
+    nz /= len;
+  }
+  const cos = nx * shadevector[0] + ny * shadevector[1] + nz * shadevector[2];
+  return cos < 0 ? 1 + cos * (1 / 8) : 1 + cos;
 }
 
 // module-scope scratch, same idiom as `md5FrameSel`/`shadowPoint`

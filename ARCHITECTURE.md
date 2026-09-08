@@ -216,6 +216,11 @@ later phase and has not been started.
   uses, with the renderer free-running and interpolating (`r_lerpmodels`,
   `r_lerpmove`, lightstyle lerp). Because no reference does this, it
   lands behind the profile switch and the classic path stays untouched.
+  The fixed-step clock runs at most four ticks per rendered frame and
+  drops any backlog beyond the frame's own elapsed time plus one tick:
+  a stall (map spawn, texture upload) is never replayed as a
+  fast-forward burst afterwards, and sustained overload runs the sim in
+  slow motion rather than spiralling.
 - **Sound**: mixer default 44.1 kHz, 16-bit stereo (one change in
   `src/platform/snd.ts`), any-rate resampling on load, `localsound`,
   `svc_spawnstaticsound2`. Music: `music/NN.ogg` and `music/trackNN.ogg`,

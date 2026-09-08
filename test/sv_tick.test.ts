@@ -190,24 +190,30 @@ describe("Host_ServerFrame's rerelease fixed-step clock", () => {
     Cvar_Set("sv_ruleset", RULESET_RERELEASE);
     Cvar_Set("sv_tickrate", "72");
 
-    // Simulate a large backlog (e.g. a long stall) directly, bypassing
-    // Host_FilterTime's own 0.1s-per-call clamp so the accumulator alone
-    // drives the scenario: 1 second of pent-up time is far more than
-    // SV_TICK_MAX_STEPS*dt (4/72 = 0.0556s).
+    // Simulate a large backlog (e.g. a long stall) directly: 1 second of
+    // pent-up time plus a stall frame of the 0.1s Host_FilterTime hands out,
+    // far more than SV_TICK_MAX_STEPS*dt (4/72 = 0.0556s).
     host.svTickAccumulator = 1;
-    host.frametime = 0;
+    host.frametime = 0.1;
 
     const t1 = sv.time;
     Host_ServerFrame();
     const t2 = sv.time;
 
     const dt = 1 / 72;
-    expect(t2 - t1).toBeCloseTo(4 * dt, 6); // exactly 4 steps' worth, not ~72
-    // The un-run remainder stays in the accumulator (this design's own
-    // choice per ARCHITECTURE.md -- see Host_ServerFrame's own comment):
-    // the sim falls behind real time under sustained overload rather than
-    // discarding it or trying to burn through the whole backlog at once.
-    expect(host.svTickAccumulator).toBeCloseTo(1 - 4 * dt, 6);
+    expect(t2 - t1).toBeCloseTo(4 * dt, 6); // exactly 4 steps' worth, not ~79
+    // The backlog past this frame's own time plus one tick is DROPPED (P11):
+    // a stall must not be replayed as a fast-forward burst over the frames
+    // that follow. What stays is the stall frame's own remainder.
+    expect(host.svTickAccumulator).toBeCloseTo(0.1 + dt - 4 * dt, 6);
+
+    // ...and one ordinary 60 Hz frame later that remainder is clamped to the
+    // new frame's time plus a tick and drains: no burst.
+    host.frametime = 1 / 60;
+    const t3 = sv.time;
+    Host_ServerFrame();
+    expect(sv.time - t3).toBeLessThanOrEqual(2 * dt + 1e-9);
+    expect(host.svTickAccumulator).toBeLessThan(dt);
 
     expect(() => Host_Shutdown()).not.toThrow();
   });
