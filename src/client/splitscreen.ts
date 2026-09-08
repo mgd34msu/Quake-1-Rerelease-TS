@@ -642,11 +642,14 @@ return value is the number of player slots the server is being asked to come
 up with (0 = no request).
 ==================
 */
-export function SS_ServerSpawned(): number {
+export function SS_HeldClientSlots(): number {
   const want = pendingMaxclients;
   pendingMaxclients = 0;
-  SS_SeatsReconnect();
   return want;
+}
+
+export function SS_ServerSpawned(): void {
+  SS_SeatsReconnect();
 }
 
 /*
@@ -933,6 +936,7 @@ export function SS_Init(): void {
 svMainHooks.localSeatCount = SS_SeatCount;
 // SV_SpawnServer asks, at the point it sizes svs.clients, for a slot count a
 // `cl_splitscreen` could not apply to the server that was already running.
+svMainHooks.heldClientSlots = SS_HeldClientSlots;
 svMainHooks.serverSpawned = SS_ServerSpawned;
 // Host_Error asks which seat's window it was raised in, and hands a seat that
 // failed back here instead of shutting the session down; see SS_SeatFailed.

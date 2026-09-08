@@ -72,10 +72,10 @@
 
 import type { BotSkillSettings, CharacterEntry } from "../botdata";
 import { aimError, aimLeadPoint, aimStep, newAimState, type BotAimStateT } from "./aim";
-import { angleMod, bvec, bvecAdd, bvecDistance, bvecSub, type BotVec3 } from "./math";
-import { BotGameType, ITEM_FLAG, chooseWeapon, itemValue, type BotGameModeT, type BotKnowledge, type BotWeaponT } from "./knowledge";
+import { angleBetween, angleMod, angleVectors, bvec, bvecAdd, bvecDistance, bvecSub, type BotVec3 } from "./math";
+import { BotGameType, INTERACTION, ITEM_FLAG, chooseWeapon, itemValue, type BotGameModeT, type BotKnowledge, type BotWeaponT } from "./knowledge";
 import { defaultTraverseCaps, type NavPathT, type NavTraverseCapsT } from "./nav_graph";
-import { BOT_RUN_SPEED, BotPathStatus, clearPath, followPath, newPathState, rollCombatJump, setPath, steerDirect, type BotPathStateT } from "./path_follow";
+import { BOT_RUN_SPEED, BOT_WALK_SPEED, BotPathStatus, clearPath, followPath, newPathState, rollCombatJump, setPath, steerDirect, type BotPathStateT } from "./path_follow";
 import { canFire, evaluateSightGeometry, isAware, newAwareness, senseStep, shouldForget, soundAudible, type BotAwarenessT, type BotContactT } from "./senses";
 import { randomChance, randomIndex, randomRange, type BotRandomT } from "./rng";
 import {
@@ -236,6 +236,31 @@ const COOP_REGROUP_GIVE_UP = 12;
 const COOP_HUNT_RADIUS = 2000;
 /** How close to a team's own objective base counts as defending it. */
 const OBJECTIVE_GUARD_RADIUS = 384;
+/**
+ * How close to its own flag stand a carrier stays while its own flag is out.
+ * Touching the stand only scores while the team's own flag is standing on it
+ * (ThreeWave's FLAG_AT_BASE test), so a carrier that gets home to an empty
+ * stand waits there for its team to bring the flag back rather than wander
+ * off after items and die 400 units away -- which is what every carrier on
+ * ctf1 did once both flags were out, and both flags were out nearly always.
+ */
+const CARRIER_HOLD_RADIUS = 192;
+/** The body swept along a candidate corner cut: a standing player, with the step height cut off the bottom. */
+const PATH_BODY_MINS: BotVec3 = { x: -16, y: -16, z: -24 + 18 };
+const PATH_BODY_MAXS: BotVec3 = { x: 16, y: 16, z: 32 };
+/** The unstick sidestep is checked this far to the side, with the player's body, for a floor within UNSTICK_MAX_DROP. */
+const UNSTICK_STEP = 40;
+const UNSTICK_MAX_DROP = 96;
+const UNSTICK_BOX_MINS: BotVec3 = { x: -16, y: -16, z: -24 };
+const UNSTICK_BOX_MAXS: BotVec3 = { x: 16, y: 16, z: 32 };
+/** How far above a submerged bot's eye the contents are tested for a surface worth swimming up to. */
+const SURFACE_REACH = 96;
+/** The arrival radius for a goal that has to be touched (the flag stand), not merely reached. */
+const TOUCH_RADIUS = 12;
+/** How far from a shootable gate on its route a bot starts shooting at it, and how well aimed it has to be. */
+const GATE_SHOOT_RANGE = 768;
+const GATE_AIM_DEGREES = 5;
+const GATE_SHOT_SECONDS = 0.7;
 /** How far an objective has to be from where it spawned to count as dropped. */
 const OBJECTIVE_AWAY = 96;
 
@@ -277,6 +302,13 @@ export class BotBrain {
   private enemyObjectiveHome: BotVec3 | null = null;
   /** "attack" or "defend" in a game with objectives; "" everywhere else. */
   private objectiveRole = "";
+  /** Set by objectiveGoal for the frame: the goal must be touched, so arrival is TOUCH_RADIUS, not 48. */
+  private touchGoal = false;
+  /** Set by objectiveGoal for the frame: stand here (a carrier at an empty stand). */
+  private holdPosition = false;
+  /** The point to shoot to open the gate on the route's current link (a shootable secret door), for this frame. */
+  private gateShootAt: BotVec3 | null = null;
+  private gateFiredAt = -1;
   /** True while a coop bot is on its way back to the human it plays with. */
   private coopRegrouping = false;
   /** Server time the next regroup becomes due, and when this one gives up. */
@@ -487,7 +519,7 @@ export class BotBrain {
     //---- 1/2: senses and target selection -----------------------------------
     this.updateSenses(world, self, entities, sounds, dt, now);
     this.updateObjectives(entities, self, now);
-    const target = this.selectTarget(entities, self.team);
+    const target = this.selectTarget(entities, self.team, self.origin);
     this.targetId = target === null ? -1 : target.id;
 
     // Pressing into geometry without moving, whether or not there is a path
@@ -499,7 +531,14 @@ export class BotBrain {
 
     //---- 4/5: movement ------------------------------------------------------
     let moveTarget: BotVec3 | null = null;
-    if (goal !== null) {
+    let ridingLift = false;
+    if (goal !== null && this.holdPosition) {
+      // Standing where the goal says to stand: no plan, no steering, and the
+      // wedge timer is told this stillness is intended.
+      clearPath(this.pathState);
+      this.wedgeOrigin = { x: self.origin.x, y: self.origin.y, z: self.origin.z };
+      this.wedgeSince = now;
+    } else if (goal !== null) {
       this.ensurePath(world, goal, now);
 
       // A goal with a nav graph in the level and no plan to it is one this
@@ -514,7 +553,7 @@ export class BotBrain {
 
       const follow = followPath(
         this.pathState,
-        { origin: self.origin, pitch: this.aim.pitch, yaw: this.aim.yaw, onGround: self.onGround, waterLevel: self.waterLevel, now, stuckTime: STUCK_SECONDS, runSpeed: this.config.runSpeed, walkSpeed: this.config.walkSpeed },
+        { origin: self.origin, pitch: this.aim.pitch, yaw: this.aim.yaw, onGround: self.onGround, waterLevel: self.waterLevel, airSeconds: self.airSeconds, airAbove: self.waterLevel >= 3 ? this.airAbove(world, self) : undefined, velocity: self.velocity, now, stuckTime: STUCK_SECONDS, runSpeed: this.config.runSpeed, walkSpeed: this.config.walkSpeed },
         this.settings.movement,
         this.config.rng,
       );
@@ -528,7 +567,7 @@ export class BotBrain {
         // hopping, for a step the follower misjudged) is what gets it back
         // onto a route it can walk. See the file header.
         this.unstickUntil = now + UNSTICK_SECONDS;
-        this.unstickSide = randomChance(this.config.rng, 50) ? 1 : -1;
+        this.unstickSide = this.pickUnstickSide(world, self);
         if (this.stuckTrips >= STUCK_GIVE_UP) {
           // Three trips in a row with no progress: this is not a route the
           // bot can actually walk, whatever the graph says. The goal gets the
@@ -542,21 +581,39 @@ export class BotBrain {
           clearPath(this.pathState);
         }
       } else if (follow.status === BotPathStatus.Arrived) {
-        this.reachGoal();
+        if (this.touchGoal && bvecDistance(self.origin, goal) >= TOUCH_RADIUS) {
+          // The route ends at the graph node by the flag stand; the last few
+          // units onto the stand itself are walked straight.
+          const direct = steerDirect(self.origin, this.aim.yaw, goal, this.settings.movement.walkOnly, this.config.runSpeed, this.config.walkSpeed);
+          cmd.forwardmove = direct.forwardmove;
+          cmd.sidemove = direct.sidemove;
+          moveTarget = goal;
+        } else {
+          this.reachGoal();
+        }
       } else if (follow.status === BotPathStatus.Moving) {
         this.stuckTrips = 0; // real progress retires the tally
         cmd.forwardmove = follow.forwardmove;
         cmd.sidemove = follow.sidemove;
         cmd.upmove = follow.upmove;
         if (follow.jump) cmd.buttons |= BOT_BUTTON_JUMP;
+        ridingLift = follow.riding === true;
         moveTarget = follow.target;
+        this.gateShootAt = this.gateToShoot(world, entities, self, follow.link?.entityBounds ?? null);
       } else if (follow.status === BotPathStatus.NoPath) {
         // No graph, or none needed: walk straight at it.
-        const direct = steerDirect(self.origin, this.aim.yaw, goal, this.settings.movement.walkOnly, this.config.runSpeed, this.config.walkSpeed);
-        cmd.forwardmove = direct.forwardmove;
-        cmd.sidemove = direct.sidemove;
-        moveTarget = goal;
-        if (bvecDistance(self.origin, goal) < 48) this.reachGoal();
+        const reach = this.touchGoal ? TOUCH_RADIUS : 48;
+        if (bvecDistance(self.origin, goal) < reach) {
+          // At the point: no press. A camper pressing at a goal it already
+          // stands on read as wedged, and the unstick hops that followed
+          // walked it off ledges (ctf1's flag room has a pit beside it).
+          this.reachGoal();
+        } else {
+          const direct = steerDirect(self.origin, this.aim.yaw, goal, this.settings.movement.walkOnly, this.config.runSpeed, this.config.walkSpeed);
+          cmd.forwardmove = direct.forwardmove;
+          cmd.sidemove = direct.sidemove;
+          moveTarget = goal;
+        }
       }
     }
 
@@ -570,7 +627,7 @@ export class BotBrain {
     if (wedged) {
       if (this.unstickUntil <= now) {
         this.unstickUntil = now + UNSTICK_SECONDS;
-        this.unstickSide = randomChance(this.config.rng, 50) ? 1 : -1;
+        this.unstickSide = this.pickUnstickSide(world, self);
         clearPath(this.pathState);
       }
       if (now - this.wedgeSince >= WEDGED_GIVE_UP_SECONDS) {
@@ -590,6 +647,21 @@ export class BotBrain {
       if (self.onGround) cmd.buttons |= BOT_BUTTON_JUMP;
     }
 
+    if (this.holdPosition) {
+      cmd.forwardmove = 0;
+      cmd.sidemove = 0;
+      cmd.upmove = 0;
+    }
+
+    // Nobody camps on a lift. A bot standing still on a plat at the top keeps
+    // it there (plat_center_touch re-arms its return every second), and every
+    // bot below waits for a ride that never comes -- ctf4's flag platforms
+    // sit on exactly such lifts. A bot with no movement of its own on a lift
+    // walks forward off it, unless it is the rider waiting to go up.
+    if (self.onLift === true && !ridingLift && cmd.forwardmove === 0 && cmd.sidemove === 0) {
+      cmd.forwardmove = this.config.walkSpeed ?? BOT_WALK_SPEED;
+    }
+
     //---- 6: aim -------------------------------------------------------------
     let aimAt: BotVec3 | null = null;
     if (target !== null) {
@@ -598,6 +670,8 @@ export class BotBrain {
       const lead = aimLeadPoint(point, target.velocity, this.settings.aiming);
       aimAt = bvecSub(lead, self.eye);
       if (aw !== undefined && aw.lastSeen < now) aimAt = bvecSub(aw.lastKnownOrigin, self.eye);
+    } else if (this.gateShootAt !== null) {
+      aimAt = bvecSub(this.gateShootAt, self.eye);
     } else if (this.shouldCheckSix(now)) {
       const { forward } = { forward: bvec(Math.cos(((this.aim.yaw + 180) * Math.PI) / 180), Math.sin(((this.aim.yaw + 180) * Math.PI) / 180), 0) };
       aimAt = forward;
@@ -608,6 +682,16 @@ export class BotBrain {
 
     if (aimAt !== null) aimStep(this.aim, aimAt, this.settings.aiming, dt, now);
     cmd.viewAngles = bvec(this.aim.pitch, angleMod(this.aim.yaw), 0);
+
+    // A shot at the gate once the view has come round to it. One press per
+    // GATE_SHOT_SECONDS: a secret door swings on the first hit, and the
+    // route through it stops naming the gate as soon as it has moved.
+    if (this.gateShootAt !== null && target === null && now - this.gateFiredAt >= GATE_SHOT_SECONDS) {
+      if (angleBetween(this.aim.pitch, this.aim.yaw, bvecSub(this.gateShootAt, self.eye)) <= GATE_AIM_DEGREES) {
+        cmd.buttons |= BOT_BUTTON_ATTACK;
+        this.gateFiredAt = now;
+      }
+    }
 
     // forwardmove/sidemove above were projected onto the view the bot held
     // when the frame began, but the usercmd carries the view it holds NOW,
@@ -701,7 +785,7 @@ export class BotBrain {
     }
   }
 
-  private selectTarget(entities: readonly BotEntityT[], team: number): BotEntityT | null {
+  private selectTarget(entities: readonly BotEntityT[], team: number, selfOrigin: BotVec3): BotEntityT | null {
     if (!this.settings.behaviors.allowCombat) {
       // "False = bot fights stupidly": it still shoots at whatever it is
       // fully aware of, it just does not choose between enemies.
@@ -719,11 +803,13 @@ export class BotBrain {
       if (aw === undefined || !isAware(aw)) continue;
       if (this.friendly(ent, team)) continue;
 
-      // Prefer whatever is closest and already lined up; a player outranks a
-      // monster of the same distance because a player shoots back.
-      let score = 4096 - bvecDistance(aw.lastKnownOrigin, aw.lastKnownOrigin);
-      score -= bvecDistance(ent.center, ent.origin);
+      // Prefer whatever is closest; a player outranks a monster of the same
+      // distance because a player shoots back, and an enemy carrying our
+      // flag outranks everything within reach: killing the carrier is what
+      // gets the flag back, and a team whose flag is out cannot score.
+      let score = 4096 - bvecDistance(selfOrigin, aw.lastKnownOrigin);
       if (ent.kind === BotEntityKind.Player) score += 512;
+      if (ent.carryingObjective === true) score += 1536;
       score += aw.weapon * 256;
       if (ent.id === this.targetId) score += 128; // hysteresis: do not flip-flop
       if (score > bestScore) {
@@ -835,10 +921,23 @@ export class BotBrain {
     if (this.ownObjectiveHome === null && this.enemyObjectiveHome === null) return null;
     const knowledge = this.config.knowledge;
 
-    // Carrying the enemy's: nothing else matters until it is home.
+    // Carrying the enemy's: nothing else matters until it is home. A capture
+    // is touching our own flag while it stands at home, so when it does the
+    // goal is the flag itself, walked onto rather than stopped short of; when
+    // it is out (carried or dropped) the carrier goes home and waits there.
     if (self.carryingObjective === true && this.ownObjectiveHome !== null) {
       this.emitChatOnce("ctf_delivering_flag");
       this.goalEntityId = -1;
+      for (const ent of entities) {
+        if (ent.kind !== BotEntityKind.Item) continue;
+        const item = knowledge.item(ent.classname);
+        if (item === undefined || !item.flags.includes(ITEM_FLAG.objective)) continue;
+        if ((item.team ?? ent.team) !== self.team) continue;
+        if (bvecDistance(ent.origin, this.ownObjectiveHome) > OBJECTIVE_AWAY) continue;
+        this.touchGoal = true;
+        return ent.origin;
+      }
+      if (bvecDistance(self.origin, this.ownObjectiveHome) < CARRIER_HOLD_RADIUS) this.holdPosition = true;
       return this.ownObjectiveHome;
     }
 
@@ -882,6 +981,61 @@ export class BotBrain {
     if (this.enemyObjectiveHome === null) return null;
     this.goalEntityId = -1;
     return this.enemyObjectiveHome;
+  }
+
+  /**
+   * The gate on the route's current link, when it is one the bot has to
+   * shoot open. NAV2 records, per gated link, the bounds of the brush entity
+   * that gates it; the interactable whose centre lies inside those bounds is
+   * the gate, and interactables.txt says what opens it. A shootable secret
+   * door (ctf1 has six, in the underpasses beside each base) opens on the
+   * first hit and stops matching the bounds once it has swung, so a bot that
+   * used to press against it for the rest of the level now fires once and
+   * walks through. Pushable gates need nothing here: the route walks into
+   * them. Plats and trains have their own link types.
+   */
+  private gateToShoot(world: BotWorldT, entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, bounds: { mins: BotVec3; maxs: BotVec3 } | null): BotVec3 | null {
+    if (bounds === null) return null;
+    const knowledge = this.config.knowledge;
+    for (const ent of entities) {
+      if (ent.kind !== BotEntityKind.Interactable) continue;
+      const c = ent.center;
+      if (c.x < bounds.mins.x - 8 || c.x > bounds.maxs.x + 8 || c.y < bounds.mins.y - 8 || c.y > bounds.maxs.y + 8 || c.z < bounds.mins.z - 8 || c.z > bounds.maxs.z + 8) continue;
+      if (knowledge.interactionFor(ent.classname, ent) !== INTERACTION.shoot) return null;
+      if (bvecDistance(self.eye, c) > GATE_SHOOT_RANGE) return null;
+      if (world.traceLine(self.eye, c).fraction < 1 && world.traceLine(self.eye, c).hitId !== ent.id) return null;
+      return c;
+    }
+    return null;
+  }
+
+  /**
+   * Which way to sidestep out of a wedge: a random side, unless the floor
+   * that way ends within a step (a pit, a ledge, a shaft), in which case the
+   * other side, or none. The blind sidestep walked wedged and camping bots
+   * off the edge beside ctf1's flag room into the pit below it.
+   */
+  private pickUnstickSide(world: BotWorldT, self: ReturnType<BotWorldT["self"]>): number {
+    const first = randomChance(this.config.rng, 50) ? 1 : -1;
+    const { right } = angleVectors(0, this.aim.yaw, 0);
+    let dropSides = 0;
+    for (const side of [first, -first]) {
+      const at = { x: self.origin.x + right.x * side * UNSTICK_STEP, y: self.origin.y + right.y * side * UNSTICK_STEP, z: self.origin.z + 8 };
+      const down = world.traceBox(at, UNSTICK_BOX_MINS, UNSTICK_BOX_MAXS, { x: at.x, y: at.y, z: at.z - UNSTICK_MAX_DROP });
+      if (down.startsolid) continue; // a wall that way: the other side, if any
+      if (down.fraction < 1) return side; // floor within reach
+      dropSides++;
+    }
+    // Both sides open with no floor in reach: a bot on a narrow beam, or a
+    // world whose traces do not model the floor (the unit tests' stub). The
+    // random side is the better bet than no sidestep at all.
+    return dropSides === 2 ? first : 0;
+  }
+
+  /** Whether a submerged bot has a water surface within SURFACE_REACH straight above its head, rather than a ceiling. */
+  private airAbove(world: BotWorldT, self: ReturnType<BotWorldT["self"]>): boolean {
+    const above = { x: self.eye.x, y: self.eye.y, z: self.eye.z + SURFACE_REACH };
+    return world.pointContents(above) === BotContents.Empty;
   }
 
   /** In coop, the human the bot regroups with. See COOP_REGROUP_SECONDS. */
@@ -1010,6 +1164,8 @@ export class BotBrain {
   private selectGoal(world: BotWorldT, entities: readonly BotEntityT[], target: BotEntityT | null, now: number): BotVec3 | null {
     this.goalEntityId = -1;
     this.goalIsLive = false;
+    this.touchGoal = false;
+    this.holdPosition = false;
 
     // The QuakeC's own goal wins over everything the brain would pick.
     if (this.explicitGoal !== null && !this.explicitGoalDone && !this.explicitGoalFailed) {
@@ -1238,7 +1394,15 @@ export class BotBrain {
       if (end === undefined || bvecDistance(end, goal) < 96) return;
     }
 
-    const visible = (from: BotVec3, to: BotVec3): boolean => world.traceLine(bvecAdd(from, bvec(0, 0, 16)), bvecAdd(to, bvec(0, 0, 16))).fraction >= 1;
+    // The corner-cut test sweeps the bot's own body, not a line: a line at
+    // chest height passes through a railing gap, over a knee-high wall and
+    // across a pit a player cannot, and every such cut became a segment the
+    // bot then pushed at for the rest of the level (ctf1's base yards). The
+    // box is the player's, so the engine's clip hull is the player's own.
+    const visible = (from: BotVec3, to: BotVec3): boolean => {
+      const t = world.traceBox(from, PATH_BODY_MINS, PATH_BODY_MAXS, to);
+      return t.fraction >= 1 && !t.startsolid;
+    };
     const path = nav.planPath(self.origin, goal, { caps: this.traverseCaps(world), visible });
     setPath(this.pathState, path, self.origin, now);
     if (path === null) this.pathState.plannedAt = now;

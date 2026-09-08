@@ -263,7 +263,7 @@ import {
 // unit: see this file's header note above.
 import { GL_LoadTexture } from "./gl_draw";
 import { GL_SubdivideSurface, R_InitSky } from "./gl_warp";
-import { GL_MakeAliasModelDisplayLists, used } from "./gl_mesh";
+import { GL_MakeAliasModelDisplayLists, ensureMeshCapacity } from "./gl_mesh";
 // U29 (concurrent with U071-U075): the re-release MD5 replacement-model
 // attach hook -- see gl_md5.ts's own header.
 import { attachMd5GlReplacementIfAny } from "./gl_md5";
@@ -817,8 +817,7 @@ export function Mod_LoadAliasModel(mod: ModelT, buffer: Uint8Array): void {
   // model past its length would build a corrupt display list rather than
   // fail. Both ceilings above are far higher than that array, so say so here
   // instead.
-  if (hdr.numtris > used.length)
-    Sys_Error("model %s has %d triangles, more than the display list builder's %d", mod.name, hdr.numtris, used.length);
+  ensureMeshCapacity(hdr.numtris); // the display list builder's work arrays grow to the model
 
   hdr.numframes = pinmodel.numframes;
   const numframes = hdr.numframes;

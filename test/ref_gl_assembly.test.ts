@@ -38,14 +38,15 @@ V_CalcBlend call whose `v_blend` output feeds the `ramps` build -- and the
 early return at the null basepal. Reported as a follow-up.
 */
 
-import { describe, test, expect, beforeAll, afterAll, spyOn } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, spyOn, afterEach } from "bun:test";
 import { mkdirSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { ptr, type Pointer } from "bun:ffi";
 
 import { COM_InitArgv, COM_InitFilesystem } from "../src/common/common";
 import * as common from "../src/common/common";
-import { host } from "../src/common/host";
+import { host, host_basepal, setHostBasepal } from "../src/common/host";
+import { host_basepal as qwHostBasepal } from "../src/qw/client/cl_main";
 import { CvarT } from "../src/common/cvar";
 import { scr_sbarscale } from "../src/client/kfont_text";
 import { cl, CSHIFT_BONUS, CSHIFT_CONTENTS, CSHIFT_DAMAGE, CSHIFT_POWERUP, NUM_CSHIFTS } from "../src/client/client";
@@ -696,6 +697,9 @@ describe("SCR_ScreenShot_f -- gl_screen.c's TGA writer", () => {
   });
 });
 
+let savedBasepal: Uint8Array | null = null;
+let savedQwBasepal: Uint8Array | null = null;
+
 describe("V_UpdatePalette -- view.c's GLQUAKE body", () => {
   function zeroCshifts(): void {
     for (let i = 0; i < NUM_CSHIFTS; i++) {
@@ -716,6 +720,18 @@ describe("V_UpdatePalette -- view.c's GLQUAKE body", () => {
     setCvar(gl_cshiftpercent, 100);
     host.frametime = 0;
     cl.items = 0;
+    // this suite asserts the no-palette path (see the file header); an
+    // earlier boot in the same process may have loaded gfx/palette.lmp
+    // (both holders: hostBasepal() answers from the QuakeWorld client's when
+    // an earlier suite left that profile selected)
+    savedBasepal = host_basepal;
+    savedQwBasepal = qwHostBasepal.data;
+    setHostBasepal(null);
+    qwHostBasepal.data = null;
+  });
+  afterEach(() => {
+    setHostBasepal(savedBasepal);
+    qwHostBasepal.data = savedQwBasepal;
   });
 
   test("no cshift change and no gamma change returns before V_CalcBlend", () => {

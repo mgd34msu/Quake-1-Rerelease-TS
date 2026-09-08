@@ -16,7 +16,8 @@ exactly as long as the event does, and both are what `senses.sound_range` is
 scaled against. Documented here as an addition rather than left implicit.
 */
 
-import { EDICT_NUM, PR_GetString, pr, type EdictT } from "../progs/progs";
+import { E_FLOAT, EDICT_NUM, PR_GetString, PROG_TO_EDICT, pr, type EdictT } from "../progs/progs";
+import { GetEdictFieldValue } from "../progs/pr_edict";
 import { EF_MUZZLEFLASH, FL_MONSTER, MOVETYPE_NOCLIP, SOLID_NOT, SOLID_TRIGGER, sv, svs } from "../server/server";
 import { MOVE_NOMONSTERS, MOVE_NORMAL, SV_Move, SV_PointContents } from "../server/world";
 import { CONTENTS_EMPTY, CONTENTS_LAVA, CONTENTS_SKY, CONTENTS_SLIME, CONTENTS_SOLID, CONTENTS_WATER } from "../common/bspfile";
@@ -134,7 +135,9 @@ export class BotServerWorld implements BotWorldT {
       },
       currentWeapon: ent.v.weapon | 0,
       onGround: ((ent.v.flags | 0) & 512) !== 0, // FL_ONGROUND
+      onLift: standsOnLift(ent),
       waterLevel: ent.v.waterlevel | 0,
+      airSeconds: (ent.v.waterlevel | 0) >= 3 ? airSecondsLeft(ent) : undefined,
       team: ent.v.team | 0,
       dead: ent.v.health <= 0 || ent.v.deadflag !== 0,
       hasProtection: hasProtection(ent),
@@ -235,6 +238,7 @@ export class BotServerWorld implements BotWorldT {
         team: ent.v.team | 0,
         dead: kind === BotEntityKind.Player || kind === BotEntityKind.Monster ? ent.v.health <= 0 || ent.v.deadflag !== 0 : false,
         invisible: (items & IT_INVISIBILITY) !== 0,
+        carryingObjective: kind === BotEntityKind.Player && carriesObjective(ent),
         waterLevel: ent.v.waterlevel | 0,
         isBot: edictIsBot(ent),
         spawnflags: ent.v.spawnflags | 0,
@@ -267,6 +271,26 @@ export class BotServerWorld implements BotWorldT {
  * of who is holding a flag. No other id1 gameplay hands a key to a player in
  * a deathmatch level.
  */
+/**
+ * Breath left, from the QuakeC's own `air_finished` (client.qc: a player
+ * under water drowns once time passes it; every surfacing resets it to time
+ * + 12). A progs without the field reads as a full lungful, so the brain
+ * never surfaces for air it cannot measure.
+ */
+export function airSecondsLeft(ent: EdictT): number {
+  const ofs = GetEdictFieldValue(ent, "air_finished");
+  if (ofs < 0) return 12;
+  return E_FLOAT(ent, ofs) - sv.time;
+}
+
+/** True when the entity under the bot's feet is a plat or a train: standing on it is what keeps a plat raised. */
+export function standsOnLift(ent: EdictT): boolean {
+  if (!ent.v.groundentity) return false;
+  const ground = PROG_TO_EDICT(ent.v.groundentity);
+  const cls = PR_GetString(ground.v.classname);
+  return cls === "func_plat" || cls === "func_train" || cls === "plat" || cls === "train";
+}
+
 export function carriesObjective(ent: EdictT): boolean {
   return ((ent.v.items | 0) & (IT_KEY1 | IT_KEY2)) !== 0;
 }

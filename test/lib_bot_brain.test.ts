@@ -20,6 +20,7 @@ import {
   BotPathStatus,
   BOT_BUTTON_JUMP,
   BOT_RUN_SPEED,
+  BOT_WALK_SPEED,
   bvec,
   bvecDistance,
   canFire,
@@ -31,6 +32,7 @@ import {
   itemValue,
   NavGraph,
   navGraphFromNav2,
+  PLAN_START_ABOVE,
   NavLinkType,
   NavNodeFlags,
   newAimState,
@@ -388,6 +390,24 @@ function buildCtfKnowledge(): BotKnowledge {
 // A*
 //=============================================================================
 
+describe("nav graph: where a plan may start", () => {
+  test("a node over the bot's head is not where its path starts; the node beside it is", () => {
+    // A pit under a room: node 0 on the room floor 73 units above the bot,
+    // node 1 in the pit 40 units away at the bot's level, both linked to a
+    // goal node. The plan must leave the pit by the pit's own node.
+    const positions = [bvec(0, 0, 73), bvec(40, 0, 0), bvec(400, 0, 0)];
+    const graph = navGraphFromNav2(buildNav(positions, [...chainLinks(3), { from: 0, to: 2, type: NavLinkType.Walk }, { from: 2, to: 0, type: NavLinkType.Walk }]));
+    const path = graph.planPath(bvec(0, 0, 0), bvec(400, 0, 0));
+    expect(path).not.toBeNull();
+    expect(path!.points[0]!.z).toBeLessThan(10);
+    // The lookup's default window (the goal end keeps it) still names the
+    // node overhead, which is right for a goal on a ledge; the start window
+    // is what changed.
+    expect(graph.closestNode(bvec(0, 0, 0), {})).toBe(0);
+    expect(graph.closestNode(bvec(0, 0, 0), { aboveHeight: PLAN_START_ABOVE })).toBe(1);
+  });
+});
+
 describe("nav graph: A*", () => {
   test("finds the shortest of two routes, not merely a connected one", () => {
     // 0 -> 1 -> 5 is 400 units; 0 -> 2 -> 3 -> 4 -> 5 is 1200.
@@ -624,6 +644,108 @@ describe("path controller", () => {
     expect(along.target).toEqual({ x: 1200, y: 0, z: -800 });
     expect(Math.abs(along.upmove)).toBeLessThan(1);
     expect(along.forwardmove).toBeCloseTo(BOT_RUN_SPEED, 3);
+  });
+
+  test("sliding wide of a corner, the controller counter-steers and slows for the turn", () => {
+    // Sliding south while the route runs east and turns north at the point
+    // just ahead: the sideways slide is pressed against (a leftward, +Y
+    // sidemove, which for yaw 0 is negative) and the wish speed drops to a
+    // walk for the corner, or the bot slides past it -- on ctf1 into the pit
+    // beside the flag room's door.
+    const positions = [bvec(0, 0, 0), bvec(64, 0, 0), bvec(64, 256, 0)];
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(3)));
+    const state = newPathState();
+    setPath(state, graph.stringPull([0, 1, 2], bvec(64, 256, 0)), bvec(0, 0, 0), 0);
+    const movement = movementSettings({ walkOnly: false });
+
+    const sliding = followPath(state, { origin: bvec(0, 0, 0), pitch: 0, yaw: 0, onGround: true, velocity: bvec(0, -300, 0), now: 0, stuckTime: 1 }, movement, new Xorshift32(1));
+    expect(sliding.status).toBe(BotPathStatus.Moving);
+    expect(sliding.target).toEqual({ x: 64, y: 0, z: 0 });
+    expect(sliding.sidemove).toBeLessThan(-100); // pressing +Y against the -Y slide
+    expect(sliding.forwardmove).toBeGreaterThan(0); // never reverses along the route
+
+    // The same corner approached at rest is taken at walking pace, not a run.
+    const state2 = newPathState();
+    setPath(state2, graph.stringPull([0, 1, 2], bvec(64, 256, 0)), bvec(0, 0, 0), 0);
+    const calm = followPath(state2, { origin: bvec(0, 0, 0), pitch: 0, yaw: 0, onGround: true, velocity: bvec(0, 0, 0), now: 0, stuckTime: 1 }, movement, new Xorshift32(1));
+    expect(calm.forwardmove).toBeGreaterThan(0);
+    expect(calm.forwardmove).toBeLessThanOrEqual(2 * BOT_WALK_SPEED + 1);
+
+    // No corner ahead, at rest: a full run.
+    const straight = [bvec(0, 0, 0), bvec(64, 0, 0), bvec(512, 0, 0)];
+    const g2 = navGraphFromNav2(buildNav(straight, chainLinks(3)));
+    const state3 = newPathState();
+    setPath(state3, g2.stringPull([0, 1, 2], bvec(512, 0, 0)), bvec(0, 0, 0), 0);
+    const run = followPath(state3, { origin: bvec(0, 0, 0), pitch: 0, yaw: 0, onGround: true, velocity: bvec(0, 0, 0), now: 0, stuckTime: 1 }, movement, new Xorshift32(1));
+    expect(run.forwardmove).toBeCloseTo(BOT_RUN_SPEED, 3);
+  });
+
+  test("short of breath, a swimmer heads up only where there is a surface above it", () => {
+    const positions = [bvec(0, 0, 0), bvec(1200, 0, 0)];
+    const graph = navGraphFromNav2(buildNav(positions, chainLinks(2)));
+    const movement = movementSettings({ walkOnly: false });
+    const run = (airAbove: boolean) => {
+      const state = newPathState();
+      setPath(state, graph.stringPull([0, 1], bvec(1200, 0, 0)), bvec(0, 0, 0), 0);
+      return followPath(state, { origin: bvec(0, 0, 0), pitch: 0, yaw: 0, onGround: false, waterLevel: 3, airSeconds: 2, airAbove, now: 0.1, stuckTime: 1 }, movement, new Xorshift32(1));
+    };
+    expect(run(true).upmove).toBeGreaterThan(100); // open water: up for air
+    expect(run(false).upmove).toBe(0); // a sealed tunnel: press on along the route
+  });
+
+  test("a walk-off-ledge landing point under the bot's floor is walked past, not stood over", () => {
+    // Node 1 is the landing point 176 units below node 0's floor and 90
+    // units south of it; a bot that has reached its shadow on the bridge
+    // above is still on the ground, so the controller steers on past it.
+    const positions = [bvec(0, 0, 0), bvec(0, -90, -176), bvec(0, -300, -176)];
+    const graph = navGraphFromNav2(buildNav(positions, [{ from: 0, to: 1, type: NavLinkType.WalkOffLedge }, { from: 1, to: 2, type: NavLinkType.Walk }, { from: 2, to: 1, type: NavLinkType.Walk }]));
+    const state = newPathState();
+    // planned from a little way along the bridge, so node 0 is already behind
+    setPath(state, graph.stringPull([0, 1, 2], bvec(0, -300, -176)), bvec(0, -40, 0), 0);
+    const movement = movementSettings({ walkOnly: false });
+    // standing over the landing point, still on the bridge
+    const out = followPath(state, { origin: bvec(0, -90, 0), pitch: 0, yaw: 0, onGround: true, now: 0.5, stuckTime: 1 }, movement, new Xorshift32(1));
+    expect(out.status).toBe(BotPathStatus.Moving);
+    // yaw 0 faces +X; south (-Y) is to the right, so the press is a positive sidemove
+    expect(out.sidemove).toBeGreaterThan(100);
+    expect(Math.abs(out.forwardmove)).toBeLessThan(1);
+    // airborne, the landing point itself is the target again
+    const falling = followPath(state, { origin: bvec(0, -120, -80), pitch: 0, yaw: 0, onGround: false, now: 1.0, stuckTime: 1 }, movement, new Xorshift32(1));
+    expect(falling.target).toEqual({ x: 0, y: -90, z: -176 });
+  });
+
+  test("aboard a lift, the controller stands still until the ride has brought it up", () => {
+    // An elevator link from the plat's resting top (node 0) to the landing
+    // 360 units up (node 1); its traversal names the same two points.
+    const positions = [bvec(0, 0, 0), bvec(0, -96, 360), bvec(0, -300, 360)];
+    const file = buildNav(positions, [{ from: 0, to: 1, type: NavLinkType.Elevator, traversal: { funnel: bvec(0, 150, -8), start: bvec(0, 0, 0), end: bvec(0, -96, 360) } }, { from: 1, to: 2, type: NavLinkType.Walk }, { from: 2, to: 1, type: NavLinkType.Walk }]);
+    const graph = navGraphFromNav2(file);
+    const state = newPathState();
+    setPath(state, graph.stringPull([0, 1, 2], bvec(0, -300, 360)), bvec(0, 40, 0), 0);
+    const movement = movementSettings({ walkOnly: false });
+    // on the plat at its resting height: no press at all, and no stuck trip
+    for (let t = 0.05; t < 3; t += 0.05) {
+      const out = followPath(state, { origin: bvec(0, 0, 0), pitch: 0, yaw: 0, onGround: true, now: t, stuckTime: 1 }, movement, new Xorshift32(1));
+      expect(out.status).toBe(BotPathStatus.Moving);
+      expect(out.forwardmove).toBe(0);
+      expect(out.sidemove).toBe(0);
+    }
+    // near the top the landing is walked to as usual
+    const up = followPath(state, { origin: bvec(0, 0, 340), pitch: 0, yaw: 0, onGround: true, now: 3.5, stuckTime: 1 }, movement, new Xorshift32(1));
+    expect(Math.abs(up.forwardmove) + Math.abs(up.sidemove)).toBeGreaterThan(0);
+
+    // A lift that never comes is waited on for LIFT_WAIT_SECONDS, then not.
+    const state2 = newPathState();
+    setPath(state2, graph.stringPull([0, 1, 2], bvec(0, -300, 360)), bvec(0, 40, 0), 0);
+    let waited = 0;
+    let moved = 0;
+    for (let t = 0.05; t < 7; t += 0.05) {
+      const out = followPath(state2, { origin: bvec(0, 0, 0), pitch: 0, yaw: 0, onGround: true, now: t, stuckTime: 1 }, movement, new Xorshift32(1));
+      if (out.riding === true) waited++;
+      else if (out.status === BotPathStatus.Moving && Math.abs(out.forwardmove) + Math.abs(out.sidemove) > 0) moved++;
+    }
+    expect(waited).toBeGreaterThan(70); // about four seconds of frames
+    expect(moved).toBeGreaterThan(0); // and then it pressed on
   });
 
   test("reaching the last point reports Arrived", () => {
@@ -1209,6 +1331,35 @@ describe("brain", () => {
     expect(brain.lastUsercmd().buttons & 1).toBe(1); // attack
   });
 
+  test("of two visible enemies the closer one is the target, unless the farther one carries our flag", () => {
+    const world = new StubWorld(bvec(0, 0, 0));
+    // Both on the same bearing, so the roam the bot starts with cannot turn
+    // one of them out of the sight cone before awareness has built.
+    const near = stubEnemy(2, bvec(300, 0, 0));
+    const far = stubEnemy(3, bvec(900, 0, 0));
+    world.ents = [near, far];
+    const brain = makeBrain(2);
+    // The view is held facing them (not fed back from the usercmd), so the
+    // roam the bot starts with cannot turn them out of the sight cone before
+    // awareness has built; this test is about the choice, not the aim.
+    for (let i = 0; i < 15; i++) {
+      world.now += 0.05;
+      brain.think(world);
+    }
+    expect(brain.currentTarget()).toBe(2);
+
+    const world2 = new StubWorld(bvec(0, 0, 0));
+    const carrier = stubEnemy(3, bvec(900, 0, 0));
+    carrier.carryingObjective = true;
+    world2.ents = [stubEnemy(2, bvec(300, 0, 0)), carrier];
+    const brain2 = makeBrain(2);
+    for (let i = 0; i < 15; i++) {
+      world2.now += 0.05;
+      brain2.think(world2);
+    }
+    expect(brain2.currentTarget()).toBe(3);
+  });
+
   test("a blocked line of sight never builds awareness", () => {
     const world = new StubWorld(bvec(0, 0, 0));
     world.blocked = true;
@@ -1593,6 +1744,48 @@ describe("objectives", () => {
     expect(bvecDistance(end!, OWN_BASE)).toBeLessThan(64);
   });
 
+  test("a carrier at home with its own flag out stands on the stand instead of wandering", () => {
+    // Touching the stand only captures while the team's own flag is on it.
+    // Both flags out is the normal state of a bot match, so a carrier that
+    // reached an empty stand used to be handed the item run next frame and
+    // die 400 units away; it now waits there.
+    const world = ctfWorld(ENEMY_BASE);
+    world.ents = flags();
+    const brain = makeBrain(40, { gameType: "ctf", weaponStay: false }, buildCtfKnowledge());
+    runFrames(brain, world, 2);
+    world.selfState.carryingObjective = true;
+    world.ents = []; // both flags carried: neither is an entity any more
+    world.selfState.origin = bvec(60, 0, 0); // inside CARRIER_HOLD_RADIUS of OWN_BASE
+    runFrames(brain, world, 4);
+    const cmd = brain.lastUsercmd();
+    expect(cmd.forwardmove).toBe(0);
+    expect(cmd.sidemove).toBe(0);
+    expect(brain.currentPath()).toBeNull();
+
+    // Far from home it still runs there.
+    world.selfState.origin = bvec(700, 0, 0);
+    runFrames(brain, world, 4);
+    expect(Math.abs(brain.lastUsercmd().forwardmove) + Math.abs(brain.lastUsercmd().sidemove)).toBeGreaterThan(0);
+    const end = pathEnd(brain);
+    expect(end).not.toBeNull();
+    expect(bvecDistance(end!, OWN_BASE)).toBeLessThan(64);
+  });
+
+  test("a carrier whose own flag is home walks onto the flag rather than stopping short of it", () => {
+    const world = ctfWorld(ENEMY_BASE);
+    world.ents = flags();
+    const brain = makeBrain(40, { gameType: "ctf", weaponStay: false }, buildCtfKnowledge());
+    runFrames(brain, world, 2);
+    world.selfState.carryingObjective = true;
+    world.ents = [stubItem(20, "item_flag_team1", OWN_BASE, 5)]; // ours at home, theirs in our hands
+    // 30 units from the stand: a plain goal counts as reached at 48 and the
+    // bot would stop here, a hand's breadth outside the flag's touch box.
+    world.selfState.origin = bvec(30, 0, 0);
+    runFrames(brain, world, 4);
+    const cmd = brain.lastUsercmd();
+    expect(Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove)).toBeGreaterThan(0);
+  });
+
   test("a team's own flag lying in the field is fetched, whichever role the bot drew", () => {
     // Touching a dropped flag is what sends it back, so this outranks both
     // halves of the attack/defend split -- which is why it does not matter
@@ -1921,6 +2114,74 @@ test("emptyUsercmd is neutral", () => {
 // pushable interactable -- except in a game with objectives, where a defender
 // or roamer wandering off to press buttons costs the team more than a blocked
 // route does.
+describe("brain: shootable gates on the route", () => {
+  // NAV2 records, per gated link, the bounds of the brush entity that gates
+  // it. A shootable secret door is the case ctf1 has: the interactable whose
+  // centre lies inside the link's bounds is shot at once the view is on it,
+  // and the route otherwise carries on -- the bot presses on toward the door.
+  function gateKnowledge(): BotKnowledge {
+    return new BotKnowledge({
+      characters: CHARACTERS_TXT,
+      weapons: WEAPONS_TXT,
+      items: ITEMS_TXT,
+      monsters: MONSTERS_TXT,
+      interactables: `${INTERACTABLES_TXT}\n{\n  name func_door_secret\n  interaction shoot\n}\n`,
+      gameRules: GAME_RULES_TXT,
+      teams: TEAMS_TXT,
+      chats: CHATS_TXT,
+      settings: SETTINGS_TXT,
+    });
+  }
+  function stubDoor(id: number, center: BotVec3): BotEntityT {
+    const ent = stubItem(id, "func_door_secret", bvec(0, 0, 0));
+    ent.kind = BotEntityKind.Interactable;
+    ent.center = center;
+    ent.hasHealth = true;
+    return ent;
+  }
+
+  test("a bot routing through a shootable door aims at it and fires once", () => {
+    const positions = [bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0)];
+    const file = buildNav(positions, chainLinks(3));
+    // the first flat link is node 0's 0->1; the door sits across it at x 112..144
+    const gate = new NavEntityLink();
+    gate.link = 0;
+    gate.mins = { x: 112, y: -32, z: -24 };
+    gate.maxs = { x: 144, y: 32, z: 64 };
+    file.entityLinks.push(gate);
+    const world = new StubWorld(bvec(0, 0, 0));
+    world.graph = navGraphFromNav2(file);
+    world.ents = [stubDoor(40, bvec(128, 0, 16)), stubItem(41, "item_health", bvec(512, 0, 0))];
+    const brain = makeBrain(41, { gameType: "deathmatch", weaponStay: false }, gateKnowledge());
+
+    let fired = 0;
+    for (let i = 0; i < 40; i++) {
+      world.now += 0.05;
+      brain.think(world);
+      world.selfState.viewAngles = brain.lastUsercmd().viewAngles;
+      if (brain.lastUsercmd().buttons & 1) fired++;
+    }
+    expect(fired).toBeGreaterThanOrEqual(1);
+    expect(fired).toBeLessThanOrEqual(3); // one press per GATE_SHOT_SECONDS, not held down
+    expect(Math.abs(brain.lastUsercmd().viewAngles.y)).toBeLessThan(10); // looking down the route at the door
+  });
+
+  test("with no gate on the current link nothing is fired", () => {
+    const positions = [bvec(0, 0, 0), bvec(256, 0, 0), bvec(512, 0, 0)];
+    const world = new StubWorld(bvec(0, 0, 0));
+    world.graph = navGraphFromNav2(buildNav(positions, chainLinks(3)));
+    world.ents = [stubDoor(40, bvec(128, 0, 16)), stubItem(41, "item_health", bvec(512, 0, 0))];
+    const brain = makeBrain(41, { gameType: "deathmatch", weaponStay: false }, gateKnowledge());
+    let fired = 0;
+    for (let i = 0; i < 40; i++) {
+      world.now += 0.05;
+      brain.think(world);
+      if (brain.lastUsercmd().buttons & 1) fired++;
+    }
+    expect(fired).toBe(0);
+  });
+});
+
 describe("brain: interactables (G12)", () => {
   function stubButton(id: number, origin: BotVec3): BotEntityT {
     const ent = stubItem(id, "func_button", origin);

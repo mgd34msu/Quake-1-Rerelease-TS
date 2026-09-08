@@ -190,6 +190,7 @@ function makeFakeRenderer(): Renderer & {
     Draw_Alt_String(): void {},
     isGL: false,
     SCR_ScreenShot_f(): void {},
+    Draw_GlyphAtlas(): void {},
 
     // The GL unit's optional seam members (render.ts): cl_parse.ts hands them
     // the raw wire values and the renderer owns every conversion.

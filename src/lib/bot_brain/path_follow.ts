@@ -28,6 +28,19 @@ export const BOT_WALK_SPEED = 160;
 export const BOT_POINT_REACHED = 32;
 /** A jump takeoff or teleporter mouth has to be hit tighter than a walk point. */
 export const BOT_TRAVERSAL_REACHED = 20;
+/** A turn sharper than this at the next point is taken at walking pace once within CORNER_SLOW_DISTANCE of it. */
+export const CORNER_TURN_DEGREES = 60;
+export const CORNER_SLOW_DISTANCE = 96;
+/** How close to an elevator link's start (the plat's resting top) counts as aboard. */
+export const LIFT_BOARD_RADIUS = 48;
+/** How long a bot stands on a lift that has not started to carry it before it stops waiting. */
+export const LIFT_WAIT_SECONDS = 4;
+/** How far past a walk-off-ledge landing point's shadow a grounded bot keeps walking to find the edge. */
+export const LEDGE_OVERSHOOT = 128;
+/** Below this much breath a swimming bot heads for the surface before anything else. */
+export const SWIM_AIR_RESERVE = 5;
+/** The share of its speed a short-of-breath swimmer puts into rising. */
+export const SWIM_SURFACE_PUSH = 0.7;
 
 export interface BotPathStateT {
   path: NavPathT | null;
@@ -39,6 +52,9 @@ export interface BotPathStateT {
   stuckSince: number;
   /** How many times in a row this path has failed to make progress. */
   stuckCount: number;
+  /** Server time the bot began waiting on a lift, and its height then; -1 when not waiting. */
+  liftWaitSince: number;
+  liftWaitZ: number;
   /** Server time the next jump is allowed (movement.jump_cooldown). */
   jumpReadyAt: number;
   /** Server time the path was planned, for re-plan pacing. */
@@ -46,7 +62,7 @@ export interface BotPathStateT {
 }
 
 export function newPathState(): BotPathStateT {
-  return { path: null, index: 0, stuckOrigin: { x: 0, y: 0, z: 0 }, stuckSince: 0, stuckCount: 0, jumpReadyAt: 0, plannedAt: 0 };
+  return { path: null, index: 0, stuckOrigin: { x: 0, y: 0, z: 0 }, stuckSince: 0, stuckCount: 0, jumpReadyAt: 0, plannedAt: 0, liftWaitSince: -1, liftWaitZ: 0 };
 }
 
 export function setPath(state: BotPathStateT, path: NavPathT | null, origin: BotVec3, now: number): void {
@@ -82,6 +98,7 @@ export function clearPath(state: BotPathStateT): void {
   state.path = null;
   state.index = 0;
   state.stuckCount = 0;
+  state.liftWaitSince = -1;
 }
 
 export const BotPathStatus = {
@@ -103,6 +120,8 @@ export interface BotMoveOutputT {
   /** Vertical swim component, non-zero only while the bot is in deep enough water to swim. */
   upmove: number;
   jump: boolean;
+  /** True while the bot is standing still on a lift waiting for the ride. */
+  riding?: boolean;
   /** The point currently being steered toward, for a caller that wants to look at it. */
   target: BotVec3 | null;
   /** The link being traversed to reach `target`, when there is one. */
@@ -117,6 +136,12 @@ export interface BotFollowInputT {
   onGround: boolean;
   /** 0 dry, 1 feet wet, 2 waist deep, 3 submerged -- Quake's waterlevel. Swimming starts at 2. */
   waterLevel?: number;
+  /** Breath left while submerged, in seconds, when known. */
+  airSeconds?: number;
+  /** True when there is air within reach straight above the bot's head (the caller's own contents test). */
+  airAbove?: boolean;
+  /** The bot's current velocity, when known: the steering then corrects for it instead of assuming the bot moves where it presses. */
+  velocity?: BotVec3;
   now: number;
   /** Seconds of no meaningful progress before the controller reports Stuck. */
   stuckTime: number;
@@ -164,8 +189,59 @@ export function followPath(state: BotPathStateT, input: BotFollowInputT, movemen
     return { status: BotPathStatus.Arrived, forwardmove: 0, sidemove: 0, upmove: 0, jump: false, target: null, link: null };
   }
 
-  const target = path.points[state.index]!;
+  let target = path.points[state.index]!;
   const link = path.links[state.index] ?? null;
+
+  // A walk-off-ledge link names where the bot lands, not where it steps off.
+  // On ctf4 the landing node sits under a grated bridge, straight below the
+  // point the bot reaches on the bridge, so steering at the landing point
+  // stopped it dead on the grate. While the bot is still on the ground well
+  // above the landing point, it keeps walking past that point's shadow along
+  // its approach direction until the floor ends and it drops.
+  if (link !== null && link.type === NavLinkType.WalkOffLedge && input.onGround && input.origin.z - target.z > 64) {
+    const prev = state.index > 0 ? path.points[state.index - 1]! : input.origin;
+    let ax = target.x - prev.x, ay = target.y - prev.y;
+    let al = Math.hypot(ax, ay);
+    if (al < 1 && input.velocity !== undefined) {
+      ax = input.velocity.x;
+      ay = input.velocity.y;
+      al = Math.hypot(ax, ay);
+    }
+    if (al >= 1) target = { x: target.x + (ax / al) * LEDGE_OVERSHOOT, y: target.y + (ay / al) * LEDGE_OVERSHOOT, z: target.z };
+  }
+
+  // Riding a lift: the elevator link's start is the plat's resting top and
+  // its end the landing far above (ctf4's flag platforms sit 360 units over
+  // their lifts). Standing on the plat is what raises it, so once the bot
+  // has reached the start it stands still until the ride has brought it near
+  // the end's height; pressing toward the end walked it off the plat's edge
+  // into the shaft wall, where the rising plat then jammed on its own rider.
+  // (The traversal's end point is pushed with a null link, so the link that
+  // led to it is the one to look at once the start has been retired.)
+  const prevLink = state.index > 0 ? (path.links[state.index - 1] ?? null) : null;
+  const lift = link !== null && link.type === NavLinkType.Elevator ? link : prevLink !== null && prevLink.type === NavLinkType.Elevator ? prevLink : null;
+  if (lift !== null && lift.traversal !== null && input.onGround) {
+    const ride = lift.traversal;
+    const belowEnd = ride.end.z - input.origin.z > 64;
+    if (belowEnd && bvecDistance2D(input.origin, ride.start) <= LIFT_BOARD_RADIUS) {
+      // A plat that never comes (someone is camping on it at the top) is
+      // not worth more than LIFT_WAIT_SECONDS: after that the wait ends and
+      // the ordinary stuck handling replans or gives the goal up.
+      if (state.liftWaitSince < 0 || Math.abs(input.origin.z - state.liftWaitZ) > 8) {
+        state.liftWaitSince = input.now;
+        state.liftWaitZ = input.origin.z;
+      }
+      if (input.now - state.liftWaitSince <= LIFT_WAIT_SECONDS) {
+        state.stuckOrigin = { x: input.origin.x, y: input.origin.y, z: input.origin.z };
+        state.stuckSince = input.now;
+        return { status: BotPathStatus.Moving, forwardmove: 0, sidemove: 0, upmove: 0, jump: false, riding: true, target, link };
+      }
+    } else {
+      state.liftWaitSince = -1;
+    }
+  } else {
+    state.liftWaitSince = -1;
+  }
 
   // Progress check.
   if (bvecDistance(input.origin, state.stuckOrigin) > 24) {
@@ -197,12 +273,57 @@ export function followPath(state: BotPathStateT, input: BotFollowInputT, movemen
     const len = Math.hypot(dx, dy, dz);
     dir = len > 0 ? { x: dx / len, y: dy / len, z: dz / len } : { x: 0, y: 0, z: 0 };
     upmove = clamp(dir.z * speed, -speed, speed);
+    // Short of breath, swim for the surface first: a flooded passage longer
+    // than one lungful (ctf1's tunnel is 5700 units of it) drowns a bot that
+    // hugs the nav nodes along its floor. Pressing up in a sealed tunnel
+    // costs nothing; wherever the passage opens the bot comes up for air.
+    // Only where a surface exists: in a sealed tunnel the push pinned a
+    // carrier against the ceiling short of a low arch it had to dive under
+    // (ctf1's tunnel at x -1080), and it drowned there pressing upward.
+    if (input.airSeconds !== undefined && input.airSeconds < SWIM_AIR_RESERVE && input.airAbove === true && dir.z > -0.5) {
+      upmove = Math.max(upmove, SWIM_SURFACE_PUSH * speed);
+    }
   } else {
     dir = steerDirection(input.origin, target);
   }
 
-  const forwardmove = clamp((dir.x * forward.x + dir.y * forward.y) * speed, -speed, speed);
-  const sidemove = clamp((dir.x * right.x + dir.y * right.y) * speed, -speed, speed);
+  // Slow for a sharp corner. A player at full run slides sixty-odd units
+  // through a right-angle turn before friction and acceleration bring the
+  // velocity round, and on ctf1 the flag room's door has a pit that far past
+  // the corner node: every carrier that ran the corner fell in.
+  let wishSpeed = speed;
+  const next = path.points[state.index + 1];
+  if (next !== undefined && bvecDistance2D(input.origin, target) < CORNER_SLOW_DISTANCE) {
+    const ax = target.x - input.origin.x, ay = target.y - input.origin.y;
+    const bx = next.x - target.x, by = next.y - target.y;
+    const la = Math.hypot(ax, ay), lb = Math.hypot(bx, by);
+    if (la > 1 && lb > 1) {
+      const cos = (ax * bx + ay * by) / (la * lb);
+      if (cos < Math.cos((CORNER_TURN_DEGREES * Math.PI) / 180)) wishSpeed = Math.min(wishSpeed, input.walkSpeed ?? BOT_WALK_SPEED);
+    }
+  }
+
+  // Cancel the sideways slide the bot already has: the part of its velocity
+  // across the direction to the point is pressed against, so a bot rounding
+  // a corner at speed tracks the route instead of the engine's acceleration
+  // deciding where it goes. Only the lateral part -- braking along the
+  // route made a slow bot reverse and dither between close points.
+  let wx = dir.x * wishSpeed, wy = dir.y * wishSpeed;
+  if (input.velocity !== undefined) {
+    const along = input.velocity.x * dir.x + input.velocity.y * dir.y;
+    const lateralX = input.velocity.x - along * dir.x;
+    const lateralY = input.velocity.y - along * dir.y;
+    wx -= lateralX;
+    wy -= lateralY;
+    const wl = Math.hypot(wx, wy);
+    if (wl > speed) {
+      wx *= speed / wl;
+      wy *= speed / wl;
+    }
+  }
+
+  const forwardmove = clamp(wx * forward.x + wy * forward.y, -speed, speed);
+  const sidemove = clamp(wx * right.x + wy * right.y, -speed, speed);
 
   // Jump when the link says to, or when the next point is a step up the bot
   // cannot walk onto. A traversal link names its own takeoff point, and the

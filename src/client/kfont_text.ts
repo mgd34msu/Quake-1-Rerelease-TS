@@ -214,8 +214,6 @@ import { vid } from "./vid";
 // see this file's header's "Renderer.Draw_GlyphAtlas is declared OPTIONAL"
 // paragraph: fallback-only lazy require()s, reached only when the active
 // Renderer omits the member.
-import type * as GlDrawModule from "../ref_gl/gl_draw";
-import type * as SoftDrawModule from "../ref_soft/draw";
 
 //=============================================================================
 // Cvars
@@ -497,15 +495,6 @@ export function test_ResetGlyphCache(): void {
 // before U44 moved the declaration next to Renderer.Draw_GlyphAtlas).
 export type { GlyphAtlasSourceT } from "./render";
 
-// Fallback-only: see this file's header. Reached only when
-// `getRenderer().Draw_GlyphAtlas` is undefined (a test's fake Renderer built
-// before this member existed).
-function glDrawMod(): typeof GlDrawModule {
-  return require("../ref_gl/gl_draw");
-}
-function softDrawMod(): typeof SoftDrawModule {
-  return require("../ref_soft/draw");
-}
 
 function drawGlyphAtlas(
   dstX: number,
@@ -519,13 +508,7 @@ function drawGlyphAtlas(
   srcH: number,
   tint: readonly [number, number, number] | null,
 ): void {
-  const r = getRenderer();
-  if (r.Draw_GlyphAtlas) {
-    r.Draw_GlyphAtlas(dstX, dstY, dstW, dstH, source, srcX, srcY, srcW, srcH, tint);
-    return;
-  }
-  const mod = r.isGL ? glDrawMod() : softDrawMod();
-  mod.Draw_GlyphAtlas(dstX, dstY, dstW, dstH, source, srcX, srcY, srcW, srcH, tint);
+  getRenderer().Draw_GlyphAtlas(dstX, dstY, dstW, dstH, source, srcX, srcY, srcW, srcH, tint);
 }
 
 //=============================================================================
@@ -545,13 +528,13 @@ const CLASSIC_MAX_CODEPOINT = 0xff;
 // F17 (the code-point-not-in-the-font policy) and G3 (which source draws a
 // code point at all) -- see this file's header for both writeups.
 type GlyphResolutionT =
-  | { readonly draw: "atlas"; readonly glyph: GlyphRectT; readonly font: ActiveFontT }
+  | { readonly draw: "atlas"; readonly glyph: GlyphRectT; readonly font: ActiveFontT; readonly cp: number }
   | { readonly draw: "classic"; readonly codepoint: number }
   | { readonly draw: "none" };
 
 function atlasGlyph(font: ActiveFontT, cp: number): GlyphResolutionT | null {
   const g = font.glyph(cp);
-  return g ? { draw: "atlas", glyph: g, font } : null;
+  return g ? { draw: "atlas", glyph: g, font, cp } : null;
 }
 
 function resolveGlyph(mode: TextModeT, cp: number): GlyphResolutionT {
@@ -683,7 +666,10 @@ export function Text_Draw(x: number, y: number, s: string, alt = false, scale = 
         height: g.font.height,
         pixels: g.font.pixels ?? new Uint8Array(0),
       };
-      drawGlyphAtlas(cx, y, dstW, dstH, source, g.glyph.x, g.glyph.y, g.glyph.w, g.glyph.h, g.glyph.color ? null : tint);
+      // A space advances the pen and draws nothing: the retail fonts map
+      // U+0020 to a blank cell, and a full console of them was some sixteen
+      // thousand empty quads a frame.
+      if (g.cp !== 0x20) drawGlyphAtlas(cx, y, dstW, dstH, source, g.glyph.x, g.glyph.y, g.glyph.w, g.glyph.h, g.glyph.color ? null : tint);
       cx += dstW;
     } else if (g.draw === "classic") {
       // F17: the classic charset, scaled to the row like every other glyph

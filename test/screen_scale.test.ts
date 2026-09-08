@@ -101,6 +101,8 @@ function makeFakeRenderer(): Renderer {
     Draw_Alt_String: () => {},
     isGL: false,
     SCR_ScreenShot_f: () => {},
+    // through the module namespace, so a spy on softDrawModule.Draw_GlyphAtlas sees the call
+    Draw_GlyphAtlas: (...args: Parameters<typeof softDrawModule.Draw_GlyphAtlas>) => softDrawModule.Draw_GlyphAtlas(...args),
   };
 }
 

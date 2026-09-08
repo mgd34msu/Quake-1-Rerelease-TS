@@ -82,6 +82,7 @@ import {
   SS_SeatCount,
   SS_SeatRect,
   SS_Reconcile,
+  SS_HeldClientSlots,
   SS_ServerSpawned,
   SS_SetSeats,
   SS_Shutdown,
@@ -1250,9 +1251,9 @@ describe("a slot count asked for under a live server waits for the next map", ()
     // Raising it here would leave SV_UpdateToReliableMessages walking client
     // slots whose edict SV_SpawnServer never allocated.
     expect(svs.maxclients).toBe(2);
-    expect(SS_ServerSpawned()).toBe(4);
+    expect(SS_HeldClientSlots()).toBe(4);
     // taken once, not handed out again
-    expect(SS_ServerSpawned()).toBe(0);
+    expect(SS_HeldClientSlots()).toBe(0);
 
     sv.active = false;
     SS_SetSeats(1);
@@ -1268,7 +1269,7 @@ describe("a slot count asked for under a live server waits for the next map", ()
 
     expect(svs.maxclients).toBe(3);
     expect(svs.maxclientslimit).toBeGreaterThanOrEqual(3);
-    expect(SS_ServerSpawned()).toBe(0);
+    expect(SS_HeldClientSlots()).toBe(0);
     SS_SetSeats(1);
   });
 
@@ -1282,7 +1283,7 @@ describe("a slot count asked for under a live server waits for the next map", ()
 
     expect(SS_SeatCount()).toBe(1);
     expect(svs.maxclients).toBe(2);
-    expect(SS_ServerSpawned()).toBe(3);
+    expect(SS_HeldClientSlots()).toBe(3);
 
     sv.active = false;
     SS_SetSeats(1);

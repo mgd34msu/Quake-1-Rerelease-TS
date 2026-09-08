@@ -195,8 +195,30 @@ export function Sys_FloatTime(): number {
   return tv_sec - secbase + tv_usec / 1000000.0;
 }
 
+/**
+ * Console text as a text file should carry it. Quake's console bytes are its
+ * own glyph set: the high bit is the "bronze" colouring, 0x10/0x11 the
+ * bracket glyphs, 0x12..0x1b the scoreboard digits, 0x1c a bullet. WinQuake's
+ * Con_DebugLog wrote them raw, so a qconsole.log opened in an editor was
+ * peppered with control bytes and Latin-1 noise; this is the same mapping
+ * every console-log reader (ProQuake, FTE, QuakeSpasm's -condebug) applies.
+ */
+export function Sys_ConsoleTextToPlain(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    let c = s.charCodeAt(i) & 0x7f;
+    if (c === 0x10) c = 0x5b; // [
+    else if (c === 0x11) c = 0x5d; // ]
+    else if (c >= 0x12 && c <= 0x1b) c = 0x30 + (c - 0x12); // 0-9
+    else if (c === 0x1c) c = 0x2e; // .
+    else if (c < 0x20 && c !== 0x0a && c !== 0x0d && c !== 0x09) c = 0x2e;
+    out += String.fromCharCode(c);
+  }
+  return out;
+}
+
 export function Sys_DebugLog(file: string, fmt: string, ...args: Array<string | number>): void {
-  const data = Com_sprintf(fmt, ...args);
+  const data = Sys_ConsoleTextToPlain(Com_sprintf(fmt, ...args));
   // open(file, O_WRONLY | O_CREAT | O_APPEND, 0666); write; close -- WinQuake's
   // Con_DebugLog never checks any of the three calls' return values, so a
   // failed open (e.g. ENOENT: the gamedir named by `-game` doesn't exist yet,

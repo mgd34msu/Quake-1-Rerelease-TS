@@ -192,7 +192,7 @@ import { CvarT, Cvar_RegisterVariable } from "../../common/cvar";
 import { FileHandle } from "../../common/common";
 import { Com_sprintf } from "../../common/sprintf";
 import { type Vec3, AngleVectors, DotProduct, VectorCopy, vec3, vec3_origin } from "../../common/mathlib";
-import { Sys_FileClose, Sys_FileOpenWrite, Sys_FileRead, Sys_FileWrite, Sys_Printf, SysError } from "../../platform/sys";
+import { Sys_FileClose, Sys_FileOpenWriteNonFatal, Sys_FileRead, Sys_FileWrite, Sys_Printf, SysError } from "../../platform/sys";
 import type * as ViewModule from "../../client/view";
 
 // `usercmd_t cmd;` -- file scope in the C, shared by SV_RunCmd's own
@@ -817,7 +817,7 @@ export function SV_NextUpload(): void {
   const percent = MSG_ReadByte();
 
   if (host_client.upload === null) {
-    const handle = Sys_FileOpenWrite(host_client.uploadfn);
+    const handle = Sys_FileOpenWriteNonFatal(host_client.uploadfn);
     if (handle === -1) {
       Sys_Printf("Can't create %s\n", host_client.uploadfn);
       ClientReliableWrite_Begin(host_client, SvcOpsT.svc_stufftext, 8);

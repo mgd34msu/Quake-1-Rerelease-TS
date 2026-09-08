@@ -313,7 +313,14 @@ async function main(): Promise<void> {
   watchdog.unref?.();
 
   try {
-    const argv = ["quake", "-basedir", basedir, ...extra, "-nosound"];
+    // Every write this boot makes (qconsole.log under -condebug, autosaves,
+    // config.cfg at shutdown) lands beside the record, never in the retail
+    // tree: `bun test` runs with the no-home setting, so without this the
+    // sweep left autosaves in every retail game directory it visited.
+    const outDir = out.slice(0, out.lastIndexOf("/"));
+    const home = `${outDir === "" ? "." : outDir}/home`;
+    mkdirSync(home, { recursive: true });
+    const argv = ["quake", "-basedir", basedir, "-homedir", home, ...extra, "-nosound"];
     Sys_Main_Init(argv);
 
     // See file header: lets quake.rc's own `startdemos` (which synchronously

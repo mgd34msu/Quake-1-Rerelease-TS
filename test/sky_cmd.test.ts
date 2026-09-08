@@ -94,6 +94,7 @@ function makeFakeRenderer(loaded: string[], isGL: boolean, withSky = true): Rend
     Draw_Alt_String(): void {},
     isGL,
     SCR_ScreenShot_f(): void {},
+    Draw_GlyphAtlas(): void {},
   };
   if (withSky) r.skyLoadSkyBox = (name: string): void => void loaded.push(name);
   return r;

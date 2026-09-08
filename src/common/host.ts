@@ -409,6 +409,10 @@ export const host = {
 
 // byte *host_basepal; byte *host_colormap;
 export let host_basepal: Uint8Array | null = null;
+/** Test seam: a suite that asserts the no-palette path can pin it, whatever an earlier boot in the process loaded. */
+export function setHostBasepal(p: Uint8Array | null): void {
+  host_basepal = p;
+}
 export let host_colormap: Uint8Array | null = null;
 
 // `host_basepal` and `host_colormap` are one C global each, but this port has
@@ -1336,6 +1340,14 @@ Host_Init
 ====================
 */
 export function Host_Init(parms: QuakeParmsT): void {
+  // A boot starts its clock. In one process that boots more than once (the
+  // test suites, a `-qw` profile coming up after a NetQuake one) a stale
+  // oldrealtime from the previous life would make Host_FilterTime reject
+  // every frame of the new one as "too soon" until realtime caught up.
+  host.realtime = 0;
+  host.oldrealtime = 0;
+  host.frametime = 0;
+  host.svTickAccumulator = 0;
   // The C resolves these at link time; this port installs them at the top of
   // Host_Init, the earliest point every module in the cycle exists.
   setHostShutdown(Host_Shutdown);

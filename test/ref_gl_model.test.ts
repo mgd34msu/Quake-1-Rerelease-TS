@@ -786,18 +786,15 @@ describe("Mod_LoadAliasModel vertex and triangle ceilings", () => {
     expect(() => Mod_LoadAliasModel(mod, buffer)).toThrow(/has too many triangles \(65537, limit 65536\)/);
   });
 
-  test("a model past gl_mesh.ts's `used` array is rejected rather than silently mis-meshed", () => {
-    // a typed array drops an out-of-range store instead of trapping, so
-    // without this check BuildTris would build a corrupt display list
-    const mod = new ModelT();
-    mod.name = "progs/manytris.mdl";
-    loadState.loadname = "manytris";
-    const overMesh = glMesh.used.length + 1;
-    expect(overMesh).toBeLessThan(ALIAS_TRIS_CEILING);
-    const buffer = buildSizedMdl(1, 1, { numtrisHeader: overMesh });
-    expect(() => Mod_LoadAliasModel(mod, buffer)).toThrow(
-      new RegExp(`has ${overMesh} triangles, more than the display list builder's ${glMesh.used.length}`),
-    );
+  test("the display list builder's work arrays grow to a model past their 8192-triangle start", () => {
+    // a typed array drops an out-of-range store instead of trapping, so a
+    // fixed array would have built a corrupt display list in silence
+    const before = glMesh.used.length;
+    glMesh.ensureMeshCapacity(before + 1);
+    expect(glMesh.used.length).toBeGreaterThanOrEqual(before + 1);
+    expect(glMesh.commands.length).toBeGreaterThanOrEqual((before + 1) * 7 + 1);
+    expect(glMesh.commandsF.buffer).toBe(glMesh.commands.buffer);
+    expect(glMesh.vertexorder.length).toBeGreaterThanOrEqual((before + 1) * 3);
   });
 });
 

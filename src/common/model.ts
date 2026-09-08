@@ -193,8 +193,26 @@ import {
   type LumpT,
   type MiptexT,
 } from "./bspfile";
-import { ALIAS_VERSION, IDPOLYHEADER, SynctypeT, readMdl } from "./modelgen";
-import { IDSPRITEHEADER, SPRITE_VERSION, readDsprite } from "./spritegn";
+import {
+  ALIAS_TRIS_CEILING,
+  ALIAS_VERSION,
+  ALIAS_VERTS_CEILING,
+  DALIASFRAME_T_SIZE,
+  DALIASFRAMETYPE_T_SIZE,
+  DALIASGROUP_T_SIZE,
+  DALIASINTERVAL_T_SIZE,
+  DALIASSKINGROUP_T_SIZE,
+  DALIASSKININTERVAL_T_SIZE,
+  DALIASSKINTYPE_T_SIZE,
+  DTRIANGLE_T_SIZE,
+  IDPOLYHEADER,
+  MDL_T_SIZE,
+  STVERT_T_SIZE,
+  SynctypeT,
+  TRIVERTX_T_SIZE,
+  readMdl,
+} from "./modelgen";
+import { DSPRITE_T_SIZE, DSPRITEFRAME_T_SIZE, DSPRITEFRAMETYPE_T_SIZE, DSPRITEGROUP_T_SIZE, DSPRITEINTERVAL_T_SIZE, IDSPRITEHEADER, SPRITE_VERSION, readDsprite } from "./spritegn";
 import { COM_FileBase, COM_FindFileTier, COM_LoadStackFile, COM_StripExtension } from "./common";
 import { Com_BlockChecksum } from "../qw/md4";
 import { CRC_Block } from "./crc";
@@ -859,7 +877,20 @@ export function Mod_LoadModel(mod: ModelT, crash: boolean): ModelT | null {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const magic = buf.byteLength >= 4 ? view.getInt32(0, true) : 0;
 
-  if (magic !== IDPOLYHEADER && magic !== IDSPRITEHEADER) {
+  if (magic === IDPOLYHEADER || magic === IDSPRITEHEADER) {
+    // The same shape as the brush check below: a truncated or self-
+    // inconsistent .mdl/.spr used to fault deep inside the parser with an
+    // "Out of bounds access" and no file name.
+    const problem = magic === IDPOLYHEADER ? Mod_AliasModelProblem(buf) : Mod_SpriteModelProblem(buf);
+    if (problem !== null) {
+      const who = magic === IDPOLYHEADER ? "Mod_LoadAliasModel" : "Mod_LoadSpriteModel";
+      if (!crash) {
+        Con_Printf("%s: %s %s\n", who, mod.name, problem);
+        return null;
+      }
+      Sys_Error("%s: %s %s", who, mod.name, problem);
+    }
+  } else {
     const problem = Mod_BrushModelProblem(buf);
     if (problem !== null) {
       // Nothing has been assigned to `mod` yet, so a caller that asked not
@@ -1246,6 +1277,17 @@ export function Mod_LoadLighting(l: LumpT): void {
   if (base === null) Sys_Error("MOD_LoadBmodel: no mod_base");
 
   loadmodel.lightdata_rgb = loadLitFile(loadmodel, l);
+
+  // The re-release ships its colored light inside the bsp as the BSPX
+  // RGBLIGHTING lump: the same three bytes per sample a .lit body carries,
+  // with no header. A .lit beside the map still wins, as in Ironwail.
+  if (loadmodel.lightdata_rgb === null) {
+    const rgb = loadmodel.bspx.get("RGBLIGHTING");
+    if (rgb !== undefined) {
+      if (rgb.length === l.filelen * 3) loadmodel.lightdata_rgb = rgb;
+      else Con_DPrintf("%s: BSPX RGBLIGHTING is %i bytes, expected %i; ignored\n", loadmodel.name, rgb.length, l.filelen * 3);
+    }
+  }
 
   if (!l.filelen) {
     if (loadmodel.lightdata_rgb === null) {
@@ -1980,6 +2022,136 @@ Returns null when the file is loadable, otherwise the tail of the
 "Mod_LoadBrushModel: <name> ..." message saying what is wrong with it.
 =================
 */
+/*
+=================
+Mod_AliasModelProblem
+
+Walks an .mdl exactly the way the loaders do -- header, skins (single or
+group with intervals), st verts, triangles, frames (single or group with
+intervals) -- checking every block against the file's length and every
+count against the loader's own limits, and returns a one-line reason when
+the file cannot be what its header says, or null when the walk comes out
+clean. Trailing bytes past the last frame are allowed, as the C allowed.
+=================
+*/
+export function Mod_AliasModelProblem(buffer: Uint8Array): string | null {
+  const len = buffer.byteLength;
+  if (len < MDL_T_SIZE) return `is ${len} bytes, shorter than the ${MDL_T_SIZE}-byte header`;
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const m = readMdl(view, 0);
+  if (m.version !== ALIAS_VERSION) return `has wrong version number (${m.version} should be ${ALIAS_VERSION})`;
+  if (m.numskins < 1 || m.numskins > 1024) return `has an impossible skin count (${m.numskins})`;
+  if (m.skinwidth < 1 || m.skinheight < 1 || m.skinwidth > 8192 || m.skinheight > 8192) return `has an impossible skin size (${m.skinwidth}x${m.skinheight})`;
+  if (m.numverts < 1) return "has no vertices";
+  if (m.numverts > ALIAS_VERTS_CEILING) return `has too many vertices (${m.numverts}, limit ${ALIAS_VERTS_CEILING})`;
+  if (m.numtris < 1) return "has no triangles";
+  if (m.numtris > ALIAS_TRIS_CEILING) return `has too many triangles (${m.numtris}, limit ${ALIAS_TRIS_CEILING})`;
+  if (m.numframes < 1) return `has an invalid number of frames (${m.numframes})`;
+
+  let offset = MDL_T_SIZE;
+  const need = (bytes: number, what: string): string | null => {
+    if (bytes < 0 || offset + bytes > len) return `is truncated: ${what} at byte ${offset} needs ${bytes} more, file is ${len}`;
+    offset += bytes;
+    return null;
+  };
+  const skinBytes = m.skinwidth * m.skinheight;
+  for (let i = 0; i < m.numskins; i++) {
+    let p = need(DALIASSKINTYPE_T_SIZE, `skin ${i} type`);
+    if (p !== null) return p;
+    const type = view.getInt32(offset - DALIASSKINTYPE_T_SIZE, true);
+    if (type === 0) {
+      p = need(skinBytes, `skin ${i}`);
+      if (p !== null) return p;
+    } else {
+      p = need(DALIASSKINGROUP_T_SIZE, `skin group ${i}`);
+      if (p !== null) return p;
+      const n = view.getInt32(offset - DALIASSKINGROUP_T_SIZE, true);
+      if (n < 1 || n > 1024) return `skin group ${i} has an impossible frame count (${n})`;
+      p = need(n * DALIASSKININTERVAL_T_SIZE, `skin group ${i} intervals`);
+      if (p !== null) return p;
+      p = need(n * skinBytes, `skin group ${i} skins`);
+      if (p !== null) return p;
+    }
+  }
+  let p = need(m.numverts * STVERT_T_SIZE, "texture coordinates");
+  if (p !== null) return p;
+  p = need(m.numtris * DTRIANGLE_T_SIZE, "triangles");
+  if (p !== null) return p;
+  const frameBytes = DALIASFRAME_T_SIZE + m.numverts * TRIVERTX_T_SIZE;
+  for (let i = 0; i < m.numframes; i++) {
+    p = need(DALIASFRAMETYPE_T_SIZE, `frame ${i} type`);
+    if (p !== null) return p;
+    const type = view.getInt32(offset - DALIASFRAMETYPE_T_SIZE, true);
+    if (type === 0) {
+      p = need(frameBytes, `frame ${i}`);
+      if (p !== null) return p;
+    } else {
+      p = need(DALIASGROUP_T_SIZE, `frame group ${i}`);
+      if (p !== null) return p;
+      const n = view.getInt32(offset - DALIASGROUP_T_SIZE, true);
+      if (n < 1 || n > 65536) return `frame group ${i} has an impossible frame count (${n})`;
+      p = need(n * DALIASINTERVAL_T_SIZE, `frame group ${i} intervals`);
+      if (p !== null) return p;
+      p = need(n * frameBytes, `frame group ${i} frames`);
+      if (p !== null) return p;
+    }
+  }
+  return null;
+}
+
+/*
+=================
+Mod_SpriteModelProblem
+
+The .spr twin of Mod_AliasModelProblem: header, then each frame as a single
+(dspriteframe_t plus width*height bytes) or a group (count, intervals, that
+many frames).
+=================
+*/
+export function Mod_SpriteModelProblem(buffer: Uint8Array): string | null {
+  const len = buffer.byteLength;
+  if (len < DSPRITE_T_SIZE) return `is ${len} bytes, shorter than the ${DSPRITE_T_SIZE}-byte header`;
+  const view = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const pin = readDsprite(view, 0);
+  if (pin.version !== SPRITE_VERSION) return `has wrong version number (${pin.version} should be ${SPRITE_VERSION})`;
+  if (pin.numframes < 1 || pin.numframes > 65536) return `has an invalid number of frames (${pin.numframes})`;
+  let offset = DSPRITE_T_SIZE;
+  const need = (bytes: number, what: string): string | null => {
+    if (bytes < 0 || offset + bytes > len) return `is truncated: ${what} at byte ${offset} needs ${bytes} more, file is ${len}`;
+    offset += bytes;
+    return null;
+  };
+  const oneFrame = (label: string): string | null => {
+    const p = need(DSPRITEFRAME_T_SIZE, `${label} header`);
+    if (p !== null) return p;
+    const w = view.getInt32(offset - 8, true);
+    const h = view.getInt32(offset - 4, true);
+    if (w < 1 || h < 1 || w > 8192 || h > 8192) return `${label} has an impossible size (${w}x${h})`;
+    return need(w * h, label);
+  };
+  for (let i = 0; i < pin.numframes; i++) {
+    let p = need(DSPRITEFRAMETYPE_T_SIZE, `frame ${i} type`);
+    if (p !== null) return p;
+    const type = view.getInt32(offset - DSPRITEFRAMETYPE_T_SIZE, true);
+    if (type === 0) {
+      p = oneFrame(`frame ${i}`);
+      if (p !== null) return p;
+    } else {
+      p = need(DSPRITEGROUP_T_SIZE, `frame group ${i}`);
+      if (p !== null) return p;
+      const n = view.getInt32(offset - DSPRITEGROUP_T_SIZE, true);
+      if (n < 1 || n > 65536) return `frame group ${i} has an impossible frame count (${n})`;
+      p = need(n * DSPRITEINTERVAL_T_SIZE, `frame group ${i} intervals`);
+      if (p !== null) return p;
+      for (let j = 0; j < n; j++) {
+        p = oneFrame(`frame group ${i} frame ${j}`);
+        if (p !== null) return p;
+      }
+    }
+  }
+  return null;
+}
+
 export function Mod_BrushModelProblem(buffer: Uint8Array): string | null {
   if (buffer.length <= 1) return "is empty";
   if (buffer.length < DHEADER_T_SIZE) return `is too short for a ${DHEADER_T_SIZE} byte header`;

@@ -108,6 +108,7 @@ const fakeRenderer: Renderer = {
   Draw_Alt_String(): void {},
   isGL: false,
   SCR_ScreenShot_f(): void {},
+  Draw_GlyphAtlas(): void {},
 };
 
 const savedRe = re.current;

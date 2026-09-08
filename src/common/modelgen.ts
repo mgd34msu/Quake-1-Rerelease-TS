@@ -77,6 +77,14 @@ export class MdlT {
 }
 export const MDL_T_SIZE = 84;
 
+/**
+ * The loaders' own ceilings on an alias model's vertex and triangle counts
+ * (the C's MAXALIASVERTS/MAXALIASTRIS were 1024/2048; the re-release's
+ * models go past both). Shared by the common validator and the GL loader.
+ */
+export const ALIAS_VERTS_CEILING = 65536;
+export const ALIAS_TRIS_CEILING = 65536;
+
 export function readMdl(view: DataView, offset: number): MdlT {
   const m = new MdlT();
   m.ident = view.getInt32(offset, true);

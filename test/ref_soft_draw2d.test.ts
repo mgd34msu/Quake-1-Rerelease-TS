@@ -16,6 +16,7 @@ first since COM_AddGameDirectory prepends).
 */
 
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { Cache_Flush } from "../src/common/zone";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { SysError } from "../src/platform/sys";
@@ -202,6 +203,9 @@ function freshVidBuffer(): Uint8Array {
 }
 
 beforeAll(() => {
+  // an earlier suite in this process may have booted on real data and left
+  // the real gfx/conback.lmp in the pic cache; this suite reads its own
+  Cache_Flush();
   W_LoadWadFromBytes("gfx.wad", buildGfxWad());
 
   vid.width = 320;

@@ -593,7 +593,7 @@ export interface Renderer {
   // renderers (src/ref_gl/ref_gl.ts, src/ref_soft/ref_soft.ts) implement it
   // unconditionally; kfont_text.ts falls back to its old isGL-keyed direct
   // dispatch only when this member is absent -- see that file's header.
-  Draw_GlyphAtlas?(
+  Draw_GlyphAtlas(
     dstX: number,
     dstY: number,
     dstW: number,
@@ -759,6 +759,8 @@ export interface Renderer {
   // `loadsky`/`sky` console commands' target. Loading a skybox is a no-op
   // renderer feature under ref_soft, hence optional.
   skyLoadSkyBox?(name: string): void;
+  /** The skybox the renderer is showing right now ("" for the classic sky), whichever way it was set: `sky`, `loadsky`, or the worldspawn key. */
+  skyGetName?(): string;
 }
 
 export const re: { current: Renderer | null } = { current: null };

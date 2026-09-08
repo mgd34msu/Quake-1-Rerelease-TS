@@ -209,7 +209,7 @@ import { Com_sprintf } from "../../common/sprintf";
 import { Hunk_AllocName, Hunk_LowMark, Memory_Init } from "../../common/zone";
 import { Mod_Init } from "../../common/model";
 import type { QuakeParmsT } from "../../common/quakedef";
-import { Sys_ConsoleInput, Sys_Error, Sys_FileClose, Sys_FileOpenWrite, Sys_FileWrite, Sys_FloatTime, setHostShutdown } from "../../platform/sys";
+import { Sys_ConsoleInput, Sys_Error, Sys_FileClose, Sys_FileOpenWriteNonFatal, Sys_FileWrite, Sys_FloatTime, setHostShutdown } from "../../platform/sys";
 import { serverShutdownHooks } from "../../common/profile";
 import { Sys_Init } from "../sys_sv";
 
@@ -1211,7 +1211,13 @@ export function SV_WriteIP_f(): void {
 
   Con_Printf("Writing %s.\n", name);
 
-  const f = Sys_FileOpenWrite(name);
+  // `fopen(name, "wb")` -- the C never checks the result and would fault on
+  // NULL; a directory that cannot be written to is a console line here.
+  const f = Sys_FileOpenWriteNonFatal(name);
+  if (f === -1) {
+    Con_Printf("Couldn't open %s.\n", name);
+    return;
+  }
 
   for (let i = 0; i < numipfilters; i++) {
     const b = unpackAddr(ipfilters[i].compare);

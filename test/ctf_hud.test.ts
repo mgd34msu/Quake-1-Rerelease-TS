@@ -204,6 +204,7 @@ function makeFakeRenderer(isGL: boolean): { renderer: Renderer; chars: CharCall[
     Draw_Alt_String(): void {},
     isGL,
     SCR_ScreenShot_f(): void {},
+    Draw_GlyphAtlas(): void {},
   };
 
   return { renderer, chars };

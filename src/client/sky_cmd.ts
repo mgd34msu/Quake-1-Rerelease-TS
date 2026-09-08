@@ -31,7 +31,9 @@ let requestedName = "";
 
 function Sky_Cmd_f(): void {
   if (Cmd_Argc() === 1) {
-    Con_Printf('"sky" is "%s"\n', requestedName);
+    // the renderer's own answer covers a skybox the worldspawn set; the name
+    // last typed here is the fallback for a renderer without the seam
+    Con_Printf('"sky" is "%s"\n', getRenderer().skyGetName?.() ?? requestedName);
     return;
   }
   requestedName = Cmd_Argv(1);

@@ -358,6 +358,7 @@ const fake: Renderer = {
   Draw_SubPic(): void {},
   Draw_Alt_String(): void {},
   isGL: false,
+  Draw_GlyphAtlas(): void {},
   SCR_ScreenShot_f(): void {
     calls.push("SCR_ScreenShot_f");
   },

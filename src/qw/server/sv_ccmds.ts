@@ -95,7 +95,7 @@ import {
   Q_atoi,
 } from "../common";
 import { net_from, NET_AdrToString, NET_BaseAdrToString, NET_LocalAdr, NET_SendPacket, NET_StringToAdr } from "../net_udp";
-import { Sys_FileClose, Sys_FileOpenRead, Sys_FileOpenWrite, Sys_FileTime, Sys_mkdir, Sys_Quit, SysError } from "../../platform/sys";
+import { Sys_FileClose, Sys_FileOpenRead, Sys_FileOpenWriteNonFatal, Sys_FileTime, Sys_mkdir, Sys_Quit, SysError } from "../../platform/sys";
 
 // see file header: sv_main.c-owned names, reached lazily.
 // U38: WinQuake's server and host_cmd, reached lazily. A process that never
@@ -205,11 +205,10 @@ export function SV_Logfile_f(): void {
 
   const name = `${com_gamedir}/qconsole.log`;
   Con_Printf("Logging text to %s.\n", name);
-  try {
-    svSendFileState.sv_logfile = Sys_FileOpenWrite(name);
-  } catch {
-    Con_Printf("failed.\n");
-  }
+  // fopen returning NULL in the C; a failed open here is a console line, not a Sys_Error
+  const handle = Sys_FileOpenWriteNonFatal(name);
+  if (handle === -1) Con_Printf("failed.\n");
+  else svSendFileState.sv_logfile = handle;
 }
 
 /*
@@ -233,11 +232,9 @@ export function SV_Fraglogfile_f(): void {
     const { handle } = Sys_FileOpenRead(name);
     if (handle === -1) {
       // can't read it, so create this one
-      try {
-        svSendFileState.sv_fraglogfile = Sys_FileOpenWrite(name);
-      } catch {
-        i = 1000; // give error
-      }
+      const handle = Sys_FileOpenWriteNonFatal(name);
+      if (handle === -1) i = 1000; // give error
+      else svSendFileState.sv_fraglogfile = handle;
       break;
     }
     Sys_FileClose(handle);

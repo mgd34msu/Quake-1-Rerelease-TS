@@ -130,6 +130,11 @@ function loadSkyFace(name: string, suf: string): { width: number; height: number
 Sky_LoadSkyBox
 =================
 */
+/** The loaded skybox's name, "" when the classic sky is drawn. */
+export function Sky_GetName(): string {
+  return skyState.active ? skyState.name : "";
+}
+
 export function Sky_LoadSkyBox(name: string): void {
   if (skyState.name === name) return; // no change
 

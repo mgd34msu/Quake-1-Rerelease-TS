@@ -195,5 +195,4 @@ export const MAXALIASTRIS = 2048;
 // 2000) already loads: mg3 ships eight .mdl files past it, the largest
 // progs/player_hanging.mdl at 1912 vertices. Ironwail's gl_model.h raises its
 // own ceiling to 0x7fff for the same reason.
-export const ALIAS_VERTS_CEILING = 65536;
-export const ALIAS_TRIS_CEILING = 65536;
+export { ALIAS_VERTS_CEILING, ALIAS_TRIS_CEILING } from "../common/modelgen";

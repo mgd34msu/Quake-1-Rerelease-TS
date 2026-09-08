@@ -192,7 +192,10 @@ export const svMainHooks: {
    *  was still running (0 = nothing held). svs.clients and the player edicts
    *  are sized here and nowhere else, so this is the only point that count can
    *  be applied; see src/client/splitscreen.ts's SS_ServerSpawned. */
-  serverSpawned: (() => number) | null;
+  /** Player slots a `cl_splitscreen` asked for before the server that sizes them existed; consumed once. */
+  heldClientSlots: (() => number) | null;
+  /** The server has just spawned a level: the seats re-arm their signon. */
+  serverSpawned: (() => void) | null;
   /** F13: called once per server frame, from SV_CheckForNewClients, before
    *  any new connection is accepted. src/bots installs it so a `bot_count`
    *  raised while the level is running seats bots on the next frame even
@@ -215,6 +218,7 @@ export const svMainHooks: {
   spawnServer: null,
   shutdownServer: null,
   localSeatCount: null,
+  heldClientSlots: null,
   serverSpawned: null,
   serverFrame: null,
   prepareLevel: null,
@@ -1405,7 +1409,7 @@ export function SV_SpawnServer(server: string): void {
   // U43: a `cl_splitscreen` that wanted more player slots than the server it
   // was typed at had is held until here, because svs.clients and the player
   // edicts below are what a slot count sizes.
-  const heldSlots = svMainHooks.serverSpawned?.() ?? 0;
+  const heldSlots = svMainHooks.heldClientSlots?.() ?? 0;
   if (heldSlots > svs.maxclients) {
     svs.maxclients = heldSlots;
     if (svs.maxclientslimit < heldSlots) svs.maxclientslimit = heldSlots;

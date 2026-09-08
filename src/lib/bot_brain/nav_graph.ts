@@ -502,7 +502,11 @@ export class NavGraph {
     let i = 0;
     while (i < chain.length) {
       const link = i === 0 ? null : this.linkBetween(chain[i - 1]!, chain[i]!);
-      const hard = link !== null && link.type !== NavLinkType.Walk;
+      // A link gated by an entity (a door the bot has to open) is a step of
+      // its own too, so the follower is told about the gate when it walks
+      // that segment; folded into a run it would be lost with the run's
+      // single null link.
+      const hard = link !== null && (link.type !== NavLinkType.Walk || link.entityBounds !== null);
 
       if (hard) {
         // A traversal names its own start and end; walk to the start, then
@@ -521,7 +525,7 @@ export class NavGraph {
       let far = i;
       for (let j = i + 1; j < chain.length; j++) {
         const step = this.linkBetween(chain[j - 1]!, chain[j]!);
-        if (step === null || step.type !== NavLinkType.Walk) break;
+        if (step === null || step.type !== NavLinkType.Walk || step.entityBounds !== null) break;
         if (!this.canCut(chain, i === 0 ? -1 : i, j, points, visible)) break;
         far = j;
       }
@@ -573,14 +577,21 @@ export class NavGraph {
 
   //--------------------------------------------------------------------------
 
-  /** Plan from a world point to a world point in one call. */
+  /**
+   * Plan from a world point to a world point in one call. The start node is
+   * one the bot can get onto from where it stands: at most a jump's height
+   * above it (PLAN_START_ABOVE), any drop below. With the default window a
+   * bot that had fallen into the pit beside ctf1's flag room planned from
+   * the flag-room node 73 units over its head, pushed at the wall under it
+   * for the rest of the level, and never found the pit's own way out.
+   */
   planPath(
     start: BotVec3,
     goal: BotVec3,
     opts: { caps?: NavTraverseCapsT; visible?: (from: BotVec3, to: BotVec3) => boolean; maxRadius?: number } = {},
   ): NavPathT | null {
     const caps = opts.caps ?? defaultTraverseCaps();
-    const startNode = this.closestNode(start, { visible: opts.visible, caps, maxRadius: opts.maxRadius });
+    const startNode = this.closestNode(start, { visible: opts.visible, caps, maxRadius: opts.maxRadius, aboveHeight: PLAN_START_ABOVE });
     if (startNode < 0) return null;
     const goalNode = this.closestNode(goal, { visible: opts.visible, caps, maxRadius: opts.maxRadius });
     if (goalNode < 0) return null;
@@ -590,6 +601,9 @@ export class NavGraph {
     return this.stringPull(chain, goal, opts.visible);
   }
 }
+
+/** How far above the bot a path may start: a step (18) plus what a standing jump clears (about 45 units), less a margin. */
+export const PLAN_START_ABOVE = 56;
 
 /** The unit direction from `from` to `to`, flattened when the two are nearly stacked. */
 export function steerDirection(from: BotVec3, to: BotVec3): BotVec3 {

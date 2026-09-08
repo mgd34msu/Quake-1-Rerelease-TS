@@ -184,7 +184,7 @@ import { R_AddEfrags, R_RemoveEfrags } from "./gl_refrag";
 import { R_PushDlights } from "./gl_rlight";
 import { R_InitSky } from "./gl_warp";
 import { Fog_FogCommand_f, Fog_GetColor, Fog_GetDensity, Fog_ParseServerMessage, Fog_ParseWorldspawn } from "./gl_fog";
-import { Sky_LoadSkyBox } from "./gl_sky";
+import { Sky_GetName, Sky_LoadSkyBox } from "./gl_sky";
 import {
   draw_disc,
   Draw_Alt_String,
@@ -631,6 +631,7 @@ export const glRenderer: Renderer = {
   fogParseServerMessage: Fog_ParseServerMessage,
   fogParseWorldspawn: Fog_ParseWorldspawn,
   skyLoadSkyBox: Sky_LoadSkyBox,
+  skyGetName: Sky_GetName,
 
   // U44 additions: render.ts's Renderer.fogCommand/fogGetState -- the shared
   // 'fog' console command's dispatch half (src/client/fog_cmd.ts). `args` is

@@ -138,6 +138,7 @@ function makeFakeRenderer(): Renderer {
     Draw_Alt_String(): void {},
     isGL: false,
     SCR_ScreenShot_f(): void {},
+    Draw_GlyphAtlas(): void {},
   };
 }
 
@@ -469,8 +470,10 @@ describe("vid.h", () => {
     // once any of them has loaded, the holder never goes back to null. Assert
     // its shape instead of assuming a pristine, never-imported process.
     expect(vidBackend.current === null || typeof vidBackend.current.VID_Init === "function").toBe(true);
-    expect(vidMenuHooks.vid_menudrawfn).toBe(null);
-    expect(vidMenuHooks.vid_menukeyfn).toBe(null);
+    // The same holds for the menu hooks: src/platform/vid.ts installs them at
+    // module load, and any earlier suite in this process may have loaded it.
+    expect(vidMenuHooks.vid_menudrawfn === null || typeof vidMenuHooks.vid_menudrawfn === "function").toBe(true);
+    expect(vidMenuHooks.vid_menukeyfn === null || typeof vidMenuHooks.vid_menukeyfn === "function").toBe(true);
   });
 
   test("vrect_t is a linkable node", () => {

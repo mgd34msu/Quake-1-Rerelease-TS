@@ -189,6 +189,7 @@ function makeFakeRenderer(): { renderer: Renderer; calls: DrawCall[]; picByName:
     Draw_Alt_String(): void {},
     isGL: false,
     SCR_ScreenShot_f(): void {},
+    Draw_GlyphAtlas(): void {},
   };
 
   return { renderer, calls, picByName };

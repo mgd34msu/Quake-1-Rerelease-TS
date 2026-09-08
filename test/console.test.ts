@@ -124,6 +124,7 @@ function makeFakeRenderer(): { renderer: Renderer; draws: DrawCharacterCall[] } 
     Draw_Alt_String: () => {},
     isGL: false,
     SCR_ScreenShot_f: () => {},
+    Draw_GlyphAtlas: () => {},
   };
   return { renderer, draws };
 }

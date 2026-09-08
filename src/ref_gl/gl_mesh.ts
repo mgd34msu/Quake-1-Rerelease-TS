@@ -113,17 +113,37 @@ export const glMeshState: GlMeshStateT = {
   stripcount: 0,
 };
 
-export const used = new Int32Array(8192);
+export let used = new Int32Array(8192);
 
 // the command list holds counts and s/t values that are valid for
 // every frame
-const commandsBuffer = new ArrayBuffer(8192 * 4);
-export const commands = new Int32Array(commandsBuffer);
-export const commandsF = new Float32Array(commandsBuffer);
+let commandsBuffer = new ArrayBuffer(8192 * 4);
+export let commands = new Int32Array(commandsBuffer);
+export let commandsF = new Float32Array(commandsBuffer);
+
+/**
+ * Sizes the three work arrays for a model of `numtris` triangles. The C's
+ * 8192-entry arrays fit every retail model (1923 triangles at most) and
+ * silently mis-meshed anything bigger; a typed array drops an out-of-range
+ * store instead of trapping. The command list's worst case is a lone
+ * triangle per strip: one count word and three s/t pairs, seven words, plus
+ * the terminator; the vertex order's is three per triangle.
+ */
+export function ensureMeshCapacity(numtris: number): void {
+  const tris = Math.max(numtris, 1);
+  if (used.length < tris) used = new Int32Array(tris);
+  const commandWords = tris * 7 + 1;
+  if (commands.length < commandWords) {
+    commandsBuffer = new ArrayBuffer(commandWords * 4);
+    commands = new Int32Array(commandsBuffer);
+    commandsF = new Float32Array(commandsBuffer);
+  }
+  if (vertexorder.length < tris * 3) vertexorder = new Int32Array(tris * 3);
+}
 
 // all frames will have their vertexes rearranged and expanded
 // so they are in the order expected by the command list
-export const vertexorder = new Int32Array(8192);
+export let vertexorder = new Int32Array(8192);
 
 export const stripverts = new Int32Array(128);
 export const striptris = new Int32Array(128);

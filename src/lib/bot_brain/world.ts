@@ -44,6 +44,8 @@ export interface BotEntityT {
   health: number;
   /** Zero when the entity has no team. */
   team: number;
+  /** A player holding a team objective (the enemy flag carrier), when the binding can tell. */
+  carryingObjective?: boolean;
   /** True for a player or monster that is out of the fight. */
   dead: boolean;
   /** True while the entity is invisible (Ring of Shadows, or the game's equivalent). */
@@ -93,6 +95,10 @@ export interface BotSelfT {
   onGround: boolean;
   /** 0 dry, 1 feet wet, 2 waist, 3 fully submerged -- the QuakeC waterlevel. */
   waterLevel: number;
+  /** Seconds of breath left while submerged, when the binding can tell; undefined otherwise. */
+  airSeconds?: number;
+  /** True when the bot is standing on a lift or train, when the binding can tell. */
+  onLift?: boolean;
   team: number;
   dead: boolean;
   /** True when the bot holds the Pentagram, which weapons.txt's electric-in-water rule exempts. */

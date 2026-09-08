@@ -650,16 +650,23 @@ describe("M_LanConfig_Key", () => {
 
 describe("M_GameOptions", () => {
   test("maxplayers clamps to svs.maxclientslimit", () => {
+    // The live limit is MAX_SCOREBOARD on every boot; this pins a smaller one
+    // for the clamp and puts it back so later suites see the real value.
+    const savedLimit = svs.maxclientslimit;
     svs.maxclientslimit = 8;
-    menu.menuState.gameoptions_cursor = 1; // Max players
-    menu.menuState.maxplayers = 7;
+    try {
+      menu.menuState.gameoptions_cursor = 1; // Max players
+      menu.menuState.maxplayers = 7;
 
-    menu.M_NetStart_Change(1);
-    expect(menu.menuState.maxplayers).toBe(8);
+      menu.M_NetStart_Change(1);
+      expect(menu.menuState.maxplayers).toBe(8);
 
-    menu.M_NetStart_Change(1);
-    expect(menu.menuState.maxplayers).toBe(8);
-    expect(menu.menuState.m_serverInfoMessage).toBe(true);
+      menu.M_NetStart_Change(1);
+      expect(menu.menuState.maxplayers).toBe(8);
+      expect(menu.menuState.m_serverInfoMessage).toBe(true);
+    } finally {
+      svs.maxclientslimit = savedLimit;
+    }
   });
 
   test("episode table selection: shareware caps at 2, registered at 7 (not hipnotic/rogue)", () => {
@@ -2036,7 +2043,9 @@ describe("menu labels through the kfont glyph path (F14)", () => {
     menu.M_Options_Draw();
 
     const row = atlasDraws().filter((d) => d.y === 96 && d.x < 200); // x=220 is the checkbox's own value
-    expect(String.fromCodePoint(...drawnCodepoints(row))).toBe(RUSSIAN_ALWAYS_RUN);
+    // a space advances the pen and draws no quad (kfont_text.ts), so the
+    // drawn glyphs spell the label without its space
+    expect(String.fromCodePoint(...drawnCodepoints(row))).toBe(RUSSIAN_ALWAYS_RUN.replace(/ /g, ""));
     for (const d of row) expect(d.source).toBe("custom");
     // Nothing on that row went to the classic charset, which is where those
     // code points used to land as `charCodeAt(i) + 128`.
@@ -2086,7 +2095,7 @@ describe("menu labels through the kfont glyph path (F14)", () => {
     // width=22 for "Always Run" (y=96), so the row's last glyph must end at
     // 16 + 22 * 8 no matter how wide the font drew it.
     const row = atlasDraws().filter((d) => d.y === 96 && d.x < 200); // x=220 is the checkbox's own value
-    expect(row.length).toBe("Always Run".length);
+    expect(row.length).toBe("Always Run".replace(/ /g, "").length); // the space advances the pen without a quad
     const last = row[row.length - 1];
     expect(last === undefined ? -1 : last.x + last.w).toBeCloseTo(16 + 22 * 8, 6);
   });

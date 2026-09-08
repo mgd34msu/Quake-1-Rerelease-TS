@@ -201,8 +201,12 @@ function walkPathToGoal(self: EdictT, movedist: number, goalVec: Vec3): number {
     // becomes a segment SV_movestep then refuses.
     const boxMins = vec3(self.v.mins[0]!, self.v.mins[1]!, self.v.mins[2]! + STEP_HEIGHT);
     const boxMaxs = vec3(self.v.maxs[0]!, self.v.maxs[1]!, self.v.maxs[2]!);
-    const visible = (from: BotVec3, to: BotVec3): boolean =>
-      SV_Move(vec3(from.x, from.y, from.z), boxMins, boxMaxs, vec3(to.x, to.y, to.z), MOVE_NOMONSTERS, self).fraction >= 1;
+    const visible = (from: BotVec3, to: BotVec3): boolean => {
+      const t = SV_Move(vec3(from.x, from.y, from.z), boxMins, boxMaxs, vec3(to.x, to.y, to.z), MOVE_NOMONSTERS, self);
+      // A trace that starts inside the world reports fraction 1 with nothing
+      // hit, which read as "clear" and approved cuts through the floor.
+      return t.fraction >= 1 && !t.startsolid;
+    };
 
     const path = nav.planPath(origin, goal, { caps, visible });
     if (path === null || path.points.length === 0) {

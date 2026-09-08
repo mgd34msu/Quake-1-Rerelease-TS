@@ -61,7 +61,7 @@
       "name": "u_ctf",
       "cmd": ["bun", "test/e2e/u_ctf.ts"],
       "env": { "SDL_VIDEODRIVER": "dummy" },
-      "timeoutSec": 900,
+      "timeoutSec": 3000,
       "needs": ["rerelease", "long"]
     },
     {

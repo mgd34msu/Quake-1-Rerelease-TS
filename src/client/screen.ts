@@ -449,6 +449,12 @@ SCR_Init
 ==================
 */
 export function SCR_Init(): void {
+  // The server-side hooks this module answers are installed here, at init,
+  // rather than at module load: a static import edge that reached this
+  // module from the server side used to read svMainHooks before sv_main.ts
+  // had finished evaluating (a temporal dead zone), and the hooks are not
+  // needed before a server spawns anyway.
+  registerScreenHooks();
   Cvar_RegisterVariable(scr_fov);
   Cvar_RegisterVariable(scr_viewsize);
   Cvar_RegisterVariable(scr_conspeed);
@@ -1003,5 +1009,3 @@ export function registerScreenHooks(): void {
     for (const c of scr_center) c.timeOff = 0;
   };
 }
-
-registerScreenHooks();

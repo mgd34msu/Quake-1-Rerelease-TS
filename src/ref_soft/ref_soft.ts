@@ -141,7 +141,7 @@ import { qwActive } from "../common/profile";
 
 import { registerRenderer } from "../platform/vid";
 import { dState } from "./d_local";
-import { Fog_ParseServerMessage, Fog_ParseWorldspawn, R_Init, R_NewMap, R_RenderView, R_SetVrect, R_ViewChanged, SoftSky_LoadSkyBox } from "./r_main";
+import { Fog_ParseServerMessage, Fog_ParseWorldspawn, R_Init, R_NewMap, R_RenderView, R_SetVrect, R_ViewChanged, SoftSky_GetName, SoftSky_LoadSkyBox } from "./r_main";
 import { Fog_FogCommand_f, Fog_GetColor, Fog_GetDensity } from "./r_fog";
 // siblings, each imported by its C name from the module its .c file maps to
 import { R_InitTextures, softModelHooks } from "./model";
@@ -601,6 +601,7 @@ export const softRenderer: Renderer = {
   fogParseServerMessage: Fog_ParseServerMessage,
   fogParseWorldspawn: Fog_ParseWorldspawn,
   skyLoadSkyBox: SoftSky_LoadSkyBox,
+  skyGetName: SoftSky_GetName,
 
   // U44 additions: render.ts's Renderer.fogCommand/fogGetState -- see
   // ref_gl.ts's own copy of this comment for why `args` goes unused here.

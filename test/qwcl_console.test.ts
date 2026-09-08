@@ -163,6 +163,7 @@ function makeFakeRenderer(): { renderer: Renderer; draws: DrawCharacterCall[]; s
     SCR_DrawCrosshair: () => {},
     isGL: false,
     SCR_ScreenShot_f: () => {},
+    Draw_GlyphAtlas: () => {},
   };
   return { renderer, draws, strings };
 }

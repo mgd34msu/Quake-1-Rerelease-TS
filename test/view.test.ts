@@ -153,6 +153,7 @@ const fake: Renderer = {
   Draw_Alt_String(): void {},
   isGL: false,
   SCR_ScreenShot_f(): void {},
+  Draw_GlyphAtlas(): void {},
 };
 
 function forcedup(v: boolean): void {

@@ -326,6 +326,11 @@ SoftSky_LoadSkyBox
 render.ts's Renderer.skyLoadSkyBox. See this section's header.
 =================
 */
+/** The loaded skybox's name, "" when the classic sky is drawn. */
+export function SoftSky_GetName(): string {
+  return softSkyBoxState.name;
+}
+
 export function SoftSky_LoadSkyBox(name: string): void {
   if (softSkyBoxState.name === name) return; // no change
 

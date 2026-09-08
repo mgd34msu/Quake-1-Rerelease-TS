@@ -582,6 +582,10 @@ export function Host_Map_QW_f(): void {
     Con_Printf("map <levelname> : continue game on a new level\n");
     return;
   }
+  // As Host_Map_f: the demo loop is off from here on, whether or not the
+  // level spawns and whether or not there is a client to seat; a failed spawn
+  // used to leave it armed.
+  hostClientHooks.setClsDemonum?.(-1);
 
   qwSvMainMod().SV_InitProfile();
 

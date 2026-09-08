@@ -144,6 +144,69 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running.
 
 ### Fixed
+- Bots play capture the flag to the end of a route. A carrier that reached
+  its own stand while the team's own flag was out used to be handed the item
+  run next frame and die 400 units away; it now waits at the stand, and when
+  the own flag is home it walks onto the flag instead of stopping a hand's
+  breadth short. Target choice weighed no distance at all (a typo subtracted
+  a point from itself) and now prefers the closer enemy, an enemy flag carrier
+  above all. Swimmers surface when their breath runs low instead of drowning
+  along the nav nodes on a tunnel floor. A route no longer starts at a node
+  over the bot's head, which is how a bot that fell into the pit beside
+  ctf1's flag room pushed at the wall under the room for the rest of the
+  level. Corner cuts are swept with the player's own body rather than a line,
+  steering cancels the bot's sideways slide and slows for sharp turns, and a
+  link gated by a shootable secret door is kept as its own step and the door
+  shot open once the view is on it (ctf1's underpass doors held bots for
+  twenty seconds at a time). The capture window in the CTF driver is now
+  derived from each map's base-to-base route instead of a flat 60 s, which no
+  round trip on ctf6 could ever fit; it requires a carrier to bring the flag
+  into its own base (the 384-unit zone the brain's defenders guard) and
+  reports the captures, since a capture also needs the other team to have
+  lost the flag it is carrying. Also from the traces: a bot aboard a lift
+  stands still until the ride has carried it up, gives up on a lift that has
+  not moved in four seconds, and never camps on one (a bot standing on a plat
+  at the top kept it there and every bot below waited for ever -- ctf4's flag
+  platforms); a bot at a goal it already stands on presses nothing, so a
+  camper no longer reads as wedged and hops itself off the ledge beside
+  ctf1's flag room; an unstick sidestep is traced for a floor first; a
+  swimmer short of breath heads up only where there is a surface above it,
+  not under a tunnel ceiling short of a low arch.
+- Screen hooks are registered from SCR_Init rather than at module load, and
+  a test pins the three modules that register commands or cvars at load to
+  the ones render.ts imports at startup (a late-loaded module doing so is a
+  Sys_Error).
+- The re-release's colored lighting is read from the bsp's own BSPX
+  RGBLIGHTING lump (a `.lit` beside the map still wins), so its maps light
+  in color without an external file.
+- A boot starts its clock: Host_Init resets realtime, oldrealtime, frametime
+  and the tick accumulator, so a stale clock from an earlier life in the same
+  process cannot make every frame of the new one "too soon".
+- The QuakeWorld server's log, frag log, listip.cfg and upload opens are no
+  longer fatal on a directory that cannot be written to.
+- `addbot` never hands out a name a bot already answers to: a second `addbot
+  ozzy` is "ozzy (2)", so `kickbot <name>` stays unambiguous. The addbot
+  stream gets the same eight-draw warm-up the brains' own RNG gets, so
+  neighbouring `sv_randomseed` values pick different first characters.
+- qconsole.log is written as text: the console's glyph bytes (bronze high
+  bit, bracket glyphs, scoreboard digits) are mapped to their ASCII look.
+- The QuakeWorld `map` command stops the demo loop even when the level fails
+  to spawn or there is no client to seat, as the NetQuake one does.
+- kfont text no longer submits a quad per space (the retail fonts map U+0020
+  to a blank cell; a full console of them was sixteen thousand empty quads a
+  frame).
+- A truncated or self-inconsistent .mdl or .spr is refused with the file's
+  name and the reason (header, skins, frames, sizes are all walked against
+  the file's length) instead of faulting inside the parser; the alias
+  display-list builder's work arrays grow with the model instead of
+  rejecting anything past 8192 triangles.
+- `sky` with no argument reports the skybox the renderer is showing, whether
+  it came from the console or the map's worldspawn.
+- The nav monster clearance test treats a trace that starts inside the world
+  as blocked, as its bot twin does.
+- The map sweep's engines boot with a `-homedir` under the sweep's own output
+  directory; they used to write qconsole.log and autosaves into the retail
+  tree under `bun test`'s no-home setting.
 - Bots can swim. The path follower only ever steered flat, from yaw, so a
   bot whose route dropped down a flooded shaft floated at its top forever
   (every ThreeWave CTF base on ctf1 is joined to the tunnel that way), and

@@ -262,33 +262,54 @@ function Bot_LevelHasTeamObjectives(): boolean {
 
 //============================================================================
 
+/**
+ * A name no bot in the game or on the roster already answers to. `kickbot
+ * <name>` and the roster are keyed by name, so `addbot ozzy` twice (or a
+ * random pick once every character is in use) gets "ozzy (2)", not a twin.
+ */
+function uniqueFunName(base: string): string {
+  const taken = (name: string): boolean => {
+    for (const slot of botState.slots.values()) if (slot.name === name) return true;
+    return botState.roster.some((e) => e.name === name);
+  };
+  if (!taken(base)) return base;
+  for (let n = 2; ; n++) {
+    const candidate = `${base} (${n})`;
+    if (!taken(candidate)) return candidate;
+  }
+}
+
 function pickCharacter(request: string): { character: string; funName: string; colors: number } {
   const knowledge = Bot_Knowledge();
   if (knowledge === null || knowledge.characters.length === 0) {
-    return { character: "", funName: request !== "" && request !== "random" ? request : `bot${botState.slots.size + 1}`, colors: 0 };
+    return { character: "", funName: uniqueFunName(request !== "" && request !== "random" ? request : `bot${botState.slots.size + 1}`), colors: 0 };
   }
 
   if (request !== "" && request !== "random") {
     const named = knowledge.character(request);
     if (named !== undefined) {
       botState.usedCharacters.add(named.name);
-      return { character: named.name, funName: named.funName, colors: ((named.shirtColor & 15) << 4) | (named.pantsColor & 15) };
+      return { character: named.name, funName: uniqueFunName(named.funName), colors: ((named.shirtColor & 15) << 4) | (named.pantsColor & 15) };
     }
     // A name that is not in characters.txt is used verbatim, so a server
     // operator can call a bot whatever they like.
-    return { character: "", funName: request, colors: 0 };
+    return { character: "", funName: uniqueFunName(request), colors: 0 };
   }
 
   const unused = knowledge.characters.filter((c) => !botState.usedCharacters.has(c.name));
   const pool = unused.length > 0 ? unused : knowledge.characters;
   const pick = pool[Math.floor(seedRandom() * pool.length) % pool.length]!;
   botState.usedCharacters.add(pick.name);
-  return { character: pick.name, funName: pick.funName, colors: ((pick.shirtColor & 15) << 4) | (pick.pantsColor & 15) };
+  return { character: pick.name, funName: uniqueFunName(pick.funName), colors: ((pick.shirtColor & 15) << 4) | (pick.pantsColor & 15) };
 }
+
+/** The warm-up rng.ts's Xorshift32 gives a fresh seed, applied to the addbot stream too. */
+const SEED_WARMUP_DRAWS = 8;
 
 /** A deterministic stream for the choices `addbot` itself makes, separate from each bot's own. */
 function seedRandom(): number {
   let x = botState.nextSeed;
+  if (x === 0) x = 0x5eed1234; // xorshift's one fixed point
   x ^= x << 13;
   x |= 0;
   x ^= x >>> 17;
@@ -796,6 +817,11 @@ export function Bot_SpawnServer(mapname: string): void {
   if (seed !== 0) {
     botState.nextSeed = seed;
     botState.usedCharacters.clear();
+    // xorshift32's first outputs from a small seed are tiny and correlated
+    // across neighbouring seeds (rng.ts's header): the same warm-up as the
+    // brains' own streams get, so `sv_randomseed 1` and `2` pick different
+    // first characters.
+    for (let i = 0; i < SEED_WARMUP_DRAWS; i++) seedRandom();
   }
 
   const mode = Bot_GameMode();
