@@ -1,0 +1,7 @@
+# `bun test` run directly (not through `bun run test`) used to boot engines with
+# the real per-user home directory and leave mkdtemp game folders under
+# ~/.local/share/q1rets. The preload pins the no-home default for every test
+# process; a suite that tests the default itself deletes the variable in its
+# own describe (test/fs_rerelease.test.ts).
+[test]
+preload = ["./test/support/preload_env.ts"]

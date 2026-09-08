@@ -227,6 +227,24 @@ export function SWimp_Present32(
   const need = width * height;
   if (indexStage.length !== need) indexStage = new Uint8Array(need);
   SWimp_QuantizeFrame32(buffer32, rowbytes, width, height, indexStage);
+  // d_8to24table holds the base palette in true colour (P20: gamma and the
+  // cshifts live in the present ramp), so the quantized fallback tints its
+  // own copy of the palette through the ramp before handing it over.
   if (paletteBytes === null) paletteBytes = new Uint8Array(d_8to24table.buffer);
-  SDLVID_Present(indexStage, width, width, height, paletteBytes);
+  SDLVID_Present(indexStage, width, width, height, shiftramp !== null ? SWimp_ShiftedPalette(paletteBytes, shiftramp) : paletteBytes);
+}
+
+let shiftedPalette: Uint8Array = new Uint8Array(0);
+
+/** The 256-entry RGBA palette `base` (d_8to24table's bytes) with the present
+ * ramp applied per channel -- what the quantized fallback shows. */
+export function SWimp_ShiftedPalette(base: Uint8Array, shiftramp: Uint8Array): Uint8Array {
+  if (shiftedPalette.length !== base.length) shiftedPalette = new Uint8Array(base.length);
+  for (let i = 0; i < 256; i++) {
+    shiftedPalette[i * 4] = shiftramp[base[i * 4]!]!;
+    shiftedPalette[i * 4 + 1] = shiftramp[256 + base[i * 4 + 1]!]!;
+    shiftedPalette[i * 4 + 2] = shiftramp[512 + base[i * 4 + 2]!]!;
+    shiftedPalette[i * 4 + 3] = base[i * 4 + 3]!;
+  }
+  return shiftedPalette;
 }

@@ -2151,6 +2151,11 @@ command, so every such line came back as an unknown-command print on the
 listen server's own console -- a second line for every kill, on the player's
 screen (P15, 2026-09-07). The line goes to the developer console only, which
 is the server log a scraper reads.
+
+COM_Parse treats ':' as a single-character token, so the line tokenizes as
+`LOG` `:` `DEATH` ... -- Cmd_Argv(0) is "LOG", not "LOG:", and the command has
+to be registered under that name (the first attempt registered "LOG:" and
+changed nothing; the console kept printing "LOG : DEATH ...").
 ==================
 */
 function Host_Log_f(): void {
@@ -2159,7 +2164,7 @@ function Host_Log_f(): void {
 
 export function Host_InitCommands(): void {
   Cmd_AddCommand("status", Host_Status_f);
-  Cmd_AddCommand("LOG:", Host_Log_f); // ThreeWave CTF's log.qc lines (see Host_Log_f)
+  Cmd_AddCommand("LOG", Host_Log_f); // ThreeWave CTF's log.qc lines, tokenized as LOG : ... (see Host_Log_f)
   Cmd_AddCommand("quit", Host_Quit_f);
   Cmd_AddCommand("god", Host_God_f);
   Cmd_AddCommand("notarget", Host_Notarget_f);

@@ -54,7 +54,7 @@ import {
   static_registered,
 } from "../src/common/common";
 import { Mod_ForName, Mod_Init, type ModelT, getModelLoaderHooks, setModelLoaderHooks } from "../src/common/model";
-import { hostClientHooks } from "../src/common/host";
+import { hostClientHooks, hostBasepal, setHostBasepal } from "../src/common/host";
 import { qw } from "../src/common/quakedef";
 import { CMP_NONE, LUMPINFO_T_SIZE, QpicT, TYP_NONE, TYP_QPIC, WADINFO_T_SIZE, W_LoadWadFromBytes } from "../src/common/wad";
 import { NUM_CSHIFTS, cl, cl_entities, cl_lightstyle, clState } from "../src/client/client";
@@ -64,7 +64,7 @@ import { scrState } from "../src/client/screen_types";
 import { CalcFov, scr_fov, scr_viewsize } from "../src/client/screen";
 import { gammatable, lcd_x } from "../src/client/view";
 import { getRegisteredRenderer, registerRenderer, unregisterRenderer } from "../src/platform/vid";
-import { SWimp_ExpandFrame32, SWimp_QuantizeFrame32, SWimp_ResetForTests } from "../src/platform/swimp";
+import { SWimp_ExpandFrame32, SWimp_QuantizeFrame32, SWimp_ResetForTests, SWimp_ShiftedPalette } from "../src/platform/swimp";
 import { softRenderer } from "../src/ref_soft/ref_soft";
 import {
   R_Init,
@@ -781,6 +781,65 @@ describe("the palette-shift blend", () => {
     const plain = new Uint8Array(4 * 4);
     SWimp_ExpandFrame32(src, 4, 4, 1, null, plain);
     expect(Array.from(plain.subarray(0, 4))).toEqual([10, 20, 30, 255]);
+  });
+
+  // P20 (2026-09-08, Mike: "died in lava, now shadows are bright"): in true
+  // colour the shift used to be applied twice -- baked into d_8to24table by
+  // VID_ShiftPalette (which the surface cache then expands texels through,
+  // keeping a lava tint on cached surfaces after the shift ended) and again
+  // by the present ramp. The table now stays at the base palette; the ramp
+  // is the whole shift. The classic 8-bit path keeps the shifted palette.
+  test("in true colour V_UpdatePalette hands VID_ShiftPalette the BASE palette; only the ramp carries the shift", () => {
+    const basepal = new Uint8Array(768);
+    for (let i = 0; i < 256; i++) { basepal[i * 3] = i; basepal[i * 3 + 1] = i >> 1; basepal[i * 3 + 2] = i >> 2; }
+    const savedBasepal = hostBasepal();
+    const savedShift = fakeVid.VID_ShiftPalette;
+    const savedTruecolor = rState.r_truecolor;
+    let handed: Uint8Array | null = null;
+    fakeVid.VID_ShiftPalette = (p: Uint8Array): void => { handed = new Uint8Array(p); };
+    try {
+      setHostBasepal(basepal);
+      for (let i = 0; i < NUM_CSHIFTS; i++) { cl.cshifts[i].percent = 0; cl.prev_cshifts[i].percent = 0; }
+      cl.cshifts[1].percent = 102; // a damage flash, 40% toward red
+      cl.cshifts[1].destcolor[0] = 255; cl.cshifts[1].destcolor[1] = 0; cl.cshifts[1].destcolor[2] = 0;
+
+      rState.r_truecolor = true;
+      softRenderer.V_UpdatePalette();
+      expect(handed).not.toBeNull();
+      expect(Array.from(handed!.subarray(128 * 3, 128 * 3 + 3))).toEqual([128, 64, 32]); // entry 128 untinted
+      // the shift is in the ramp: the same builder over the live gamma table
+      // (whatever an earlier suite left it at) must reproduce it, and it must
+      // differ from the unshifted value
+      const ramp = rState.d_shiftramp!;
+      const expected = new Uint8Array(3 * 256);
+      R_BuildShiftRamps(gammatable, expected);
+      expect(ramp[128]).toBe(expected[128]);
+      expect(ramp[256 + 128]).toBe(expected[256 + 128]);
+      expect(ramp[128]).not.toBe(ramp[256 + 128]); // red moved, green did not
+
+      // the classic 8-bit path still receives the shifted palette
+      cl.prev_cshifts[1].percent = 0; // make the change "new" again
+      rState.r_truecolor = false;
+      softRenderer.V_UpdatePalette();
+      expect(handed![128 * 3]).toBe(expected[128]);
+      expect(handed![128 * 3 + 1]).toBe(expected[256 + 64]);
+    } finally {
+      fakeVid.VID_ShiftPalette = savedShift;
+      rState.r_truecolor = savedTruecolor;
+      setHostBasepal(savedBasepal);
+      for (let i = 0; i < NUM_CSHIFTS; i++) { cl.cshifts[i].percent = 0; cl.prev_cshifts[i].percent = 0; }
+    }
+  });
+
+  test("SWimp_ShiftedPalette tints a base RGBA palette through the ramp, per channel, alpha kept", () => {
+    const base = new Uint8Array(256 * 4);
+    for (let i = 0; i < 256; i++) { base[i * 4] = i; base[i * 4 + 1] = i >> 1; base[i * 4 + 2] = i >> 2; base[i * 4 + 3] = 255; }
+    const ramp = new Uint8Array(3 * 256);
+    for (let i = 0; i < 256; i++) { ramp[i] = 255 - i; ramp[256 + i] = i >> 1; ramp[512 + i] = i; }
+    const out = SWimp_ShiftedPalette(base, ramp);
+    expect(Array.from(out.subarray(200 * 4, 200 * 4 + 4))).toEqual([55, 50, 50, 255]);
+    expect(Array.from(out.subarray(0, 4))).toEqual([255, 0, 0, 255]);
+    expect(out).not.toBe(base); // the live table is never rewritten
   });
 
   test("SWimp_QuantizeFrame32 finds the palette index nearest each pixel", () => {

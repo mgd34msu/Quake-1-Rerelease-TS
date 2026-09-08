@@ -109,7 +109,7 @@ check(
   `asked for ${protocolArg}, got ${p1 === null ? "nothing" : p1.protocol}`,
 );
 
-const cl1 = startPolledQwClient(`t_qw_${protocolArg}_cl`, ["-qw", "-basedir", BASE, "-nosound"], ["cl_shownet 0", `connect 127.0.0.1:${port1}`, "+forward", "+attack"]);
+const cl1 = startPolledQwClient(`t_qw_${protocolArg}_cl`, ["-qw", "-basedir", BASE, ...homedirArgs("qw"), "-nosound"], ["cl_shownet 0", `connect 127.0.0.1:${port1}`, "+forward", "+attack"]);
 const entered1 = await waitFor(sv1, /entered the game/, 180000);
 check(
   `a -qw client reads protocol ${protocolArg} and enters the game`,
@@ -250,7 +250,7 @@ if (protocolArg === "28") {
   */
   const guest = startPolledQwClient(
     "t_qw_listen_guest",
-    ["-qw", "-basedir", BASE, "-nosound", "-clientport", String(port4 + 1)],
+    ["-qw", "-basedir", BASE, ...homedirArgs("qw"), "-nosound", "-clientport", String(port4 + 1)],
     ["cl_shownet 0", "name qwguest", `connect 127.0.0.1:${port4}`, "+forward", "+attack"],
   );
   const guestIn = await waitFor(listen.seat, /qwguest entered the game/, 180000);

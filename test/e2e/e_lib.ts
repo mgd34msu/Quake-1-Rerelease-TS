@@ -109,7 +109,10 @@ ensureBasedir();
 // ---------------------------------------------------------------- client ---
 
 export async function bootClient(args: string[]): Promise<void> {
-  Sys_Main_Init(["qwcl", "-basedir", BASEDIR, "-nosound", ...args]);
+  // -nohomedir: this client's demos/screenshots/config land in the scratch
+  // BASEDIR's qw (a copy, not the retail tree), where e_s5 and shot() read
+  // them; without it the QuakeWorld client now resolves the per-user home.
+  Sys_Main_Init(["qwcl", "-basedir", BASEDIR, "-nohomedir", "-nosound", ...args]);
   await NET_Ready();
 }
 

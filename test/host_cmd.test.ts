@@ -9,10 +9,12 @@ Every process-wide flag Host_Init installs is captured before and restored in
 afterAll (`bun test` runs every file in one process).
 */
 
-import { describe, expect, test, beforeAll, beforeEach, afterAll } from "bun:test";
+import { describe, expect, test, beforeAll, beforeEach, afterAll, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { COM_GetGameNames, COM_InitArgv, com_gamedir, com_searchpaths, pop, setComGamedir, setComSearchpaths } from "../src/common/common";
+import { Com_sprintf } from "../src/common/sprintf";
+import * as consoleMod from "../src/client/console";
 import { writePakToDisk } from "./support/pak_builder";
 import { buildBsp, buildMdl, buildSpr, ensureDir, writeGameFile } from "./support/bsp_builder";
 import { Cbuf_AddText, Cbuf_Execute, Cmd_ExecuteString, Cmd_TokenizeString, CmdSourceT, cmdHost, cmdState } from "../src/common/cmd";
@@ -793,5 +795,27 @@ describe.skipIf(!HAVE_PROGS106)("Host_Game_f re-execs quake.rc ahead of the rest
     expect(COM_GetGameNames()).toBe("id1");
     const archived = readFileSync(join(outgoing, "config.cfg"), "utf8");
     expect(archived).toContain('sv_ruleset "classic"');
+  });
+
+  // P15 (2026-09-08): ThreeWave's log.qc stuffs `LOG:  DEATH <victim>/<n>
+  // <killer>/<n> <weapon>` through localcmd. COM_Parse splits "LOG:" into
+  // "LOG" and ":", so the command must answer to "LOG"; before that every kill
+  // echoed the whole line to the players' consoles as an unknown command.
+  test("ThreeWave's `LOG:  DEATH ...` line is swallowed by the LOG command (developer console only)", () => {
+    const printed: string[] = [];
+    const spy = spyOn(consoleMod, "Con_Printf").mockImplementation((fmt: string, ...args: Array<string | number>) => {
+      printed.push(Com_sprintf(fmt, ...args));
+    });
+    try {
+      Cmd_ExecuteString("LOG:  DEATH Navy Red/0 The Verminator/1 rocket", CmdSourceT.src_command);
+      Cmd_ExecuteString("LOG:  FLAG-CAPTURE Navy Red", CmdSourceT.src_command);
+      // the shipped progs' form: `echo LOG:  DEATH ...` (the pak carries "echo " as its own string)
+      Cmd_ExecuteString("echo LOG:  DEATH Navy Red/0 The Verminator/1 rocket ", CmdSourceT.src_command);
+      Cmd_ExecuteString("echo hello world", CmdSourceT.src_command); // an ordinary echo still prints
+    } finally {
+      spy.mockRestore();
+    }
+    expect(printed.filter((l) => /LOG|Unknown command/.test(l))).toEqual([]);
+    expect(printed.join("")).toContain("hello world");
   });
 });

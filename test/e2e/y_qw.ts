@@ -68,7 +68,7 @@ interface ServerHandle {
 }
 
 function startServer(): ServerHandle {
-  const proc = Bun.spawn([...qwsvCmd(), "-basedir", Q1TS_DATA, "-port", String(SERVER_PORT), "+map", "dm2"], {
+  const proc = Bun.spawn([...qwsvCmd(), "-basedir", Q1TS_DATA, ...homedirArgs("qw"), "-port", String(SERVER_PORT), "+map", "dm2"], {
     cwd: REPO,
     stdin: "ignore",
     stdout: "pipe",

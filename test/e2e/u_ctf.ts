@@ -194,6 +194,17 @@ for (const entry of maps) {
   const obs = watch.report();
   if (lines.some((l) => l.includes('Unknown command "ctfscores"'))) ctfScoresUnknown.push(entry.map);
 
+  // P13 (2026-09-08): Mike saw the bots move at several times their speed for
+  // the first seconds of a CTF game (a tick-backlog replay, P11). The watcher
+  // now tracks each bot's longest run of horizontal overspeed; a knockback is
+  // a few frames, a burst is seconds.
+  const fastest = obs.reduce((a, o) => (o.longestOverspeedSeconds > a.longestOverspeedSeconds ? o : a), obs[0]!);
+  check(
+    `${entry.map}: no bot runs past its speed for more than a second (fast-forward burst)`,
+    obs.every((o) => o.longestOverspeedSeconds <= 1),
+    `longest overspeed run ${fastest.longestOverspeedSeconds.toFixed(2)}s at ${Math.round(fastest.peakHorizontalSpeed)} u/s (${fastest.name})`,
+  );
+
   const teamList = [...counts.entries()].sort((a, b) => a[0] - b[0]);
   const scoreText = [...scoresAfter.entries()].sort((a, b) => a[0] - b[0]).map(([t, s]) => `${t}:${s}`).join(",");
 

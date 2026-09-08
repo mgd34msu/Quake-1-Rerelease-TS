@@ -253,7 +253,17 @@ function V_UpdatePalette(): void {
   if (rState.d_shiftramp === null) rState.d_shiftramp = new Uint8Array(3 * 256);
   R_BuildShiftRamps(gammatable, rState.d_shiftramp);
 
-  vidBackend.current?.VID_ShiftPalette(pal);
+  // P20 (2026-09-08): in true colour the ramp above IS the palette shift --
+  // it is applied to every presented pixel. The table the renderer expands
+  // texels through (d_8to24table, via VID_ShiftPalette -> VID_SetPalette)
+  // must therefore stay at the BASE palette: handing it the shifted+gamma
+  // palette applied gamma and every cshift twice while they were active,
+  // and worse, the surface cache bakes the table's colours into its blocks,
+  // so a lava/damage tint that was live when a surface was cached stayed on
+  // that surface after the shift ended (the "shadows are bright orange
+  // after dying in lava" report). The classic 8-bit path is unchanged: its
+  // palette is the shift.
+  vidBackend.current?.VID_ShiftPalette(rState.r_truecolor ? basepal : pal);
 }
 
 /*

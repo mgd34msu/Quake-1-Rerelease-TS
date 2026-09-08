@@ -9,7 +9,7 @@
 // scratch, the same technique test/e2e/e_lib.ts/o_qwcl_video.ts already use
 // for their own isolated basedirs, then this file adds one real synthetic
 // gamedir of its own under that private root.
-import { boot, frames, exec, tap, check, summary, results, menuState, MStateT, asMState, Cvar_VariableString, buildScratchRereleaseRoot, writeScratchGameFile } from "./w_lib";
+import { boot, frames, exec, tap, check, summary, results, menuState, MStateT, asMState, Cvar_VariableString, buildScratchRereleaseRoot, writeScratchGameFile, W_HOMEDIR } from "./w_lib";
 import { K_RIGHTARROW } from "../../src/client/keys";
 import { AvailableLanguages, LoadMenuLocalization } from "../../src/client/menu_content";
 import { Loc_Localize } from "../../src/lib/loc";
@@ -23,7 +23,7 @@ const SCRATCH = process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests";
 const root = buildScratchRereleaseRoot(SCRATCH, "w_loc");
 writeScratchGameFile(root, "e2e_w_locmod", "localization/loc_english_mod.txt", 'm_quake = "E2E_MOD_OVERRIDE"\n');
 
-boot(["-basedir", root, "-game", "e2e_w_locmod"]);
+boot(["-basedir", root, "-game", "e2e_w_locmod", "-homedir", W_HOMEDIR]);
 frames(5);
 exec("disconnect", 3);
 

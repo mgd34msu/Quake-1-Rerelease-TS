@@ -29,7 +29,7 @@ import {
   SDL_TEST_WINDOWEVENT_FOCUS_LOST,
   SDL_TEST_WINDOWEVENT_CLOSE,
 } from "../../src/platform/sdl";
-import { Q1TS_DATA, classicArgv } from "./q1data";
+import { Q1TS_DATA, classicArgv, homedirArgs } from "./q1data";
 
 export const BASEDIR = Q1TS_DATA;
 export const GAME = "e2e_q";
@@ -65,7 +65,8 @@ export function finish(label: string): number {
 // ---- boot / frame pump -----------------------------------------------------
 
 export function boot(extra: string[]): void {
-  Sys_Main_Init(classicArgv(["quake", "-basedir", BASEDIR, "-game", GAME, "-nosound", ...extra]));
+  // H1: the family home is passed explicitly (homedirArgs) instead of relying on the per-user default
+  Sys_Main_Init(classicArgv(["quake", "-basedir", BASEDIR, ...homedirArgs(GAME), "-game", GAME, "-nosound", ...extra]));
 }
 
 export function frames(n = 1, dt = 0.05): void {

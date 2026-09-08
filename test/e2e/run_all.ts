@@ -311,6 +311,12 @@ async function runOne(spec: DriverSpecT, renv: RunnerEnvT): Promise<DriverResult
     Q1TS_DATA: renv.data,
     Q1TS_SCRATCH: renv.scratch,
     Q1TS_HOMEDIR: familyHome,
+    // H1 (2026-09-08): a boot that passes neither -homedir nor -nohomedir
+    // resolves COM_DefaultHomeDir from XDG_DATA_HOME; pointed under the
+    // family home so nothing a driver forgets to pin can reach the real
+    // per-user directory (it did: e2e_q, e2e_w, id1, mg1 folders turned up in
+    // ~/.local/share/q1rets after a regate).
+    XDG_DATA_HOME: join(familyHome, "xdg"),
     SDL_AUDIODRIVER: "dummy",
     ...driverEnv,
   };

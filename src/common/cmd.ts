@@ -161,7 +161,7 @@ import { SizeBuf, SZ_Alloc, SZ_Clear, SZ_Write } from "./sizebuf";
 import { COM_Parse, type ParseState, com_argc, com_argv, COM_LoadHunkFile } from "./common";
 import { Cvar_Command, Cvar_VariableString } from "./cvar";
 import { Hunk_LowMark, Hunk_FreeToLowMark } from "./zone";
-import { Con_Printf } from "../client/console";
+import { Con_Printf, Con_DPrintf } from "../client/console";
 import { Sys_Error, sysState } from "../platform/sys";
 import { activeProfile, type NetProfileT } from "./profile";
 import type * as HostModule from "./host";
@@ -460,6 +460,18 @@ function isConfigCfg(path: string): boolean {
 
 // Just prints the rest of the line to the console
 export function Cmd_Echo_f(): void {
+  // ThreeWave CTF's shipped log.qc stuffs `echo LOG:  DEATH <victim>/<n>
+  // <killer>/<n> <weapon>` (and `echo LOG:  <event>`) through localcmd for a
+  // server-side log scraper; on a listen server that echo landed in the
+  // player's notify area after every kill (P15, 2026-09-07). COM_Parse makes
+  // the first word `LOG` (the colon is its own token), and those lines go to
+  // the developer console -- the server log a scraper reads -- instead.
+  if (Cmd_Argc() > 1 && Q_strcasecmp(Cmd_Argv(1), "LOG") === 0) {
+    let line = "";
+    for (let i = 1; i < Cmd_Argc(); i++) line += Cmd_Argv(i) + " ";
+    Con_DPrintf("%s\n", line);
+    return;
+  }
   for (let i = 1; i < Cmd_Argc(); i++) Con_Printf("%s ", Cmd_Argv(i));
   Con_Printf("\n");
 }

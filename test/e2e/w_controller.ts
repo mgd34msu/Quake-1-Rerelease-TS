@@ -12,7 +12,7 @@
 // SDL_PushEvent SDL_CONTROLLERAXISMOTION/BUTTONDOWN/UP events routed through
 // the engine's own SDL_PumpInput, only the native open/attach call itself
 // stood in for) instead, exactly as test/gamepad.test.ts already does.
-import { boot, frames, exec, check, summary, results, keyState, Cvar_VariableValue, Cvar_SetValue } from "./w_lib";
+import { boot, frames, exec, check, summary, results, keyState, Cvar_VariableValue, Cvar_SetValue, W_HOMEDIR } from "./w_lib";
 import { KeydestT } from "../../src/client/keys";
 import {
   SDL_PushTestEvent,
@@ -45,7 +45,7 @@ const FAKE_INSTANCE = -1; // gpDeviceByInstance's sole-device fallback only fire
 // with a positive id first and seeing every axis/button event silently fail
 // to reach the device (SDL_GamepadAxisStateForTests() stayed all-zero).
 
-boot(["-basedir", BASE, "-game", "e2e_w"]);
+boot(["-basedir", BASE, "-game", "e2e_w", "-homedir", W_HOMEDIR]);
 frames(5);
 exec("disconnect", 3);
 exec("maxplayers 1", 2);

@@ -6,8 +6,7 @@ import {
   boot, frames, exec, tap, typeText, check, summary, results,
   menuState, MStateT, asMState, asDest, Cvar_VariableValue, Cvar_VariableString, Cvar_FindVar,
   keyState, keybindings, Key_KeynumToString, key_lines, conHas, conTail,
-  shot, decodeShot, litRunHeight, type DecodedImage,
-} from "./w_lib";
+  shot, decodeShot, litRunHeight, type DecodedImage, W_HOMEDIR } from "./w_lib";
 import {
   K_ESCAPE, K_ENTER, K_UPARROW, K_DOWNARROW, K_LEFTARROW, K_RIGHTARROW,
   K_TAB, K_BACKSPACE, K_DEL, KeydestT,
@@ -54,7 +53,7 @@ function right(): void {
 // menu either. vid_mode's own default (3 = 640x480, platform/vid.ts's own
 // `new CvarT("vid_mode", "3", true)`) already gives Part C's screenshot math
 // the resolution it wants.
-boot(["-basedir", BASE, "-game", "e2e_w", "-vid_ref", "soft"]);
+boot(["-basedir", BASE, "-game", "e2e_w", "-homedir", W_HOMEDIR, "-vid_ref", "soft"]);
 frames(5);
 exec("disconnect", 3);
 exec("map start", 60); // rerelease content precaches far more than classic id1 -- 20 frames left cls.state mid-signon in practice (found by running this driver), which flips Con_ToggleConsole_f's "turning off" branch to M_Menu_Main_f() instead of key_game and broke every check downstream

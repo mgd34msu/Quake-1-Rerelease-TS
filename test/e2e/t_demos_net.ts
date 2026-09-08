@@ -174,7 +174,7 @@ if (!isQw) {
     ...waits(10),
   ];
   const recCfg = writeQwSpawnCfg(`t_dem_${protocolArg}_rec`, recScript);
-  const cl: SeatT = startQwClient(`t_dem_${protocolArg}_cl`, ["-qw", "-basedir", BASE, "-nosound"], [
+  const cl: SeatT = startQwClient(`t_dem_${protocolArg}_cl`, ["-qw", "-basedir", BASE, ...homedirArgs("qw"), "-nosound"], [
     "cl_shownet 0",
     `cl_execonspawn ${recCfg}`,
     `connect 127.0.0.1:${port}`,
@@ -206,7 +206,7 @@ if (!isQw) {
   killSeat(cl);
   killSeat(sv);
   await sleep(3000);
-  playbackArgs = ["-qw", "-basedir", BASE, "-nosound"];
+  playbackArgs = ["-qw", "-basedir", BASE, ...homedirArgs("qw"), "-nosound"];
 }
 
 check("the live client was sent a level title to compare playback against", liveTitle !== null && liveTitle.length > 0, `title=${liveTitle ?? "(none)"}`);

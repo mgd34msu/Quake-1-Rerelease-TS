@@ -76,6 +76,7 @@ ahead of it. So the working design is:
      mechanisms apply because nothing chains or loops across the join at all.
 */
 
+import { homedirArgs } from "./q1data";
 import { argValue, check, clientLevelTitle, killSeat, qwBasedir, readLog, recordedDemoPath, startQwClient, startServer, summary, waitFor, waits, writeQwSpawnCfg, type SeatT } from "./t_lib";
 import { existsSync, statSync } from "node:fs";
 
@@ -98,7 +99,7 @@ const HOLD_FRAMES = 120;
 
 const BASE = qwBasedir();
 
-const sv: SeatT = startServer(`${tag}_sv`, ["-qw", "-basedir", BASE, "-nosound", "-port", port, "+sv_qwprotocol", PROTOCOL_ARG, "+map", "dm1"]);
+const sv: SeatT = startServer(`${tag}_sv`, ["-qw", "-basedir", BASE, ...homedirArgs("qw"), "-nosound", "-port", port, "+sv_qwprotocol", PROTOCOL_ARG, "+map", "dm1"]);
 const svUp = await waitFor(sv, /Server protocol \d+ \(flags/, 90000);
 check(`${tag}/server-serves-the-protocol`, svUp, svUp ? "" : `no "Server protocol" line in ${sv.log}`);
 
@@ -123,7 +124,7 @@ const recScript = [
 const recCfg = writeQwSpawnCfg(`${tag}_rec`, recScript);
 
 const bootScript = ["cl_shownet 0", `cl_execonspawn ${recCfg}`, `connect 127.0.0.1:${port}`];
-const cl: SeatT = startQwClient(`${tag}_cl`, ["-qw", "-basedir", BASE, "-nosound"], bootScript);
+const cl: SeatT = startQwClient(`${tag}_cl`, ["-qw", "-basedir", BASE, ...homedirArgs("qw"), "-nosound"], bootScript);
 
 const joined = await waitFor(sv, /entered the game/, 120000);
 check(`${tag}/client-joined`, joined, joined ? "" : (readLog(sv).match(/.*entered the game.*/g) ?? []).slice(-1).join("") || `no player entered (client log ${cl.log})`);
@@ -148,7 +149,7 @@ killSeat(sv);
 // playback in fresh processes, no server anywhere
 // ---------------------------------------------------------------------------
 
-const playbackArgs = ["-qw", "-basedir", BASE, "-nosound"];
+const playbackArgs = ["-qw", "-basedir", BASE, ...homedirArgs("qw"), "-nosound"];
 
 const play = startQwClient(`${tag}_play`, playbackArgs, ["cl_shownet 0", `playdemo ${DEMO}`]);
 const playSaw = await waitFor(play, /\[02\]/, 60000);

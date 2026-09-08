@@ -421,6 +421,13 @@ export interface BotObservationT {
   stillSnapshot: StillSnapshotT | null;
   /** Frames the brain held another entity as its combat target. */
   targetFrames: number;
+  /** P13: longest run of frames (in seconds) the bot's HORIZONTAL speed exceeded
+   * OVERSPEED_UNITS while alive, teleports excluded. A knockback lasts a few
+   * frames; a server that replays a tick backlog (P11) or a movement defect
+   * drives it for seconds. */
+  longestOverspeedSeconds: number;
+  /** The highest horizontal speed seen in that run, units per second. */
+  peakHorizontalSpeed: number;
   /** Frames where the bot gained an item bit, ammo, armour or health. */
   pickups: number;
   /** Frames where this bot's frag count went up. */
@@ -452,10 +459,16 @@ interface WatchStateT {
   aliveFrames: number;
   wasDead: boolean;
   skipNext: boolean;
+  overspeed: number;
+  longestOverspeed: number;
+  peakSpeed: number;
 }
 
 /** A respawn moves the body across the level; that jump is not walking. */
 const TELEPORT_STEP = 200;
+// sv_maxspeed is 320; a rocket knockback can push past it for a moment, a
+// tick-backlog replay or a movement defect keeps a bot past it for seconds
+const OVERSPEED_UNITS = 480;
 /** Under this much movement in a frame the bot counts as standing still. */
 const STILL_STEP = 1;
 
@@ -500,6 +513,9 @@ export class BotWatch {
         aliveFrames: 0,
         wasDead: false,
         skipNext: false,
+        overspeed: 0,
+        longestOverspeed: 0,
+        peakSpeed: 0,
       });
     }
   }
@@ -518,6 +534,12 @@ export class BotWatch {
       if (!dead && !s.wasDead && !s.skipNext) {
         if (step < TELEPORT_STEP) s.distance += step;
         s.aliveFrames += 1;
+        const horizontal = Math.hypot(origin[0] - s.prev[0], origin[1] - s.prev[1]) / this.dt;
+        if (step < TELEPORT_STEP && horizontal > OVERSPEED_UNITS) {
+          s.overspeed += 1;
+          if (s.overspeed > s.longestOverspeed) s.longestOverspeed = s.overspeed;
+          if (horizontal > s.peakSpeed) s.peakSpeed = horizontal;
+        } else s.overspeed = 0;
         // A player the progs hold with MOVETYPE_NONE (hip1m1's spawn freeze
         // holds every client for ~5 s) is not a stuck bot: that time does
         // not count toward the standstill.
@@ -592,6 +614,8 @@ export class BotWatch {
         longestStillSeconds: s.longestStill * this.dt,
         stillSnapshot: s.stillSnapshot,
         targetFrames: s.targetFrames,
+        longestOverspeedSeconds: s.longestOverspeed * this.dt,
+        peakHorizontalSpeed: s.peakSpeed,
         pickups: s.pickups,
         frags: s.frags,
         deaths: s.deaths,
