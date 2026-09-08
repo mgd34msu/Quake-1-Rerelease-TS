@@ -321,15 +321,30 @@ describe("draw.ts (WinQuake draw.c)", () => {
     }
   });
 
-  test("Draw_Pic Sys_Errors on bad coordinates", () => {
+  test("Draw_Pic clips a pic that runs off the screen instead of Sys_Erroring (resizable window)", () => {
+    // WinQuake's "Draw_Pic: bad coordinates" Sys_Error assumed fixed video
+    // modes; this port's window can be made smaller than the status bar.
+    vid.buffer = freshVidBuffer();
     const pic = new QpicT();
     pic.width = 4;
     pic.height = 4;
-    pic.data = new Uint8Array(16);
+    pic.data = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
 
-    expect(() => Draw_Pic(-1, 0, pic)).toThrow(SysError);
-    expect(() => Draw_Pic(-1, 0, pic)).toThrow(/Draw_Pic: bad coordinates/);
-    expect(() => Draw_Pic(vid.width - 3, 0, pic)).toThrow(SysError); // x + width > vid.width
+    expect(() => Draw_Pic(-1, 0, pic)).not.toThrow();
+    // columns 1..3 of the pic land in screen columns 0..2
+    expect(vid.buffer?.[0]).toBe(2);
+    expect(vid.buffer?.[2]).toBe(4);
+    expect(vid.buffer?.[3]).toBe(SENTINEL);
+    expect(vid.buffer?.[vid.rowbytes * 3 + 0]).toBe(14);
+
+    vid.buffer = freshVidBuffer();
+    expect(() => Draw_Pic(vid.width - 3, vid.height - 2, pic)).not.toThrow(); // runs off the right and the bottom
+    expect(vid.buffer?.[(vid.height - 2) * vid.rowbytes + vid.width - 3]).toBe(1);
+    expect(vid.buffer?.[(vid.height - 1) * vid.rowbytes + vid.width - 1]).toBe(7);
+
+    vid.buffer = freshVidBuffer();
+    expect(() => Draw_Pic(vid.width, 0, pic)).not.toThrow(); // nothing visible: nothing drawn
+    expect(vid.buffer?.every((b) => b === SENTINEL)).toBe(true);
   });
 
   test("F2: Draw_ScaledPic at scale 1 matches Draw_Pic exactly (same pixels, no clipping)", () => {

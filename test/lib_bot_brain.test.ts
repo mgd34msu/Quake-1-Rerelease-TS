@@ -52,7 +52,9 @@ import {
   type BotVec3,
   type BotWorldT,
 } from "../src/lib/bot_brain";
-import { BotEntityKind } from "../src/lib/bot_brain/world";
+import { BotContents, BotEntityKind } from "../src/lib/bot_brain/world";
+import { angleMod } from "../src/lib/bot_brain/math";
+import type { NavGraphLinkT, NavPathT } from "../src/lib/bot_brain/nav_graph";
 import type { BotMovementSettings } from "../src/lib/botdata";
 
 //=============================================================================
@@ -1225,7 +1227,7 @@ class StubWorld implements BotWorldT {
   traceBox(_start: BotVec3, _mins: BotVec3, _maxs: BotVec3, end: BotVec3): BotTraceT {
     return { fraction: this.blocked ? 0.5 : 1, endpos: end, startsolid: false, hitId: -1 };
   }
-  pointContents(): number {
+  pointContents(_p: BotVec3): number {
     return 0;
   }
   entities(): readonly BotEntityT[] {
@@ -1300,6 +1302,274 @@ function makeBrain(seed: number, gameMode: { gameType: string; weaponStay: boole
     weaponImpulse: (n) => (n === 1 ? 2 : n === 2 ? 3 : n === 4096 ? 1 : 0),
   });
 }
+
+// P17 (2026-09-08): a world whose contents the test controls per point.
+class HazardWorld extends StubWorld {
+  contentsAt: (p: BotVec3) => number = () => BotContents.Empty;
+  override pointContents(p: BotVec3): number {
+    return this.contentsAt(p);
+  }
+  /** A line trace that stops at the first solid sample (2-unit steps), like the engine's does at a brush. */
+  override traceLine(start: BotVec3, end: BotVec3): BotTraceT {
+    const len = bvecDistance(start, end);
+    const steps = Math.max(1, Math.ceil(len / 2));
+    for (let i = 0; i <= steps; i++) {
+      const f = i / steps;
+      const p = { x: start.x + (end.x - start.x) * f, y: start.y + (end.y - start.y) * f, z: start.z + (end.z - start.z) * f };
+      if (this.contentsAt(p) === BotContents.Solid) return { fraction: f, endpos: p, startsolid: i === 0, hitId: -1 };
+    }
+    return { fraction: 1, endpos: end, startsolid: false, hitId: -1 };
+  }
+}
+
+function worldMove(cmd: { forwardmove: number; sidemove: number; viewAngles: BotVec3 }): { x: number; y: number } {
+  const yaw = (cmd.viewAngles.y * Math.PI) / 180;
+  return { x: Math.cos(yaw) * cmd.forwardmove + Math.sin(yaw) * cmd.sidemove, y: Math.sin(yaw) * cmd.forwardmove - Math.cos(yaw) * cmd.sidemove };
+}
+
+describe("brain: lava (P17, ctf6/ctf8 deaths)", () => {
+  test("in lava it drops the route, faces the last dry ground and pushes straight at it (the water-jump climbs out)", () => {
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(11);
+    brain.think(world); // dry, on the ground: remembered as the safe spot
+    world.selfState.origin = bvec(200, 0, -100);
+    world.selfState.eye = bvec(200, 0, -78);
+    world.selfState.onGround = false;
+    world.selfState.waterLevel = 2;
+    world.contentsAt = (p) => (p.z < -40 ? BotContents.Lava : BotContents.Empty);
+    world.now += 0.05;
+    const cmd = brain.think(world);
+    expect(brain.currentPath()).toBeNull();
+    expect(Math.abs(angleMod(cmd.viewAngles.y) - 180)).toBeLessThan(1); // facing x=0, the dry spot
+    expect(cmd.viewAngles.x).toBe(0);
+    expect(cmd.forwardmove).toBeGreaterThan(0);
+    expect(Math.abs(cmd.sidemove)).toBeLessThan(1);
+    expect(cmd.upmove).toBe(0); // move-up lifts the origin out of the liquid and defeats the water-jump
+    expect(cmd.buttons & BOT_BUTTON_JUMP).toBe(0);
+    expect(worldMove(cmd).x).toBeLessThan(0); // back toward x=0
+  });
+
+  test("in lava it faces the exit even with an enemy in view", () => {
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(11);
+    brain.think(world);
+    world.selfState.origin = bvec(200, 0, -100);
+    world.selfState.eye = bvec(200, 0, -78);
+    world.selfState.onGround = false;
+    world.selfState.waterLevel = 2;
+    world.contentsAt = (p) => (p.z < -40 ? BotContents.Lava : BotContents.Empty);
+    world.ents = [stubEnemy(30, bvec(200, 300, -80))]; // an enemy off to the side (+y)
+    world.now += 0.05;
+    const cmd = brain.think(world);
+    expect(Math.abs(angleMod(cmd.viewAngles.y) - 180)).toBeLessThan(1);
+  });
+
+  test("fully under the lava it swims up first", () => {
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(11);
+    brain.think(world);
+    world.selfState.origin = bvec(200, 0, -100);
+    world.selfState.eye = bvec(200, 0, -78);
+    world.selfState.onGround = false;
+    world.selfState.waterLevel = 3;
+    world.contentsAt = (p) => (p.z < 0 ? BotContents.Lava : BotContents.Empty);
+    world.now += 0.05;
+    const cmd = brain.think(world);
+    expect(cmd.upmove).toBeGreaterThan(0);
+  });
+
+  test("in lava with no dry spot remembered it heads for the nearest non-lava point around it", () => {
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(12);
+    world.selfState.onGround = false;
+    world.selfState.waterLevel = 2;
+    // lava everywhere except to the west (x < -60)
+    world.contentsAt = (p) => (p.x < -60 ? BotContents.Empty : BotContents.Lava);
+    const cmd = brain.think(world);
+    expect(Math.abs(angleMod(cmd.viewAngles.y) - 180)).toBeLessThan(46); // facing west (the first dry sample of twelve around it)
+    expect(cmd.forwardmove).toBeGreaterThan(0);
+    expect(worldMove(cmd).x).toBeLessThan(0);
+  });
+
+  test("on the ground it refuses a step whose floor ahead is lava", () => {
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(13);
+    // the bot stands on a pillar: anything more than 30 units away has lava under it
+    world.contentsAt = (p) => (Math.hypot(p.x, p.y) > 30 && p.z < -10 ? BotContents.Lava : BotContents.Empty);
+    let pressed = 0;
+    for (let i = 0; i < 10; i++) {
+      world.now += 0.05;
+      const cmd = brain.think(world);
+      pressed += Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove);
+    }
+    expect(pressed).toBe(0);
+  });
+
+  test("lava beyond the point it is steering for does not stop the step (the ctf6 walkway)", () => {
+    // The carrier's route home on ctf6 bends along a walkway with lava
+    // beside it. A guard that looked 144 u down the current heading saw
+    // lava past the bend and held the carrier at the rim for 30 s. The
+    // look is cut at the steer point: the bot turns there.
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(15);
+    world.ents = [stubItem(10, "item_armor2", bvec(60, 0, 0))];
+    world.selfState.velocity = bvec(320, 0, 0); // at a run the uncut look is 80 u
+    world.contentsAt = (p) => (p.x > 70 && p.z < -10 ? BotContents.Lava : p.z < -10 ? BotContents.Solid : BotContents.Empty); // lava 10 u past the item, well inside the 80 u run look
+    let pressed = 0;
+    for (let i = 0; i < 10; i++) {
+      world.now += 0.05;
+      const cmd = brain.think(world);
+      pressed += Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove);
+    }
+    expect(pressed).toBeGreaterThan(0);
+    expect(brain.guardRefusals).toBe(0);
+  });
+
+  test("a thin plate over lava (a lift, a bridge) is floor, not the pit", () => {
+    // ctf6's lifts and lowest walkways: a 8-unit plate with lava beneath.
+    // Point scans at 24-unit steps missed the plate and read the lava.
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(16);
+    world.ents = [stubItem(10, "item_armor2", bvec(60, 0, 0))];
+    world.contentsAt = (p) => (p.z <= -24 && p.z > -32 ? BotContents.Solid : p.z <= -32 ? BotContents.Lava : BotContents.Empty);
+    let pressed = 0;
+    for (let i = 0; i < 10; i++) {
+      world.now += 0.05;
+      const cmd = brain.think(world);
+      pressed += Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove);
+    }
+    expect(pressed).toBeGreaterThan(0);
+    expect(brain.guardRefusals).toBe(0);
+  });
+
+  test("a ledge high over lava is refused too (ctf8's upper level, 250 u above the pools)", () => {
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(17);
+    // floor under the bot only; beyond x=30 the next solid thing is the lava floor 300 u down
+    world.contentsAt = (p) => (Math.hypot(p.x, p.y) <= 30 && p.z < -10 ? BotContents.Solid : p.z < -330 ? BotContents.Solid : p.z < -290 ? BotContents.Lava : BotContents.Empty);
+    let pressed = 0;
+    for (let i = 0; i < 10; i++) {
+      world.now += 0.05;
+      const cmd = brain.think(world);
+      pressed += Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove);
+    }
+    expect(pressed).toBe(0);
+    expect(brain.guardRefusals).toBeGreaterThan(0);
+  });
+
+  test("a jump that would land in lava is not pressed even when the step itself is fine", () => {
+    // The bot runs along a rim (floor for 60 u ahead, lava beyond): the
+    // step guard passes, but a jump at run speed flies past the floor.
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(18);
+    world.ents = [stubItem(10, "item_armor2", bvec(50, 0, 0)), stubEnemy(30, bvec(50, 400, 0))]; // an enemy: combat jumps roll
+    world.selfState.velocity = bvec(320, 0, 0);
+    world.contentsAt = (p) => (p.x <= 60 && p.z < -10 ? BotContents.Solid : p.x > 60 && p.z < -10 ? BotContents.Lava : BotContents.Empty);
+    let jumps = 0, pressed = 0;
+    for (let i = 0; i < 40; i++) {
+      world.now += 0.05;
+      const cmd = brain.think(world);
+      if (cmd.buttons & BOT_BUTTON_JUMP) jumps++;
+      pressed += Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove);
+    }
+    expect(jumps).toBe(0);
+    expect(pressed).toBeGreaterThan(0);
+  });
+
+  test("a lava gap with a landing in jump reach is run at and jumped (ctf8's central channel)", () => {
+    // Floor to x=40, lava from 40 to 104 (64 u), floor again from 104 at
+    // the same height: a player runs and jumps it.
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(19);
+    world.ents = [stubItem(10, "item_armor2", bvec(300, 0, 0))];
+    world.selfState.velocity = bvec(320, 0, 0);
+    world.contentsAt = (p) => (p.z >= -10 ? BotContents.Empty : p.x > 40 && p.x < 104 ? BotContents.Lava : BotContents.Solid);
+    let forward = 0, jumps = 0;
+    for (let i = 0; i < 10; i++) {
+      world.now += 0.05;
+      const cmd = brain.think(world);
+      forward += cmd.forwardmove;
+      if (cmd.buttons & BOT_BUTTON_JUMP) jumps++;
+      if (cmd.forwardmove > 0 && world.selfState.origin.x < 24) world.selfState.origin = bvec(world.selfState.origin.x + 8, 0, 0); // the run to the rim
+    }
+    expect(forward).toBeGreaterThan(0);
+    expect(jumps).toBeGreaterThan(0);
+    expect(brain.gapJumps).toBeGreaterThan(0);
+    expect(brain.guardRefusals).toBe(0);
+  });
+
+  test("a lava gap wider than the jump reach is refused", () => {
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(20);
+    world.ents = [stubItem(10, "item_armor2", bvec(600, 0, 0))];
+    world.selfState.velocity = bvec(320, 0, 0);
+    // 400 u of lava at the same height: 320 u/s for 0.68 s of air is 217 u
+    world.contentsAt = (p) => (p.z >= -10 ? BotContents.Empty : p.x > 40 && p.x < 440 ? BotContents.Lava : BotContents.Solid);
+    let pressed = 0, jumps = 0;
+    for (let i = 0; i < 10; i++) {
+      world.now += 0.05;
+      const cmd = brain.think(world);
+      pressed += Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove);
+      if (cmd.buttons & BOT_BUTTON_JUMP) jumps++;
+    }
+    expect(pressed).toBe(0);
+    expect(jumps).toBe(0);
+    expect(brain.guardRefusals).toBeGreaterThan(0);
+  });
+
+  test("a single 16-u lip past the lava is not a landing (ctf6's rail at chest height)", () => {
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(22);
+    world.ents = [stubItem(10, "item_armor2", bvec(300, 0, 0))];
+    world.selfState.velocity = bvec(320, 0, 0);
+    // lava from 40; a lip of solid at the bot's own height between x 72 and 88; lava beyond it
+    world.contentsAt = (p) => (p.x > 72 && p.x <= 88 && p.z <= 0 ? BotContents.Solid : p.z >= -10 ? BotContents.Empty : p.x > 40 ? BotContents.Lava : BotContents.Solid);
+    let pressed = 0, jumps = 0;
+    for (let i = 0; i < 10; i++) {
+      world.now += 0.05;
+      const cmd = brain.think(world);
+      pressed += Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove);
+      if (cmd.buttons & BOT_BUTTON_JUMP) jumps++;
+    }
+    expect(pressed).toBe(0);
+    expect(jumps).toBe(0);
+  });
+
+  test("a fresh plan never skips the teleporter node just because the destination lies behind the bot", () => {
+    // ctf6: points [source node (walk), destination (Teleport link)]. The
+    // bot stands a little past the source, with the destination on the far
+    // side of the map behind it: the flat behind-me test in setPath used to
+    // retire the source and the bot steered at the destination across lava.
+    const state = newPathState();
+    const teleport = { from: 0, to: 1, type: NavLinkType.Teleport, traversal: null, entityBounds: null } as unknown as NavGraphLinkT;
+    const path: NavPathT = { nodes: [0, 1], points: [bvec(-1099, -535, -1214), bvec(-2319, 221, -614)], links: [null, teleport], cost: 1 };
+    setPath(state, path, bvec(-1203, -514, -1191), 0);
+    expect(state.index).toBe(0);
+  });
+
+  test("a wall past the lava is a pit, not a gap", () => {
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(21);
+    world.ents = [stubItem(10, "item_armor2", bvec(300, 0, 0))];
+    world.selfState.velocity = bvec(320, 0, 0);
+    world.contentsAt = (p) => (p.x > 104 ? BotContents.Solid : p.z >= -10 ? BotContents.Empty : p.x > 40 ? BotContents.Lava : BotContents.Solid);
+    let pressed = 0;
+    for (let i = 0; i < 10; i++) {
+      world.now += 0.05;
+      const cmd = brain.think(world);
+      pressed += Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove);
+    }
+    expect(pressed).toBe(0);
+  });
+
+  test("a floor of solid ground ahead is a step it takes", () => {
+    const world = new HazardWorld(bvec(0, 0, 0));
+    const brain = makeBrain(14);
+    world.contentsAt = (p) => (p.z < -10 ? BotContents.Solid : BotContents.Empty);
+    const cmd = makeBrain(14).think(world) && brain.think(world);
+    expect(Math.abs(cmd.forwardmove) + Math.abs(cmd.sidemove)).toBeGreaterThan(0);
+  });
+});
 
 describe("brain", () => {
   test("with no target and no nav it walks somewhere rather than standing still", () => {

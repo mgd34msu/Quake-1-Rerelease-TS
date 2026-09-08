@@ -10,7 +10,7 @@
 
 import { angleVectors, bvecDistance, bvecDistance2D, clamp, type BotVec3 } from "./math";
 import type { BotMovementSettings } from "../botdata";
-import { navLinkIsJump, NavLinkType, steerDirection, type NavGraphLinkT, type NavPathT } from "./nav_graph";
+import { navLinkIsEntity, navLinkIsJump, NavLinkType, steerDirection, type NavGraphLinkT, type NavPathT } from "./nav_graph";
 import { randomChance, type BotRandomT } from "./rng";
 
 /**
@@ -85,6 +85,15 @@ export function setPath(state: BotPathStateT, path: NavPathT | null, origin: Bot
       // the flat test above reads as already passed -- and the bot then swims
       // at the next tunnel node straight through the shaft wall.
       if (Math.abs(here.z - origin.z) > 64) break;
+      // A point whose next step is a traversal owned by an entity (a
+      // teleporter, a lift, a train, a push) or a jump is where that step
+      // is taken: it cannot be walked past. The flat test above read ctf6's
+      // teleporter node as "behind" because the point after it is the
+      // teleport's destination on the far side of the map, and the bot then
+      // steered straight at the destination across a lava moat (P17: 14 s
+      // stalls at the rim). A walk-off-ledge point is walked like any other.
+      const nextLink = path.links[state.index + 1] ?? null;
+      if (nextLink !== null && (navLinkIsEntity(nextLink.type) || navLinkIsJump(nextLink.type))) break;
       state.index++;
     }
   }

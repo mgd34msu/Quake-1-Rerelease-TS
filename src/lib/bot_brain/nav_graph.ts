@@ -102,6 +102,12 @@ export interface NavTraverseCapsT {
    * nothing is avoided.
    */
   avoid?: (node: NavGraphNodeT) => boolean;
+  /**
+   * A link the searcher refuses to walk, whatever its type says: the caller
+   * knows what lies UNDER the straight line between two nodes (a walk link
+   * across a lava pit is a link the mapper meant for a monster that flies).
+   */
+  avoidLink?: (from: NavGraphNodeT, to: NavGraphNodeT, link: NavGraphLinkT) => boolean;
 }
 
 export function defaultTraverseCaps(): NavTraverseCapsT {
@@ -330,6 +336,7 @@ export class NavGraph {
 
     if (!caps.swim && (to.flags & NavNodeFlags.UnderWater) !== 0) return false;
     if (caps.avoid !== undefined && caps.avoid(to)) return false;
+    if (caps.avoidLink !== undefined && caps.avoidLink(from, to, link)) return false;
 
     if (navLinkIsEntity(link.type)) {
       if (!caps.entityTraversal) return false;

@@ -74,7 +74,7 @@ import type { BotSkillSettings, CharacterEntry } from "../botdata";
 import { aimError, aimLeadPoint, aimStep, newAimState, type BotAimStateT } from "./aim";
 import { angleBetween, angleMod, angleVectors, bvec, bvecAdd, bvecDistance, bvecSub, type BotVec3 } from "./math";
 import { BotGameType, INTERACTION, ITEM_FLAG, chooseWeapon, itemValue, type BotGameModeT, type BotKnowledge, type BotWeaponT } from "./knowledge";
-import { PLAN_START_ABOVE, defaultTraverseCaps, type NavPathT, type NavTraverseCapsT } from "./nav_graph";
+import { PLAN_START_ABOVE, defaultTraverseCaps, type NavPathT, type NavTraverseCapsT, NavLinkType } from "./nav_graph";
 import { BOT_RUN_SPEED, BOT_WALK_SPEED, BotPathStatus, clearPath, followPath, newPathState, rollCombatJump, setPath, steerDirect, type BotPathStateT } from "./path_follow";
 import { canFire, evaluateSightGeometry, isAware, newAwareness, senseStep, shouldForget, soundAudible, type BotAwarenessT, type BotContactT } from "./senses";
 import { randomChance, randomIndex, randomRange, type BotRandomT } from "./rng";
@@ -88,6 +88,7 @@ import {
   type BotEntityT,
   type BotUsercmdT,
   type BotWorldT,
+  type BotContentsT,
 } from "./world";
 
 //============================================================================
@@ -156,6 +157,61 @@ const REPLAN_SECONDS = 2.0;
 const STUCK_GIVE_UP = 3;
 /** How far a roaming bot is willing to be sent. */
 const ROAM_RADIUS = 4096;
+/** How far ahead of the bot the floor is checked for lava before a step is taken, plus the stopping distance at its speed. */
+const EDGE_LOOKAHEAD = 32;
+/**
+ * Seconds of travel added to the look-ahead. Ground friction (sv_friction 4)
+ * stops a 320 u/s run in about 0.25 s over some 40 u; 0.3 s looked 144 u
+ * ahead, past every bend of ctf6's lava walkways, and carriers stood at the
+ * rim for 30 s (P17 arrival regression).
+ */
+const EDGE_STOP_SECONDS = 0.15;
+/** Spacing of the floor probes between the bot and the look-ahead point. */
+const EDGE_PROBE_STEP = 16;
+/**
+ * How far below a probe point the floor is looked for. 160 u let every ledge
+ * higher than that over lava pass as "too deep to see the bottom of": on
+ * ctf8 seven of eighteen lava deaths were bots walking or running off the
+ * upper level (z 216-280) into pools 250 u below. A fall onto ground is a
+ * few points of damage at worst; a fall into lava is death at any depth.
+ */
+const EDGE_DROP_CHECK = 1024;
+/** Seconds a jump keeps a bot in the air at run speed (270 u/s up under 800 u/s^2 gravity lands in ~0.7 s). */
+const JUMP_AIR_SECONDS = 0.7;
+/** The engine's jump: velocity_z 270 under sv_gravity 800 (client.qc PlayerJump). */
+const JUMP_VELOCITY = 270;
+const GRAVITY = 800;
+/** How far past a hazard's start a landing is looked for. */
+const GAP_LANDING_SEARCH = 320;
+/** How much higher than the bot's floor a landing may be (a jump clears 45 u; keep a margin). */
+const GAP_LANDING_RISE = 40;
+/** A jump is pressed once the hazard's start is this close (about 6 frames at a run). */
+const GAP_JUMP_TRIGGER = 32;
+/** Fraction of the computed jump reach the landing must fit in: speed and take-off timing are not exact. */
+const GAP_REACH_MARGIN = 0.85;
+/**
+ * Whether what lies under a point is lava or slime: a line is traced down
+ * EDGE_DROP_CHECK units to the first solid thing -- world OR a brush entity,
+ * so a lift, a bridge plate or a door over a pit is floor (point contents
+ * see the world only, and a 24-unit point scan skipped plates thinner than
+ * that: bots on ctf6's lowest floor and on lifts over lava refused every
+ * step) -- and the contents just above where it stopped decide. Nothing
+ * within reach means a drop too deep to see the bottom of; only lava at
+ * the end of it counts.
+ */
+function hazardBelow(world: BotWorldT, x: number, y: number, z: number): boolean {
+  const trace = world.traceLine({ x, y, z }, { x, y, z: z - EDGE_DROP_CHECK });
+  const c = world.pointContents({ x, y, z: trace.endpos.z + 2 });
+  return c === BotContents.Lava || c === BotContents.Slime;
+}
+
+/** Directions sampled for a way out when the bot is already in lava and has no safe ground remembered. */
+const LAVA_EXIT_SAMPLES = 12;
+const LAVA_EXIT_REACH = 96;
+/** How long a static point the bot has reached is left alone before it is worth walking to again. */
+const POINT_REST_SECONDS = 8;
+/** How close an escort keeps to the teammate carrying the objective. */
+const ESCORT_DISTANCE = 160;
 /**
  * How long a goal the nav graph could not reach is left alone. Long enough
  * that the bot stops thrashing against it, short enough that a door or plat
@@ -295,6 +351,18 @@ export class BotBrain {
   /** Where the bot was when the wedge timer last reset, and when that was. */
   private wedgeOrigin: BotVec3 | null = null;
   private wedgeSince = -1;
+  /** The last spot the bot stood on dry, solid ground: where a bot in lava heads back to (P17). */
+  private lastSafeOrigin: BotVec3 | null = null;
+  /** A static point the bot has reached, resting until `restUntil` so it roams instead of standing on it (P17). */
+  private restPoint: BotVec3 | null = null;
+  private restUntil = 0;
+  /** Counters a driver or diagnostic can read: steps the edge guard refused, frames spent escaping lava (P17). */
+  guardRefusals = 0;
+  /** Whether the edge guard zeroed the last frame's move: the wedge detector reads that as pressing into a wall. */
+  private lastGuardRefused = false;
+  /** Diagnostic: jumps pressed to cross a gap (P17). */
+  gapJumps = 0;
+  hazardFrames = 0;
 
   /** Where each objective was standing the first time this level showed it. */
   private readonly objectiveHome = new Map<number, BotVec3>();
@@ -405,6 +473,9 @@ export class BotBrain {
     this.lastWeaponNumber = 0;
     this.lastCmd = emptyUsercmd();
     this.wedgeOrigin = null;
+    this.lastSafeOrigin = null;
+    this.restPoint = null;
+    this.restUntil = 0;
     this.wedgeSince = -1;
     this.objectiveHome.clear();
     this.ownObjectiveHome = null;
@@ -532,6 +603,8 @@ export class BotBrain {
     //---- 4/5: movement ------------------------------------------------------
     let moveTarget: BotVec3 | null = null;
     let ridingLift = false;
+    let hazardFace: BotVec3 | null = null; // in lava: the exit the view is held on (the water-jump needs it)
+    let inHazardNow = false;
     if (goal !== null && this.holdPosition) {
       // Standing where the goal says to stand: no plan, no steering, and the
       // wedge timer is told this stillness is intended.
@@ -589,6 +662,7 @@ export class BotBrain {
           cmd.sidemove = direct.sidemove;
           moveTarget = goal;
         } else {
+          this.restStaticGoal(goal, now);
           this.reachGoal();
         }
       } else if (follow.status === BotPathStatus.Moving) {
@@ -607,6 +681,7 @@ export class BotBrain {
           // At the point: no press. A camper pressing at a goal it already
           // stands on read as wedged, and the unstick hops that followed
           // walked it off ledges (ctf1's flag room has a pit beside it).
+          this.restStaticGoal(goal, now);
           this.reachGoal();
         } else {
           const direct = steerDirect(self.origin, this.aim.yaw, goal, this.settings.movement.walkOnly, this.config.runSpeed, this.config.walkSpeed);
@@ -615,6 +690,46 @@ export class BotBrain {
           moveTarget = goal;
         }
       }
+    }
+
+    // P17 (2026-09-08, ctf6/ctf8): bots walked into lava on a route -- off a
+    // ledge beside a teleporter, past a walk-off-ledge landing, across a
+    // corner cut over a pit -- and then kept following the path while it
+    // burned them (9 of 17 deaths on ctf6 were lava). Two rules, both from
+    // what the world says is under the bot:
+    //  - in lava or slime, nothing else matters: drop the plan, FACE the
+    //    last dry ground the bot stood on (or the nearest non-lava spot
+    //    around it) and push straight at it. The climb out is the engine's
+    //    water-jump, which fires only for a player whose view faces a wall
+    //    within 24 units with its origin in the liquid: measured on ctf8's
+    //    central channel (banks 16 u above the lava), facing the bank and
+    //    pushing forward is out in 0.5 s, facing an enemy and strafing at
+    //    the bank is pinned on it until dead, and pressing move-up lifts
+    //    the origin above the surface where neither swimming nor the
+    //    water-jump works. So: aim at the exit over any enemy, no jump, no
+    //    move-up unless fully under (then swim up to the surface first);
+    //  - on the ground, a step whose floor ahead is lava is not taken; a
+    //    planned long jump is the one exception.
+    if (this.inHazard(world, self)) {
+      this.hazardFrames++;
+      inHazardNow = true;
+      clearPath(this.pathState);
+      const exit = this.lastSafeOrigin ?? this.hazardExit(world, self);
+      if (exit !== null) {
+        this.aim.yaw = (Math.atan2(exit.y - self.origin.y, exit.x - self.origin.x) * 180) / Math.PI;
+        this.aim.pitch = 0;
+        hazardFace = exit;
+        const direct = steerDirect(self.origin, this.aim.yaw, exit, false, this.config.runSpeed, this.config.walkSpeed);
+        cmd.forwardmove = direct.forwardmove;
+        cmd.sidemove = direct.sidemove;
+        moveTarget = exit;
+      }
+      cmd.upmove = self.waterLevel >= 3 ? (this.config.runSpeed ?? BOT_RUN_SPEED) : 0;
+      cmd.buttons &= ~BOT_BUTTON_JUMP;
+      this.wedgeOrigin = { x: self.origin.x, y: self.origin.y, z: self.origin.z };
+      this.wedgeSince = now;
+    } else if (self.onGround && self.waterLevel === 0) {
+      this.lastSafeOrigin = { x: self.origin.x, y: self.origin.y, z: self.origin.z };
     }
 
     // Nothing above this point knows what is actually in front of the bot:
@@ -647,6 +762,67 @@ export class BotBrain {
       if (self.onGround) cmd.buttons |= BOT_BUTTON_JUMP;
     }
 
+    // The edge guard (P17) has the last word on a step: it runs after the
+    // combat-jump roll and the unstick hop, which add a jump and a sideways
+    // move of their own -- run before them it zeroed the follower's step
+    // and the hop then carried the bot off the rim anyway. A step whose
+    // floor ahead is lava is not taken; a planned long jump is the one
+    // exception. The plan is kept: the follower's own no-progress timer
+    // trips the unstick and, after STUCK_GIVE_UP trips, rests the goal
+    // (clearing the plan here re-planned the same route every frame and
+    // bots stood at a rim for a whole match).
+    this.lastGuardRefused = false;
+    if (!inHazardNow && self.onGround) {
+      const link = this.pathState.path?.links[this.pathState.index] ?? null;
+      const plannedJump = link !== null && (link.type === NavLinkType.LongJump || link.type === NavLinkType.ManualLongJump);
+      let gapJumpPressed = false;
+      if (!plannedJump && (cmd.forwardmove !== 0 || cmd.sidemove !== 0)) {
+        let gap = this.gapAhead(world, self, cmd, moveTarget);
+        if (gap !== null && gap.crossable && now < this.unstickUntil) gap = { ...gap, crossable: false }; // no gap jumps out of an unstick hop
+        if (gap !== null && !gap.crossable && now < this.unstickUntil) {
+          // The unstick hop's side is the pit: the other side, or back off.
+          cmd.sidemove = -cmd.sidemove;
+          this.unstickSide = -this.unstickSide;
+          gap = this.gapAhead(world, self, cmd, moveTarget);
+          if (gap !== null && !gap.crossable) {
+            cmd.sidemove = 0;
+            cmd.forwardmove = -(this.config.runSpeed ?? BOT_RUN_SPEED);
+            cmd.buttons &= ~BOT_BUTTON_JUMP;
+            gap = this.gapAhead(world, self, cmd, moveTarget);
+          }
+        }
+        if (gap !== null && gap.crossable) {
+          // A gap the route crosses (ctf8: 64 u of lava between the central
+          // channel's banks, 112-128 u of lava off the upper level onto a
+          // floor 64-224 u lower): run at it and jump at the rim, as a
+          // player does. Refusing these held bots at the rim for 40 s.
+          if (gap.hazardAt <= GAP_JUMP_TRIGGER) {
+            cmd.buttons |= BOT_BUTTON_JUMP;
+            this.gapJumps++;
+            gapJumpPressed = true;
+          }
+        } else if (gap !== null) {
+          this.guardRefusals++;
+          this.lastGuardRefused = true;
+          cmd.forwardmove = 0;
+          cmd.sidemove = 0;
+          cmd.buttons &= ~BOT_BUTTON_JUMP;
+          // Direct steering at a roam point with no route: the point is
+          // across a pit with no landing. Drop it now instead of standing
+          // until it rests (7 s stalls on ctf6).
+          if (this.pathState.path === null && this.roamPoint !== null && this.goalEntityId < 0 && !this.touchGoal && !this.holdPosition) this.abandonGoal();
+        }
+      }
+      if ((cmd.buttons & BOT_BUTTON_JUMP) !== 0 && !plannedJump && !gapJumpPressed && this.jumpLandsInHazard(world, self, cmd)) {
+        // A jump (combat hop, unstick hop) carries the bot a run's worth of
+        // air past the step guard's look: five of ctf8's eighteen lava
+        // deaths took off from a rim at jump speed. The walk stays, the
+        // jump does not.
+        this.guardRefusals++;
+        cmd.buttons &= ~BOT_BUTTON_JUMP;
+      }
+    }
+
     if (this.holdPosition) {
       cmd.forwardmove = 0;
       cmd.sidemove = 0;
@@ -664,7 +840,9 @@ export class BotBrain {
 
     //---- 6: aim -------------------------------------------------------------
     let aimAt: BotVec3 | null = null;
-    if (target !== null) {
+    if (hazardFace !== null) {
+      // held by the escape above: the yaw is already on the exit
+    } else if (target !== null) {
       const aw = this.awareness.get(target.id);
       const point = this.aimPointFor(target, self.origin);
       const lead = aimLeadPoint(point, target.velocity, this.settings.aiming);
@@ -876,7 +1054,11 @@ export class BotBrain {
    */
   private updateWedge(origin: BotVec3, now: number, inCombat: boolean): boolean {
     const cmd = this.lastCmd;
-    const pressing = cmd.forwardmove !== 0 || cmd.sidemove !== 0;
+    // A move the edge guard zeroed was a move the bot wanted: without this
+    // a bot refused at a rim reads as "not pressing", the timer resets every
+    // frame and the unstick / give-up escalation never runs (P17: 14-40 s
+    // stalls at lava rims).
+    const pressing = cmd.forwardmove !== 0 || cmd.sidemove !== 0 || this.lastGuardRefused;
     if (inCombat || this.wedgeOrigin === null || !pressing || bvecDistance(origin, this.wedgeOrigin) > WEDGED_DISPLACEMENT) {
       this.wedgeOrigin = { x: origin.x, y: origin.y, z: origin.z };
       this.wedgeSince = now;
@@ -917,7 +1099,7 @@ export class BotBrain {
   }
 
   /** The objective entity the bot should be walking to, or null. */
-  private objectiveGoal(entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, target: BotEntityT | null): BotVec3 | null {
+  private objectiveGoal(entities: readonly BotEntityT[], self: ReturnType<BotWorldT["self"]>, target: BotEntityT | null, now: number): BotVec3 | null {
     if (this.ownObjectiveHome === null && this.enemyObjectiveHome === null) return null;
     const knowledge = this.config.knowledge;
 
@@ -961,8 +1143,28 @@ export class BotBrain {
       enemyFlag = ent;
     }
 
+    // Who is carrying what. An enemy carrying OURS decides the match (our
+    // carrier cannot score until it is back); our own carrier is worth
+    // escorting while it is still on its way home.
+    let ourCarrier: BotEntityT | null = null;
+    let enemyCarrier: BotEntityT | null = null;
+    for (const ent of entities) {
+      if (ent.kind !== BotEntityKind.Player || ent.carryingObjective !== true || ent.id === self.id || ent.dead) continue;
+      if (ent.team !== self.team) enemyCarrier = ent;
+      else ourCarrier = ent;
+    }
+    const huntEnemyCarrier = (): BotVec3 => {
+      this.emitChatOnce("ctf_attacking_enemy_carrier");
+      this.goalEntityId = enemyCarrier!.id;
+      this.goalIsLive = true;
+      return enemyCarrier!.origin;
+    };
+
     if (this.objectiveRole === "defend") {
       if (target !== null) return null; // an enemy in the base outranks the base
+      // Our flag is on an enemy: the defender's job is that enemy (P17: the
+      // two-carriers-waiting stalemate, ctf8).
+      if (enemyCarrier !== null) return huntEnemyCarrier();
       if (this.ownObjectiveHome === null) return null;
       if (bvecDistance(self.origin, this.ownObjectiveHome) < OBJECTIVE_GUARD_RADIUS) return null;
       this.goalEntityId = -1;
@@ -977,8 +1179,27 @@ export class BotBrain {
       this.goalEntityId = enemyFlag.id;
       return enemyFlag.origin;
     }
-    // Somebody is carrying it: their base is where it has to come back to.
+    // The enemy flag is on our carrier: escort it while it is still on its
+    // way home. Once it holds at the stand (waiting for our own flag) there
+    // is nothing to escort, and the attacker goes after the enemy carrier
+    // that is holding the match up -- or, with none known, fights, picks up
+    // and roams. Standing on the enemy's empty stand until their flag came
+    // back is what the bots did before (P17: 10-25 s dead still, ctf6/ctf8);
+    // hunting the enemy carrier with EVERY attacker was the other extreme
+    // (no carrier survived the trip on ctf6).
+    if (ourCarrier !== null) {
+      const carrierHome = this.ownObjectiveHome !== null && bvecDistance(ourCarrier.origin, this.ownObjectiveHome) < CARRIER_HOLD_RADIUS;
+      if (carrierHome) return enemyCarrier !== null ? huntEnemyCarrier() : null;
+      this.goalEntityId = ourCarrier.id;
+      this.goalIsLive = true;
+      if (bvecDistance(self.origin, ourCarrier.origin) < ESCORT_DISTANCE) return null; // close enough: fight, pick up, roam
+      return ourCarrier.origin;
+    }
+    // Nobody on our side has it and it is not lying about: whoever holds it
+    // must bring it here. A point already reached rests, so the bot roams
+    // the area instead of standing on the stand.
     if (this.enemyObjectiveHome === null) return null;
+    if (this.restPoint !== null && bvecDistance(this.restPoint, this.enemyObjectiveHome) < 1 && now < this.restUntil) return null;
     this.goalEntityId = -1;
     return this.enemyObjectiveHome;
   }
@@ -1030,6 +1251,143 @@ export class BotBrain {
     // world whose traces do not model the floor (the unit tests' stub). The
     // random side is the better bet than no sidestep at all.
     return dropSides === 2 ? first : 0;
+  }
+
+  /** A static point (no entity, not a flag to touch or a stand to hold) the bot has just reached rests for a while. */
+  private restStaticGoal(goal: BotVec3, now: number): void {
+    if (this.goalEntityId >= 0 || this.touchGoal || this.holdPosition) return;
+    this.restPoint = { x: goal.x, y: goal.y, z: goal.z };
+    this.restUntil = now + POINT_REST_SECONDS;
+  }
+
+  /**
+   * Whether lava or slime lies under the straight line from `a` to `b`: the
+   * floor under points along it is probed downwards; solid before lava is
+   * ground, lava before solid is the pit. A drop with no floor within reach
+   * is not lava.
+   */
+  private hazardUnderSegment(world: BotWorldT, a: BotVec3, b: BotVec3): boolean {
+    const len = bvecDistance(a, b);
+    const steps = Math.max(1, Math.ceil(len / 64));
+    for (let i = 1; i < steps; i++) {
+      const f = i / steps;
+      if (hazardBelow(world, a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, a.z + (b.z - a.z) * f)) return true;
+    }
+    return false;
+  }
+
+  /** Lava or slime at the bot's centre or feet. */
+  private inHazard(world: BotWorldT, self: ReturnType<BotWorldT["self"]>): boolean {
+    const isBad = (c: BotContentsT): boolean => c === BotContents.Lava || c === BotContents.Slime;
+    return isBad(world.pointContents(self.origin)) || isBad(world.pointContents({ x: self.origin.x, y: self.origin.y, z: self.origin.z - 20 }));
+  }
+
+  /** The nearest spot around a bot in lava whose floor is not lava, or null when every direction is. */
+  private hazardExit(world: BotWorldT, self: ReturnType<BotWorldT["self"]>): BotVec3 | null {
+    for (let i = 0; i < LAVA_EXIT_SAMPLES; i++) {
+      const a = (i / LAVA_EXIT_SAMPLES) * Math.PI * 2;
+      const p = { x: self.origin.x + Math.cos(a) * LAVA_EXIT_REACH, y: self.origin.y + Math.sin(a) * LAVA_EXIT_REACH, z: self.origin.z };
+      const c = world.pointContents(p);
+      if (c === BotContents.Lava || c === BotContents.Slime || c === BotContents.Solid) continue;
+      const below = world.pointContents({ x: p.x, y: p.y, z: p.z - 24 });
+      if (below === BotContents.Lava || below === BotContents.Slime) continue;
+      return p;
+    }
+    return null;
+  }
+
+  /**
+   * What the move the command presses would carry the bot over. The floor
+   * under the points between the bot and EDGE_LOOKAHEAD (plus its stopping
+   * distance) ahead is probed; the look is cut at the point the bot is
+   * steering for (it turns there). Null when nothing ahead is lava or
+   * slime. Otherwise where the hazard starts, and -- looking further, up to
+   * GAP_LANDING_SEARCH past it -- whether a floor the bot can land on lies
+   * within its jump reach at the speed it will have (ground acceleration is
+   * near-instant in Quake, so a bot pressing forward is at its cap by the
+   * rim): a crossable gap, or a pit.
+   */
+  private gapAhead(world: BotWorldT, self: ReturnType<BotWorldT["self"]>, cmd: BotUsercmdT, steerAt: BotVec3 | null): { hazardAt: number; crossable: boolean } | null {
+    const dir = this.moveDirection(cmd);
+    if (dir === null) return null;
+    const { x: mx, y: my } = dir;
+    const speed = Math.hypot(self.velocity.x, self.velocity.y);
+    let ahead = EDGE_LOOKAHEAD + speed * EDGE_STOP_SECONDS;
+    if (steerAt !== null) {
+      const along = (steerAt.x - self.origin.x) * mx + (steerAt.y - self.origin.y) * my;
+      if (along > EDGE_PROBE_STEP && along < ahead) ahead = along;
+    }
+    let hazardAt = -1;
+    for (let d = EDGE_PROBE_STEP; d <= ahead + 0.01; d += EDGE_PROBE_STEP) {
+      if (hazardBelow(world, self.origin.x + mx * d, self.origin.y + my * d, self.origin.z)) {
+        hazardAt = d;
+        break;
+      }
+    }
+    if (hazardAt < 0) return null;
+    // the landing: the first floor past the hazard that is not itself over lava and not a wall
+    const floorZ = self.origin.z - 24;
+    const cap = this.settings.movement.walkOnly ? (this.config.walkSpeed ?? BOT_WALK_SPEED) : (this.config.runSpeed ?? BOT_RUN_SPEED);
+    const runSpeed = Math.max(speed, cap);
+    // A landing is two probes in a row (the box is 32 wide) of floor at
+    // one height: a single 16-u probe of "floor" past the lava was a rail
+    // at chest height on ctf6, and bots jumped onto it and into the lava.
+    let landingStart = -1, landingZ = 0;
+    for (let d = hazardAt + EDGE_PROBE_STEP; d <= hazardAt + GAP_LANDING_SEARCH; d += EDGE_PROBE_STEP) {
+      const x = self.origin.x + mx * d, y = self.origin.y + my * d;
+      const trace = world.traceLine({ x, y, z: self.origin.z }, { x, y, z: self.origin.z - EDGE_DROP_CHECK });
+      if (trace.startsolid) return { hazardAt, crossable: false }; // a wall past the pit
+      const landZ = trace.endpos.z;
+      const c = trace.fraction < 1 ? world.pointContents({ x, y, z: landZ + 2 }) : BotContents.Lava;
+      const floorHere = trace.fraction < 1 && c !== BotContents.Lava && c !== BotContents.Slime;
+      if (!floorHere) { landingStart = -1; continue; } // no floor, or still the pit
+      if (landZ > floorZ + GAP_LANDING_RISE) return { hazardAt, crossable: false }; // too high to jump onto
+      if (landingStart < 0 || Math.abs(landZ - landingZ) > 8) { landingStart = d; landingZ = landZ; continue; }
+      // the second probe of a landing: within reach? The jump's air time
+      // over a drop of h: t = (v_jump + sqrt(v_jump^2 + 2 g h)) / g; the box
+      // must land fully on the floor, so the centre needs 16 more than the
+      // landing's edge.
+      const drop = Math.max(0, floorZ - landingZ);
+      const airtime = (JUMP_VELOCITY + Math.sqrt(JUMP_VELOCITY * JUMP_VELOCITY + 2 * GRAVITY * drop)) / GRAVITY;
+      const reach = runSpeed * airtime * GAP_REACH_MARGIN;
+      return { hazardAt, crossable: landingStart + 16 <= reach };
+    }
+    return { hazardAt, crossable: false };
+  }
+
+  /** The world-space horizontal direction the command's move presses, or null for no move. */
+  private moveDirection(cmd: BotUsercmdT): { x: number; y: number } | null {
+    const yaw = (this.aim.yaw * Math.PI) / 180;
+    const fx = Math.cos(yaw), fy = Math.sin(yaw);
+    const rx = Math.sin(yaw), ry = -Math.cos(yaw);
+    const mx = fx * cmd.forwardmove + rx * cmd.sidemove;
+    const my = fy * cmd.forwardmove + ry * cmd.sidemove;
+    const ml = Math.hypot(mx, my);
+    if (ml < 1) return null;
+    return { x: mx / ml, y: my / ml };
+  }
+
+  /**
+   * Whether a jump pressed now would land the bot over lava or slime: the
+   * ground under the run it makes in the air (its current velocity, or the
+   * move it presses, for JUMP_AIR_SECONDS) is probed every EDGE_PROBE_STEP.
+   */
+  private jumpLandsInHazard(world: BotWorldT, self: ReturnType<BotWorldT["self"]>, cmd: BotUsercmdT): boolean {
+    let vx = self.velocity.x, vy = self.velocity.y;
+    let speed = Math.hypot(vx, vy);
+    if (speed < 1) {
+      const dir = this.moveDirection(cmd);
+      if (dir === null) return false;
+      speed = this.config.runSpeed ?? BOT_RUN_SPEED;
+      vx = dir.x * speed;
+      vy = dir.y * speed;
+    }
+    const reach = speed * JUMP_AIR_SECONDS;
+    const ux = vx / speed, uy = vy / speed;
+    for (let d = EDGE_PROBE_STEP; d <= reach + 0.01; d += EDGE_PROBE_STEP) {
+      if (hazardBelow(world, self.origin.x + ux * d, self.origin.y + uy * d, self.origin.z)) return true;
+    }
+    return false;
   }
 
   /** Whether a submerged bot has a water surface within SURFACE_REACH straight above its head, rather than a ceiling. */
@@ -1188,7 +1546,7 @@ export class BotBrain {
 
     // An objective is the whole point of the game it belongs to, so it wins
     // over the item run -- and over the fight, for a bot carrying one.
-    const objective = this.objectiveGoal(entities, self, target);
+    const objective = this.objectiveGoal(entities, self, target, now);
     if (objective !== null) {
       this.goalPoint = objective;
       return this.goalPoint;
@@ -1374,6 +1732,11 @@ export class BotBrain {
       hazard.set(node.index, bad);
       return bad;
     };
+    // The mapper's own links are trusted even where their straight line
+    // clips a pit (ctf6's rim links do): refusing them isolated whole spawn
+    // platforms and two bots never moved for a match. The corner cut that
+    // walks a bot into lava is string pulling's, and ensurePath's visibility
+    // test is where it is refused (P17).
     return caps;
   }
 
@@ -1401,7 +1764,10 @@ export class BotBrain {
     // box is the player's, so the engine's clip hull is the player's own.
     const visible = (from: BotVec3, to: BotVec3): boolean => {
       const t = world.traceBox(from, PATH_BODY_MINS, PATH_BODY_MAXS, to);
-      return t.fraction >= 1 && !t.startsolid;
+      if (t.fraction < 1 || t.startsolid) return false;
+      // P17: a clear body sweep still crosses a pit; a pulled segment with
+      // lava under it is one the bot would walk straight into.
+      return !this.hazardUnderSegment(world, from, to);
     };
     const path = nav.planPath(self.origin, goal, { caps: this.traverseCaps(world), visible, startAbove: PLAN_START_ABOVE });
     setPath(this.pathState, path, self.origin, now);

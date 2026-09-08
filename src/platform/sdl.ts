@@ -147,6 +147,9 @@ const SDL_WINDOW_SHOWN = 0x00000004;
 // below exists for -- and with the engine now adopting whatever size it is
 // handed, refusing a deliberate drag-resize would be the odd behaviour.
 const SDL_WINDOW_RESIZABLE = 0x00000020;
+/** WinQuake's smallest video mode (320x200); the window minimum-size hint. */
+const VID_MIN_WIDTH = 320;
+const VID_MIN_HEIGHT = 200;
 // FULLSCREEN | 0x1000: borderless "desktop" fullscreen. The plain
 // FULLSCREEN flag asks for a video-mode change, which Wayland cannot do --
 // SDL's wayland backend then leaves the surface in a state some compositors
@@ -274,6 +277,7 @@ const symbols = {
   SDL_SetWindowTitle: { args: ["ptr", "cstring"], returns: "void" },
   SDL_GetWindowSize: { args: ["ptr", "ptr", "ptr"], returns: "void" },
   SDL_SetWindowSize: { args: ["ptr", "i32", "i32"], returns: "void" },
+  SDL_SetWindowMinimumSize: { args: ["ptr", "i32", "i32"], returns: "void" },
   SDL_GetWindowFlags: { args: ["ptr"], returns: "u32" },
 
   SDL_CreateRenderer: { args: ["ptr", "i32", "u32"], returns: "ptr" },
@@ -637,6 +641,10 @@ export function SDLVID_Init(width: number, height: number, fullscreen: boolean):
     Con_Printf("SDL: SDL_CreateWindow failed: %s\n", sdlError(l));
     return false;
   }
+  // WinQuake's smallest mode; the status bar is 320 wide and the window is
+  // resizable. A hint only (a tiling window manager can ignore it): the
+  // renderers' 2-D blitters clip whatever the window ends up at.
+  l.symbols.SDL_SetWindowMinimumSize(window, VID_MIN_WIDTH, VID_MIN_HEIGHT);
 
   renderer = l.symbols.SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
   if (!renderer) renderer = l.symbols.SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
@@ -817,6 +825,10 @@ export function SDLGL_CreateWindow(width: number, height: number, fullscreen: bo
     Con_Printf("SDL: SDL_CreateWindow failed: %s\n", sdlError(l));
     return false;
   }
+  // WinQuake's smallest mode; the status bar is 320 wide and the window is
+  // resizable. A hint only (a tiling window manager can ignore it): the
+  // renderers' 2-D blitters clip whatever the window ends up at.
+  l.symbols.SDL_SetWindowMinimumSize(window, VID_MIN_WIDTH, VID_MIN_HEIGHT);
   return true;
 }
 

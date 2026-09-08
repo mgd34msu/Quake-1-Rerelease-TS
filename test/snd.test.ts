@@ -394,6 +394,37 @@ describe("ResampleSfx", () => {
 });
 
 describe("SND_Spatialize", () => {
+  // P12 (2026-09-07, Mike: "the regeneration rune sound is playing globally"):
+  // ThreeWave plays rune/rune4.wav on the CARRIER every second at ATTN_NORM
+  // (dist_mult = 1/sound_nominal_clip_dist = 1/1000). Another player's rune is
+  // inaudible past 1000 units and full volume only on the carrier itself.
+  test("an ATTN_NORM sound from another entity is silent past 1000 units and audible close by", () => {
+    listener_origin[0] = 0;
+    listener_origin[1] = 0;
+    listener_origin[2] = 0;
+    listener_right[0] = 0;
+    listener_right[1] = 1;
+    listener_right[2] = 0;
+
+    const far = new ChannelT();
+    far.entnum = 5; // a bot, not the viewentity
+    far.master_vol = 255;
+    far.origin[0] = 2000; // straight ahead, 2000 units away
+    far.dist_mult = 1 / 1000;
+    SND_Spatialize(far);
+    expect(far.leftvol).toBe(0);
+    expect(far.rightvol).toBe(0);
+
+    const near = new ChannelT();
+    near.entnum = 5;
+    near.master_vol = 255;
+    near.origin[0] = 200;
+    near.dist_mult = 1 / 1000;
+    SND_Spatialize(near);
+    expect(near.leftvol).toBe(Math.trunc(255 * 0.8));
+    expect(near.rightvol).toBe(Math.trunc(255 * 0.8));
+  });
+
   test("gives full volume for the viewentity", () => {
     resetSoundState();
 

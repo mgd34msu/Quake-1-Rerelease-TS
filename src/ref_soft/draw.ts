@@ -393,6 +393,29 @@ export function Draw_Crosshair(): void {
 }
 
 /*
+clipPicRect -- not in the C. WinQuake Sys_Errors on a pic that does not fit
+the screen ("Draw_Pic: bad coordinates"), which was safe there because its
+video modes were fixed and none was smaller than 320x200. This port's window
+is resizable (SDL_WINDOW_RESIZABLE, and a tiling window manager sizes it
+without asking), so a window narrower than the 320-wide status bar or
+shorter than the bar plus the inventory row killed the game with that error
+on the very first frame (2026-09-08, four survey clients tiled by the window
+manager; the same happens to a player who shrinks the window). The blitters
+now draw the part of the pic that is on screen and skip the rest, which is
+what a player expects of a too-small window. Returns null when nothing of
+the pic is visible.
+*/
+function clipPicRect(x: number, y: number, width: number, height: number): { x: number; y: number; sx: number; sy: number; w: number; h: number } | null {
+  let sx = 0, sy = 0, w = width, h = height;
+  if (x < 0) { sx = -x; w += x; x = 0; }
+  if (y < 0) { sy = -y; h += y; y = 0; }
+  if (x + w > vid.width) w = vid.width - x;
+  if (y + h > vid.height) h = vid.height - y;
+  if (w <= 0 || h <= 0) return null;
+  return { x, y, sx, sy, w, h };
+}
+
+/*
 ================
 Draw_SubPic
 
@@ -404,20 +427,19 @@ export function Draw_SubPic(x: number, y: number, pic: QpicT, srcx: number, srcy
   x = x | 0;
   y = y | 0;
 
-  if (x < 0 || x + width > vid.width || y < 0 || y + height > vid.height) {
-    return Sys_Error("Draw_Pic: bad coordinates");
-  }
+  const clip = clipPicRect(x, y, width, height);
+  if (clip === null) return;
 
   const buffer = vid.buffer;
   if (!buffer) return;
 
-  let destOfs = y * vid.rowbytes + x;
-  let sourceOfs = srcy * pic.width + srcx;
+  let destOfs = clip.y * vid.rowbytes + clip.x;
+  let sourceOfs = (srcy + clip.sy) * pic.width + srcx + clip.sx;
   const out32 = overlay32();
 
-  for (let v = 0; v < height; v++) {
-    buffer.set(pic.data.subarray(sourceOfs, sourceOfs + width), destOfs);
-    if (out32 !== null) overlayRun32(out32, pic.data, sourceOfs, destOfs, width);
+  for (let v = 0; v < clip.h; v++) {
+    buffer.set(pic.data.subarray(sourceOfs, sourceOfs + clip.w), destOfs);
+    if (out32 !== null) overlayRun32(out32, pic.data, sourceOfs, destOfs, clip.w);
     destOfs += vid.rowbytes;
     sourceOfs += pic.width;
   }
@@ -450,21 +472,20 @@ export function Draw_Pic(x: number, y: number, pic: QpicT): void {
   x = x | 0;
   y = y | 0;
 
-  if (x < 0 || x + pic.width > vid.width || y < 0 || y + pic.height > vid.height) {
-    return Sys_Error("Draw_Pic: bad coordinates");
-  }
+  const clip = clipPicRect(x, y, pic.width, pic.height);
+  if (clip === null) return;
 
   const buffer = vid.buffer;
   if (!buffer) return;
 
   const source = pic.data;
-  let destOfs = y * vid.rowbytes + x;
-  let sourceOfs = 0;
+  let destOfs = clip.y * vid.rowbytes + clip.x;
+  let sourceOfs = clip.sy * pic.width + clip.sx;
   const out32 = overlay32();
 
-  for (let v = 0; v < pic.height; v++) {
-    buffer.set(source.subarray(sourceOfs, sourceOfs + pic.width), destOfs);
-    if (out32 !== null) overlayRun32(out32, source, sourceOfs, destOfs, pic.width);
+  for (let v = 0; v < clip.h; v++) {
+    buffer.set(source.subarray(sourceOfs, sourceOfs + clip.w), destOfs);
+    if (out32 !== null) overlayRun32(out32, source, sourceOfs, destOfs, clip.w);
     destOfs += vid.rowbytes;
     sourceOfs += pic.width;
   }
@@ -729,23 +750,22 @@ export function Draw_TransPic(x: number, y: number, pic: QpicT): void {
   x = x | 0;
   y = y | 0;
 
-  if (x < 0 || x + pic.width > vid.width || y < 0 || y + pic.height > vid.height) {
-    return Sys_Error("Draw_TransPic: bad coordinates");
-  }
+  const clip = clipPicRect(x, y, pic.width, pic.height);
+  if (clip === null) return;
 
   const buffer = vid.buffer;
   if (!buffer) return;
 
   const source = pic.data;
-  let destOfs = y * vid.rowbytes + x;
-  let sourceOfs = 0;
+  let destOfs = clip.y * vid.rowbytes + clip.x;
+  let sourceOfs = clip.sy * pic.width + clip.sx;
 
   const out32 = overlay32();
 
   // see file header: the C's width&7 unrolled-by-8 branch is dropped as
   // behaviorally identical to this plain per-pixel loop
-  for (let v = 0; v < pic.height; v++) {
-    for (let u = 0; u < pic.width; u++) {
+  for (let v = 0; v < clip.h; v++) {
+    for (let u = 0; u < clip.w; u++) {
       const tbyte = source[sourceOfs + u];
       if (tbyte !== TRANSPARENT_COLOR) {
         buffer[destOfs + u] = tbyte;
@@ -766,22 +786,20 @@ export function Draw_TransPicTranslate(x: number, y: number, pic: QpicT, transla
   x = x | 0;
   y = y | 0;
 
-  // the C's Draw_TransPicTranslate reuses Draw_TransPic's error text verbatim
-  if (x < 0 || x + pic.width > vid.width || y < 0 || y + pic.height > vid.height) {
-    return Sys_Error("Draw_TransPic: bad coordinates");
-  }
+  const clip = clipPicRect(x, y, pic.width, pic.height);
+  if (clip === null) return;
 
   const buffer = vid.buffer;
   if (!buffer) return;
 
   const source = pic.data;
-  let destOfs = y * vid.rowbytes + x;
-  let sourceOfs = 0;
+  let destOfs = clip.y * vid.rowbytes + clip.x;
+  let sourceOfs = clip.sy * pic.width + clip.sx;
 
   const out32 = overlay32();
 
-  for (let v = 0; v < pic.height; v++) {
-    for (let u = 0; u < pic.width; u++) {
+  for (let v = 0; v < clip.h; v++) {
+    for (let u = 0; u < clip.w; u++) {
       const tbyte = source[sourceOfs + u];
       if (tbyte !== TRANSPARENT_COLOR) {
         buffer[destOfs + u] = translation[tbyte];
@@ -1016,22 +1034,24 @@ export function Draw_Fill(x: number, y: number, w: number, h: number, c: number)
   h = h | 0;
   c = c | 0;
 
-  // QW/client/draw.c adds this bounds check (WinQuake's Draw_Fill has none);
-  // dropped silently when qw.active is false, matching WinQuake exactly.
-  if (clientProfile() === "qw" && (x < 0 || x + w > vid.width || y < 0 || y + h > vid.height)) {
-    Con_Printf("Bad Draw_Fill(%d, %d, %d, %d, %c)\n", x, y, w, h, c);
-    return;
-  }
+  // QW/client/draw.c refuses (with a "Bad Draw_Fill" console line) a fill
+  // that does not fit the screen; WinQuake's has no check and a too-wide
+  // fill wraps into the next row. Both assumed fixed video modes: with a
+  // resizable window the fill is clipped instead (see clipPicRect), in
+  // both profiles -- the QW message would print every frame in a small
+  // window.
+  const clip = clipPicRect(x, y, w, h);
+  if (clip === null) return;
 
   const buffer = vid.buffer;
   if (!buffer) return;
 
-  let destOfs = y * vid.rowbytes + x;
+  let destOfs = clip.y * vid.rowbytes + clip.x;
   const out32 = overlay32();
   const c32 = out32 !== null ? d_8to24table[c & 0xff] : 0;
-  for (let v = 0; v < h; v++, destOfs += vid.rowbytes) {
-    for (let u = 0; u < w; u++) buffer[destOfs + u] = c;
-    if (out32 !== null) for (let u = 0; u < w; u++) out32[destOfs + u] = c32;
+  for (let v = 0; v < clip.h; v++, destOfs += vid.rowbytes) {
+    for (let u = 0; u < clip.w; u++) buffer[destOfs + u] = c;
+    if (out32 !== null) for (let u = 0; u < clip.w; u++) out32[destOfs + u] = c32;
   }
 }
 
