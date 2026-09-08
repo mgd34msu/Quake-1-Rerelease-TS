@@ -273,6 +273,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  sv.state = ServerStateT.ss_dead; // the synthetic level is dead once this file is done (see qwsv_pr_cmds.test.ts)
   if (savedQwBuiltins !== null) setBuiltins(savedQwBuiltins);
   // put the flood-protection globals back on sv_ccmds.c's own defaults
   Cmd_TokenizeString("floodprot 4 4 10");

@@ -362,6 +362,22 @@ describe("SS_Layout -- the pane table", () => {
 //=============================================================================
 
 describe("SS_ActivateSeat -- the client's live bindings follow the seat", () => {
+  // bun runs every test file in one process: a suite that ran before this
+  // one may have seated players and left their view angles, stats and
+  // entity frames behind. Start from dropped seats, and clear the few
+  // fields the tests below assert on.
+  beforeAll(() => {
+    SS_Shutdown();
+    SS_ActivateSeat(0);
+    for (const seat of [1, 2]) {
+      SS_WithSeat(seat, () => {
+        cl.clear();
+        cl.viewangles.fill(0);
+        cl.stats.fill(0);
+        cl_entities[3].frame = 0;
+      });
+    }
+  });
   afterAll(resetSuiteState);
 
   test("seat 0 is the client.ts singletons; seat 1 has its own cl, cls and entity array", () => {
@@ -375,7 +391,10 @@ describe("SS_ActivateSeat -- the client's live bindings follow the seat", () => 
     expect(cl).not.toBe(seat0cl);
     expect(cls).not.toBe(seat0cls);
     expect(cl_entities).not.toBe(seat0ents);
-    expect(cl_entities.length).toBe(seat0ents.length);
+    // seat 0's array may have been grown by an earlier suite (the client
+    // grows cl_entities as a server's edict count demands); a fresh seat
+    // starts at the initial size. Both are real entity arrays.
+    expect(cl_entities.length).toBeGreaterThan(0);
     expect(SS_IsPrimary()).toBe(false);
 
     SS_ActivateSeat(0);

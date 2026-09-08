@@ -797,8 +797,11 @@ describe("sdl.ts -- IN_Move's IN_JoyMove_ contribution (deadzone + easing + sens
 
     const expectedYaw = yawBefore - eased.x * joy_sensitivity_yaw.value * host.frametime;
     const expectedPitch = pitchBefore + eased.y * joy_sensitivity_pitch.value * host.frametime;
-    expect(cl.viewangles[YAW]).toBeCloseTo(expectedYaw, 6);
-    expect(cl.viewangles[PITCH]).toBeCloseTo(expectedPitch, 6);
+    // cl.viewangles is a Float32Array: one float32 ulp at 45 degrees is
+    // 3.8e-6, so a 6-digit comparison fails on whatever angle an earlier
+    // suite left the view at. 4 digits is still far inside one frame's move.
+    expect(cl.viewangles[YAW]).toBeCloseTo(expectedYaw, 4);
+    expect(cl.viewangles[PITCH]).toBeCloseTo(expectedPitch, 4);
 
     SDL_PushTestEvent(SDL_MakeControllerAxisEvent(FAKE_INSTANCE_A, SDL_TEST_CONTROLLER_AXIS_RIGHTX, 0));
     SDL_PushTestEvent(SDL_MakeControllerAxisEvent(FAKE_INSTANCE_A, SDL_TEST_CONTROLLER_AXIS_RIGHTY, 0));
@@ -824,7 +827,7 @@ describe("sdl.ts -- IN_Move's IN_JoyMove_ contribution (deadzone + easing + sens
     const cmd = new UsercmdT();
     IN_Move(cmd);
     const expectedInvertedPitch = pitchBefore + eased.y * joy_sensitivity_pitch.value * -1 * host.frametime;
-    expect(cl.viewangles[PITCH]).toBeCloseTo(expectedInvertedPitch, 6);
+    expect(cl.viewangles[PITCH]).toBeCloseTo(expectedInvertedPitch, 4);
     expect(cl.viewangles[PITCH]).toBeLessThan(pitchBefore); // inverted: stick down now looks UP
 
     cl.viewangles[PITCH] = pitchBefore;

@@ -52,6 +52,10 @@ const baseDir = join(scratchDir, "quake");
 const savedNostdout = sysState.nostdout;
 
 afterAll(() => {
+  // The synthetic level is dead once this file is done: a later suite's
+  // NetQuake spawn shuts down whatever QuakeWorld server is live, and its
+  // final message writes into a receive buffer no NET_Init sized here.
+  sv.state = ServerStateT.ss_dead;
   sysState.nostdout = savedNostdout;
   setComSearchpaths(null);
   setComModified(false);

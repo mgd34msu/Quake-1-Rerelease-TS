@@ -1,6 +1,6 @@
 {
   "name": "quake-1-re-ts",
-  "version": "0.1.0-dev",
+  "version": "1.0.0",
   "private": true,
   "description": "The 2021 Quake re-release engine in TypeScript on Bun, seeded from Quake-1-TS: classic and re-release content under any ruleset, NetQuake 15/666/999 and QuakeWorld 28, software and OpenGL renderers.",
   "license": "GPL-2.0-or-later",

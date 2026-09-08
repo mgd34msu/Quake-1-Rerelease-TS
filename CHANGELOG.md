@@ -6,8 +6,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-This engine is a work in progress: it is played and tested daily and
-still has bugs, as does the Quake 2 re-release port it grew up beside.
+## [1.0.0] - 2026-09-08
+
+The first release. This engine is a work in progress: it is played and
+tested daily and still has bugs, as does the Quake 2 re-release port it
+grew up beside. Everything below the 2026-09-06 milestone is what 1.0.0
+ships with; the play fixes above it are the days since.
 
 ### Play fixes 2026-09-07/08
 - Bots: swim in three dimensions; bring the flag home (carrier hold and
@@ -577,7 +581,7 @@ still has bugs, as does the Quake 2 re-release port it grew up beside.
   one-word typo at the dedicated console still prints, and `developer`
   restores the per-line print.
 
-## Quake-1-TS [1.0.0] - 2026-09-05 (the seed)
+## [Quake-1-TS 1.0.0] - 2026-09-05 (the seed)
 
 First release: id Software's 1999 GPL Quake sources ported to TypeScript on
 Bun, one `.ts` module per `.c` file, verified against retail game data.
@@ -738,4 +742,6 @@ end-to-end passes. Each was a port bug, not a change to Quake's behaviour.
 - `NET_Init` bind failure raises `SysError` through `NET_Ready` instead of
   failing silently.
 
-[1.0.0]: https://github.com/mgd34msu/Quake-1-TS/releases/tag/v1.0.0
+[Unreleased]: https://github.com/mgd34msu/Quake-1-Rerelease-TS/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/mgd34msu/Quake-1-Rerelease-TS/releases/tag/v1.0.0
+[Quake-1-TS 1.0.0]: https://github.com/mgd34msu/Quake-1-TS/releases/tag/v1.0.0

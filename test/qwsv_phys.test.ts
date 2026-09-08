@@ -205,6 +205,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
+  sv.state = ServerStateT.ss_dead; // the synthetic level is dead once this file is done (see qwsv_pr_cmds.test.ts)
   if (savedQwBuiltins !== null) setBuiltins(savedQwBuiltins);
   sysState.nostdout = savedNostdout;
   for (const [c, value, string] of savedCvars) {
