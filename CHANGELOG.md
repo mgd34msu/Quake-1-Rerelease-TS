@@ -151,10 +151,12 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   breadth short. Target choice weighed no distance at all (a typo subtracted
   a point from itself) and now prefers the closer enemy, an enemy flag carrier
   above all. Swimmers surface when their breath runs low instead of drowning
-  along the nav nodes on a tunnel floor. A route no longer starts at a node
-  over the bot's head, which is how a bot that fell into the pit beside
-  ctf1's flag room pushed at the wall under the room for the rest of the
-  level. Corner cuts are swept with the player's own body rather than a line,
+  along the nav nodes on a tunnel floor. A bot's route no longer starts at a
+  node over its head, which is how a bot that fell into the pit beside ctf1's
+  flag room pushed at the wall under the room for the rest of the level
+  (monsters keep the wider lookup: the graph places stair nodes above a
+  walker that climbs them, and u_monsters measured the narrow window as a
+  loss for them). Corner cuts are swept with the player's own body rather than a line,
   steering cancels the bot's sideways slide and slows for sharp turns, and a
   link gated by a shootable secret door is kept as its own step and the door
   shot open once the view is on it (ctf1's underpass doors held bots for
@@ -172,10 +174,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   ctf1's flag room; an unstick sidestep is traced for a floor first; a
   swimmer short of breath heads up only where there is a surface above it,
   not under a tunnel ceiling short of a low arch.
-- Screen hooks are registered from SCR_Init rather than at module load, and
-  a test pins the three modules that register commands or cvars at load to
-  the ones render.ts imports at startup (a late-loaded module doing so is a
-  Sys_Error).
+- The Options screen's column (labels, sliders, values, cursor) moves right by
+  whole character cells when the widest label beside the QUAKE plaque would
+  start over it -- the re-release's "Customize Bindings..." and the longer
+  localized labels did; menu.c's own English layout still fits and stays put.
+- A test pins the three modules that register commands or cvars at module load
+  to the ones render.ts imports at startup, and pins that importing screen.ts
+  installs the hooks Host_Init reaches the client through (a late-loaded module
+  registering is a Sys_Error; a hook missing at init is a client without SCR_Init).
 - The re-release's colored lighting is read from the bsp's own BSPX
   RGBLIGHTING lump (a `.lit` beside the map still wins), so its maps light
   in color without an external file.

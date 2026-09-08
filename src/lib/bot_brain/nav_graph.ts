@@ -578,20 +578,23 @@ export class NavGraph {
   //--------------------------------------------------------------------------
 
   /**
-   * Plan from a world point to a world point in one call. The start node is
-   * one the bot can get onto from where it stands: at most a jump's height
-   * above it (PLAN_START_ABOVE), any drop below. With the default window a
-   * bot that had fallen into the pit beside ctf1's flag room planned from
-   * the flag-room node 73 units over its head, pushed at the wall under it
-   * for the rest of the level, and never found the pit's own way out.
+   * Plan from a world point to a world point in one call. `startAbove` caps
+   * how far above the mover the start node may sit: a bot passes
+   * PLAN_START_ABOVE (a jump's height -- with the default window a bot that
+   * had fallen into the pit beside ctf1's flag room planned from the
+   * flag-room node 73 units over its head, pushed at the wall under it for
+   * the rest of the level, and never found the pit's own way out); a monster
+   * keeps the lookup's default, since the graph places stair and ramp nodes
+   * above a walker that can climb them (u_monsters measured the narrow
+   * window as a loss for them).
    */
   planPath(
     start: BotVec3,
     goal: BotVec3,
-    opts: { caps?: NavTraverseCapsT; visible?: (from: BotVec3, to: BotVec3) => boolean; maxRadius?: number } = {},
+    opts: { caps?: NavTraverseCapsT; visible?: (from: BotVec3, to: BotVec3) => boolean; maxRadius?: number; startAbove?: number } = {},
   ): NavPathT | null {
     const caps = opts.caps ?? defaultTraverseCaps();
-    const startNode = this.closestNode(start, { visible: opts.visible, caps, maxRadius: opts.maxRadius, aboveHeight: PLAN_START_ABOVE });
+    const startNode = this.closestNode(start, { visible: opts.visible, caps, maxRadius: opts.maxRadius, aboveHeight: opts.startAbove });
     if (startNode < 0) return null;
     const goalNode = this.closestNode(goal, { visible: opts.visible, caps, maxRadius: opts.maxRadius });
     if (goalNode < 0) return null;

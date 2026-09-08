@@ -1686,7 +1686,9 @@ describe("localized menu labels", () => {
     useLanguage(lang);
     drawCalls.length = 0;
     menu.M_Options_Draw();
-    return drawnRows(200);
+    // the labels end at column 16 + 22*8 plus the plaque shift; 220 + shift
+    // is the values column (see M_OptionsShift)
+    return drawnRows(220 + menu.M_OptionsShift());
   }
 
   afterAll(() => {
@@ -2042,7 +2044,8 @@ describe("menu labels through the kfont glyph path (F14)", () => {
     menu.menuState.options_cursor = 0; // keeps the blinking cursor off the row read below
     menu.M_Options_Draw();
 
-    const row = atlasDraws().filter((d) => d.y === 96 && d.x < 200); // x=220 is the checkbox's own value
+    const shift = menu.M_OptionsShift(); // the column moves right of the plaque when a label needs the room
+    const row = atlasDraws().filter((d) => d.y === 96 && d.x < 220 + shift); // x=220+shift is the checkbox's own value
     // a space advances the pen and draws no quad (kfont_text.ts), so the
     // drawn glyphs spell the label without its space
     expect(String.fromCodePoint(...drawnCodepoints(row))).toBe(RUSSIAN_ALWAYS_RUN.replace(/ /g, ""));
@@ -2094,10 +2097,11 @@ describe("menu labels through the kfont glyph path (F14)", () => {
     // menu.ts right-aligns the Options labels to `cx + width * 8` -- x=16,
     // width=22 for "Always Run" (y=96), so the row's last glyph must end at
     // 16 + 22 * 8 no matter how wide the font drew it.
-    const row = atlasDraws().filter((d) => d.y === 96 && d.x < 200); // x=220 is the checkbox's own value
+    const shift = menu.M_OptionsShift(); // the column moves right of the plaque when a label needs the room
+    const row = atlasDraws().filter((d) => d.y === 96 && d.x < 220 + shift); // x=220+shift is the checkbox's own value
     expect(row.length).toBe("Always Run".replace(/ /g, "").length); // the space advances the pen without a quad
     const last = row[row.length - 1];
-    expect(last === undefined ? -1 : last.x + last.w).toBeCloseTo(16 + 22 * 8, 6);
+    expect(last === undefined ? -1 : last.x + last.w).toBeCloseTo(16 + 22 * 8 + shift, 6);
   });
 
   test("M_DrawCharacter stays on the charset under the kfont, so the cursor and sliders still draw", () => {

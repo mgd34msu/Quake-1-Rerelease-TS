@@ -128,10 +128,13 @@ check(
   oa !== null && ob !== null && Math.hypot(ob[0] - oa[0], ob[1] - oa[1], ob[2] - oa[2]) > 8,
   `origin ${JSON.stringify(oa)} -> ${JSON.stringify(ob)}`,
 );
+// A walking player can cross a shells box between the two samples (seen
+// 2026-09-07 under load: 24 -> 34 while firing), so firing is also read from
+// attack_finished, which every shot pushes forward in server time.
 check(
-  "the QuakeWorld player's ammo drops when the client holds +attack",
-  edictNumber(b1, "currentammo") < edictNumber(a1, "currentammo"),
-  `currentammo ${edictNumber(a1, "currentammo")} -> ${edictNumber(b1, "currentammo")}`,
+  "the QuakeWorld player fires when the client holds +attack",
+  edictNumber(b1, "currentammo") < edictNumber(a1, "currentammo") || edictNumber(b1, "attack_finished") > edictNumber(a1, "attack_finished"),
+  `currentammo ${edictNumber(a1, "currentammo")} -> ${edictNumber(b1, "currentammo")}, attack_finished ${edictNumber(a1, "attack_finished")} -> ${edictNumber(b1, "attack_finished")}`,
 );
 
 killSeat(cl1.seat);

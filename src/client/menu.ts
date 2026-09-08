@@ -2246,78 +2246,132 @@ export function M_DrawCheckbox(x: number, y: number, on: boolean): void {
   else M_Print(x, y, M_Loc("$m_off", "off"));
 }
 
+/** The label rows of M_Options_Draw that sit beside the QUAKE plaque, with the right-align width each uses. */
+function M_OptionsPlaqueRows(): Array<{ y: number; width: number; label: string }> {
+  return [
+    { y: 32, width: 22, label: M_Loc("$m_set_binds", "Customize controls") },
+    { y: 40, width: 22, label: "Go to console" },
+    { y: 48, width: 22, label: M_Loc("$m_reset_settings", "Reset to defaults") },
+    { y: 56, width: 22, label: "Screen size" },
+    { y: 64, width: 22, label: M_Loc("$m_brightness", "Brightness") },
+    { y: 72, width: 22, label: M_Loc("$m_sensitivity", "Mouse Speed") },
+    { y: 80, width: 22, label: M_Loc("$m_music_volume", "CD Music Volume") },
+    { y: 88, width: 22, label: M_Loc("$m_sound_volume", "Sound Volume") },
+    { y: 96, width: 22, label: M_Loc("$m_always_run", "Always Run") },
+    { y: 104, width: 22, label: M_Loc("$m_invert_look", "Invert Mouse") },
+    { y: 112, width: 22, label: "Lookspring" },
+    { y: 120, width: 22, label: "Lookstrafe" },
+    { y: 128, width: 22, label: M_Loc("$m_video_settings", "Video Options") },
+    { y: 136, width: 22, label: M_Loc("$m_colorlightmaps", "Colored Lighting") },
+    { y: 144, width: 21, label: "Sound Frequency" },
+    { y: 152, width: 22, label: "Autosave" },
+    { y: 160, width: 21, label: M_Loc("$m_change_on_pickup", "Weapon Switch") },
+  ];
+}
+
+/**
+ * How far right the Options column has to move so no label drawn on a row
+ * the plaque spans starts left of the plaque's right edge. Whole classic
+ * columns (8 px), 0 when the C's layout already fits.
+ */
+/** The shift M_Options_Draw applies this frame, from the plaque as cached. */
+export function M_OptionsShift(): number {
+  const plaque = cachePic("gfx/qplaque.lmp");
+  return M_OptionsColumnShift(16 + plaque.width, 4 + plaque.height);
+}
+
+export function M_OptionsColumnShift(plaqueRight: number, plaqueBottom: number): number {
+  let shift = 0;
+  for (const row of M_OptionsPlaqueRows()) {
+    if (row.y >= plaqueBottom) continue;
+    const startX = 16 + Math.max(0, row.width * 8 - M_TextWidth(row.label));
+    if (startX < plaqueRight) shift = Math.max(shift, plaqueRight - startX);
+  }
+  return Math.ceil(shift / 8) * 8;
+}
+
 export function M_Options_Draw(): void {
-  M_DrawTransPic(16, 4, cachePic("gfx/qplaque.lmp"));
+  const plaque = cachePic("gfx/qplaque.lmp");
+  M_DrawTransPic(16, 4, plaque);
   const p = cachePic("gfx/p_option.lmp");
   M_DrawPic(Math.trunc((320 - p.width) / 2), 4, p);
 
-  M_PrintRight(16, 32, 22, M_Loc("$m_set_binds", "Customize controls"));
-  M_PrintRight(16, 40, 22, "Go to console");
-  M_PrintRight(16, 48, 22, M_Loc("$m_reset_settings", "Reset to defaults"));
+  // menu.c right-aligns the labels to column 16 + 22*8 and the widest of its
+  // own English labels just clears the plaque. The re-release's strings
+  // ("Customize Bindings...", or a Russian label) run further left and were
+  // drawn over the plaque's right edge. The whole column -- labels, sliders,
+  // values, cursor -- moves right by however much the widest label beside
+  // the plaque would overlap it, so the layout stays the C's whenever no
+  // label needs the room.
+  const shift = M_OptionsShift();
 
-  M_PrintRight(16, 56, 22, "Screen size");
+  M_PrintRight(16 + shift, 32, 22, M_Loc("$m_set_binds", "Customize controls"));
+  M_PrintRight(16 + shift, 40, 22, "Go to console");
+  M_PrintRight(16 + shift, 48, 22, M_Loc("$m_reset_settings", "Reset to defaults"));
+
+  M_PrintRight(16 + shift, 56, 22, "Screen size");
   let r = (Cvar_VariableValue("viewsize") - 30) / (120 - 30);
-  M_DrawSlider(220, 56, r);
+  M_DrawSlider(220 + shift, 56, r);
 
-  M_PrintRight(16, 64, 22, M_Loc("$m_brightness", "Brightness"));
+  M_PrintRight(16 + shift, 64, 22, M_Loc("$m_brightness", "Brightness"));
   r = (1.0 - Cvar_VariableValue("gamma")) / 0.5;
-  M_DrawSlider(220, 64, r);
+  M_DrawSlider(220 + shift, 64, r);
 
-  M_PrintRight(16, 72, 22, M_Loc("$m_sensitivity", "Mouse Speed"));
+  M_PrintRight(16 + shift, 72, 22, M_Loc("$m_sensitivity", "Mouse Speed"));
   r = (Cvar_VariableValue("sensitivity") - 1) / 10;
-  M_DrawSlider(220, 72, r);
+  M_DrawSlider(220 + shift, 72, r);
 
-  M_PrintRight(16, 80, 22, M_Loc("$m_music_volume", "CD Music Volume"));
+  M_PrintRight(16 + shift, 80, 22, M_Loc("$m_music_volume", "CD Music Volume"));
   r = Cvar_VariableValue("bgmvolume");
-  M_DrawSlider(220, 80, r);
+  M_DrawSlider(220 + shift, 80, r);
 
-  M_PrintRight(16, 88, 22, M_Loc("$m_sound_volume", "Sound Volume"));
+  M_PrintRight(16 + shift, 88, 22, M_Loc("$m_sound_volume", "Sound Volume"));
   r = Cvar_VariableValue("volume");
-  M_DrawSlider(220, 88, r);
+  M_DrawSlider(220 + shift, 88, r);
 
-  M_PrintRight(16, 96, 22, M_Loc("$m_always_run", "Always Run"));
-  M_DrawCheckbox(220, 96, Cvar_VariableValue("cl_forwardspeed") > 200);
+  M_PrintRight(16 + shift, 96, 22, M_Loc("$m_always_run", "Always Run"));
+  M_DrawCheckbox(220 + shift, 96, Cvar_VariableValue("cl_forwardspeed") > 200);
 
-  M_PrintRight(16, 104, 22, M_Loc("$m_invert_look", "Invert Mouse"));
-  M_DrawCheckbox(220, 104, Cvar_VariableValue("m_pitch") < 0);
+  M_PrintRight(16 + shift, 104, 22, M_Loc("$m_invert_look", "Invert Mouse"));
+  M_DrawCheckbox(220 + shift, 104, Cvar_VariableValue("m_pitch") < 0);
 
-  M_PrintRight(16, 112, 22, "Lookspring");
-  M_DrawCheckbox(220, 112, Cvar_VariableValue("lookspring") !== 0);
+  M_PrintRight(16 + shift, 112, 22, "Lookspring");
+  M_DrawCheckbox(220 + shift, 112, Cvar_VariableValue("lookspring") !== 0);
 
-  M_PrintRight(16, 120, 22, "Lookstrafe");
-  M_DrawCheckbox(220, 120, Cvar_VariableValue("lookstrafe") !== 0);
+  M_PrintRight(16 + shift, 120, 22, "Lookstrafe");
+  M_DrawCheckbox(220 + shift, 120, Cvar_VariableValue("lookstrafe") !== 0);
 
-  if (vidMenuHooks.vid_menudrawfn) M_PrintRight(16, 128, 22, M_Loc("$m_video_settings", "Video Options"));
+  if (vidMenuHooks.vid_menudrawfn) M_PrintRight(16 + shift, 128, 22, M_Loc("$m_video_settings", "Video Options"));
 
   // U17 additions -- see OPTIONS_ITEMS' own comment.
-  M_PrintRight(16, 136, 22, M_Loc("$m_colorlightmaps", "Colored Lighting"));
-  M_DrawCheckbox(220, 136, Cvar_VariableValue("gl_coloredlight") !== 0);
+  M_PrintRight(16 + shift, 136, 22, M_Loc("$m_colorlightmaps", "Colored Lighting"));
+  M_DrawCheckbox(220 + shift, 136, Cvar_VariableValue("gl_coloredlight") !== 0);
 
-  M_PrintRight(16, 144, 21, "Sound Frequency");
-  M_Print(220, 144, `${Math.trunc(Cvar_VariableValue("snd_speed")) || 44100}`);
+  M_PrintRight(16 + shift, 144, 21, "Sound Frequency");
+  M_Print(220 + shift, 144, `${Math.trunc(Cvar_VariableValue("snd_speed")) || 44100}`);
 
-  M_PrintRight(16, 152, 22, "Autosave");
-  M_DrawCheckbox(220, 152, Cvar_VariableValue("sv_autosave") !== 0);
+  M_PrintRight(16 + shift, 152, 22, "Autosave");
+  M_DrawCheckbox(220 + shift, 152, Cvar_VariableValue("sv_autosave") !== 0);
 
-  M_PrintRight(16, 160, 21, M_Loc("$m_change_on_pickup", "Weapon Switch"));
+  M_PrintRight(16 + shift, 160, 21, M_Loc("$m_change_on_pickup", "Weapon Switch"));
   const weaponSwitchLabels = [
     M_Loc("$m_onlynew", "Only New"),
     M_Loc("$m_never", "Never"),
     M_Loc("$m_always", "Always"),
   ];
   const weaponSwitchValue = Math.trunc(Cvar_VariableValue("cl_weaponswitch"));
-  M_Print(220, 160, weaponSwitchLabels[weaponSwitchValue] ?? weaponSwitchLabels[0]);
+  M_Print(220 + shift, 160, weaponSwitchLabels[weaponSwitchValue] ?? weaponSwitchLabels[0]);
 
-  M_PrintRight(16, 168, 22, M_Loc("$m_language", "Language"));
-  M_Print(220, 168, Cvar_VariableString("language") || "english");
+  M_PrintRight(16 + shift, 168, 22, M_Loc("$m_language", "Language"));
+  M_Print(220 + shift, 168, Cvar_VariableString("language") || "english");
 
-  M_PrintRight(16, 176, 21, M_Loc("$m_controller", "Game Controller"));
-  M_DrawCheckbox(220, 176, Cvar_VariableValue("joy_enable") !== 0);
+  M_PrintRight(16 + shift, 176, 21, M_Loc("$m_controller", "Game Controller"));
+  M_DrawCheckbox(220 + shift, 176, Cvar_VariableValue("joy_enable") !== 0);
 
-  M_PrintRight(16, 184, 23, M_Loc("$m_addons", "Add-Ons"));
+  M_PrintRight(16 + shift, 184, 23, M_Loc("$m_addons", "Add-Ons"));
 
   // cursor
-  M_DrawCharacter(200, 32 + menuState.options_cursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
+  M_DrawCharacter(200 + shift, 32 + menuState.options_cursor * 8, 12 + (Math.trunc(host.realtime * 4) & 1));
 }
 
 export function M_Options_Key(k: number): void {

@@ -1,11 +1,11 @@
 // Scenario 1: qwsv console commands typed on the server's stdin, observed on
 // both sides with one qwcl connected. One line per server frame -- two lines
 // in a single read get glued together (see E.md, SV_GetConsoleCommands).
-import { Cvar_VariableString, BASEDIR, CA_ACTIVE, REPO, bootClient, check, cl, cls, conMark, conSince, conTail, engineErrors, execPump, pump, pumpUntil, serverReady, startServer, summary } from "./e_lib";
+import { Cvar_VariableString, BASEDIR, CA_ACTIVE, REPO, SERVER_HOME, bootClient, check, cl, cls, conMark, conSince, conTail, engineErrors, execPump, pump, pumpUntil, serverReady, startServer, summary } from "./e_lib";
 import { existsSync, readdirSync, rmSync } from "node:fs";
 
 const PORT = 27606;
-rmSync(`${REPO}/qw/snap`, { recursive: true, force: true });
+rmSync(`${SERVER_HOME}/qw/snap`, { recursive: true, force: true });
 for (const f of readdirSync(`${BASEDIR}/qw`)) {
   if (/^(qconsole\.log|frag_\d+\.log)$/.test(f)) rmSync(`${BASEDIR}/qw/${f}`, { force: true });
 }
@@ -104,8 +104,8 @@ async function svc(line: string, ms = 700): Promise<void> {
   const m = sv.mark();
   await svc("snap 1", 7000);
   const t = sv.since(m);
-  // gamedirfile is the bare gamedir name in QW, so snaps land under CWD/qw/snap
-  const dir = `${REPO}/qw/snap`;
+  // snaps land under the server's writable game directory: <homedir>/qw/snap
+  const dir = `${SERVER_HOME}/qw/snap`;
   const files = existsSync(dir) ? readdirSync(dir) : [];
   check("1.8 snap <userid> pulls a remote screenshot from the client", /upload completed/.test(t) && files.length > 0, `server="${t.replace(/\n/g, " | ").slice(0, 160)}" files=${JSON.stringify(files)}`);
 }

@@ -19,7 +19,7 @@ import { cl, cl_dlights, cl_entities, cl_static_entities, cl_visedicts, clState,
 import { Length, VectorSubtract, vec3, type Vec3 } from "../../src/common/mathlib";
 import { r_refdef } from "../../src/client/render";
 import { R_LightPoint } from "../../src/ref_gl/gl_rlight";
-import { SHADEDOT_QUANT } from "../../src/ref_soft/anorm_dots";
+import { SHADEDOT_QUANT, r_avertexnormal_dots } from "../../src/ref_soft/anorm_dots";
 import { qglHolder, type QGL } from "../../src/ref_gl/qgl";
 import { readdirSync, copyFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
 import { Q1TS_DATA, classicArgv, homedirArgs } from "./q1data";
@@ -231,8 +231,16 @@ check("alias models are in view to light", rows.length > 0, `${rows.length} dist
 }
 if (real !== null) {
   check("GL_DrawAliasFrame reached glColor3f over the measured frame", colors.length > 0, `n=${colors.length}`);
-  const outOfRange = colors.filter((c) => !Number.isFinite(c) || c < 0 || c > 1);
-  check("every shade value handed to glColor3f is a real 0..1 intensity", outOfRange.length === 0, outOfRange.length === 0 ? `n=${colors.length}` : `${outOfRange.length} of ${colors.length} outside 0..1, e.g. ${outOfRange[0]}`);
+  // glquake's own ceiling: R_DrawAliasModel lights the flame models at a flat
+  // 256 (past the 192 clamp every other model gets), divides by 200, and the
+  // normal-dot table it multiplies by reaches 1.6 -- so a lit torch legitimately
+  // hands 2.048 to glColor3f, which GL clamps. Anything above THAT is a real
+  // scaling error (a x256 sample, an unclamped channel).
+  let maxDot = 0;
+  for (const d of r_avertexnormal_dots) if (d > maxDot) maxDot = d;
+  const ceiling = (256 / 200) * maxDot + 1e-6;
+  const outOfRange = colors.filter((c) => !Number.isFinite(c) || c < 0 || c > ceiling);
+  check(`every shade value handed to glColor3f is within glquake's own range (0..${ceiling.toFixed(3)}, the flame ceiling)`, outOfRange.length === 0, outOfRange.length === 0 ? `n=${colors.length}` : `${outOfRange.length} of ${colors.length} outside, e.g. ${outOfRange[0]}`);
 }
 check("the driver wrote its screenshot", shotPath !== null, String(shotPath));
 summary(`K ${shotName}`);

@@ -74,7 +74,7 @@ import type { BotSkillSettings, CharacterEntry } from "../botdata";
 import { aimError, aimLeadPoint, aimStep, newAimState, type BotAimStateT } from "./aim";
 import { angleBetween, angleMod, angleVectors, bvec, bvecAdd, bvecDistance, bvecSub, type BotVec3 } from "./math";
 import { BotGameType, INTERACTION, ITEM_FLAG, chooseWeapon, itemValue, type BotGameModeT, type BotKnowledge, type BotWeaponT } from "./knowledge";
-import { defaultTraverseCaps, type NavPathT, type NavTraverseCapsT } from "./nav_graph";
+import { PLAN_START_ABOVE, defaultTraverseCaps, type NavPathT, type NavTraverseCapsT } from "./nav_graph";
 import { BOT_RUN_SPEED, BOT_WALK_SPEED, BotPathStatus, clearPath, followPath, newPathState, rollCombatJump, setPath, steerDirect, type BotPathStateT } from "./path_follow";
 import { canFire, evaluateSightGeometry, isAware, newAwareness, senseStep, shouldForget, soundAudible, type BotAwarenessT, type BotContactT } from "./senses";
 import { randomChance, randomIndex, randomRange, type BotRandomT } from "./rng";
@@ -1403,7 +1403,7 @@ export class BotBrain {
       const t = world.traceBox(from, PATH_BODY_MINS, PATH_BODY_MAXS, to);
       return t.fraction >= 1 && !t.startsolid;
     };
-    const path = nav.planPath(self.origin, goal, { caps: this.traverseCaps(world), visible });
+    const path = nav.planPath(self.origin, goal, { caps: this.traverseCaps(world), visible, startAbove: PLAN_START_ABOVE });
     setPath(this.pathState, path, self.origin, now);
     if (path === null) this.pathState.plannedAt = now;
   }

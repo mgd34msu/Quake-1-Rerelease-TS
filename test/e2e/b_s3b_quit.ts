@@ -1,7 +1,7 @@
 import { boot, frames, exec, check, summary, keyState, Cvar_VariableValue, asDest } from "./b_lib";
 import { KeydestT } from "../../src/client/keys";
 import { existsSync, readFileSync } from "node:fs";
-import { Q1TS_DATA } from "./q1data";
+import { Q1TS_DATA, homedirRoot } from "./q1data";
 
 const BASE = Q1TS_DATA;
 const mode = process.argv[2] ?? "quit";
@@ -38,7 +38,10 @@ if (mode === "menu") {
 // wrote the cvars it was holding into config.cfg -- are both only knowable
 // once it is on its way out. `process.on("exit")` is the last synchronous
 // point where they can still be printed.
-const CONFIG = `${BASE}/e2e_b/config.cfg`;
+// Host_Shutdown writes into the live game directory, which under -homedir is
+// the family's home tier, never the retail tree (a stale copy in the retail
+// tree used to satisfy this read).
+const CONFIG = `${homedirRoot()}/e2e_b/config.cfg`;
 console.log("  reading back sensitivity:", Cvar_VariableValue("sensitivity"));
 exec("sensitivity 7", 1);
 exec('bind p "echo b_config_marker"', 1);

@@ -1410,6 +1410,10 @@ export function SV_SpawnServer(server: string): void {
   // was typed at had is held until here, because svs.clients and the player
   // edicts below are what a slot count sizes.
   const heldSlots = svMainHooks.heldClientSlots?.() ?? 0;
+  // The seats re-arm their signon for the new level here, where the single
+  // hook used to do both (17fbb93 split the hook and dropped this call: a
+  // three-minute splitscreen soak then died on "Received signon 1 when at 4").
+  svMainHooks.serverSpawned?.();
   if (heldSlots > svs.maxclients) {
     svs.maxclients = heldSlots;
     if (svs.maxclientslimit < heldSlots) svs.maxclientslimit = heldSlots;

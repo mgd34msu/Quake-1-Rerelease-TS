@@ -10,7 +10,7 @@ import { Cvar_VariableString, Cvar_VariableValue } from "../../src/common/cvar";
 import { cl, cls } from "../../src/client/client";
 import { con_main, conState } from "../../src/qw/client/console";
 import { existsSync, mkdirSync, readdirSync, renameSync, copyFileSync, symlinkSync, statSync, unlinkSync } from "node:fs";
-import { Q1TS_REPO, Q1TS_DATA } from "./q1data";
+import { Q1TS_REPO, Q1TS_DATA, homedirRoot } from "./q1data";
 
 export const BASEDIR = `${process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests"}/eb`;
 export const LOGDIR = `${process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests"}/elog`;
@@ -257,6 +257,9 @@ yesterday's server instead).
 const liveServers: ServerHandle[] = [];
 let exitHookInstalled = false;
 
+/** Where this family's QuakeWorld servers write: the runner's home tier for family e. */
+export const SERVER_HOME = homedirRoot();
+
 export function startServer(name: string, args: string[]): ServerHandle {
   mkdirSync(LOGDIR, { recursive: true });
   if (!exitHookInstalled) {
@@ -272,7 +275,10 @@ export function startServer(name: string, args: string[]): ServerHandle {
     });
   }
   const logPath = `${LOGDIR}/${name}.log`;
-  const proc = Bun.spawn([...qwsvCmd(), "-basedir", BASEDIR, ...args], {
+  // -homedir: the QuakeWorld side mounts <homedir>/qw first and writes there
+  // (logs, snaps, config); without it a server started here would write into
+  // the user's real home tier.
+  const proc = Bun.spawn([...qwsvCmd(), "-basedir", BASEDIR, "-homedir", SERVER_HOME, ...args], {
     cwd: REPO,
     stdin: "pipe",
     stdout: "pipe",

@@ -397,9 +397,12 @@ describe("nav graph: where a plan may start", () => {
     // goal node. The plan must leave the pit by the pit's own node.
     const positions = [bvec(0, 0, 73), bvec(40, 0, 0), bvec(400, 0, 0)];
     const graph = navGraphFromNav2(buildNav(positions, [...chainLinks(3), { from: 0, to: 2, type: NavLinkType.Walk }, { from: 2, to: 0, type: NavLinkType.Walk }]));
-    const path = graph.planPath(bvec(0, 0, 0), bvec(400, 0, 0));
+    const path = graph.planPath(bvec(0, 0, 0), bvec(400, 0, 0), { startAbove: PLAN_START_ABOVE });
     expect(path).not.toBeNull();
+    expect(path!.nodes[0]).toBe(1); // the pit's own node, not the one overhead
     expect(path!.points[0]!.z).toBeLessThan(10);
+    // a monster (no startAbove) keeps the wider default and may start overhead
+    expect(graph.planPath(bvec(0, 0, 0), bvec(400, 0, 0))!.nodes[0]).toBe(0);
     // The lookup's default window (the goal end keeps it) still names the
     // node overhead, which is right for a goal on a ledge; the start window
     // is what changed.
