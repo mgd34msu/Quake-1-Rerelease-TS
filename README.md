@@ -18,7 +18,15 @@ conventions, `CHANGELOG.md` records what each release changed.
 
 ## Status
 
-Landed (2026-09-06):
+**This is a work in progress.** Like the Quake 2 re-release port it
+grew up beside, the engine is played and tested every day and still has
+bugs: some known and being worked on, some not found yet. Expect rough
+edges in the bot AI, the menus, the software renderer's true-colour path
+and the QuakeWorld side in particular. Bug reports with the map, the
+ruleset, the renderer and the console output are welcome.
+
+Landed (2026-09-06, with the play fixes of 2026-09-07/08 listed in
+`CHANGELOG.md`):
 
 - One QuakeC VM with NetQuake and QuakeWorld host profiles; the re-release
   progs run with all 18 name-bound `ex_*` builtins, `checkextension`,
@@ -45,9 +53,9 @@ Landed (2026-09-06):
   its own loopback client connection with its own view, HUD and input;
   `svc_setviews` tells a local client how many seats its own machine is
   running.
-- A Multiplayer menu: a Bots page, a start-server screen (ruleset, bot
-  count/skill, protocol), a join screen for NetQuake and QuakeWorld
-  addresses, and CTF team selection.
+- A Multiplayer menu: a start-server screen (ruleset, bot count and
+  skill, protocol), a join screen for NetQuake and QuakeWorld addresses,
+  and CTF team selection.
 - Bots and navigation: NAV2 pathing, `ex_walkpathtogoal` (falling back to
   `movetogoal` on a map with no `.nav`), a game-agnostic bot brain shared
   with quake-2-re-ts's binding work, `addbot`/`bot_count`/`bot_skill`.
@@ -309,6 +317,10 @@ Behaviour that looks like a gap but is a deliberate, documented choice:
   GPLv2 open engines.
 - Windows and macOS builds are cross-compiled but **untested** on real
   hardware; see `docs/PLATFORMS.md`.
+- The bot AI is a first cut. Bots path, fight, swim, carry flags and now
+  mostly stay out of the lava, but they still misjudge some jumps, stand
+  where they should not, and lose fights a player would win. Measured
+  numbers for each change live in the commit messages.
 
 ## Lineage and attribution
 

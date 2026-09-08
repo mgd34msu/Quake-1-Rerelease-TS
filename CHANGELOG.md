@@ -6,6 +6,56 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+This engine is a work in progress: it is played and tested daily and
+still has bugs, as does the Quake 2 re-release port it grew up beside.
+
+### Play fixes 2026-09-07/08
+- Bots: swim in three dimensions; bring the flag home (carrier hold and
+  touch, target scoring, corner and slide steering, gated-door shooting,
+  lifts, ledges); stay out of the lava (in lava they face the exit and push
+  at it so the engine's water-jump climbs the bank; the floor probe traces
+  down to the first solid thing, brush entities included, so lifts and
+  thin bridges over lava are floor; a crossable lava gap is run at and
+  jumped, a pit is refused; the guard has the last word over combat and
+  unstick hops; a teleporter node is never skipped by a fresh plan);
+  defenders hunt an enemy flag carrier, attackers escort their own carrier
+  on its way home. Measured over seeded ctf6/ctf8 matches: ctf8 lava deaths
+  11/9/7 -> 6/1/0 per seed, longest stalls 31/2.7/21.7 s -> 3.9/5.9/1.9 s.
+- Settings survive New Game, map changes and `game` switches (the config is
+  archived before the switch; `game <same dir>` is a no-op).
+- Re-release MD5 models are lit like the classic models (normalised shade
+  dot, `gl_overbright_models` honoured) and wear team colours in both
+  renderers; the software MD5 path normalises its blended normal.
+- Colored lighting moved from Options to the Video menu, where it applies
+  to the renderer that has it; the GL lightmaps rebuild when the cvar and
+  the built format disagree.
+- Big re-release maps: the server's fat-PVS buffer grows with the map, so
+  entities on maps with more than 8192 leaves are sent (mge1m1's grunts
+  and doors were invisible).
+- The re-release localization is loaded only under the re-release ruleset
+  (classic progs printed raw `$` keys such as a death message).
+- Tick backlog: the fixed-step server clock caps its catch-up to one real
+  frame plus one tick, so a stall no longer fast-forwards the bots.
+- The CTF progs' `echo LOG:  DEATH ...` stuffing goes to the developer
+  console instead of the player's; the bare `LOG` form too.
+- True-colour software rendering keeps the palette at the base colours and
+  applies gamma and damage/lava tints in the present ramp (a lava death no
+  longer brightens the shadows for the rest of the map).
+- The console's map-start bar prints as `=` on stdout instead of control
+  bytes.
+- The software 2-D blitters (`Draw_Pic`, `Draw_SubPic`, `Draw_TransPic`,
+  `Draw_TransPicTranslate`, `Draw_Fill`) clip to the screen instead of a
+  fatal "bad coordinates" error: a window narrower than the 320-wide status
+  bar killed the game on its first frame. The window carries a 320x200
+  minimum-size hint.
+- Tests never touch the real per-user directory (`Q1TS_NOHOMEDIR=1` under
+  `bun test`, scratch homes for every driver boot).
+- A client kept across a level change drops its unsent old-level backlog.
+
+### Removed
+- The Multiplayer menu's Bots page (a full-screen roster with no way to
+  start a game); bot count and skill live on the start-server screen.
+
 ### Milestone 2026-09-06
 - Every retail map in all ten trees (classic id1/hipnotic/rogue and the
   re-release id1/hipnotic/rogue/mg1/mg3/dopa/ctf) boots headless under its
