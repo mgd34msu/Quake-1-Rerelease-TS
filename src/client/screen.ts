@@ -449,12 +449,6 @@ SCR_Init
 ==================
 */
 export function SCR_Init(): void {
-  // The server-side hooks this module answers are installed here, at init,
-  // rather than at module load: a static import edge that reached this
-  // module from the server side used to read svMainHooks before sv_main.ts
-  // had finished evaluating (a temporal dead zone), and the hooks are not
-  // needed before a server spawns anyway.
-  registerScreenHooks();
   Cvar_RegisterVariable(scr_fov);
   Cvar_RegisterVariable(scr_viewsize);
   Cvar_RegisterVariable(scr_conspeed);
@@ -1009,3 +1003,12 @@ export function registerScreenHooks(): void {
     for (const c of scr_center) c.timeOff = 0;
   };
 }
+
+// At module load, on purpose: hostClientHooks.scrInit IS how Host_Init
+// reaches SCR_Init, so this cannot wait for SCR_Init (moving it there left
+// the NetQuake client with no screen cvars and no `screenshot` command --
+// 17fbb93, caught by the regate). The import-order hazard the followup
+// described is a static server-side import of this module evaluating before
+// host.ts/sv_main.ts; both hook holders are plain objects created at their
+// modules' top, so a client module that imports them gets them initialized.
+registerScreenHooks();

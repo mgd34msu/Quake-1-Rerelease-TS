@@ -47,3 +47,16 @@ describe("console registrations at module load", () => {
     }
   });
 });
+
+// The other direction: registrations that MUST happen at module load, because
+// they are how Host_Init reaches the client at all. Moving this one into
+// SCR_Init (17fbb93) left the NetQuake client with no screen cvars and no
+// `screenshot` command; the regate caught it, this pins it.
+describe("hooks Host_Init reaches the client through are installed at module load", () => {
+  test("importing screen.ts installs hostClientHooks.scrInit and scrUpdateScreen", async () => {
+    const screen = await import("../src/client/screen");
+    const { hostClientHooks } = await import("../src/common/host");
+    expect(hostClientHooks.scrInit).toBe(screen.SCR_Init);
+    expect(typeof hostClientHooks.scrUpdateScreen).toBe("function");
+  });
+});
