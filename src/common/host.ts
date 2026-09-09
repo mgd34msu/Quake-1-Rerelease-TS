@@ -159,8 +159,7 @@ import {
   com_argv,
   com_gamedir,
   host_parms,
-  standard_quake,
-} from "./common";
+  standard_quake, COM_UserConfigPath } from "./common";
 import {
   NET_CanSendMessage,
   NET_Close,
@@ -762,7 +761,10 @@ export function Host_WriteConfiguration(): void {
   // config.cfg cvars
   if (host.initialized && !sysState.isDedicated) {
     // f = fopen (va("%s/config.cfg",com_gamedir), "w");
-    const handle = Sys_FileOpenWriteNonFatal(Com_sprintf("%s/config.cfg", com_gamedir));
+    // Under a home directory the one shared config takes it instead (see
+    // common.ts's COM_UserConfigPath); the classic per-gamedir file otherwise.
+    const shared = COM_UserConfigPath();
+    const handle = Sys_FileOpenWriteNonFatal(shared !== "" ? shared : Com_sprintf("%s/config.cfg", com_gamedir));
     if (handle === -1) {
       // if (!f) { Con_Printf ("Couldn't write config.cfg.\n"); return; }
       Con_Printf("Couldn't write config.cfg.\n");

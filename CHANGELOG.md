@@ -6,6 +6,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-09-08
+
+Two fixes from the first evening of play on the release build.
+
+### Fixed
+- The view no longer stays tilted after some respawns and hits in
+  multiplayer: a `fixangle` that outlived its frame had its angles rewritten
+  by the next client think, which stamped the movement lean (up to 8
+  degrees) into the roll that `svc_setangle` then delivered as the view's
+  own roll, which nothing on the client ever cleared. The lean now waits
+  for a pending fixangle to be delivered (both server profiles).
+- One shared `config.cfg` per user (`<homedir>/config.cfg`) instead of one per
+  game directory: keys bound while playing CTF were gone back in id1 and had
+  to be bound again after every switch. A first run carries over the newest
+  per-game-directory config an earlier build left. `-nohomedir` keeps the
+  classic per-gamedir file; the QuakeWorld client keeps its own config.
+
 ## [1.0.0] - 2026-09-08
 
 The first release. This engine is a work in progress: it is played and
@@ -742,6 +759,7 @@ end-to-end passes. Each was a port bug, not a change to Quake's behaviour.
 - `NET_Init` bind failure raises `SysError` through `NET_Ready` instead of
   failing silently.
 
-[Unreleased]: https://github.com/mgd34msu/Quake-1-Rerelease-TS/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/mgd34msu/Quake-1-Rerelease-TS/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/mgd34msu/Quake-1-Rerelease-TS/releases/tag/v1.0.1
 [1.0.0]: https://github.com/mgd34msu/Quake-1-Rerelease-TS/releases/tag/v1.0.0
 [Quake-1-TS 1.0.0]: https://github.com/mgd34msu/Quake-1-TS/releases/tag/v1.0.0

@@ -610,21 +610,26 @@ describe("CL_InitInput", () => {
 
 describe("cvar defaults (cl_input.c literals)", () => {
   test("values and archive flags", () => {
-    expect(cl_input.cl_upspeed.value).toBe(200);
+    // The declaration literals, not the live values: bun runs every test
+    // file in one process, and a suite that booted real or synthetic data
+    // before this one may have exec'd a default.cfg (the re-release's sets
+    // cl_forwardspeed 400) with no config.cfg to bring it back.
+    const def = (c: { defaultString: string }): number => Number(c.defaultString);
+    expect(def(cl_input.cl_upspeed)).toBe(200);
     expect(cl_input.cl_upspeed.archive).toBe(false);
-    expect(cl_input.cl_forwardspeed.value).toBe(200);
+    expect(def(cl_input.cl_forwardspeed)).toBe(200);
     expect(cl_input.cl_forwardspeed.archive).toBe(true);
-    expect(cl_input.cl_backspeed.value).toBe(200);
+    expect(def(cl_input.cl_backspeed)).toBe(200);
     expect(cl_input.cl_backspeed.archive).toBe(true);
-    expect(cl_input.cl_sidespeed.value).toBe(350);
+    expect(def(cl_input.cl_sidespeed)).toBe(350);
     expect(cl_input.cl_sidespeed.archive).toBe(false);
-    expect(cl_input.cl_movespeedkey.value).toBe(2.0);
+    expect(def(cl_input.cl_movespeedkey)).toBe(2.0);
     expect(cl_input.cl_movespeedkey.archive).toBe(false);
-    expect(cl_input.cl_yawspeed.value).toBe(140);
+    expect(def(cl_input.cl_yawspeed)).toBe(140);
     expect(cl_input.cl_yawspeed.archive).toBe(false);
-    expect(cl_input.cl_pitchspeed.value).toBe(150);
+    expect(def(cl_input.cl_pitchspeed)).toBe(150);
     expect(cl_input.cl_pitchspeed.archive).toBe(false);
-    expect(cl_input.cl_anglespeedkey.value).toBe(1.5);
+    expect(def(cl_input.cl_anglespeedkey)).toBe(1.5);
     expect(cl_input.cl_anglespeedkey.archive).toBe(false);
   });
 });

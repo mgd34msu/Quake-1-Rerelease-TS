@@ -1514,11 +1514,16 @@ export function SV_RunCmd(ucmd: QwUsercmdT): void {
   // angles
   // show 1/3 the pitch angle and all the roll angle
   if (sv_player.v.health > 0) {
+    // The lean (V_CalcRoll*4) waits for a pending fixangle too: while one
+    // waits, `angles` is what the next svc_setangle ships into the client's
+    // own view angles, and the client never clears its roll -- see the
+    // NetQuake SV_ClientThink's note (P21, 2026-09-08). The C wrote the roll
+    // unconditionally.
     if (!sv_player.v.fixangle) {
       sv_player.v.angles[PITCH] = -sv_player.v.v_angle[PITCH] / 3;
       sv_player.v.angles[YAW] = sv_player.v.v_angle[YAW];
+      sv_player.v.angles[ROLL] = V_CalcRoll(sv_player.v.angles, sv_player.v.velocity) * 4;
     }
-    sv_player.v.angles[ROLL] = V_CalcRoll(sv_player.v.angles, sv_player.v.velocity) * 4;
   }
 
   svMainMod.svMainState.host_frametime = ucmd.msec * 0.001;

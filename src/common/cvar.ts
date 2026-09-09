@@ -95,10 +95,13 @@ export class CvarT {
   info: boolean; // QuakeWorld track: propagate to userinfo (qwcl) / serverinfo (qwsv) when changed
   value: number;
   next: CvarT | null;
+  /** The string the cvar was declared with (the C's initializer literal), kept through every Cvar_Set. Not in the C. */
+  readonly defaultString: string;
 
   constructor(name: string, string: string, archive = false, server = false, info = false) {
     this.name = name;
     this.string = string;
+    this.defaultString = string;
     this.archive = archive;
     this.server = server;
     this.info = info;

@@ -119,9 +119,16 @@ binary, `q1rets`; see [Building from source](#building-from-source) below.
 - **Writable directory.** By default the engine writes to
   `$XDG_DATA_HOME/q1rets` (`~/.local/share/q1rets` when that variable is
   unset), mirrored per game directory: `~/.local/share/q1rets/id1/`,
-  `.../hipnotic/`, and so on, created on demand. `config.cfg`, savegames,
-  autosaves, demos, screenshots and `qconsole.log` all land there, and that
-  tier sits at the head of the search path so those files are found first.
+  `.../hipnotic/`, and so on, created on demand. Savegames, autosaves,
+  demos, screenshots and `qconsole.log` land there per game directory, and
+  that tier sits at the head of the search path so those files are found
+  first. `config.cfg` is the exception: there is ONE, `~/.local/share/q1rets/
+  config.cfg`, shared by every game directory, so the keys you bind while
+  playing CTF are still bound in id1 and in the mission packs (WinQuake kept
+  a config per game directory, which lost bindings on every switch). A
+  first run with no shared config carries over the newest per-game-directory
+  `config.cfg` an earlier build left, then the game directory's own config,
+  then `default.cfg`.
   The install under `-basedir` is only ever read, so a read-only or shared
   retail copy is left untouched — the same quality-of-life rule QuakeSpasm
   and Ironwail follow on Linux, and an addition over WinQuake, which wrote

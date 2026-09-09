@@ -448,8 +448,19 @@ export function SV_ClientThink(): void {
 
   const v_angle = vec3();
   VectorAdd(sv_player.v.v_angle, sv_player.v.punchangle, v_angle);
-  angles[ROLL] = V_CalcRoll(sv_player.v.angles, sv_player.v.velocity) * 4;
+  // The C writes angles[ROLL] = V_CalcRoll(...)*4 unconditionally and only
+  // guards PITCH/YAW with fixangle. That lean is the pose other players see
+  // on this player's model. While a fixangle is pending, though, `angles`
+  // is what the next svc_setangle ships into the client's own view angles
+  // -- and a fixangle raised after a frame's send waits a tick for that
+  // (measured: 31 such ticks in a 300 s bot match). A player knocked
+  // sideways in that tick got the lean, up to 8 degrees, as a permanent
+  // view roll: nothing on the client ever writes the roll again, so the
+  // view stayed tilted until the next teleport or respawn (P21, Mike's
+  // screenshot, 2026-09-08; forced condition reproduced it exactly). The
+  // whole write waits for the fixangle to be delivered.
   if (!sv_player.v.fixangle) {
+    angles[ROLL] = V_CalcRoll(sv_player.v.angles, sv_player.v.velocity) * 4;
     angles[PITCH] = -v_angle[PITCH] / 3;
     angles[YAW] = v_angle[YAW];
   }

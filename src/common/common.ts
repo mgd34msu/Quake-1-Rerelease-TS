@@ -730,6 +730,7 @@ export function COM_InitArgv(argv: string[]): void {
 export const registered: CvarT = {
   name: "registered",
   string: "0",
+  defaultString: "0",
   archive: false,
   server: false,
   info: false,
@@ -739,6 +740,7 @@ export const registered: CvarT = {
 export const cmdline: CvarT = {
   name: "cmdline",
   string: "0",
+  defaultString: "0",
   archive: false,
   server: true,
   info: false,
@@ -1565,6 +1567,56 @@ function stripTrailingSlash(path: string): string {
 
 // The last path component of a mounted gamedir ("id1", "hipnotic", a mod
 // name, ...) -- what a homedir mount recreates the write tree under.
+/**
+ * The one config.cfg a player's settings live in when a per-user directory is
+ * in use: `<homedir>/config.cfg`, shared by every game directory. WinQuake
+ * kept one config per game directory, which was fine when a mod was a thing
+ * you launched once; the re-release's New Game / Multiplayer screens switch
+ * game directories every session, and a per-directory config meant the keys
+ * bound while playing CTF were gone in id1 and back again in CTF (2026-09-08,
+ * Mike: "I had to rebind my keys again"). The QuakeWorld client keeps its own
+ * config and is not part of this. Empty when no home directory is in use
+ * (-nohomedir): the classic per-gamedir file then.
+ */
+export function COM_UserConfigPath(): string {
+  return com_homedir ? `${com_homedir}/config.cfg` : "";
+}
+
+/**
+ * Where `exec config.cfg` reads from under a home directory: the shared file
+ * when it exists; otherwise the most recently written of the per-game-directory
+ * configs an earlier build left (so the bindings the player saved last are the
+ * ones carried into the shared file), or "" to fall through to the search path
+ * (a mod's own config.cfg, then default.cfg) for a first run.
+ */
+export function COM_UserConfigReadPath(): string {
+  const shared = COM_UserConfigPath();
+  if (shared === "") return "";
+  if (existsSync(shared)) return shared;
+  let newest = "";
+  let newestTime = -1;
+  let entries: string[];
+  try {
+    entries = readdirSync(com_homedir);
+  } catch {
+    return "";
+  }
+  for (const entry of entries) {
+    const candidate = `${com_homedir}/${entry}/config.cfg`;
+    try {
+      const st = statSync(candidate);
+      if (!st.isFile()) continue;
+      if (st.mtimeMs > newestTime) {
+        newestTime = st.mtimeMs;
+        newest = candidate;
+      }
+    } catch {
+      // not a game directory with a config
+    }
+  }
+  return newest;
+}
+
 function homedirBaseName(dir: string): string {
   const idx = dir.lastIndexOf("/");
   return idx === -1 ? dir : dir.slice(idx + 1);

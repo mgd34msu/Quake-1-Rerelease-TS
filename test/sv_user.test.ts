@@ -583,6 +583,42 @@ describe("SV_RunClients", () => {
     }
   });
 
+  test("a pending fixangle keeps the movement lean out of angles[ROLL] (P21: the view roll that stuck)", () => {
+    // The lean V_CalcRoll*4 is the pose other players see. While a fixangle
+    // waits to be delivered, `angles` is what the next svc_setangle ships
+    // into the client's own view angles, and the client never writes its
+    // roll again: a player knocked sideways in that tick kept an 8-degree
+    // tilt until the next teleport or respawn.
+    resetPlayer();
+    player.v.flags = FL_ONGROUND;
+    host.frametime = 0.1;
+    sv.time = 100;
+    sv.paused = false;
+    const savedKeyDestIsGame = svUserHooks.keyDestIsGame;
+    svUserHooks.keyDestIsGame = null;
+    svs.maxclients = 1;
+    svs.clients = [runClient];
+    try {
+      // facing +x, knocked along +y: a full-size lean if it were written
+      player.v.angles[0] = 0; player.v.angles[1] = 0; player.v.angles[2] = 0;
+      player.v.v_angle[0] = 0; player.v.v_angle[1] = 0; player.v.v_angle[2] = 0;
+      player.v.velocity[0] = 0; player.v.velocity[1] = 300; player.v.velocity[2] = 0;
+      player.v.fixangle = 1;
+      SV_RunClients();
+      expect(player.v.angles[2]).toBe(0);
+      expect(player.v.fixangle).toBe(1); // still pending: the send phase clears it, not the think
+
+      // delivered: the lean is the model's pose again
+      player.v.fixangle = 0;
+      player.v.velocity[0] = 0; player.v.velocity[1] = 300; player.v.velocity[2] = 0;
+      SV_RunClients();
+      expect(Math.abs(player.v.angles[2])).toBeGreaterThan(1);
+    } finally {
+      svUserHooks.keyDestIsGame = savedKeyDestIsGame;
+      player.v.fixangle = 0;
+    }
+  });
+
   test("SV_RunClients does not run SV_ClientThink while sv.paused", () => {
     player.v.velocity[0] = 0;
     player.v.velocity[1] = 0;

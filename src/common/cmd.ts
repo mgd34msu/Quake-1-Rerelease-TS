@@ -157,8 +157,9 @@ Deviations from PORTING.md / the C source:
   original engine could exec is spliced byte-for-byte as it was before.
 */
 
+import { readFileSync } from "node:fs";
 import { SizeBuf, SZ_Alloc, SZ_Clear, SZ_Write } from "./sizebuf";
-import { COM_Parse, type ParseState, com_argc, com_argv, COM_LoadHunkFile } from "./common";
+import { COM_Parse, type ParseState, com_argc, com_argv, COM_LoadHunkFile, COM_UserConfigReadPath } from "./common";
 import { Cvar_Command, Cvar_VariableString } from "./cvar";
 import { Hunk_LowMark, Hunk_FreeToLowMark } from "./zone";
 import { Con_Printf, Con_DPrintf } from "../client/console";
@@ -430,7 +431,20 @@ export function Cmd_Exec_f(): void {
   }
 
   const mark = Hunk_LowMark();
-  const f = COM_LoadHunkFile(Cmd_Argv(1));
+  // `exec config.cfg` under a home directory reads the player's one shared
+  // config (common.ts's COM_UserConfigReadPath) ahead of the search path;
+  // every other file, and config.cfg with no home directory, goes through
+  // the search path as the C does.
+  const userConfig = isConfigCfg(Cmd_Argv(1)) ? COM_UserConfigReadPath() : "";
+  let f: Uint8Array | null = null;
+  if (userConfig !== "") {
+    try {
+      f = new Uint8Array(readFileSync(userConfig));
+    } catch {
+      f = null;
+    }
+  }
+  if (f === null) f = COM_LoadHunkFile(Cmd_Argv(1));
   if (!f) {
     Con_Printf("couldn't exec %s\n", Cmd_Argv(1));
     return;
@@ -439,7 +453,9 @@ export function Cmd_Exec_f(): void {
 
   // f carries one trailing NUL byte (common.ts's COM_LoadHunkFile ruling);
   // drop it so Cbuf_InsertText sees exactly what the C's Q_strlen(f) would.
-  let text = latin1BytesToString(f.subarray(0, f.length - 1));
+  // The shared config read straight off the disk carries no such byte.
+  const body = f.length > 0 && f[f.length - 1] === 0 ? f.subarray(0, f.length - 1) : f;
+  let text = latin1BytesToString(body);
   // A file whose last line has no terminator would otherwise be spliced
   // straight onto whatever was already queued behind the exec -- see the
   // file header's F5 note.

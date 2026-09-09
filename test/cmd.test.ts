@@ -24,7 +24,7 @@
 // .mockRestore() at the end of each test, per rule 15).
 
 import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   CmdSourceT,
@@ -44,7 +44,7 @@ import {
   Cmd_ExecuteString,
   Cmd_CheckParm,
 } from "../src/common/cmd";
-import { COM_AddGameDirectory, com_searchpaths, setComSearchpaths } from "../src/common/common";
+import { COM_AddGameDirectory, COM_UserConfigPath, COM_UserConfigReadPath, com_homedir, com_searchpaths, setComHomedir, setComSearchpaths } from "../src/common/common";
 import { sysState } from "../src/platform/sys";
 import { developer } from "../src/common/host";
 import * as consoleMod from "../src/client/console";
@@ -380,6 +380,48 @@ describe("Cmd_Exec_f and a file with no trailing newline", () => {
     Cbuf_AddText("exec config.cfg\ntestrecord queued\n");
     Cbuf_Execute();
     expect(recorded).toEqual(real ? ["testrecord|fromconfig", "testrecord|queued"] : ["testrecord|fromconfig", "cfg_migrate|ran", "testrecord|queued"]);
+  });
+
+  test("under a home directory `exec config.cfg` reads the one shared config ahead of the gamedir's own", () => {
+    // P-config (2026-09-08, Mike: "I had to rebind my keys again"): the
+    // per-gamedir archive meant keys bound in CTF were gone in id1.
+    const home = mkdtempSync(join(scratchRoot, "cmd-home-"));
+    const savedHome = com_homedir;
+    try {
+      setComHomedir(home);
+      expect(COM_UserConfigPath()).toBe(`${home}/config.cfg`);
+      // nothing saved yet: the search path's config.cfg (the gamedir's) is what runs
+      expect(COM_UserConfigReadPath()).toBe("");
+      recorded = [];
+      Cbuf_AddText("exec config.cfg\n");
+      Cbuf_Execute();
+      expect(recorded[0]).toBe("testrecord|fromconfig");
+
+      // an earlier build's per-gamedir archives: the newest one is what carries over
+      mkdirSync(join(home, "id1"));
+      mkdirSync(join(home, "ctf"));
+      writeFileSync(join(home, "id1", "config.cfg"), "testrecord fromid1\n");
+      const past = new Date(Date.now() - 60_000);
+      utimesSync(join(home, "id1", "config.cfg"), past, past);
+      writeFileSync(join(home, "ctf", "config.cfg"), "testrecord fromctf\n");
+      expect(COM_UserConfigReadPath()).toBe(join(home, "ctf", "config.cfg"));
+      recorded = [];
+      Cbuf_AddText("exec config.cfg\n");
+      Cbuf_Execute();
+      expect(recorded[0]).toBe("testrecord|fromctf");
+
+      // once the shared file exists it wins over everything
+      writeFileSync(join(home, "config.cfg"), "testrecord fromshared\n");
+      expect(COM_UserConfigReadPath()).toBe(`${home}/config.cfg`);
+      recorded = [];
+      Cbuf_AddText("exec config.cfg\n");
+      Cbuf_Execute();
+      expect(recorded[0]).toBe("testrecord|fromshared");
+    } finally {
+      setComHomedir(savedHome);
+    }
+    // no home directory: the classic search-path read
+    expect(COM_UserConfigPath()).toBe(savedHome === "" ? "" : `${savedHome}/config.cfg`);
   });
 
   test("exec of any other file queues nothing extra", () => {

@@ -14,7 +14,7 @@ own net host hooks and add their own console commands.
 import { describe, expect, test, beforeAll, afterAll, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { COM_InitArgv, com_gamedir, pop } from "../src/common/common";
+import { COM_InitArgv, com_gamedir, pop, com_homedir, setComHomedir } from "../src/common/common";
 import { writePakToDisk } from "./support/pak_builder";
 import { buildBsp, buildMdl, buildSpr, ensureDir, writeGameFile } from "./support/bsp_builder";
 import { Cbuf_AddText, Cmd_AddCommand, Cmd_Exists, Cmd_ExecuteString, CmdSourceT, cmdHost } from "../src/common/cmd";
@@ -819,6 +819,22 @@ describe.skipIf(!HAVE_PROGS106)("Host_WriteConfiguration", () => {
 
     expect(existsSync(configPath())).toBe(true);
     expect(readFileSync(configPath(), "utf8").length).toBeGreaterThan(0);
+  });
+
+  test("under a home directory the one shared <homedir>/config.cfg is written, not the gamedir's", () => {
+    const home = mkdtempSync(join(process.env.Q1TS_SCRATCH ?? "/tmp/q1ts-tests", "host-home-"));
+    const savedHome = com_homedir;
+    rmSync(configPath(), { recursive: true, force: true });
+    try {
+      setComHomedir(home);
+      writeConfigAsClient();
+      expect(existsSync(join(home, "config.cfg"))).toBe(true);
+      expect(readFileSync(join(home, "config.cfg"), "utf8").length).toBeGreaterThan(0);
+      expect(existsSync(configPath())).toBe(false);
+    } finally {
+      setComHomedir(savedHome);
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test('prints "Couldn\'t write config.cfg." and returns when the open fails', () => {

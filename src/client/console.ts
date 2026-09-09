@@ -275,6 +275,7 @@ let con_debuglog = false;
 export const con_notifytime: CvarT = {
   name: "con_notifytime",
   string: "3",
+  defaultString: "3",
   archive: false,
   server: false,
   info: false,
